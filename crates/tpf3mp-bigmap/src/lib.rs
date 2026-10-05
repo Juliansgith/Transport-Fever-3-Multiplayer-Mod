@@ -19,6 +19,9 @@
 //!   TPF2 build 35924's from Big Maps' measurements, TF3 build 40408's from
 //!   its executable, its scripts and one log
 //!   (investigation/TF3_BIGMAPS_PORT_2026-10-01.md).
+//! - [`memory_gate`]: the PROVISIONAL constants of the New Game page's
+//!   memory gate (MB per km² and the game's own use), the one place to
+//!   recalibrate them once Stage 0 has measured them.
 //! - [`stock`]: TF3's own sizes and the walls stock TF3 stays inside.
 //! - [`ladder`]: the added map sizes and the shapes the ratio dropdown gives
 //!   each one.
@@ -47,6 +50,7 @@ pub mod config;
 pub mod features;
 pub mod ladder;
 pub mod measure;
+pub mod memory_gate;
 pub mod mod_data;
 pub mod page;
 pub mod stock;

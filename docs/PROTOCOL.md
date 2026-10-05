@@ -1,6 +1,6 @@
 # Protocol
 
-Current integration: protocol **15**, bridge **21**, action schema **22**.
+Current integration: protocol **16**, bridge **23**, action schema **25**.
 This selective combination differs from both prior dev and PR #37; all
 participants and the relay must be upgraded together. Numbers in feature
 history below describe their original introduction.
@@ -95,9 +95,14 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   the server orders commands without judging them. The room view and every
   `TurnStart` name the room's rules, and they never change for the life of
   the room.
-- **Closing.** A room closes when its last member leaves. A running game
-  also closes when nobody has been connected to it for 10 minutes; until
-  then, disconnected players keep their seats and can resume.
+- **Closing.** A room closes when its last member leaves; a lobby also
+  when its last member disconnects. A running game also closes when nobody
+  has been connected to it for the server's grace period, 10 minutes by
+  default (OPERATIONS.md, "Room lifetime"); until then, disconnected
+  players keep their seats and can resume, and the room is left out of the
+  room list. Joining a room that closed is refused as `BadInvite`, like
+  any unknown room: the agent takes that answer to a rejoin as the room
+  being gone, and stops rejoining.
 - **Chat.** Any member can say something to the room (`Chat`, up to 280
   bytes). Every member hears it, the sender too, so everyone sees one
   conversation. A player may send one message a second, with a burst of
@@ -133,8 +138,9 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   invite is for anyone to join with, and its password still guards it. A
   private room is never listed, and its invite never leaves the server
   but as the answer to its creator. The server keeps a public room's
-  invite in memory only: a room restored after a restart is private. The
-  owner updates the listing with `DescribeRoom(RoomListing)`, such as the
+  invite in memory only: a room restored after a restart is private. A
+  public room nobody is connected to is not listed while it waits out its
+  grace period. The owner updates the listing with `DescribeRoom(RoomListing)`, such as the
   year and companies once the game runs; anyone else gets `NotOwner`, and
   a private room `NotListed`. A connection may ask for one page a second,
   with a burst of five (`RateLimited` beyond), within its general request
@@ -189,6 +195,44 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   and counting the rest. It says so again whenever that changes, and sends
   `ContentDiff(None)` once the member matches. The game's manifest is kept
   in its log, so a restored game can still say how a newcomer differs.
+- **The room's mods** (protocol 18). In the lobby the owner declares with
+  `DeclareRoom` instead of `DeclareContent`: a `RoomDeclaration`, their
+  manifest and beside it a `RoomConfig`, what players are told of each of
+  its mods in its order (`ModInfo`: a name for players of up to 48 bytes,
+  where the owner's game has it from, `source`, up to 16, and its Mod Hub
+  number, `modio`, for a mod from Mod Hub) and the settings the room's
+  world loads them with (`ModParams`: per mod its `modParams` by name, up
+  to 64 bytes, each a whole number; the id `""`, `GAME_SETTINGS`, carries
+  the game's own: difficulty, costs, the economy's). The room takes it
+  whole or not at all: every mod listed (no `Unlisted` tail), at most 256,
+  each valid and once, TPF3-MP's own exactly once and last, a Mod Hub
+  number only for a mod from `mod.io`, settings only for the room's mods
+  and the game's own, at most 512, each mod once, all within 60 KiB;
+  otherwise `InvalidContent`. Only the owner sends it (`NotOwner`), only
+  in the lobby (`GameRunning`). It counts as the owner's content
+  declaration, and the room tells every member the room's mods with
+  `ServerMessage::RoomMods(Some(RoomMods))`: the game's build, each mod
+  with the owner's version and its `ModInfo`, and the settings. A member
+  receives it on joining the lobby, whenever it changes, and before a join
+  to a running game is refused, so it learns which mods to have before it
+  declares its own. It comes before the `RoomUpdate` of the same change,
+  on the same ordered stream, so a member asked to get ready again has
+  the mods and settings it agrees to before it can. Every connection of a
+  member is told once, `None` included, also on rejoining with a new
+  connection; a client joining a
+  running game begins it only once told, as the room's mods and settings
+  come on the control stream and the game's turns on another. When the mods change, every member is marked not
+  ready. An owner's plain `DeclareContent` leaves the room without a list
+  (`RoomMods(None)`), and the room only compares content as before. Each
+  member's view (`MemberView::differs`) says in counts how its game
+  differs from the room's (`ContentStatus`: mods missing, in another
+  version, extra; another build; reordered; a differing unlisted tail),
+  `None` while it matches or has not declared, so the owner sees whom the
+  start waits for. Starting is unchanged: every fingerprint must still be
+  equal. The log keeps only the game's manifest (no format change): a
+  game restored after a restart tells its mods again from it, each by its
+  id, with no names, Mod Hub numbers or settings (its world carries its
+  own settings); a manifest that is no room's list tells none.
 - **Starting.** In the lobby, members declare their content and toggle
   **ready**. The owner can start the game only when every member is ready,
   all fingerprints are equal, and the world the owner handed over, if any,
@@ -375,6 +419,23 @@ These travel on the control stream.
   fetch at most every 400 ms (the agent sends at most two a second), and a
   percent over 100 shows as 100. It shares the progress messages' rate
   limit, and neither the room nor the server log keeps it.
+- **`Preview`** (protocol 17): what the player's build tool shows now,
+  for the other members to see in their games ([HOOKS.md](HOOKS.md),
+  "Build previews"): the action its proposal would build, encoded as an
+  intent's payload, at most 16 KiB (`MAX_PREVIEW`), or `None` once it
+  shows nothing. Advisory: the room orders, keeps and logs none of it. It
+  relays it as `ServerMessage::Preview { from, preview }` to every other
+  member of a running game that is connected, never to the sender, and
+  ignores it in the lobby, from a non-member, and over 16 KiB. A client
+  sends one at most five times a second, and the one that still shows
+  again every two seconds; a receiver forgets one not heard of again for
+  six seconds. The server writes previews to a client's control stream
+  only when nothing else waits for it, from a queue of their own (64
+  messages) that drops the newest when full, and at most 48 KiB of them a
+  second (a burst of 64 KiB; one that hides is never dropped for that): a
+  preview once written stays ahead of the client's own messages on the
+  stream, so a flood of them must not fill its window. A slow client
+  misses previews and is never disconnected for them.
 - **`Progress`**: the last step the client executed. It drives pacing.
 - **`Checkpoint`**: per-lane digests at every checkpoint step (a room
   setting). The server compares members' digests, as described in
@@ -551,40 +612,68 @@ server releases snapshots no restored room refers to.
 
 ## Diagnostics
 
-A client may send lines of its own log to the server, so the server's
+A client may send lines of its logs to the server, so the server's
 operator can see what went wrong for a player from the support code
 alone (the session ID, a code like an invite's that the server gives no
 two sessions while their diagnostics are kept). TPF2MP's relay kept its
-players' diagnostics the same way.
+players' diagnostics the same way. Under the approved D10 amendment
+(DECISIONS.md, not decided), the lines include the hook's and the game's
+logs and the game's error reports, and all of a launcher's run goes under
+one *log session*.
 
-- **What.** `Request::Diagnostics` carries up to 32 `DiagnosticEvent`s: the
-  client's time in milliseconds, a level (`Info`, `Warn`, `Error`), where
-  it was logged (up to 48 bytes) and the line (up to 1024 bytes). The
-  largest request fits a control frame.
+- **What.** From version 16, `Request::Telemetry` carries the launcher's
+  log session (a `LogSession`, a code in D13's format the launcher chooses
+  as it starts and keeps until it closes) and up to 32 `TelemetryLine`s:
+  the client's time in milliseconds, a level (`Info`, `Warn`, `Error`), a
+  source (`Launcher`, `Agent`, `Hook`, `Game`, `Crash`), where it was
+  logged or the file it was read from (up to 48 bytes) and the line (up
+  to 1024 bytes). The largest request fits a control frame.
+  `Request::Diagnostics`, the same lines without source or run, is still
+  taken and kept as the launcher's.
+- **Sources.** `Launcher` and `Agent` are the launcher's own log. `Hook`
+  is the in-game hook's `hook.log` and `Game` the game's `stdout.txt`,
+  each read from where it stood when the launcher started; `Crash` is the
+  text of the game's error reports (`.txt`, `.json` in its `crash_dump`
+  folder) written since, each read once for each change, its last
+  256 KiB at most. Never the game's `.dmp` minidumps, and never a file
+  whose name looks like a key, certificate or token.
 - **Redacted on both sides.** The client passes every line through
   `tpf3mp_proto::redact`, and the server does again before keeping it.
   Absolute paths keep only their last part (and not that, when it is
   digits alone, such as a Steam account's folder); IP addresses, secrets
-  after keys such as `token=`, `password:` or `invite=`, e-mail addresses
+  after keys such as `token=`, `password:` or `invite=`, values after keys
+  naming an account (`userId`, `account_id`, `steamid`), e-mail addresses
   and Steam IDs are replaced. An invite's code looks like any word, so
   clients never log one but after such a key.
-- **Kept per session.** The server appends the lines, with the player's
-  ID, to a file named by the session ID, up to 8 MiB a session, and
-  answers `Done`. It answers `DiagnosticsNotKept` when it keeps none, or
-  this session has sent all it may: the client then stops sending them on
-  this connection.
+- **Kept per session, found by run.** The server appends the lines, with
+  the player's ID and the name from their `Hello` (redacted), the run and
+  the source, to a file named by the session
+  ID, up to 64 MiB a session by default, and answers `Done`. The first
+  time a session sends lines of a run, the server notes the session in
+  that run's index, so the operator reads a whole run, over all of its
+  connections, by its code; and it gives no session a code a run has. A
+  session indexes four runs at most. The server answers
+  `DiagnosticsNotKept` when it keeps none, or this session has sent all it
+  may: the client then stops sending them on this connection.
 - **Their own budget.** Diagnostics requests take no share of a
-  connection's requests: one a second, with a burst of eight, on their
+  connection's requests: two a second, with a burst of sixteen, on their
   own. Beyond it, `RateLimited`, and the client sends the lines later.
 - **Never in a game's way.** The server hands the lines to a writer of its
   own and does not wait for it; when the writer is behind, it answers
-  `RateLimited` and the lines are sent again.
+  `RateLimited` and the lines are sent again. The client reads the files
+  on a blocking thread of its own, once a second (error reports every ten
+  seconds).
 - **The client.** The launcher records its log's lines from `info` up (and
-  other libraries' warnings and errors), sends up to four batches every
-  five seconds on each connection, and what is left as the connection
-  closes; lines waiting when a connection drops go with the next. At most
-  2000 lines wait; past that, the oldest go. The player can switch
-  diagnostics off, which also forgets the lines waiting.
+  other libraries' warnings and errors), and each file source within a
+  budget of bytes a minute (the hook's log 192 KiB, the game's 96 KiB,
+  error reports 512 KiB): when a log grows faster, its oldest unread part
+  is skipped, and the launcher's log says how much once a minute. It sends
+  up to eight batches every four seconds on each connection, and what is
+  left as the connection closes; lines waiting when a connection drops go
+  with the next. At most 10,000 lines wait; past that, the oldest go; a run
+  sends 256 MiB at most. The player can switch diagnostics off, which stops
+  every source, forgets the lines waiting, and passes over what the logs
+  gain until it is on again.
 
 ## Slow and misbehaving clients
 
@@ -619,8 +708,9 @@ players' diagnostics the same way.
     `RateLimited`.
   - Game messages, per connection and per kind: progress reports 200 per
     second with a burst of 400 (excess ones are dropped), intents 40 per
-    second with a burst of 80. Checkpoints are not limited here: the room
-    ignores reports for closed rounds.
+    second with a burst of 80, build previews 5 per second with a burst of
+    10 (excess ones are dropped). Checkpoints are not limited here: the
+    room ignores reports for closed rounds.
   - Requests that change nothing, such as setting ready twice, do not send
     everyone the room again.
 - **Password guessing.** A room takes 10 wrong passwords per minute from

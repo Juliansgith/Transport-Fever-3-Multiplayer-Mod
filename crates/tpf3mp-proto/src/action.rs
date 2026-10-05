@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 22;
+pub const ACTION_SCHEMA_VERSION: u32 = 25;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -52,6 +52,8 @@ pub const MAX_PHASES: usize = 64;
 pub const MAX_EDGES: usize = 256;
 /// Most town buildings one bulldoze of streets removes with them.
 pub const MAX_BUILDINGS: usize = 64;
+/// Most assets removed by one action.
+pub const MAX_ASSETS: usize = 64;
 /// Most parameters of one construction, nested modules counted one by one.
 pub const MAX_PARAMS: usize = 1024;
 /// Most vehicle models in one consist.
@@ -159,6 +161,13 @@ canonical_id!(
     /// game binds them, lowest entity first, at the room's first update.
     TownId,
     "town-"
+);
+canonical_id!(
+    /// An industry, by its construction. Industries come with the room's
+    /// world or from a prospection, and every game binds them as it binds
+    /// towns (`tpf3mp/registry.lua`, `industries`).
+    IndustryId,
+    "industry-"
 );
 
 /// The two transport networks. A road node and a track node can stand at
@@ -506,6 +515,35 @@ pub enum Bulldoze {
         at: Pos,
         model: ResName,
     },
+    /// Trees and other assets taken out of their asset group, which every
+    /// game builds again from its own copy without them (schema 25).
+    Assets(AssetRemoval),
+}
+
+/// One asset of an asset group: its model's file and where it stands,
+/// matched within 5 mm.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AssetRef {
+    pub model: ResName,
+    pub at: Pos,
+}
+
+/// The asset bulldozer's removal: the group, named by its first asset and
+/// how many it holds, and the assets taken out of it. Every game finds the
+/// group that holds exactly that many assets, the first one and every one
+/// removed among them, and builds it again from its own copy without them;
+/// any other group refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetRemoval {
+    pub first: AssetRef,
+    pub count: u32,
+    pub removed: BoundedVec<AssetRef, MAX_ASSETS>,
+    /// Each asset's turn goes the other way round in the game's matrix
+    /// than `[cos, sin; -sin, cos]` (which way the tool built them, read
+    /// off its proposal).
+    pub mirrored: bool,
+    /// Whether the tool's rebuilt group was owned by the player.
+    pub owned: bool,
 }
 
 /// Where a construction stands: the game's 4x4 matrix as its rotation and
@@ -602,9 +640,10 @@ pub struct BuyVehicle {
     pub groups: BoundedVec<u8, MAX_CONSIST>,
     /// For each group, the multiple unit's file, or empty.
     pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
-    /// Which of the construction's depots, from 0 (`CONSTRUCTION.depots`):
-    /// an airport's or harbour's second hangar or ship depot. Added under
-    /// schema version 20.
+    /// Which of the construction's depots, from 0: its `CONSTRUCTION.depots`,
+    /// then its subconstructions that are depots (an airfield's or
+    /// airport's hangar module), as the mod's `capture.depotsOf` lists
+    /// them; an airport's second hangar, say. Added under schema version 20.
     #[serde(default)]
     pub depot_index: u8,
 }
@@ -767,7 +806,9 @@ pub struct AssignLine {
 pub enum VehicleChange {
     /// Stopped by the player (true), or running again (false).
     Stop(bool),
-    /// To the nearest depot, sold on arrival if `sell`.
+    /// To the nearest depot. `sell` (sold on arrival) must be false:
+    /// [`Action::validate`] refuses it, as build 40408 crashes when such a
+    /// vehicle reaches its depot. The field stays for the wire's bytes.
     ToDepot {
         sell: bool,
     },
@@ -817,6 +858,13 @@ pub struct PlaceStop {
     /// A one-way signal (the signal tool's "oneWay").
     #[serde(default)]
     pub one_way: bool,
+    /// The name the originator's tool gave the stop
+    /// (`street_util::MakeEdgeObjectName`: a street name from the town's
+    /// name list, else "Stop #n"), which every game builds it with. None
+    /// where the tool gave none the schema can carry: every game then names
+    /// it by the mod's own rule.
+    #[serde(default)]
+    pub name: Option<ObjectName>,
 }
 
 /// What an edge object placed with the stop and signal tool is (TF3's
@@ -932,10 +980,23 @@ pub enum CompanyOp {
         player: PlayerHex,
     },
     /// The company's head opens its stations to other companies' lines, or
-    /// closes them. A company's stations start open.
+    /// closes them. A company's stations start open. This is the default:
+    /// it holds for every company without a choice of its own
+    /// ([`CompanyOp::StationAccess`]), those founded later included.
     ShareStations {
         company: CompanyId,
         open: bool,
+    },
+    /// The company's head lets the lines of one other company stop at its
+    /// stations (`Some(true)`), or not (`Some(false)`), whatever the default
+    /// says; `None` leaves that company to the default again. Per company,
+    /// not per player: a company's players share everything it owns.
+    /// Appended under schema version 23: the variants before it keep their
+    /// bytes.
+    StationAccess {
+        company: CompanyId,
+        other: CompanyId,
+        open: Option<bool>,
     },
 }
 
@@ -1036,6 +1097,50 @@ pub enum Renamed {
     Construction(ConstructionRef),
 }
 
+/// A company perk the construction menu's perk tools use on a town or an
+/// industry (`gui/construction/tools/*.script.tl`): an event to TF3's
+/// company script, which spends the perk's permit for the acting company
+/// and passes the perk on to the towns or emissions script. Appended under
+/// schema version 24.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PerkOp {
+    /// Industry Greenification (`Companies` `MakeGreen`,
+    /// `industry_greenify_tool.script.tl`): the industry's emissions cut.
+    Greenify {
+        industry: IndustryId,
+        /// The company permit it spends (`permitKey`), if it names one.
+        permit: Option<ResName>,
+    },
+    /// A marketing campaign in a town (`Companies`
+    /// `startMarketingCampaign`, `marketing_campaign_tool.script.tl`),
+    /// with the campaign's terms as the tool's metadata gives them, and its
+    /// cost, which the tool books to the company once the campaign started.
+    Marketing {
+        town: TownId,
+        /// How long it runs, in the game's milliseconds (`durationMs`).
+        duration_ms: i64,
+        /// `lineCostFactor`.
+        line_cost_factor: Fraction,
+        permit: Option<ResName>,
+        /// In the game's money, as the tool priced it at the click.
+        cost: i64,
+    },
+}
+
+/// A town building's Historic Preservation checkbox
+/// (`makeTownBuildingSetBlockedDevelopmentCmd`,
+/// `gui/entity_window/town_building/town_building.tl`): the building keeps
+/// its look but still levels up. Appended under schema version 24.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preservation {
+    /// The construction the town building stands in, by its file and place.
+    pub building: ConstructionRef,
+    /// Which of that construction's town buildings, from 0.
+    pub index: u8,
+    /// Preserved (true), or free to change again (false).
+    pub preserved: bool,
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1085,6 +1190,12 @@ pub enum Action {
         what: Renamed,
         name: ObjectName,
     },
+    /// A company perk used on a town or an industry (`PerkOp`). Appended
+    /// under schema version 24: the variants before it keep their bytes.
+    Perk(PerkOp),
+    /// A town building's Historic Preservation (`Preservation`). Appended
+    /// under schema version 24: the variants before it keep their bytes.
+    Preserve(Preservation),
 }
 
 #[derive(Debug, Error)]
@@ -1099,12 +1210,57 @@ pub enum ActionError {
     TrailingBytes(usize),
     #[error(transparent)]
     TooLarge(#[from] PayloadTooLarge),
+    /// A vehicle sent to its depot to be sold there. Build 40408 sells it on
+    /// arrival (`Engine::RemoveEntity`) and then asks the removed vehicle
+    /// where its depot is, which fails the engine's assertion
+    /// (`Engine.h:323`, `GetComponentDataIndex`) and ends every game in the
+    /// room at the same step. TF3's own windows only ever send `false`.
+    #[error(
+        "selling a vehicle when it reaches its depot (the game crashes there; sell it instead)"
+    )]
+    SellOnArrival,
 }
 
 impl Action {
-    /// Validate relationships within a junction, beyond the wire's bounds.
+    /// The action's kind, as its variant is named (and as the mod's Lua
+    /// tables name it), for logs.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Action::BuildRoad(_) => "BuildRoad",
+            Action::BuildTrack(_) => "BuildTrack",
+            Action::Bulldoze(_) => "Bulldoze",
+            Action::BuildConstruction(_) => "BuildConstruction",
+            Action::BuyVehicle(_) => "BuyVehicle",
+            Action::SellVehicle { .. } => "SellVehicle",
+            Action::CreateLine(_) => "CreateLine",
+            Action::EditLine(_) => "EditLine",
+            Action::AssignLine(_) => "AssignLine",
+            Action::PlaceStop(_) => "PlaceStop",
+            Action::Terraform(_) => "Terraform",
+            Action::CompanyOp(_) => "CompanyOp",
+            Action::Loan(_) => "Loan",
+            Action::VehicleOp(_) => "VehicleOp",
+            Action::ReplaceVehicle(_) => "ReplaceVehicle",
+            Action::Prospect(_) => "Prospect",
+            Action::NotificationSeen { .. } => "NotificationSeen",
+            Action::ApplyRank { .. } => "ApplyRank",
+            Action::EditJunctions(_) => "EditJunctions",
+            Action::Subsidy(_) => "Subsidy",
+            Action::Rename { .. } => "Rename",
+            Action::Perk(_) => "Perk",
+            Action::Preserve(_) => "Preserve",
+        }
+    }
+
+    /// Validate what the wire's bounds do not: the relationships within a
+    /// junction, and no vehicle sent to be sold on arrival
+    /// ([`ActionError::SellOnArrival`]).
     pub fn validate(&self) -> Result<(), ActionError> {
         let changes = match self {
+            Self::VehicleOp(VehicleOp {
+                change: VehicleChange::ToDepot { sell: true },
+                ..
+            }) => return Err(ActionError::SellOnArrival),
             Self::EditJunctions(edit) => {
                 if edit.changes.is_empty() {
                     return Err(ActionError::Junction("empty edit"));
@@ -1280,7 +1436,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1323,7 +1479,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1358,7 +1514,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1376,7 +1532,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1391,7 +1547,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1402,7 +1558,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1414,7 +1570,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1422,7 +1578,7 @@ mod tests {
             ]
         );
         // Appended under schema version 9: the company's head's own.
-        let cases: [(CompanyOp, &[u8]); 4] = [
+        let cases: [(CompanyOp, &[u8]); 5] = [
             (CompanyOp::Lock(CompanyId(2)), &[5, 2]),
             (CompanyOp::Unlock(CompanyId(2)), &[6, 2]),
             (
@@ -1439,12 +1595,41 @@ mod tests {
                 },
                 &[8, 2, 0],
             ),
+            // Appended under schema version 23.
+            (
+                CompanyOp::StationAccess {
+                    company: CompanyId(2),
+                    other: CompanyId(3),
+                    open: Some(false),
+                },
+                &[9, 2, 3, 1, 0],
+            ),
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [22, 11]);
+            assert_eq!(payload.as_bytes()[..2], [25, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
+        // Appended under schema version 24: the perk tools take the next tag.
+        let green = Action::Perk(PerkOp::Greenify {
+            industry: IndustryId(5),
+            permit: None,
+        });
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [25, 21, 0, 5, 0]);
+        // Appended under schema version 24: Historic Preservation takes the
+        // next tag.
+        let preserve = Action::Preserve(Preservation {
+            building: ConstructionRef {
+                file: Text::new("b").unwrap(),
+                at: pos(1, 0, 0),
+            },
+            index: 0,
+            preserved: true,
+        });
+        assert_eq!(
+            preserve.to_payload().unwrap().as_bytes(),
+            [25, 22, 1, b'b', 2, 0, 0, 0, 1]
+        );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
             change: VehicleChange::ManualDeparture(true),
@@ -1452,7 +1637,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                25, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10
@@ -1490,5 +1675,6 @@ mod tests {
     fn ids_display_with_their_kind() {
         assert_eq!(LineId(7).to_string(), "line-7");
         assert_eq!(StationId(12).to_string(), "station-12");
+        assert_eq!(IndustryId(3).to_string(), "industry-3");
     }
 }

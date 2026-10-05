@@ -2,7 +2,9 @@
 -- edit. The added size rows, in the order the size dropdown shows them,
 -- and the shape each ratio gives them, in tiles (x, y); false where the
 -- settings cannot build that shape. peakMb: generation's expected peak
--- memory for the row's largest shape, in MB, the game's own included.
+-- memory for the row's largest shape, in MB, the game's own included;
+-- PROVISIONAL until Stage 0 measures it (the law is in
+-- crates/tpf3mp-bigmap/src/memory_gate.rs).
 return {
 	{ label = "Big 32.8 km", tiles = 128, peakMb = 17285, shapes = { { 128, 128 }, { 180, 90 }, { 222, 74 }, { 250, 64 }, { 250, 58 } } },
 	{ label = "Big 36.9 km", tiles = 144, peakMb = 20956, shapes = { { 144, 144 }, { 204, 102 }, { 250, 84 }, { 250, 72 }, { 250, 64 } } },

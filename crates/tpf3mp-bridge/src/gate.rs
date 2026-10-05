@@ -1,7 +1,7 @@
 //! The hook's side of the step gate.
 
 use thiserror::Error;
-use tpf3mp_proto::{ChatText, Event, IntentRejection, Speed, Text};
+use tpf3mp_proto::{ChatText, Event, IntentRejection, Payload, PlayerId, Speed, Text};
 
 use crate::{LobbyView, MAX_PATH, RoomInfo, ToHook};
 
@@ -58,6 +58,11 @@ pub enum Gated {
     Room(RoomInfo),
     /// Keep the launcher's lobby for the main menu's window.
     Lobby(Box<LobbyView>),
+    /// Show what another member's build tool shows.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
     /// Nothing to do but check [`Gate::may_run`] again.
     Nothing,
 }
@@ -145,7 +150,11 @@ impl Gate {
     /// Handles one message read while the game waits before its next step.
     pub fn on_message(&mut self, message: ToHook) -> Result<Gated, GateError> {
         // The lobby is for the menu's window and changes nothing here: it
-        // may come at any time, a load included.
+        // may come at any time, a load included. So may another member's
+        // preview, which a world on its way has nowhere to show.
+        if self.loading && matches!(message, ToHook::Preview { .. }) {
+            return Ok(Gated::Nothing);
+        }
         if self.loading && !matches!(message, ToHook::End { .. } | ToHook::Lobby(_)) {
             return Err(GateError::Loading);
         }
@@ -186,6 +195,7 @@ impl Gate {
             ToHook::Chat { from, text } => Ok(Gated::Chat { from, text }),
             ToHook::Room(room) => Ok(Gated::Room(room)),
             ToHook::Lobby(view) => Ok(Gated::Lobby(view)),
+            ToHook::Preview { from, preview } => Ok(Gated::Preview { from, preview }),
             ToHook::Hello { .. } => Err(GateError::Unexpected("a hello")),
             ToHook::Begin { .. } => Err(GateError::Unexpected("the start of a game")),
         }
@@ -339,6 +349,34 @@ mod tests {
         gate.on_message(ToHook::Apply(event(7, 300))).unwrap();
         gate.on_message(ToHook::Release { through: 300 }).unwrap();
         assert_eq!(gate.ran(), Ok(300));
+    }
+
+    #[test]
+    fn a_preview_shows_in_a_world_that_plays_and_is_dropped_while_one_loads() {
+        let mut gate = Gate::new(1);
+        let from = PlayerId(FixedBytes([2; 32]));
+        let preview = Some(tpf3mp_proto::Payload::new(vec![1, 2]).unwrap());
+        assert_eq!(
+            gate.on_message(ToHook::Preview {
+                from,
+                preview: preview.clone()
+            }),
+            Ok(Gated::Preview {
+                from,
+                preview: preview.clone()
+            })
+        );
+        gate.on_message(ToHook::Load {
+            file: None,
+            next_step: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            gate.on_message(ToHook::Preview { from, preview }),
+            Ok(Gated::Nothing),
+            "advisory: never a reason to give up on the room"
+        );
+        assert!(gate.loading());
     }
 
     #[test]

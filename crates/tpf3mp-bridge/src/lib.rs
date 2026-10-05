@@ -64,8 +64,20 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// that may name one (protocol 13's `tpf3mp_proto::PORTRAITS`); 20 the save
 /// a room starts from on its page ([`LobbyRoom::start`]), the owner's
 /// upload of it ([`LobbyRoom::upload`]) and the owner's choice of another
-/// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14).
-pub const BRIDGE_VERSION: u32 = 21;
+/// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14); 22 lists up to
+/// 100 saves ([`MAX_LOBBY_SAVES`], 40 before), the player's own only; 23
+/// the launcher's run, for the window to show ([`LobbyView::log_session`];
+/// protocol 16); 24 carries what the players' build tools show: the
+/// player's own ([`ToAgent::Preview`]) and the other members'
+/// ([`ToHook::Preview`]; protocol 17); 25 the room's mods as its owner
+/// declared them, with their names, sources, Mod Hub numbers and this
+/// player's versions ([`LobbyRoomMod`], up to [`MAX_LOBBY_ROOM_MODS`]),
+/// how each member's game differs ([`LobbyMember::differs`]), the owner's
+/// choice of the room's mods and their settings
+/// ([`LobbyAction::ChooseRoomMods`]), finding the installed mods again
+/// ([`LobbyAction::RescanMods`]), and the room's settings of its mods in
+/// [`ModLists`] (protocol 18).
+pub const BRIDGE_VERSION: u32 = 25;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -138,14 +150,24 @@ pub enum ToHook {
     /// room's game. Only the latest counts. Boxed: it is far larger than
     /// the other messages.
     Lobby(Box<LobbyView>),
+    /// What another member's build tool shows now: an action as an intent
+    /// carries one, or `None` once it shows nothing (protocol 17's
+    /// `ServerMessage::Preview`). Advisory: never applied to the world, and
+    /// only the latest of each member counts.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
 }
 
 /// Most chat lines a [`LobbyView`] carries: the newest.
 pub const MAX_LOBBY_CHAT: usize = 40;
 /// Most rules a [`LobbyView`] offers.
 pub const MAX_LOBBY_RULES: usize = 8;
-/// Most saves a [`LobbyView`] lists: the newest.
-pub const MAX_LOBBY_SAVES: usize = 40;
+/// Most saves a [`LobbyView`] lists: the newest. The game's autosaves and
+/// the mod's own room copies are left out before the cut
+/// (`tpf3mp_agent::steam::list_saves`).
+pub const MAX_LOBBY_SAVES: usize = 100;
 /// Longest save name a [`LobbyView`] lists or a [`LobbyAction::Create`]
 /// names, in UTF-8 bytes.
 pub const MAX_SAVE_NAME: usize = 64;
@@ -199,11 +221,24 @@ pub struct LobbyView {
     /// The mods this player has installed, those they may choose first
     /// (docs/MODS.md, "Choosing mods"), as many as fit.
     pub mods: BoundedVec<LobbyMod, MAX_LOBBY_MODS>,
-    /// The room's shared mods, from its owner's start save, and whether this
-    /// player has each; empty while they are not known.
+    /// The room's mods, as its owner declared them, and whether this player
+    /// has each; empty while they are not known. As many as fit the
+    /// message: [`LobbyView::room_mods_more`] counts the rest.
     pub room_mods: BoundedVec<LobbyRoomMod, MAX_LOBBY_ROOM_MODS>,
-    /// The room's shared mods beyond those listed.
+    /// The room's mods beyond those listed.
     pub room_mods_more: u32,
+    /// Of all the room's mods, how many this player lacks, and how many it
+    /// has in another version: what the window's mods line says, listed or
+    /// not.
+    pub room_mods_missing: u16,
+    pub room_mods_other: u16,
+    /// The settings of the room's mods, as its owner picked them: what the
+    /// owner's mod selector starts from again.
+    pub room_params: BoundedVec<LobbySetting, { tpf3mp_proto::MAX_ROOM_PARAMS }>,
+    /// The launcher's run, the code every line of its diagnostics carries,
+    /// for the window to show with a Copy (proposed D10 amendment); empty
+    /// while diagnostics are off.
+    pub log_session: Text<8>,
 }
 
 /// Most portraits a [`LobbyView`] offers: room for all of
@@ -212,8 +247,9 @@ pub const MAX_LOBBY_PORTRAITS: usize = 32;
 
 /// Most installed mods a [`LobbyView`] lists.
 pub const MAX_LOBBY_MODS: usize = 64;
-/// Most of the room's shared mods a [`LobbyView`] lists.
-pub const MAX_LOBBY_ROOM_MODS: usize = 32;
+/// Most of the room's mods a [`LobbyView`] lists: as many as a room runs.
+/// The launcher lists fewer when the whole view would not fit a message.
+pub const MAX_LOBBY_ROOM_MODS: usize = tpf3mp_proto::MAX_ROOM_MODS;
 
 /// One mod this player has installed, as the window lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,13 +280,23 @@ pub enum LobbyModClass {
     Shared,
 }
 
-/// One of the room's shared mods, and whether this player has it.
+/// One of the room's mods, and whether this player has it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LobbyRoomMod {
     pub id: ModName,
+    /// Its name for players, as the room's owner's game has it.
+    pub name: Text<48>,
     /// The room's version of it (empty when unknown).
     pub version: Text<32>,
+    /// This player's version, when it has one.
+    pub yours: Option<Text<32>>,
     pub have: LobbyHave,
+    /// Where the owner's game has it from (`mod.io`, `StagingArea`,
+    /// `UserMods`, `DLC`, `BuiltInMods`); empty unknown.
+    pub source: Text<16>,
+    /// Its Mod Hub number: the owner's claim of where to get it, which the
+    /// window has this player's game resolve before offering to install it.
+    pub modio: Option<u64>,
 }
 
 /// Whether this player has one of the room's shared mods.
@@ -342,7 +388,11 @@ impl Default for LobbyView {
             mods: BoundedVec::empty(),
             room_mods: BoundedVec::empty(),
             room_mods_more: 0,
+            room_mods_missing: 0,
+            room_mods_other: 0,
+            room_params: BoundedVec::empty(),
             rooms: None,
+            log_session: Text::lossy(""),
         }
     }
 }
@@ -412,6 +462,8 @@ pub struct LobbyMember {
     /// Whether this member's game matches the owner's: `None` while either
     /// has not said.
     pub same_content: Option<bool>,
+    /// How this member's game differs from the room's, while it does.
+    pub differs: Option<tpf3mp_proto::ContentStatus>,
     /// The banner this member picked (`tpf3mp_proto::BANNERS`), or the
     /// portrait (`tpf3mp_proto::PORTRAITS`) this player's game can show, if
     /// any: a portrait it cannot show is left out, for the default banner.
@@ -500,6 +552,40 @@ pub enum LobbyAction {
         map: Text<32>,
         year: u16,
     },
+    /// The room's owner, in its lobby: the room's mods are these, as the
+    /// game's Load Game page has them, in its activation order, with the
+    /// settings it holds, the game's own among them (docs/MODS.md, "The
+    /// room's mods"); and, with `save`, the room starts from that save, as
+    /// [`LobbyAction::ChooseStart`] says, both at once. Every player is asked
+    /// to get ready again.
+    ChooseRoomMods {
+        save: Option<SaveName>,
+        map: Text<32>,
+        year: u16,
+        mods: BoundedVec<LobbySelected, MAX_LOBBY_ROOM_MODS>,
+        params: BoundedVec<LobbySetting, { tpf3mp_proto::MAX_ROOM_PARAMS }>,
+    },
+    /// Find the installed mods again, as after installing one from Mod Hub.
+    RescanMods,
+}
+
+/// One mod the room's owner picked in the game's mod selector, with what
+/// the game says of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbySelected {
+    pub id: ModName,
+    pub name: Text<48>,
+    pub source: Text<16>,
+    pub modio: Option<u64>,
+}
+
+/// One setting of a mod, as the game's mod selector holds it; with the id
+/// [`tpf3mp_proto::GAME_SETTINGS`] one of the game's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbySetting {
+    pub id: ModName,
+    pub key: Text<64>,
+    pub value: i64,
 }
 
 /// The room as the game's Multiplayer window shows it.
@@ -572,6 +658,10 @@ pub enum ToAgent {
     MenuUp { menu: u64 },
     /// The player asked for this in the main menu's Multiplayer window.
     Lobby(LobbyAction),
+    /// What the player's build tool shows now, for the other members: an
+    /// action as [`ToAgent::Command`] carries one, at most
+    /// `tpf3mp_proto::MAX_PREVIEW` bytes, or `None` once it shows nothing.
+    Preview { preview: Option<Payload> },
 }
 
 #[derive(Debug, Error)]
@@ -703,6 +793,7 @@ mod tests {
             owner: n == 0,
             you: n == 1,
             same_content: Some(true),
+            differs: None,
             banner: Some(Text::new("x".repeat(32)).unwrap()),
             loading: Some(tpf3mp_proto::LoadingStage::Fetching { percent: 100 }),
         };
@@ -783,11 +874,23 @@ mod tests {
                     id: Text::new("m".repeat(96)).unwrap(),
                     version: Text::new("v".repeat(32)).unwrap(),
                     have: LobbyHave::OtherVersion,
+                    name: Text::new("n".repeat(48)).unwrap(),
+                    yours: Some(Text::new("y".repeat(32)).unwrap()),
+                    source: Text::new("s".repeat(16)).unwrap(),
+                    modio: Some(u64::MAX),
                 };
-                MAX_LOBBY_ROOM_MODS
+                // The launcher lists as many of the room's mods as fit the
+                // rest of the view, and counts the rest
+                // (`tpf3mp_agent::launcher::lobby::view`): with everything
+                // else at its longest, still this many.
+                24
             ])
             .unwrap(),
             room_mods_more: u32::MAX,
+            room_mods_missing: 0,
+            room_mods_other: 0,
+            room_params: BoundedVec::empty(),
+            log_session: Text::new("l".repeat(8)).unwrap(),
             rooms: Some(LobbyRoomList {
                 page: u16::MAX,
                 rooms: BoundedVec::new(vec![

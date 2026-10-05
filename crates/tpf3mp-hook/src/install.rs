@@ -111,6 +111,21 @@ fn now_ms() -> u64 {
         .max(1)
 }
 
+/// The room's step the last batch ended at, if one ran
+/// ([`crate::edgewatch`]).
+pub(crate) fn last_step_run() -> Option<u64> {
+    let last = LAST_STEP_RUN.load(Ordering::Acquire);
+    (last != u64::MAX).then_some(last)
+}
+
+/// The game's `updateCount` while its step runs, else `None`
+/// ([`crate::edgewatch`]).
+pub(crate) fn update_count_now() -> Option<u32> {
+    crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire))
+        .ok()
+        .map(|c| c.update_count)
+}
+
 /// Writes `line` to the hook's log, if it has one.
 pub(crate) fn log_line(line: &str) {
     if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
@@ -175,7 +190,23 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
         lines.push(format!(
             "menu: the world closed (CMenuUI::m_game cleared); the {forgotten} Lua state(s) its GUI was given are never used by the main menu"
         ));
+        // Closed by the player, not by a load of the room's the hook
+        // started: in a room's game, any world up after is none the room
+        // loaded, and the step gate holds it (crate::step, WorldMark).
+        if !lua::load_started() {
+            crate::menu::note_world_closed();
+        }
+        // Its company's entity is no entity of the next world: forgotten
+        // before the views' refresh below, so no GUI hands it on.
+        let notes = lua::forget_world_notes();
+        if notes > 0 {
+            lines.push(format!(
+                "menu: the closed world's company note(s) forgotten ({notes}): the next world's views follow its own room's roster"
+            ));
+        }
     }
+    crate::guiplayer::refresh();
+    lines.extend(crate::probe::frame(menu, frame.now_ms));
     // Once per change; a load's task coming and going is one wait.
     let waiting = |seen: Option<Seen>| matches!(seen, Some(Seen::Loading | Seen::Closing));
     if sight.logged != Some(seen) && !(waiting(sight.logged) && waiting(Some(seen))) {
@@ -195,6 +226,8 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
 /// started in the menu. Otherwise nothing: the step's detour drives the room
 /// while a world is up.
 pub(crate) fn menu_frame(menu: usize) {
+    // The GUI thread and its menu, for the others' previews drawn.
+    crate::drawing::note_menu(menu);
     if BROKEN.load(Ordering::Acquire) {
         return;
     }
@@ -216,7 +249,10 @@ pub(crate) fn menu_frame(menu: usize) {
         }
         return;
     }
-    if !seen.allows() || !crate::menu::available() {
+    // Room control (including Leave) must progress even if the menu's
+    // Lua registration was missed. Only serving a load requires that state;
+    // `serve` reports its absence instead of freezing the room's message queue.
+    if !seen.allows() {
         for line in lines {
             log_line(&line);
         }
@@ -377,12 +413,17 @@ unsafe fn run_step(
     // Whatever the engine freed since the last step, no cached region
     // answers for it.
     crate::image::invalidate();
-    let started = crate::perf::start();
+    let perf = crate::perf::start();
+    let started = crate::steptrace::step_timer(perf, crate::steptrace::enabled());
+    crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
+    crate::order::set_in_step(false);
     if let Some(started) = started {
         let nanos = crate::perf::nanos_since(started);
-        crate::perf::game_step(nanos);
+        if perf.is_some() {
+            crate::perf::game_step(nanos);
+        }
         STEP_GAME_NANOS.fetch_add(nanos, Ordering::Relaxed);
     }
     crate::ticks::set_room(false);
@@ -399,6 +440,11 @@ fn log_counters(first: u64, updates: u32, checkpoint: bool) {
     if checkpoint || before.saturating_add(1) != first {
         let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
         log_line(&crate::ticks::checkpoint_line(last, counters));
+        // The road entry trace's digest of the in-step appends since the
+        // last checkpoint (docs/HOOKS.md, "The road entry trace").
+        if let Some(line) = crate::roadtrace::take_checkpoint(last) {
+            log_line(&line);
+        }
     }
 }
 
@@ -413,6 +459,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // for this function, which keeps the game's own ABI.
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
     let started = crate::perf::start();
+    let traced_at = crate::steptrace::enabled().then(Instant::now);
     STEP_GAME_NANOS.store(0, Ordering::Relaxed);
     LAST_STEP.store(now_ms(), Ordering::Release);
     // The step's speed call sets it again for this call.
@@ -423,10 +470,14 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         return;
     }
     let mut ran = false;
+    // What this call answered, and why, for the step trace.
+    let mut answered: Option<(Updates, bool)> = None;
+    let mut why: &'static str = "own";
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
             ran = true;
+            answered = Some((Updates::Own, false));
             // SAFETY: the game's own step, called as the game called it.
             unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
@@ -435,11 +486,12 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         // the batch's first update hands the mod the room's actions for it.
         driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
+            answered = Some((batch.updates, batch.lanes));
             let updates = match batch.updates {
                 Updates::Exactly(updates) => updates,
                 Updates::Own => 0,
             };
-            match lua::begin_batch(batch.actions, updates, batch.lanes, batch.dump) {
+            match lua::begin_batch(&[], updates, batch.lanes, batch.dump) {
                 Ok(()) => {
                     unsafe { run_step(original, batch.updates, batch.room, this, a, b, c) };
                     if let Some(first) = batch.first_step {
@@ -453,11 +505,15 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                 }
             }
         });
+        why = driver.why();
         for (ticket, why) in driver.take_refused() {
             lua::refused(ticket, &why);
         }
         for text in lua::take_said() {
             driver.say(text);
+        }
+        if let Some(preview) = crate::previews::take_out(Instant::now()) {
+            driver.preview(preview);
         }
         // The main menu's Multiplayer window, whose lobby the step just read.
         crate::lobby::exchange(driver.as_mut());
@@ -482,6 +538,20 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if !ran {
             // SAFETY: as above.
             unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        }
+    }
+    if let (Some(at), Some((updates, lanes))) = (traced_at, answered) {
+        let updates = match updates {
+            Updates::Exactly(updates) => Some(updates),
+            Updates::Own => None,
+        };
+        let game = STEP_GAME_NANOS.load(Ordering::Relaxed);
+        let call = u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let lines = crate::steptrace::call(at, updates, why, lanes, game, call);
+        if !lines.is_empty()
+            && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
+        {
+            log.lines(&lines);
         }
     }
     if let Some(started) = started {
@@ -618,21 +688,44 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let session = tpf3mp_bridge::Session::attach(link_name, &profile.name, Duration::from_secs(30))
         .map_err(|error| format!("the agent's link: {error}"))?;
     lua::install_api(api);
+    crate::network::install(base);
     let mut driver = crate::step::StepDriver::new(
         session,
         Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
     );
     let env = std::env::var(crate::lanedump::ENV).ok();
     let (setting, refused) = crate::lanedump::Setting::from_env(env.as_deref());
+    // The town trace adds the towns lane, its size factors, experience and
+    // level, at every checkpoint (crate::towntrace).
+    let setting = setting.with_town_trace(crate::towntrace::wanted(
+        std::env::var(crate::towntrace::ENV).ok().as_deref(),
+    ));
+    // The network lane cut to a box at the checkpoints of a step range
+    // (crate::lanedump::BOX_ENV), even with dumps off.
+    let boxed = crate::lanedump::BoxDump::from_env(
+        std::env::var(crate::lanedump::BOX_ENV).ok().as_deref(),
+        std::env::var(crate::lanedump::BOX_STEPS_ENV)
+            .ok()
+            .as_deref(),
+    )
+    .unwrap_or_else(|why| {
+        log_line(&why);
+        None
+    });
+    if let Some(boxed) = &boxed {
+        log_line(&boxed.describe());
+    }
+    let setting = setting.with_box(boxed);
     if let Some(why) = refused {
         log_line(&why);
     } else if setting.off {
         log_line("lane dumps are off, even after a divergence");
     } else if !setting.always.is_empty() {
         log_line(&format!(
-            "dumping lanes {:?} at every checkpoint ({})",
+            "dumping lanes {:?} at every checkpoint ({} or {})",
             setting.always,
-            crate::lanedump::ENV
+            crate::lanedump::ENV,
+            crate::towntrace::ENV
         ));
     }
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
@@ -687,22 +780,47 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         // thread runs yet; detour_forever installs each for good.
         (Ok(add), Ok(apply)) => {
             let module = at(crate::modules::MODULE_ADD_CALL).ok();
+            let terrain = at(crate::terrain::DO_APPLY_ADD_CALL).ok();
+            // The stop tool takes its next click at once only where the
+            // profile finds both its call and its busy byte.
+            let stop = at(crate::stoptool::STOP_ADD_CALL)
+                .ok()
+                .filter(|_| at(crate::stoptool::STOP_BUSY_SET).is_ok());
             crate::junctions::enable(
                 at(crate::junctions::CONFIG_LAYOUT).is_ok()
                     && at(crate::junctions::PROPOSAL_LAYOUT).is_ok()
                     && at(crate::junctions::CROSSWALK_LAYOUT).is_ok(),
             );
             // SAFETY: as above.
-            unsafe { crate::builds::install(add, apply, module, detour_forever) }
-                .map(|()| match module {
-                    Some(call) => format!(
-                        "the build tools build through the room; the module editor's builds \
-                         are read where Add returns to {:#x}",
-                        call + 5
-                    ),
-                    None => "the build tools build through the room; the profile has no \
-                             module editor call, so its builds stay refused"
-                        .to_owned(),
+            unsafe { crate::builds::install(add, apply, module, terrain, stop, detour_forever) }
+                .map(|()| {
+                    let module = match module {
+                        Some(call) => format!(
+                            "the module editor's builds are read where Add returns to {:#x}",
+                            call + 5
+                        ),
+                        None => "the profile has no module editor call, so its builds stay \
+                                 refused"
+                            .to_owned(),
+                    };
+                    let terrain = match terrain {
+                        Some(call) => {
+                            format!("the terrain tools' where it returns to {:#x}", call + 5)
+                        }
+                        None => "the profile has no terrain tools' call, so terraforming \
+                                 stays refused"
+                            .to_owned(),
+                    };
+                    let stop = match stop {
+                        Some(call) => format!(
+                            "the stop tool takes its next click at once where Add returns to {:#x}",
+                            call + 5
+                        ),
+                        None => "the profile has no stop tool call, so it waits for each \
+                                 click's answer"
+                            .to_owned(),
+                    };
+                    format!("the build tools build through the room; {module}; {terrain}; {stop}")
                 })
                 .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
         }
@@ -717,6 +835,13 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     match unsafe { crate::menu::install(&at, detour_forever) } {
         Ok(line) | Err(line) => log_line(&line),
     }
+    // The others' build previews, drawn (docs/HOOKS.md, "Build previews"):
+    // without every target, nobody's is.
+    // SAFETY: as above.
+    log_line(&unsafe { crate::drawing::install(&at, detour_forever) });
+    // The street/track tool may abort its proposal while remaining open.
+    // SAFETY: the profile checked the reset, and no tool runs yet.
+    log_line(&unsafe { crate::previewcancel::install(&at, detour_forever) });
     // The seeds and the order fixes (docs/HOOKS.md, "Seeds, as built" and
     // "The order fixes, as built") take the targets at their addresses in
     // this process; each piece installs, and fails closed, on its own, and
@@ -734,10 +859,36 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     } else {
         format!("perf: timing off ({} says so)", crate::perf::ENV)
     });
+    if let Some(line) = crate::steptrace::configure_from_env() {
+        log_line(&line);
+    }
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
+    for line in crate::roadtrace::configure_from_env() {
+        log_line(&line);
+    }
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
+    }
+    log_line(&crate::townfield::install(&absolute));
+    log_line(&crate::probe::install(&absolute));
+    for line in crate::toolplayer::install(&absolute) {
+        log_line(&line);
+    }
+    for line in crate::guiplayer::install(&absolute) {
+        log_line(&line);
+    }
+    for line in crate::persons::install(&absolute) {
+        log_line(&line);
+    }
+    for line in crate::towntrace::install(&absolute, base as u64) {
+        log_line(&line);
+    }
+    for line in crate::edgewatch::install(&absolute, base as u64) {
+        log_line(&line);
+    }
+    for line in crate::streettrace::install(&absolute) {
+        log_line(&line);
     }
     Ok(step_rva)
 }
@@ -769,6 +920,11 @@ unsafe fn lua_api(at: &dyn Fn(&str) -> Result<usize, String>) -> Result<lua::Lua
         toboolean: function!("lua_toboolean"),
         tonumberx: function!("lua_tonumberx"),
         tolstring: function!("lua_tolstring"),
+        // Optional on older external profiles; Lua keeps its existing reader.
+        touserdata: at("lua_touserdata").ok().map(|address| {
+            // SAFETY: signature/prologue resolution identifies this Lua API.
+            unsafe { std::mem::transmute::<usize, _>(address) }
+        }),
         next: function!("lua_next"),
         pushnil: function!("lua_pushnil"),
         pushnumber: function!("lua_pushnumber"),
@@ -960,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rooms_actions_reach_the_game_script_in_the_first_update_of_their_step() {
+    fn the_rooms_actions_hold_updates_until_the_event_replay_finishes() {
         let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         lua51();
         lua::take_commands();
@@ -995,9 +1151,9 @@ mod tests {
         ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);
         let step: extern "C" fn(usize, usize, usize, usize) = std::hint::black_box(fake_step);
 
-        // One call runs steps 1 and 2; step 1's first update takes the depot.
+        // The first call queues the replay without running any updates.
         step(0x1111, 0x2222, 0x3333, 0x4444);
-        assert_eq!(game_script.run("return TAKEN"), Ok("1".into()));
+        assert_eq!(game_script.run("return TAKEN"), Ok("nil".into()));
         assert!(!BROKEN.load(Ordering::SeqCst));
         // The player's action goes to the room from the step as well.
         game_script
@@ -1005,7 +1161,7 @@ mod tests {
             .unwrap();
         step(0x1111, 0x2222, 0x3333, 0x4444);
         assert!(lua::take_commands().is_empty(), "handed to the room");
-        assert_eq!(*CALLS.lock().unwrap(), vec![2, 0]);
+        assert_eq!(*CALLS.lock().unwrap(), vec![0, 2]);
 
         ORIGINAL.store(0, Ordering::Release);
         // SAFETY: nothing runs fake_step now.
@@ -1029,10 +1185,9 @@ mod tests {
         script
             .events
             .push_back(vec![command_event(1, 1, &depot_build())]);
-        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
-            script,
-            Box::new(FakeControl::default()),
-        )));
+        let control = FakeControl::default();
+        control.state.lock().unwrap().replay_wait = true;
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(script, Box::new(control))));
         let target = fake_step as *mut u8;
         // SAFETY: as above.
         let detour = unsafe { InlineDetour::install(target, step_detour as *const u8) }.unwrap();
@@ -1042,8 +1197,8 @@ mod tests {
         step(0x1111, 0x2222, 0x3333, 0x4444);
         assert_eq!(
             *CALLS.lock().unwrap(),
-            vec![2, 0],
-            "the steps ran once without the action, then the world stood still"
+            vec![0, 0],
+            "no update runs while the ordered replay is unfinished"
         );
         let driver = DRIVER.lock().unwrap().take().unwrap();
         assert!(driver.in_room(), "held, not left");
@@ -1053,6 +1208,46 @@ mod tests {
         unsafe { detour.detach() }.unwrap();
         IN_ROOM.store(false, Ordering::Release);
         CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
+    #[test]
+    fn a_menu_without_its_lua_state_still_processes_start_and_leave() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua::forget_worlds();
+        forget_menu_sight();
+        crate::menu::tests::menu51();
+        assert!(!crate::menu::available());
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.push_back(StepGate::Wait);
+        script.departure_done = true;
+        script.reset_ended = true;
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            script,
+            Box::new(FakeControl::default()),
+        )));
+        let mut cmenu = [0usize; 3];
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_mut_ptr() as usize;
+        menu_frame(at);
+        assert!(
+            DRIVER.lock().unwrap().as_ref().unwrap().in_room(),
+            "Begin must not block the lobby queue when menu Lua is missing"
+        );
+        DRIVER
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .lobby(vec![tpf3mp_bridge::LobbyAction::Leave]);
+        menu_frame(at);
+        assert!(
+            !DRIVER.lock().unwrap().as_ref().unwrap().in_room(),
+            "Leave must drain End and return to the lobby without menu Lua"
+        );
+        *DRIVER.lock().unwrap() = None;
+        IN_ROOM.store(false, Ordering::Release);
+        forget_menu_sight();
     }
 
     /// A game at its main menu, no world up: the menu's frame follows the
@@ -1078,7 +1273,7 @@ mod tests {
         )
         .unwrap();
         let mut script = Script::default();
-        script.begin.extend([None, Some(begin())]);
+        script.begin.extend([None, None, Some(begin())]);
         script.gates.push_back(StepGate::Load(Load {
             file: Some(room.clone()),
             next_step: 9,
@@ -1231,6 +1426,14 @@ mod tests {
         menu_frame(at);
         assert!(!DRIVER.lock().unwrap().as_ref().unwrap().in_room());
         assert!(hook_log().contains("menu: a world is loaded (CMenuUI::m_game set)"));
+        // The world's GUI noted its company and the room's companies, and
+        // the save's player; the probe's switch is the hook's own.
+        lua::set_note("tpf3mp.company", "372610");
+        lua::set_note("tpf3mp.companies", "372553,372610");
+        lua::set_note("tpf3mp.player", "214443");
+        lua::set_note("tpf3mp.probe", "1");
+        menu_frame(at);
+        assert_eq!(lua::noted("tpf3mp.company").as_deref(), Some("372610"));
         // The world closes, and the next one loads: still out.
         set_world(false);
         unsafe {
@@ -1240,6 +1443,21 @@ mod tests {
         MENU_CLOCK_SKEW.store(20 * crate::at_menu::QUIET_MS, Ordering::Release);
         menu_frame(at);
         assert!(hook_log().contains("menu: the world closed (CMenuUI::m_game cleared)"));
+        // Its company is no entity of the next world (a new world's first
+        // frame crashed on it, 2026-10-02): forgotten with the world, so
+        // the views answer the game's own player until the next world's
+        // GUI notes its own. The rest stays.
+        assert_eq!(lua::noted("tpf3mp.company"), None);
+        assert_eq!(lua::noted("tpf3mp.companies"), None);
+        assert_eq!(lua::noted("tpf3mp.player").as_deref(), Some("214443"));
+        assert_eq!(lua::noted("tpf3mp.probe").as_deref(), Some("1"));
+        assert!(
+            hook_log().contains("menu: the closed world's company note(s) forgotten (2)"),
+            "{}",
+            hook_log()
+        );
+        lua::set_note("tpf3mp.player", "");
+        lua::set_note("tpf3mp.probe", "");
         assert!(hook_log().contains("menu: no world loaded, but the game is loading one"));
         // Nothing loads: quiet for the stretch, then the menu follows the
         // room, which begins, and loads the room's save.
@@ -1308,7 +1526,7 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("12".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("14".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }

@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BoundedVec, Text};
+use crate::{BoundedVec, LogSession, Text};
 
 /// Events one request carries at most: the largest batch fits a control
 /// frame.
@@ -51,6 +51,74 @@ impl DiagnosticLevel {
     }
 }
 
+/// Where a line of diagnostics comes from: the launcher's own log, as D10
+/// has it, and, under the approved D10 amendment, the hook's and the
+/// game's logs and the game's error reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LogSource {
+    /// The launcher window's own lines.
+    Launcher,
+    /// The agent's: connections, rooms, the link to the game.
+    Agent,
+    /// The in-game hook's `hook.log`.
+    Hook,
+    /// The game's own log, `stdout.txt`.
+    Game,
+    /// The game's crash and error reports (`.txt`, `.json`; never its
+    /// `.dmp` minidumps).
+    Crash,
+}
+
+impl LogSource {
+    pub const ALL: [Self; 5] = [
+        Self::Launcher,
+        Self::Agent,
+        Self::Hook,
+        Self::Game,
+        Self::Crash,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Launcher => "launcher",
+            Self::Agent => "agent",
+            Self::Hook => "hook",
+            Self::Game => "game",
+            Self::Crash => "crash",
+        }
+    }
+
+    /// The source a name such as `hook` stands for.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|source| source.as_str() == name)
+    }
+}
+
+/// A line of diagnostics with its source, as [`Telemetry`] carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TelemetryLine {
+    /// When it was logged, or read from its file: milliseconds since the
+    /// Unix epoch, by the client's clock.
+    pub at_ms: u64,
+    pub level: DiagnosticLevel,
+    pub source: LogSource,
+    /// Where it was logged, such as `tpf3mp_agent::bridge`, or the file it
+    /// was read from, such as `stdout.txt`.
+    pub target: DiagnosticTarget,
+    pub text: DiagnosticText,
+}
+
+/// The lines one [`Telemetry`] request carries.
+pub type TelemetryLines = BoundedVec<TelemetryLine, MAX_DIAGNOSTIC_EVENTS>;
+
+/// Lines of diagnostics, every one under the launcher's run
+/// ([`LogSession`]): `Request::Telemetry`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Telemetry {
+    pub run: LogSession,
+    pub lines: TelemetryLines,
+}
+
 /// Takes out of a log line what could identify a player or give access to
 /// something:
 ///
@@ -63,7 +131,10 @@ impl DiagnosticLevel {
 ///   `invite:`, a bearer token, …) becomes `<redacted>`: an invite's code
 ///   is six letters and digits, which nothing tells from a word, so code
 ///   that logs one names it;
-/// - e-mail addresses become `<email>`, and 64-bit Steam IDs `<steam id>`.
+/// - e-mail addresses become `<email>`, and 64-bit Steam IDs `<steam id>`;
+/// - the value after a key naming an account (`userId`, `account_id`,
+///   `steamid`, …), as the game's error reports name the Steam account,
+///   becomes `<redacted>` too.
 ///
 /// Control characters count as spaces. Words are split on spaces; a path
 /// with spaces in it goes on through the words that continue it.
@@ -204,10 +275,21 @@ fn secret_value(word: &str) -> Option<usize> {
     let key = word[..split]
         .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
         .to_ascii_lowercase();
+    // What names a player's account, as the game's `error.json` names the
+    // Steam account it runs under (`"userId": "63389028"`).
+    const ACCOUNTS: [&str; 6] = [
+        "userid",
+        "user_id",
+        "accountid",
+        "account_id",
+        "steamid",
+        "steam_id",
+    ];
     let secret = key == "key"
         || key == "apikey"
         || key.ends_with("_key")
-        || SECRETS.iter().any(|secret| key.contains(secret));
+        || SECRETS.iter().any(|secret| key.contains(secret))
+        || ACCOUNTS.contains(&key.as_str());
     if key.is_empty() || !secret {
         return None;
     }
@@ -390,6 +472,26 @@ mod tests {
         assert_eq!(redact("steam 76561198000000000"), "steam <steam id>");
     }
 
+    /// The game's own logs and error reports, which go too under the
+    /// approved D10 amendment: the account they name is taken out.
+    #[test]
+    fn the_games_reports_lose_the_account_they_name() {
+        assert_eq!(
+            redact(r#"        "userId": "125253817","#),
+            r#"        "userId": <redacted>"#
+        );
+        hides(r#"{"userId":"125253817"}"#, "125253817");
+        hides("account_id=125253817 steamid=4242", "125253817");
+        hides("account_id=125253817 steamid=4242", "4242");
+        hides(
+            r"[2026-10-02 15:53:49Z - ERROR - Main Thread - Main ] cannot load C:\\Program Files (x86)\\Steam\\userdata\\125253817\\3493540\\local\\save\\x.sav",
+            "125253817",
+        );
+        // The game's ordinary lines stay readable.
+        let line = "[2026-10-02 18:23:22Z - MESSAGE  - Simulation Threa - Main           ]  Industries: 1/1 connected";
+        assert_eq!(redact(line), line);
+    }
+
     #[test]
     fn ordinary_lines_stay_as_they_are() {
         for line in [
@@ -419,5 +521,28 @@ mod tests {
             request: Request::Diagnostics(batch),
         };
         assert!(encode_frame(&message, CONTROL_MAX_FRAME).is_ok());
+        let line = TelemetryLine {
+            at_ms: u64::MAX,
+            level: DiagnosticLevel::Error,
+            source: LogSource::Crash,
+            target: Text::new("x".repeat(48)).unwrap(),
+            text: Text::new("y".repeat(1024)).unwrap(),
+        };
+        let message = ClientMessage::Request {
+            id: u32::MAX,
+            request: Request::Telemetry(Telemetry {
+                run: LogSession("K7QM2X".parse().unwrap()),
+                lines: TelemetryLines::new(vec![line; MAX_DIAGNOSTIC_EVENTS]).unwrap(),
+            }),
+        };
+        assert!(encode_frame(&message, CONTROL_MAX_FRAME).is_ok());
+    }
+
+    #[test]
+    fn sources_are_named() {
+        for source in LogSource::ALL {
+            assert_eq!(LogSource::from_name(source.as_str()), Some(source));
+        }
+        assert_eq!(LogSource::from_name("dmp"), None);
     }
 }

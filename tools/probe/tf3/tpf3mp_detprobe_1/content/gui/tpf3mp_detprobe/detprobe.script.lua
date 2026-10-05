@@ -16,11 +16,13 @@
 -- is seen; at 4x most are passed between frames and logged as skipped), and
 -- tools/probe/compare_runs.py compares the steps both logged.
 --
--- Lanes, as the TPF2 probe: v vehicle count, p vehicle positions (1 m),
--- e edge geometry (0.1 m), c constructions, t town building counts, m money
--- per player, n people. Each is read through api.engine first, as mods for
--- build 40391 do, then TPF2's game.interface; a lane it cannot read is
--- "err", never a guess. Output goes to $TPF3MP_PROBE_DIR (or
+-- Lanes, as the TPF2 probe: v vehicle count, p vehicle state plus world
+-- position (1 m), or a `depot:` sentinel with IN_DEPOT state and a stable
+-- construction/depot ordinal; e edge geometry (0.1 m), c constructions,
+-- t town building counts, m money per player, n people. Active aircraft
+-- also include flight state. Each lane is read through
+-- api.engine first, as mods for build 40391 do, then TPF2's game.interface.
+-- A lane it cannot read is "err", never a guess. Output goes to $TPF3MP_PROBE_DIR (or
 -- %LOCALAPPDATA%/tpf3mp/probe) where the state can write files, else as
 -- "[tpf3mp-probe det] ..." lines for tools/dayone/dayone.py collect: in a
 -- game TPF3-MP's launcher started, to its hook's log (hook.log, through
@@ -111,17 +113,104 @@ function data()
     return p
   end
 
+  local function scalarKey(value)
+    if type(value) == "number" and value == math.floor(value) then return tostring(value) end
+    if type(value) == "string" and #value > 0 then return value end
+    return nil
+  end
+
+  -- A vehicle in a depot has no world position. Resolve the local depot ID
+  -- through its construction and use that construction's stable place plus
+  -- the depot's construction-local index; never hash the local entity ID.
+  local function depotLocations()
+    local constructions = entitiesWith(ct().CONSTRUCTION, "CONSTRUCTION")
+    if not constructions then return nil end
+    local locations = {}
+    for _, id in ipairs(constructions) do
+      local c = getComp(id, ct().CONSTRUCTION)
+      if not c then return nil end
+      local depots, seen = {}, {}
+      local function addDepot(depot)
+        if type(depot) ~= "number" then return false end
+        if depot >= 0 and not seen[depot] then
+          seen[depot] = true
+          depots[#depots + 1] = depot
+        end
+        return true
+      end
+      if c.depots ~= nil then
+        local ok, count = pcall(function() return #c.depots end)
+        if not ok or type(count) ~= "number" then return nil end
+        for i = 1, count do
+          if not addDepot(c.depots[i]) then return nil end
+        end
+      end
+      local vehicleDepotComponent = ct().VEHICLE_DEPOT
+      if vehicleDepotComponent ~= nil and c.subconstructions ~= nil then
+        local ok, count = pcall(function() return #c.subconstructions end)
+        if not ok or type(count) ~= "number" then return nil end
+        for i = 1, count do
+          local sub = c.subconstructions[i]
+          if type(sub) ~= "number" then return nil end
+          if getComp(sub, vehicleDepotComponent) ~= nil and not addDepot(sub) then return nil end
+        end
+      end
+      if #depots > 0 then
+        local file, transform = c.fileName, c.transf
+        if type(file) ~= "string" or transform == nil then return nil end
+        local x, y, z = transform[13], transform[14], transform[15]
+        if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then return nil end
+        for i, depot in ipairs(depots) do
+          if locations[depot] ~= nil then return nil end
+          locations[depot] = string.format("%s@%s,%s,%s#%d",
+            file, q01(x), q01(y), q01(z), i)
+        end
+      end
+    end
+    return locations
+  end
+
+  -- Hash the vehicle's state and position, not an entity or model ID: the
+  -- stock aircraft TransportVehicle component has no groupFileName value.
   local function laneVehicles()
     local list = entitiesWith(ct().TRANSPORT_VEHICLE, "VEHICLE")
     if not list then return nil, nil end
     local pos = {}
+    local locations = nil
+    local enums = api().type.enum
+    local inDepot = enums and enums.TransportVehicleState and enums.TransportVehicleState.IN_DEPOT
+    local aircraftCarrier = enums and enums.Carrier and enums.Carrier.AIR
     for _, id in ipairs(sortedIds(list)) do
+      local vehicle = getComp(id, ct().TRANSPORT_VEHICLE)
+      if not vehicle then return tostring(#list), nil end
+      local state = scalarKey(vehicle.state)
+      if not state then return tostring(#list), nil end
+      local aircraft = getComp(id, ct().MOVE_PATH_AIRCRAFT)
+      local flight = nil
+      if aircraft then
+        local airState = aircraft.aircraftState
+        flight = scalarKey(airState and airState.flightState)
+      end
+      local isAircraft = (aircraftCarrier ~= nil and vehicle.carrier == aircraftCarrier) or aircraft ~= nil
+      if isAircraft and vehicle.state ~= inDepot and not flight then
+        -- An active aircraft without its documented flight state is not a
+        -- valid position sample.
+        return tostring(#list), nil
+      end
+      local stateKey = "state=" .. state .. (flight and ":flight=" .. flight or "")
       local p = position(id)
-      if type(p) == "table" then
-        pos[#pos + 1] = string.format("%d,%d,%d",
+      if p ~= nil then
+        pos[#pos + 1] = string.format("%s:pos=%d,%d,%d", stateKey,
           q1(p.x or p[1]), q1(p.y or p[2]), q1(p.z or p[3]))
       else
-        pos[#pos + 1] = "nopos:" .. tostring(id)
+        local depot = vehicle.depot
+        if type(depot) ~= "number" or depot < 0 or inDepot == nil or vehicle.state ~= inDepot then
+          return tostring(#list), nil
+        end
+        if locations == nil then locations = depotLocations() end
+        local location = locations and locations[depot]
+        if not location then return tostring(#list), nil end
+        pos[#pos + 1] = "depot:" .. stateKey .. ":at=" .. location
       end
     end
     table.sort(pos)
@@ -151,7 +240,22 @@ function data()
   -- edge is read on its own, so one unreadable edge is counted ("!N"), not
   -- the whole lane lost.
   local function laneEdges()
-    local list = entitiesWith(ct().BASE_EDGE, "BASE_EDGE")
+    -- Build 40408 refuses generic BASE_EDGE enumeration. The street
+    -- system's node map includes road and rail segments, each listed at
+    -- both ends; deduplicate before hashing (as tpf3mp/lanes.lua does).
+    local ok, map = pcall(function() return api().engine.system.streetSystem.getNode2SegmentMap() end)
+    local list
+    if ok and type(map) == "table" then
+      list = {}
+      local seen = {}
+      for _, segments in pairs(map) do
+        for _, id in pairs(segments) do
+          if not seen[id] then seen[id] = true; list[#list + 1] = id end
+        end
+      end
+    else
+      list = entitiesWith(ct().BASE_EDGE, "BASE_EDGE")
+    end
     if not list then return nil end
     local cache, geo, bad = {}, {}, 0
     for _, eid in ipairs(list) do
@@ -218,6 +322,18 @@ function data()
       end
     else
       local players = entitiesWith(ct().PLAYER, "PLAYER") or {}
+      if #players == 0 then
+        -- PLAYER cannot be enumerated on build 40408. In multiplayer the
+        -- GUI's getPlayer is deliberately local to each player, so use the
+        -- saved roster to compare every company's actual ACCOUNT instead.
+        pcall(function()
+          local e = api().engine.system.gameScriptSystem.getEntityForGameScript("tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs")
+          local script = assert(getComp(e, ct().GAME_SCRIPT))
+          for _, company in ipairs(script.state.companies.list) do
+            if not company.gone and type(company.entity) == "number" then players[#players + 1] = company.entity end
+          end
+        end)
+      end
       if #players == 0 then
         pcall(function() players = { api().engine.util.getPlayer() } end)
       end

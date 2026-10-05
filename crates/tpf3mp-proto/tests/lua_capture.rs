@@ -18,8 +18,8 @@ use mlua::{Lua, Table, Value};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        Action, EdgeEnds, EdgeKind, EdgeRef, Link, Network, NodeRef, Polyline, Pos, Resolve,
-        RoadBuild, Structure, Tangent, TrackBuild, Tram, Vertex,
+        Action, AssetRef, AssetRemoval, Bulldoze, EdgeEnds, EdgeKind, EdgeRef, Link, Network,
+        NodeRef, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent, TrackBuild, Tram, Vertex,
     },
     lua::{LuaValue, action_from_lua},
 };
@@ -31,7 +31,14 @@ macro_rules! modules {
 }
 
 /// Every module of the mod, as `require "tpf3mp.<name>"` finds it.
-const MODULES: [(&str, &str); 4] = modules!("geom", "roads", "junctions", "engine");
+const MODULES: [(&str, &str); 6] = modules!(
+    "geom",
+    "roads",
+    "junctions",
+    "engine",
+    "acceptance",
+    "capture"
+);
 
 const TEST: &str = include_str!("lua/road_capture.lua");
 
@@ -382,7 +389,7 @@ fn a_tf3_proposal_the_mod_cannot_place_fails_the_capture() {
 fn capture_street(street: &str) -> Result<LuaValue, String> {
     capture_with(
         street,
-        "captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street')",
+        "engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street')",
     )
 }
 
@@ -390,7 +397,7 @@ fn capture_street(street: &str) -> Result<LuaValue, String> {
 fn capture_modify(street: &str) -> Result<LuaValue, String> {
     capture_with(
         street,
-        "captureModify({ toAdd = {}, toRemove = {}, proposal = street })",
+        "engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street })",
     )
 }
 
@@ -411,8 +418,11 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
             "local function v(x, y, z) return {{ x = x, y = y, z = z }} end
              -- The country street 8-9-10 runs north through (50, 0); street
              -- 20-21 east-west under (120, 0), where the new road's bridge ends.
+             -- The track 30-31 runs north at x = 300.
              local NODES = {{ [7] = v(0, 0, 0), [8] = v(50, -40, 0), [9] = v(50, 1, 0), [10] = v(50, 40, 0),
-                              [20] = v(120, -30, 0), [21] = v(120, 30, 0) }}
+                              [20] = v(120, -30, 0), [21] = v(120, 30, 0), [30] = v(300, -30, 0),
+                              [31] = v(300, 30, 0) }}
+             local TRACKS = {{ [30] = {{ 110 }}, [31] = {{ 110 }} }}
              local STREETS = {{ [7] = {{ 104 }}, [8] = {{ 100 }}, [9] = {{ 100, 101 }}, [10] = {{ 101 }},
                                 [20] = {{ 102 }}, [21] = {{ 102 }} }}
              api = {{
@@ -430,12 +440,13 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
                      end,
                      system = {{ streetSystem = {{
                          getNodeStreetSegments = function(n) return STREETS[n] or {{}} end,
-                         getNodeTrackSegments = function() return {{}} end,
+                         getNodeTrackSegments = function(n) return TRACKS[n] or {{}} end,
                      }} }},
                  }},
              }}
              local street = {street}
-             return require('tpf3mp.engine').{call}"
+             local engine, roads = require('tpf3mp.engine'), require('tpf3mp.roads')
+             return {call}"
         ))
         .eval()
         .map_err(|error| error.to_string())?;
@@ -649,13 +660,298 @@ fn a_stop_moves_with_a_road_only_on_the_edge_rebuilt_in_place() {
 fn a_road_through_a_town_house_is_carried_and_through_a_station_is_not() {
     let through_house = capture_with(
         SPLIT_PROPOSAL,
-        "captureBuild({ toAdd = {}, toRemove = { 900 }, proposal = street }, 'Street')",
+        "engine.captureBuild({ toAdd = {}, toRemove = { 900 }, proposal = street }, 'Street')",
     );
     assert!(through_house.is_ok(), "{through_house:?}");
     let why = capture_with(
         SPLIT_PROPOSAL,
-        "captureBuild({ toAdd = {}, toRemove = { 901 }, proposal = street }, 'Street')",
+        "engine.captureBuild({ toAdd = {}, toRemove = { 901 }, proposal = street }, 'Street')",
     )
     .unwrap_err();
     assert!(why.contains("removes a construction"), "{why}");
+}
+
+/// A track modifier's proposal (INFERRED from the street tools' seen
+/// shape, not yet seen in the game): the track 30-31 rebuilt in place in
+/// the high-speed template, its one lane electrified (ELECTRIC_TRAIN, mode
+/// 8, beside TRAIN, 7) and faster.
+const TRACK_MODIFY_PROPOSAL: &str = "{
+    addedNodes = {},
+    addedSegments = {
+        { entity = -1, type = 1, comp = { node0 = 30, node1 = 31, tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0),
+          type = 0, typeIndex = -1, roadTemplate = 'track/high_speed.track_template', roadStyle = '',
+          objects = {}, laneConfigs = { { speed = 83.333, width = 1.435, height = 0, offset = 0,
+          forward = true, transportModes = { [7] = true, [8] = true } } } } },
+    },
+    removedSegments = { { entity = 110, type = 1, comp = { node0 = 30, node1 = 31, objects = {} } } },
+    removedNodes = {},
+}";
+
+#[test]
+fn a_track_modifier_carries_its_type_catenary_and_speed() {
+    let action = decode(capture_modify(TRACK_MODIFY_PROPOSAL).unwrap());
+    let Action::BuildTrack(track) = action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(track.track.as_str(), "track/high_speed.track_template");
+    let link = &track.polyline.links[0];
+    assert_eq!(link.lanes.len(), 1);
+    assert_eq!(
+        link.lanes[0].modes,
+        (1 << 7) | (1 << 8),
+        "TRAIN and ELECTRIC_TRAIN"
+    );
+    assert_eq!(
+        link.lanes[0].speed, 83_333,
+        "the lane's speed, in thousandths"
+    );
+    assert_eq!(track.polyline.removals.len(), 1);
+    assert_eq!(track.polyline.removals[0].network, Network::Track);
+}
+
+#[test]
+fn an_upgrade_is_said_in_one_line_and_another_build_is_not_an_upgrade() {
+    let summary = |street: &str, call: &str| match capture_with(street, call).unwrap() {
+        LuaValue::String(text) => String::from_utf8(text).unwrap(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        summary(
+            TRACK_MODIFY_PROPOSAL,
+            "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
+        ),
+        "track upgrade of 1 edge(s) rebuilt in place; template track/high_speed.track_template; 1 lane(s) carrying TRAIN ELECTRIC_TRAIN; lane speeds 83.333 to 83.333; decorations none; locked 0, owned 0"
+    );
+    assert_eq!(
+        summary(
+            &modify_proposal("{ { 555, 0 } }", "{}"),
+            "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
+        ),
+        "street upgrade of 2 edge(s) rebuilt in place; template street/country_tram.street_template; 2 edge(s) with their template's lanes; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1"
+    );
+    // A new street onto another's middle is no upgrade.
+    let other = capture_with(
+        SPLIT_PROPOSAL,
+        "roads.upgradeSummary(engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street'))",
+    );
+    assert_eq!(other, Err(String::new()));
+}
+
+/// The bridge and tunnel window's type change (`bridge_and_tunnel.tl`,
+/// `createBridgeOrTunnelProposal`), as the window sends it: the track
+/// 30-31 rebuilt in place between the same nodes as a stone bridge
+/// (INFERRED from the API's proposal shape, not yet seen in the game).
+const BRIDGE_WINDOW_PROPOSAL: &str = "{
+    addedNodes = {},
+    addedSegments = {
+        { entity = -1, type = 1, comp = { node0 = 30, node1 = 31, tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0),
+          type = 1, typeIndex = 3, roadTemplate = 'track/standard.track_template', roadStyle = '',
+          objects = {} } },
+    },
+    removedSegments = { { entity = 110, type = 1, comp = { node0 = 30, node1 = 31, objects = {} } } },
+    removedNodes = {},
+}";
+
+fn window_build(street: &str, gate: bool) -> Result<LuaValue, String> {
+    capture_with(
+        street,
+        &format!(
+            "(function() require('tpf3mp.acceptance').bridges = {gate} \
+             return require('tpf3mp.capture').windowBuild(nil, {{ toAdd = {{}}, toRemove = {{}}, proposal = street }}) end)()"
+        ),
+    )
+}
+
+/// A bridge's type changed in its window was refused in a room ("building
+/// from this window"): an in-place rebuild of edges travels as the track
+/// modifiers' does, once its gate is on; until then it says it waits for
+/// acceptance. A window build that adds or removes nodes is no in-place
+/// rebuild and stays refused.
+#[test]
+fn a_bridge_window_rebuild_travels_as_the_track_it_rebuilds() {
+    let why = window_build(BRIDGE_WINDOW_PROPOSAL, false).unwrap_err();
+    assert!(why.contains("awaits two-player game acceptance"), "{why}");
+
+    let action = decode(window_build(BRIDGE_WINDOW_PROPOSAL, true).unwrap());
+    let Action::BuildTrack(track) = action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(track.track.as_str(), "track/standard.track_template");
+    assert_eq!(track.polyline.links.len(), 1);
+    assert_eq!(
+        track.polyline.links[0].structure,
+        Structure::Bridge(text("bridge/stone.lua"))
+    );
+    assert_eq!(track.polyline.removals.len(), 1);
+    assert_eq!(track.polyline.removals[0].network, Network::Track);
+    assert!(track.polyline.removed_nodes.is_empty());
+
+    // Rebuilt the other way round: still in place.
+    let reversed = BRIDGE_WINDOW_PROPOSAL.replace(
+        "node0 = 30, node1 = 31, tangent0",
+        "node0 = 31, node1 = 30, tangent0",
+    );
+    assert!(window_build(&reversed, true).is_ok());
+    // A road modifier's rebuild through a new node is not the window's.
+    let moved = modify_proposal("{ { 555, 0 } }", "{}");
+    let why = window_build(&moved, true).unwrap_err();
+    assert!(!why.contains("acceptance"), "{why}");
+    // A bridge that keeps the signal on it, and one that drops it.
+    let signal = BRIDGE_WINDOW_PROPOSAL
+        .replace(
+            "objects = {} } },\n    },",
+            "objects = { { 556, 2 } } } },\n    },",
+        )
+        .replace(
+            "node1 = 31, objects = {}",
+            "node1 = 31, objects = { { 556, 2 } }",
+        );
+    assert!(window_build(&signal, true).is_ok());
+    let dropped = BRIDGE_WINDOW_PROPOSAL.replace(
+        "node1 = 31, objects = {}",
+        "node1 = 31, objects = { { 556, 2 } }",
+    );
+    let why = window_build(&dropped, true).unwrap_err();
+    assert!(
+        why.contains("removes an edge with a stop or signal"),
+        "{why}"
+    );
+}
+
+/// Runs the asset bulldozer's capture (`engine.captureAssets`) over three
+/// asset groups as build 40408 holds them, and returns the action table,
+/// or why it was refused. 50 holds four firs as thin instances; 51 a fir
+/// and a boulder, a full instance with its own matrix; 52 one boulder.
+/// `TOOL(group, removed)` makes the tool's proposal as
+/// UI::AssetBulldozerAction does: the group removed and, unless every asset
+/// went, one construction entity at the origin whose models are the assets
+/// kept, thin ones then full ones, each its file and world matrix.
+fn capture_assets(call: &str) -> Result<LuaValue, String> {
+    let lua = Lua::new();
+    let preload: Table = lua
+        .globals()
+        .get::<Table>("package")
+        .unwrap()
+        .get("preload")
+        .unwrap();
+    for (name, source) in MODULES {
+        let chunk = lua.load(source).into_function().unwrap();
+        preload.set(format!("tpf3mp.{name}"), chunk).unwrap();
+    }
+    let (action, why): (Value, Option<String>) = lua
+        .load(format!(
+            "local FILES = {{ [41] = 'assets/trees/fir.mdl', [42] = 'assets/rocks/boulder.mdl' }}
+             local function fir(x, y, rot)
+                 return {{ modelId = 41, pos = {{ x = x, y = y, z = 3 }}, rot = rot, scale = 1.25 }}
+             end
+             local function boulder(x, y)
+                 return {{ modelId = 42, transf = {{ 0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 2, 0, x, y, 2, 1 }} }}
+             end
+             local THIN = {{ [50] = {{ fir(10, 20, 0), fir(14, 21, 0.5), fir(18, 19, 1), fir(22, 20, 2) }},
+                             [51] = {{ fir(600, 50, 0.25) }}, [52] = {{}} }}
+             local FULL = {{ [51] = {{ boulder(602, 50) }}, [52] = {{ boulder(700, 60) }} }}
+             api = {{
+                 type = {{ ComponentType = {{ ASSET_GROUP = 30, MODEL_INSTANCE_LIST = 31 }} }},
+                 res = {{ modelRep = {{ getName = function(id) return FILES[id] end }} }},
+                 engine = {{ getComponent = function(e, kind)
+                     if kind == 30 and THIN[e] then return {{}} end
+                     if kind == 31 and THIN[e] then
+                         return {{ thinInstances = THIN[e], fatInstances = FULL[e] or {{}} }}
+                     end
+                 end }},
+             }}
+             local engine = require('tpf3mp.engine')
+             function TOOL(group, removed)
+                 local gone, models, n = {{}}, {{}}, 0
+                 for _, i in ipairs(removed) do gone[i] = true end
+                 for _, t in ipairs(THIN[group]) do
+                     n = n + 1
+                     if not gone[n] then
+                         models[#models + 1] = {{ id = '::/' .. FILES[t.modelId], thin = false,
+                             transf = engine.assetMatrix({{ x = t.pos.x, y = t.pos.y, z = t.pos.z,
+                                 rot = t.rot, scale = t.scale }}, false) }}
+                     end
+                 end
+                 for _, f in ipairs(FULL[group] or {{}}) do
+                     n = n + 1
+                     if not gone[n] then
+                         models[#models + 1] = {{ id = '::/' .. FILES[f.modelId], thin = false, transf = f.transf }}
+                     end
+                 end
+                 local toAdd = {{}}
+                 if #models > 0 then
+                     toAdd[1] = {{ fileName = '', playerEntity = -1,
+                         transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }},
+                         construction = {{ subconstructions = {{ {{ models = models }} }} }} }}
+                 end
+                 return {{ toRemove = {{ group }}, toAdd = toAdd,
+                     proposal = {{ addedNodes = {{}}, addedSegments = {{}}, removedNodes = {{}},
+                         removedSegments = {{}} }} }}
+             end
+             return {call}"
+        ))
+        .eval()
+        .map_err(|error| error.to_string())?;
+    match (action, why) {
+        (Value::Nil, why) => Err(why.unwrap_or_default()),
+        (action, _) => Ok(tree(&action)),
+    }
+}
+
+fn asset(model: &str, x: i32, y: i32, z: i32) -> AssetRef {
+    AssetRef {
+        model: text(model),
+        at: pos(x, y, z),
+    }
+}
+
+/// The three shapes the asset bulldozer makes decode as the schema says,
+/// in millimetres: a fir taken out of a group of thin instances, the rest
+/// rebuilt; a boulder (a full instance) taken out of a group with a fir;
+/// a group of one boulder taken whole, nothing rebuilt.
+#[test]
+fn an_asset_bulldoze_decodes_as_the_schema_says() {
+    const FIR: &str = "::/assets/trees/fir.mdl";
+    const BOULDER: &str = "::/assets/rocks/boulder.mdl";
+    let removal = |call: &str| match decode(capture_assets(call).unwrap()) {
+        Action::Bulldoze(Bulldoze::Assets(removal)) => removal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        removal("engine.captureAssets(TOOL(50, { 2 }))"),
+        AssetRemoval {
+            first: asset(FIR, 10_000, 20_000, 3_000),
+            count: 4,
+            removed: list(vec![asset(FIR, 14_000, 21_000, 3_000)]),
+            mirrored: false,
+            owned: false,
+        }
+    );
+    assert_eq!(
+        removal("engine.captureAssets(TOOL(51, { 2 }))"),
+        AssetRemoval {
+            first: asset(FIR, 600_000, 50_000, 3_000),
+            count: 2,
+            removed: list(vec![asset(BOULDER, 602_000, 50_000, 2_000)]),
+            mirrored: false,
+            owned: false,
+        }
+    );
+    assert_eq!(
+        removal("engine.captureAssets(TOOL(52, { 1 }))"),
+        AssetRemoval {
+            first: asset(BOULDER, 700_000, 60_000, 2_000),
+            count: 1,
+            removed: list(vec![asset(BOULDER, 700_000, 60_000, 2_000)]),
+            mirrored: false,
+            owned: false,
+        }
+    );
+    // A proposal that also changes streets is no asset bulldoze.
+    let why = capture_assets(
+        "engine.captureAssets((function() local p = TOOL(52, { 1 }) \
+             p.proposal.removedSegments = { { entity = 100 } } return p end)())",
+    )
+    .unwrap_err();
+    assert_eq!(why, "an asset bulldoze that changes streets too");
 }

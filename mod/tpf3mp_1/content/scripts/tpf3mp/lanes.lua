@@ -3,8 +3,8 @@
 --
 -- A lane is one part of the world summed up in a short text: the same text
 -- on two games means that part of their worlds is the same. The mod's game
--- script reads them in its postUpdate, right after the last update of a
--- batch that ends at a checkpoint step, and hands them to the hook, which
+-- script reads rolling observations in each postUpdate, accumulating a
+-- window that ends at a checkpoint step, and hands them to the hook, which
 -- reports their digests to the room; the room compares them between
 -- players. The numbers follow the regression harness's model
 -- (crates/tpf3mp-testkit/src/regress/model.rs, `lane`), with two more.
@@ -21,14 +21,18 @@
 --   path state as the frame began (dyn0), differed between two games in
 --   the same simulation update by millimetres (build 40408), the frames
 --   being their own; the simulation's state did not;
--- - ECONOMY: each player's balance;
+-- - ECONOMY: the save's own player's balance; with more than one company
+--   in the room's roster, each company's balance by its id; and where the
+--   game has the subsidy script, its offers, taken, completed and failed
+--   subsidies, each with its terms (tpf3mp/subsidies.lua, summary), so two
+--   games whose offers differ split here at the next checkpoint;
 -- - TOWNS: each town's number of buildings;
 -- - PEOPLE: the number of people.
 --
 -- Nothing is read by an entity's id where an id could differ between two
 -- games that agree on the world, except where the save carries it (towns and
--- players). Each lane is read on its own: one that cannot be read is
--- "err" on every game alike, and the others still count.
+-- players). The diagnostic full reader represents a failed lane as "err";
+-- the rolling room reader instead refuses failed reads and holds the game.
 --
 -- The engine lists the entities of some components only
 -- (getEntitiesWithComponent refuses BASE_EDGE, LINE and PLAYER on build
@@ -36,6 +40,7 @@
 -- street system's node map, lines from the line system, and the player
 -- from the engine's util.
 --
+-- The full synchronous reader remains for diagnostics and stand-in engines.
 -- A lane can also be dumped (`lanes.dump`): its full text, entry by entry,
 -- read by the same reader that sums it up, with the raw values it rounds
 -- (`%.17g`), keyed by the registry's id where there is one (vehicle-N,
@@ -44,16 +49,23 @@
 -- the hook hashes. The hook writes each entry to hook.log as
 -- `lane <n> step <step> <entry>`, for tools/lane_diff.py to diff between
 -- games (docs/HOOKS.md, "Lane dumps"). Reading a lane for its digest builds
--- none of it.
+-- none of it. The network lane's dump can be cut to a box: only the edges
+-- with an end inside it, and no junctions.
+--
+-- `lanes.watch` reads one entity for the edge watch (docs/HOOKS.md, "The
+-- edge watch"): an edge's nodes, ends and tangents, and its nodes'
+-- positions, at full precision; a node's position.
 --
 -- Pure Lua over the `api` it is given; the tests hand it a fake.
 
 local lanes = {}
-local junctions
+local junctions, subsidies
 if type(ug_require) == "function" then
 	junctions = ug_require("tpf3mp_1::/scripts/tpf3mp/junctions.lua")
+	subsidies = ug_require("tpf3mp_1::/scripts/tpf3mp/subsidies.lua")
 else
 	junctions = require("tpf3mp.junctions")
+	subsidies = require("tpf3mp.subsidies")
 end
 
 lanes.NETWORK = 0
@@ -77,10 +89,46 @@ local function hashStr(s)
 	return string.format("%010d-%010d", h1, h2)
 end
 
+-- The same hash from the hook, `tpf3mp_native.hash`
+-- (crates/tpf3mp-hook/src/lanehash.rs), which does not loop over every byte
+-- in Lua; this Lua's own where the state has no hook.
+local function fastHash(s)
+	local ok, native = pcall(function() return tpf3mp_native end)
+	if ok and type(native) == "table" and type(native.hash) == "function" then
+		local done, hash = pcall(native.hash, s)
+		if done and type(hash) == "string" then return hash end
+	end
+	return hashStr(s)
+end
+
+-- The diagnostic clock in seconds, or nil where the state has none. For the
+-- lanes' cost in the log only: nothing read from it reaches the world.
+local function clock()
+	local readClock = type(os) == "table" and os.clock
+	if type(readClock) ~= "function" then return nil end
+	local ok, t = pcall(readClock)
+	if ok and type(t) == "number" then return t end
+	return nil
+end
+
+-- What the last lanes.read cost, in seconds: by lane, and the summaries'
+-- sorting and hashing (inside the lanes' times).
+lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
+
 -- A sorted list's count and hash.
 local function summary(rows)
+	local t0 = clock()
 	table.sort(rows)
-	return #rows .. ":" .. hashStr(table.concat(rows, "\30"))
+	local text = table.concat(rows, "\30")
+	local t1 = clock()
+	local hash = fastHash(text)
+	local t2 = clock()
+	if t0 and t1 and t2 then
+		lanes.cost.sort = lanes.cost.sort + (t1 - t0)
+		lanes.cost.hash = lanes.cost.hash + (t2 - t1)
+	end
+	lanes.cost.bytes = lanes.cost.bytes + #text
+	return #rows .. ":" .. hash
 end
 
 local function q01(v) return math.floor((v or 0) * 10 + 0.5) / 10 end
@@ -115,9 +163,41 @@ local function full(v)
 	return tostring(v)
 end
 
+-- A vector at full precision, for a dump: a table, or the game's userdata
+-- (a Vec3f, whose fields x, y and z read but which has no [1]); anything
+-- without numbers as text.
 local function vecFull(p)
-	if type(p) ~= "table" then return tostring(p) end
-	return full(p.x or p[1]) .. "," .. full(p.y or p[2]) .. "," .. full(p.z or p[3] or 0)
+	if p == nil then return "nil" end
+	local x, y, z = get(p, "x"), get(p, "y"), get(p, "z")
+	if type(x) ~= "number" and type(p) == "table" then x, y, z = p[1], p[2], p[3] end
+	if type(x) ~= "number" then return tostring(p) end
+	return full(x) .. "," .. full(y) .. "," .. full(z or 0)
+end
+
+-- The base game's town growth script's state, as its own
+-- town_cargo_util.getTownCargoState reads it: a function from a town to its
+-- { experience, level, ... }, or nil. For a dump only; it changes nothing.
+local function townGrowth(api)
+	local ok, script = pcall(function()
+		local e = api.engine.system.gameScriptSystem.getEntityForGameScript("::/game_mechanics/towns/town_cargo.gs")
+		return api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
+	end)
+	if not ok or script == nil then return function() return nil end end
+	local native, plain = get(script, "state_native"), nil
+	return function(town)
+		if native ~= nil then
+			local found, data = pcall(function()
+				local d = native:findPath({ "townState", town })
+				return d and d:asTable()
+			end)
+			if found and data ~= nil then return data end
+		end
+		if plain == nil then
+			local state = get(script, "state")
+			plain = type(state) == "table" and type(state.townState) == "table" and state.townState or false
+		end
+		return plain and plain[town] or nil
+	end
 end
 
 -- Each reader returns its lane's text. With `emit` (a dump), it also calls
@@ -126,46 +206,78 @@ end
 -- it was made from. Without `emit` it builds no fields.
 local readers = {}
 
-readers[lanes.NETWORK] = function(api, emit)
-	local rows, seen = {}, {}
-	for _, segments in pairs(api.engine.system.streetSystem.getNode2SegmentMap()) do
+readers[lanes.NETWORK] = function(api, emit, ids, selected)
+	local rows, seen, baseEdges = {}, {}, selected and selected.baseEdges or {}
+	local net = { map = 0, get = 0, lanes = 0, junctions = 0, edges = 0, laneConfigs = 0 }
+	lanes.cost.net = net
+	local t0 = clock()
+	local map = selected and { selected.edges } or api.engine.system.streetSystem.getNode2SegmentMap()
+	local t1 = clock()
+	if t0 and t1 then net.map = t1 - t0 end
+	for _, segments in pairs(map) do
 		for _, e in pairs(segments) do
 			if not seen[e] then
 				seen[e] = true
-				local edge = component(api, e, "BASE_EDGE")
+				local g0 = clock()
+				local edge = baseEdges[e] or component(api, e, "BASE_EDGE")
+				baseEdges[e] = edge or false
+				local g1 = clock()
+				if g0 and g1 then net.get = net.get + (g1 - g0) end
+				net.edges = net.edges + 1
 				if edge then
 					local a, b = vec01(edge.position0), vec01(edge.position1)
 					local reversed = a > b
 					if reversed then a, b = b, a end
 					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
-					local laneRows = {}
-					for i = 1, #edge.laneConfigs do
-						local l, modes = edge.laneConfigs[i], {}
-						for m = 0, 15 do modes[#modes+1] = l.transportModes[m] == true and "1" or "0" end
-						laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
-							l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+					local l0 = clock()
+					local native = tpf3mp_native
+					local laneText, count
+					local copy = api.type.BaseEdge and api.type.BaseEdge.new
+					if native and type(native.laneRows) == "function" and type(copy) == "function" then
+						-- getComponent returns a borrowed reference. Copy once;
+						-- Rust reads the owned snapshot, including nested vectors.
+						laneText, count = native.laneRows(copy(edge), reversed)
 					end
-					table.sort(laneRows)
-					row = row .. "|lanes:" .. table.concat(laneRows,";")
+					if laneText == nil then
+						local laneRows, configs = {}, edge.laneConfigs
+						count = #configs
+						for i = 1, count do
+							local l, modes = configs[i], {}
+							local transportModes = l.transportModes
+							for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
+							laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
+								l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+						end
+						table.sort(laneRows)
+						laneText = table.concat(laneRows,";")
+					end
+					net.laneConfigs = net.laneConfigs + count
+					local l1 = clock()
+					if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
+					row = row .. "|lanes:" .. laneText
 					rows[#rows + 1] = row
 					if emit then
 						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
-							.. " template=" .. tostring(edge.roadTemplate))
+							.. " template=" .. tostring(edge.roadTemplate), { edge.position0, edge.position1 })
 					end
 				end
 			end
 		end
 	end
-	for _, row in ipairs(junctions.rows(api)) do
+	local j0 = clock()
+	local junctionRows = junctions.rows(api, baseEdges, selected and selected.nodes)
+	local j1 = clock()
+	if j0 and j1 then net.junctions = j1 - j0 end
+	for _, row in ipairs(junctionRows) do
 		rows[#rows+1] = "junction:" .. row
-		if emit then emit(nil, nil, "junction:" .. row, "") end
+		if emit then emit(nil, nil, "junction:" .. row, "", false) end
 	end
 	return summary(rows)
 end
 
-readers[lanes.CONSTRUCTIONS] = function(api, emit)
+readers[lanes.CONSTRUCTIONS] = function(api, emit, ids, selected)
 	local rows = {}
-	for _, e in ipairs(entities(api, "CONSTRUCTION")) do
+	for _, e in ipairs(selected and selected.constructions or entities(api, "CONSTRUCTION")) do
 		local c = component(api, e, "CONSTRUCTION")
 		if c then
 			local t = c.transf
@@ -201,6 +313,25 @@ readers[lanes.LINES] = function(api, emit, ids)
 		end
 	end
 	return summary(rows)
+end
+
+-- A vehicle's free capacity by line stop and cargo type
+-- (TransportVehicle.lineStop2cargo2available) as `a/b|c/d`, stops apart:
+-- what it has room for, so what it carries. For a dump only.
+local function freeCapacity(byStop)
+	if byStop == nil then return "nil" end
+	local ok, text = pcall(function()
+		local out = {}
+		for i = 1, #byStop do
+			local cargo = byStop[i]
+			local values = {}
+			for j = 1, #cargo do values[#values + 1] = full(cargo[j]) end
+			out[#out + 1] = table.concat(values, "/")
+		end
+		return table.concat(out, "|")
+	end)
+	if ok then return text end
+	return "err"
 end
 
 readers[lanes.VEHICLES] = function(api, emit, ids)
@@ -246,24 +377,173 @@ readers[lanes.VEHICLES] = function(api, emit, ids)
 				.. " edge=" .. full(pos and pos.edgeIndex) .. " pos=" .. full(pos and pos.pos)
 				.. " speed=" .. full(d and d.speed)
 				.. " arrival=" .. full(get(arrival, "station")) .. "/" .. full(get(arrival, "terminal"))
-					.. " arrival_locked=" .. tostring(get(v, "arrivalStationTerminalLocked")) .. detail)
+					.. " arrival_locked=" .. tostring(get(v, "arrivalStationTerminalLocked"))
+				.. " load=" .. full(get(v, "loadState")) .. " pending=" .. full(get(get(v, "unloadPendingIncome"), "amount"))
+				.. " free=" .. freeCapacity(get(v, "lineStop2cargo2available")) .. detail)
 		end
 	end
 	return summary(rows)
 end
 
-readers[lanes.ECONOMY] = function(api, emit)
+-- A list of numbers as `a/b/c`, read by index (a table or the game's
+-- userdata); nil when it does not read.
+local function numbers(v)
+	if v == nil then return nil end
+	local ok, text = pcall(function()
+		local out = {}
+		for i = 1, #v do out[#out + 1] = full(v[i]) end
+		return table.concat(out, "/")
+	end)
+	if ok then return text end
+	return nil
+end
+
+-- The finance window's table for the player (computeFinanceTable, the
+-- window's own config: four periods), flattened to `key=v/v/v/v` words:
+-- transport income per carrier and kind, investments, other entries,
+-- loan, interest and totals. Each value a period's column, so the category
+-- an amount was booked under shows. For a dump only; "err" when the engine
+-- has no such table.
+local function financeTable(api, player)
+	local ok, text = pcall(function()
+		local finance = api.engine.util.finance
+		local config = api.type.ChartConfig.new()
+		config.count = 4
+		local data = finance.computeFinanceTable(player, config)
+		local words = {}
+		local function add(key, values)
+			words[#words + 1] = key .. "=" .. (numbers(values) or "nil")
+		end
+		data:foreach_carrier(function(carrier)
+			data:foreach_transport(function(kind, values)
+				add("transport" .. tostring(carrier) .. "." .. tostring(kind), values)
+			end, carrier)
+		end)
+		data:foreach_investment(function(kind, values) add("investment" .. tostring(kind), values) end)
+		data:foreach_other(function(kind, values) add("other" .. tostring(kind), values) end)
+		for _, key in ipairs({ "loan", "interest", "loanBorrowing", "loanRepayment", "total", "balance" }) do
+			add(key, get(data, key))
+		end
+		-- The engine's maps list in their own order: sorted, two games'
+		-- equal tables read alike.
+		table.sort(words)
+		return table.concat(words, " ")
+	end)
+	if ok and type(text) == "string" then return text end
+	return "err"
+end
+
+-- What each vehicle and each line earned and cost (income and maintenance:
+-- calculateBalance(..., true), as the game's vehicle and line windows read
+-- it), from the game's start to now. A dump of the economy lane emits one
+-- entry per vehicle and line with it, so two games' dumps name the vehicle
+-- whose takings split (docs/HOOKS.md, "Lane dumps"). For a dump only.
+local function takings(api)
+	local ok, finance, now = pcall(function()
+		local time = component(api, api.engine.util.getWorld(), "GAME_TIME")
+		return api.engine.util.finance, time and time.gameTime
+	end)
+	if not ok or finance == nil or now == nil then
+		return function() return "nil" end
+	end
+	return function(e)
+		local read, value = pcall(function() return finance.calculateBalance({ e }, 0, now, true) end)
+		if read then return full(value) end
+		return "err"
+	end
+end
+
+-- A game script's state as the game keeps it, by the script's file; nil
+-- where the game has no such script.
+local function scriptState(api, name)
+	local ok, state = pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(name)
+		if type(entity) ~= "number" or entity < 0 then return nil end
+		local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		return c and c.state
+	end)
+	if ok and type(state) == "table" then return state end
+	return nil
+end
+
+-- The mod's own game script, under the names the game has given it.
+local MOD_SCRIPTS = { "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs", "tpf3mp_1::/tpf3mp_sim.gs" }
+local SUBSIDY_SCRIPT = "::/game_mechanics/subventions/subventions.gs"
+
+-- Each company of the room's roster with its balance, "id=entity:balance",
+-- in the roster's order; nil with one company or none, or no roster.
+local function companyBalances(api)
+	local roster
+	for _, name in ipairs(MOD_SCRIPTS) do
+		local state = scriptState(api, name)
+		if state and type(state.companies) == "table" then roster = state.companies break end
+	end
+	local list = roster and type(roster.list) == "table" and roster.list or {}
+	if #list < 2 then return nil end
+	local out = {}
+	for _, c in ipairs(list) do
+		if type(c) == "table" and not c.gone then
+			local account = type(c.entity) == "number" and component(api, c.entity, "ACCOUNT")
+			local balance = account and account.balance
+			out[#out + 1] = tostring(c.id) .. "=" .. tostring(c.entity) .. ":"
+				.. (type(balance) == "number" and string.format("%d", balance) or "?")
+		end
+	end
+	return table.concat(out, ",")
+end
+
+readers[lanes.ECONOMY] = function(api, emit, ids)
 	local player = api.engine.util.getPlayer()
 	local account = component(api, player, "ACCOUNT")
 	local balance = account and account.balance
 	local text = tostring(player) .. ":" .. (balance ~= nil and string.format("%d", balance) or "?")
-	if emit then emit("player", player, text, "balance=" .. full(balance)) end
+	local okC, balances = pcall(companyBalances, api)
+	if okC and balances then text = text .. " companies " .. balances end
+	local offers = scriptState(api, SUBSIDY_SCRIPT)
+	local rows = offers and subsidies.rows(offers)
+	if rows then
+		text = text .. " subsidies " .. #rows .. ":" .. hashStr(subsidies.clock(offers) .. "\30" .. table.concat(rows, "\30"))
+	end
+	if emit and rows then
+		emit("subsidies", nil, "subsidies:clock", subsidies.clock(offers))
+		for i, row in ipairs(rows) do
+			emit("subsidies", nil, "subsidies:" .. i, row)
+		end
+	end
+	if emit then
+		-- Dump only: the loan, the player's income as the engine sums it,
+		-- the time of its last income and the finance table; then each
+		-- vehicle's and line's takings. None of it is hashed.
+		local function read(f)
+			local found, v = pcall(f)
+			return found and full(v) or "nil"
+		end
+		local finance = get(api.engine.util, "finance")
+		emit("player", player, text, "balance=" .. full(balance) .. " loan=" .. full(get(account, "loan"))
+			.. " time=" .. read(function() return component(api, api.engine.util.getWorld(), "GAME_TIME").gameTime end)
+			.. " income=" .. read(function() return finance.calcIncomeSince(0, player) end)
+			.. " last_income=" .. read(function() return finance.getLastIncomeTime(player) end)
+			.. " " .. financeTable(api, player))
+		local taken = takings(api)
+		for _, e in ipairs(entities(api, "TRANSPORT_VEHICLE")) do
+			local v = component(api, e, "TRANSPORT_VEHICLE")
+			emit("vehicles", e, "takings:" .. tostring(e), "takings=" .. taken(e)
+				.. " line=" .. ids("lines", get(v, "line"), "line"))
+		end
+		local lines = {}
+		pcall(function() for _, l in pairs(api.engine.system.lineSystem.getLines()) do lines[#lines + 1] = l end end)
+		table.sort(lines)
+		for _, l in ipairs(lines) do
+			emit("lines", l, "takings:" .. tostring(l), "takings=" .. taken(l))
+		end
+	end
 	return text
 end
 
 readers[lanes.TOWNS] = function(api, emit)
 	local map = api.engine.system.townBuildingSystem.getTown2BuildingMap()
 	local rows = {}
+	local growth = emit and townGrowth(api)
 	for _, town in ipairs(entities(api, "TOWN")) do
 		local count = 0
 		local buildings = map and map[town]
@@ -272,7 +552,17 @@ readers[lanes.TOWNS] = function(api, emit)
 		end
 		local row = tostring(town) .. ":" .. count
 		rows[#rows + 1] = row
-		if emit then emit("towns", town, row, "buildings=" .. count) end
+		if emit then
+			-- The town's size factors at full precision, and the growth
+			-- script's experience and level: what makeTownUpdateSizeCmd is
+			-- made from (docs/HOOKS.md, "The town trace").
+			local size = get(component(api, town, "TOWN"), "sizeFactors")
+			local factors = {}
+			for i = 1, 3 do factors[i] = full(get(size, i)) end
+			local data = growth(town)
+			emit("towns", town, row, "buildings=" .. count .. " size=" .. table.concat(factors, ",")
+				.. " experience=" .. full(get(data, "experience")) .. " level=" .. full(get(data, "level")))
+		end
 	end
 	return summary(rows)
 end
@@ -287,8 +577,12 @@ end
 -- with why, from the `api` of the state the game script runs in.
 function lanes.read(api)
 	local out, failed = {}, {}
+	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
 	for lane = lanes.NETWORK, lanes.PEOPLE do
+		local t0 = clock()
 		local ok, text = pcall(readers[lane], api)
+		local t1 = clock()
+		if t0 and t1 then lanes.cost.lanes[lane] = t1 - t0 end
 		if ok and type(text) == "string" then
 			out[lane] = text
 		else
@@ -297,6 +591,143 @@ function lanes.read(api)
 		end
 	end
 	return out, failed
+end
+lanes.clock = clock
+
+-- Read just the static world intersecting a box. All engine references have
+-- this call's lifetime; nothing borrowed is kept for the next simulation step.
+-- Junctions at either end of intersecting edges are included even when their
+-- position is outside the box. This also covers long edges and tile borders.
+function lanes.spatial(api, box, limit)
+	local found, selected = {}, { edges = {}, nodes = {}, baseEdges = {}, constructions = {} }
+	api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
+		-- Only collect IDs in the engine's callback. Component access and all
+		-- fallible canonicalization happen after the callback has returned.
+		found[e] = true
+	end)
+	for e in pairs(found) do
+		local edge = component(api, e, "BASE_EDGE")
+		if edge then
+			selected.edges[#selected.edges + 1] = e
+			selected.baseEdges[e] = edge
+			selected.nodes[edge.node0], selected.nodes[edge.node1] = true, true
+		end
+		if component(api, e, "CONSTRUCTION") then
+			selected.constructions[#selected.constructions + 1] = e
+		end
+	end
+	if limit and #selected.edges + #selected.constructions > limit then
+		local nodes = 0
+		for _ in pairs(selected.nodes) do nodes = nodes + 1 end
+		-- The split decision itself is compared. If replicas have different
+		-- static inventories, they cannot silently follow different schedules.
+		return { [lanes.NETWORK] = "split:" .. #selected.edges .. ":" .. nodes,
+			[lanes.CONSTRUCTIONS] = "split:" .. #selected.constructions }, selected, true
+	end
+	local out = {
+		[lanes.NETWORK] = readers[lanes.NETWORK](api, nil, nil, selected),
+		[lanes.CONSTRUCTIONS] = readers[lanes.CONSTRUCTIONS](api, nil, nil, selected),
+	}
+	return out, selected
+end
+
+-- A rolling observation window, saved with the world so a joining/rebased
+-- game resumes the exact same window. Only numbers and digest strings survive
+-- an update. Samples use absolute room steps, never frame rate or a stopwatch.
+-- Busy cells subdivide before canonicalizing their components; empty countryside
+-- advances without spending hundreds of steps there. The split counts are part
+-- of the observations, so a divergent world cannot choose a different schedule
+-- unnoticed. Dynamic lanes are read once every five updates.
+function lanes.rolling(api, previous, step, checkpoint)
+	if type(step) ~= "number" or step < 1 or step % 1 ~= 0 then error("invalid world-check step", 0) end
+	local scan = previous
+	if step == 1 then scan = { version = 1, step = 0, first = 1, hashes = {}, counts = {},
+		tile = 0, pending = {}, sweepStart = 1, sweeps = 0 } end
+	if type(scan) ~= "table" or scan.version ~= 1 or scan.step ~= step - 1 then
+		error("the rolling world-check history is missing or skipped an update", 0)
+	end
+	local t0 = clock()
+	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
+	local bounds = api.engine.terrain.getBoundingBox()
+	local x0, y0, x1, y1 = bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y
+	for _, n in ipairs({x0, y0, x1, y1}) do
+		if type(n) ~= "number" or n ~= n or math.abs(n) >= 1000000 then error("invalid world-check bounds", 0) end
+	end
+	if x1 <= x0 or y1 <= y0 then error("empty world-check bounds", 0) end
+	local side = 1024
+	local nx, ny = math.ceil((x1 - x0) / side), math.ceil((y1 - y0) / side)
+	local total = nx * ny
+	local region = table.remove(scan.pending)
+	if not region then
+		local x, y = scan.tile % nx, math.floor(scan.tile / nx)
+		region = { x0 + side * x, y0 + side * y, math.min(x1, x0 + side * (x + 1)), math.min(y1, y0 + side * (y + 1)) }
+		scan.tile = (scan.tile + 1) % total
+	end
+	local minX = region[1] == x0 and -1000000 or region[1]
+	local minY = region[2] == y0 and -1000000 or region[2]
+	local maxX = region[3] == x1 and 1000000 or region[3]
+	local maxY = region[4] == y1 and 1000000 or region[4]
+	local box = api.type.Box3.new(api.type.Vec3f.new(minX, minY, -1000000),
+		api.type.Vec3f.new(maxX, maxY, 1000000))
+	local canSplit = region[3] - region[1] > 32 and region[4] - region[2] > 32
+	local values, _, split = lanes.spatial(api, box, canSplit and 32 or nil)
+	if split then
+		local mx, my = (region[1] + region[3]) / 2, (region[2] + region[4]) / 2
+		for _, child in ipairs({ { mx, my, region[3], region[4] }, { region[1], my, mx, region[4] },
+			{ mx, region[2], region[3], my }, { region[1], region[2], mx, my } }) do
+			scan.pending[#scan.pending + 1] = child
+		end
+	end
+	local dynamic = lanes.LINES + (step - 1) % 5
+	values[dynamic] = readers[dynamic](api)
+	local context = string.format("%d|%.3f,%.3f,%.3f,%.3f|%.3f,%.3f,%.3f,%.3f|", step,
+		x0, y0, x1, y1, region[1], region[2], region[3], region[4])
+	for lane, text in pairs(values) do
+		if type(text) ~= "string" or text == "err" then error("world-check lane " .. lane .. " was not read", 0) end
+		scan.hashes[lane] = fastHash((scan.hashes[lane] or "rolling-v1") .. context .. text)
+		scan.counts[lane] = (scan.counts[lane] or 0) + 1
+	end
+	scan.step = step
+	local t1 = clock()
+	local ms = t0 and t1 and (t1 - t0) * 1000 or 0
+	local out, report
+	if scan.tile == 0 and #scan.pending == 0 then
+		scan.sweeps = scan.sweeps + 1
+		report = string.format("rolling world sweep: cycle=%d steps=%d-%d samples=%d",
+			scan.sweeps, scan.sweepStart, step, step - scan.sweepStart + 1)
+		scan.sweepStart = step + 1
+	end
+	if checkpoint then
+		out = {}
+		local texts = {}
+		for lane = lanes.NETWORK, lanes.PEOPLE do
+			out[lane] = string.format("rolling-v1:%d-%d:%d:%s", scan.first, step,
+				scan.counts[lane] or 0, scan.hashes[lane] or "empty")
+			texts[#texts + 1] = out[lane]
+		end
+		local checkpointReport = string.format("rolling world check: steps=%d-%d tile=%d/%d pending=%d last_ms=%.3f signature=%s", scan.first, step, scan.tile, total, #scan.pending, ms, fastHash(table.concat(texts, "\n")))
+		report = report and (report .. "; " .. checkpointReport) or checkpointReport
+		scan.first, scan.hashes, scan.counts = step + 1, {}, {}
+	end
+	return scan, out, report, ms
+end
+
+-- The last read's cost as one line for the log, in milliseconds.
+function lanes.costLine()
+	local c, parts = lanes.cost, {}
+	local names = { [0] = "network", "constructions", "lines", "vehicles", "economy", "towns", "people" }
+	local total = 0
+	for lane = lanes.NETWORK, lanes.PEOPLE do
+		local t = c.lanes[lane]
+		if t then total = total + t end
+		parts[#parts + 1] = names[lane] .. " " .. (t and string.format("%.1f", t * 1000) or "?")
+	end
+	local n = c.net or {}
+	return string.format("lanes read in %.1f ms: %s; of it sort+concat %.1f ms, hash %.1f ms over %d bytes;"
+		.. " network: map %.1f ms, %d edges' getComponent %.1f ms, their %d lane configs %.1f ms, junctions %.1f ms",
+		total * 1000, table.concat(parts, ", "), c.sort * 1000, c.hash * 1000, c.bytes,
+		(n.map or 0) * 1000, n.edges or 0, (n.get or 0) * 1000, n.laneConfigs or 0, (n.lanes or 0) * 1000,
+		(n.junctions or 0) * 1000)
 end
 
 -- The registry's kinds as a dump names their ids.
@@ -308,8 +739,25 @@ local PREFIX = { vehicles = "vehicle", lines = "line", towns = "town", industrie
 -- lane's text as lanes.read reads it; a lane that cannot be read is the one
 -- line `err <why>`. `reg` is the registry of the game script's state
 -- (tpf3mp/registry.lua), which names the keys; nil names none.
-function lanes.dump(api, lane, reg)
+-- Whether one of `points` (vectors) lies inside `box`, { x0, y0, x1, y1 }
+-- with x0 <= x1 and y0 <= y1.
+local function inBox(box, points)
+	for _, p in ipairs(points) do
+		local x, y = get(p, "x"), get(p, "y")
+		if type(x) ~= "number" and type(p) == "table" then x, y = p[1], p[2] end
+		if type(x) == "number" and type(y) == "number"
+			and x >= box[1] and x <= box[3] and y >= box[2] and y <= box[4] then
+			return true
+		end
+	end
+	return false
+end
+
+-- With `box` ({ x0, y0, x1, y1 }, the network lane only), the entries are
+-- the edges with an end inside it; the summary stays the whole lane's.
+function lanes.dump(api, lane, reg, box)
 	local reader = readers[lane]
+	if lane ~= lanes.NETWORK or type(box) ~= "table" or #box ~= 4 then box = nil end
 	if reader == nil then return { "err no lane " .. tostring(lane) } end
 	-- The registry's ids by entity, per kind, made when first asked.
 	local byEntity = {}
@@ -332,7 +780,8 @@ function lanes.dump(api, lane, reg)
 		return "entity-" .. tostring(e)
 	end
 	local entries = {}
-	local function emit(kind, e, row, fields)
+	local function emit(kind, e, row, fields, points)
+		if box and not (type(points) == "table" and inBox(box, points)) then return end
 		local id = idOf(kind, e)
 		local key, order
 		if id ~= nil then
@@ -358,5 +807,31 @@ function lanes.dump(api, lane, reg)
 end
 
 lanes.hash = hashStr
+
+-- One entity as the edge watch reads it, a line of text: `edge node0=
+-- node1= p0= p1= t0= t1= n0= n1= type=` (the ends and tangents of the
+-- edge, then its nodes' positions), `node pos=`, or `absent`. Never raises.
+function lanes.watch(api, entity)
+	local ok, text = pcall(function()
+		local edge = component(api, entity, "BASE_EDGE")
+		if edge then
+			local n0, n1 = get(edge, "node0"), get(edge, "node1")
+			local function nodePos(n)
+				if n == nil then return "nil" end
+				return vecFull(get(component(api, n, "BASE_NODE"), "position"))
+			end
+			return "edge node0=" .. full(n0) .. " node1=" .. full(n1)
+				.. " p0=" .. vecFull(get(edge, "position0")) .. " p1=" .. vecFull(get(edge, "position1"))
+				.. " t0=" .. vecFull(get(edge, "tangent0")) .. " t1=" .. vecFull(get(edge, "tangent1"))
+				.. " n0=" .. nodePos(n0) .. " n1=" .. nodePos(n1)
+				.. " type=" .. full(get(edge, "type")) .. " template=" .. full(get(edge, "roadTemplate"))
+		end
+		local node = component(api, entity, "BASE_NODE")
+		if node then return "node pos=" .. vecFull(get(node, "position")) end
+		return "absent"
+	end)
+	if ok then return text end
+	return "err " .. tostring(text)
+end
 
 return lanes

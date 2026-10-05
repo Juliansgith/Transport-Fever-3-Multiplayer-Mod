@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoundedVec, ContentDiff, ContentManifest, Platform, Text,
+    BoundedVec, ContentDiff, ContentManifest, Platform, RoomDeclaration, RoomMods, Text,
     bytes::{FixedBytes, Payload},
     ids::{Invite, PlayerId, RoomId, SessionId, Signature},
     snapshot::{SavedWorld, SnapshotId},
@@ -21,6 +21,9 @@ pub const AUTH_EXPORTER_LABEL: &[u8] = b"EXPORTER-tpf3mp-auth";
 pub const MAX_ROOM_MEMBERS: u8 = 64;
 /// Largest number of lanes in one [`GameMessage::Checkpoint`].
 pub const MAX_CHECKPOINT_LANES: usize = 32;
+/// Largest payload of a [`GameMessage::Preview`]: a long road's or a
+/// station's build fits; anything larger is not shown.
+pub const MAX_PREVIEW: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -68,6 +71,20 @@ pub enum ServerMessage {
     /// A message from the server's operator to everyone connected, such as
     /// a restart coming.
     Notice(ChatText),
+    // Last, so the earlier variants keep their tags on the wire.
+    /// What another member's build tool shows now ([`GameMessage::Preview`]),
+    /// relayed as it came; `None` once it shows nothing. Advisory: never
+    /// part of the room's world or log.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
+    /// The room's mods, as its owner declared them ([`Request::DeclareRoom`]):
+    /// sent to every member when they change, to a member joining the lobby,
+    /// and before a refused join to a running game, so that a player learns
+    /// which mods to have before declaring theirs. `None`: the room's owner
+    /// declared none, and the room only compares content.
+    RoomMods(Option<Box<RoomMods>>),
 }
 
 /// One chat message: a line of text, no longer than a short paragraph.
@@ -187,6 +204,20 @@ pub enum Request {
     /// room this player is in at once. Unknown ids are refused
     /// (`UnknownBanner`).
     SetBanner(Option<BannerId>),
+    /// Lines of this player's logs, redacted, each with its source (the
+    /// launcher, the agent, the hook, the game, its error reports), all
+    /// under the launcher's run (see "Diagnostics" in PROTOCOL.md). Takes
+    /// the place of [`Request::Diagnostics`] from version 16 on.
+    Telemetry(crate::Telemetry),
+    /// The owner, in the lobby: what their game runs and the room's mods,
+    /// together ([`RoomDeclaration`], validated whole). Takes the place of
+    /// the owner's [`Request::DeclareContent`]; the room tells every member
+    /// ([`ServerMessage::RoomMods`]) and marks them not ready when the mods
+    /// change. Refused for anyone else (`NotOwner`), once the game runs
+    /// (`GameRunning`), and when it does not hold together
+    /// (`InvalidContent`). An owner's plain `DeclareContent` leaves the room
+    /// without a list of mods.
+    DeclareRoom(Box<RoomDeclaration>),
 }
 
 /// A player's picture: one of [`BANNERS`] or [`PORTRAITS`], by id. Long
@@ -542,6 +573,43 @@ pub struct MemberView {
     /// How far this player's game is with the room's world while it comes
     /// in ([`GameMessage::Loading`]); `None` otherwise.
     pub loading: Option<LoadingStage>,
+    /// How this player's game differs from the room's (the owner's in the
+    /// lobby, the game's once it runs); `None` while it does not, or while
+    /// either has not said ([`MemberView::content`]).
+    pub differs: Option<ContentStatus>,
+}
+
+/// How a member's game differs from the room's, in counts: what the room's
+/// owner sees of each member.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentStatus {
+    /// The room's mods this game lacks.
+    pub missing: u16,
+    /// The room's mods it has in another version.
+    pub changed: u16,
+    /// Mods it runs that the room does not.
+    pub extra: u16,
+    /// It runs another game build.
+    pub game: bool,
+    /// The same mods, in another order.
+    pub reordered: bool,
+    /// The mods beyond a manifest's listed ones differ.
+    pub unlisted: bool,
+}
+
+impl ContentDiff {
+    /// The difference in counts.
+    pub fn status(&self) -> ContentStatus {
+        let count = |total: u32| u16::try_from(total).unwrap_or(u16::MAX);
+        ContentStatus {
+            missing: count(self.missing_total),
+            changed: count(self.changed_total),
+            extra: count(self.extra_total),
+            game: self.game.is_some(),
+            reordered: self.reordered,
+            unlisted: self.unlisted,
+        }
+    }
 }
 
 /// Where a player's game is with the room's world while it comes in.
@@ -585,6 +653,13 @@ pub enum GameMessage {
     /// plays or has none coming. At most about two a second; the room keeps
     /// no more of them, and logs none.
     Loading(Option<LoadingStage>),
+    /// What this player's build tool shows now, for the other members to
+    /// see in their games: the action it would build, encoded as an
+    /// intent's payload, at most [`MAX_PREVIEW`] bytes; `None` once it shows
+    /// nothing. Advisory: the room relays it to the other members of a
+    /// running game and keeps, orders and logs none. Sent again every few
+    /// seconds while it shows, so a receiver forgets one that stops coming.
+    Preview(Option<Payload>),
 }
 
 /// A password a player typed for an intent: a company's, to join it or to

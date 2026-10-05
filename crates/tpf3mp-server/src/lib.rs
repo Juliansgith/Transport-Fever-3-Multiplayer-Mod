@@ -18,7 +18,6 @@ mod verdict;
 
 use std::{fmt, future::Future, io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-use quinn::Runtime;
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use tpf3mp_net::{
@@ -33,7 +32,10 @@ const ANNOUNCEMENTS: usize = 16;
 
 pub use crate::{
     admin::serve_admin,
-    diagnostics::{DiagnosticsConfig, Entry as DiagnosticsEntry, SESSION_QUOTA},
+    diagnostics::{
+        DiagnosticsConfig, Entry as DiagnosticsEntry, READ_LIMIT as DIAGNOSTICS_READ_LIMIT,
+        SESSION_QUOTA, SessionOf as DiagnosticsSession, Summary as DiagnosticsSummary,
+    },
     ruleset::{AcceptAll, NATIVE, RulesChoice, RulesMenu, Ruleset, RulesetFactory},
     snapshots::SnapshotConfig,
     tunnel::{AddressRange, TunnelConfig},
@@ -136,7 +138,9 @@ impl ServerConfig {
             roomless_timeout: Duration::from_secs(600),
             max_rooms: 10_000,
             max_rooms_per_address: 8,
-            // Long enough to ride out a server restart or a player's crash.
+            // Long enough to ride out a server restart or a player's crash,
+            // short enough that a game everyone closed does not linger. The
+            // agent stops retrying sooner (`REJOIN_PATIENCE`, five minutes).
             abandoned_timeout: Duration::from_secs(600),
             secret,
             rules: RulesMenu::native(),
@@ -250,20 +254,20 @@ impl Server {
             .as_ref()
             .map(|_| Tunnels::new(Some(config.handshake_timeout)));
         let quic = tpf3mp_net::server_config(config.identity)?;
-        let endpoint = match &tunnels {
-            None => quinn::Endpoint::server(quic, config.listen)?,
-            Some(tunnels) => {
-                // One endpoint for UDP and tunnels alike.
-                let runtime = Arc::new(quinn::TokioRuntime);
-                let udp = runtime.wrap_udp_socket(std::net::UdpSocket::bind(config.listen)?)?;
-                quinn::Endpoint::new_with_abstract_socket(
-                    quinn::EndpointConfig::default(),
-                    Some(quic),
-                    Arc::new(MuxSocket::new(udp, Arc::clone(tunnels))),
-                    runtime,
-                )?
-            }
+        // A plain UDP socket where the network stack refuses quinn's socket
+        // options, as Wine's does.
+        let udp = tpf3mp_net::udp::bind(config.listen)?;
+        let socket: Arc<dyn quinn::AsyncUdpSocket> = match &tunnels {
+            None => udp,
+            // One endpoint for UDP and tunnels alike.
+            Some(tunnels) => Arc::new(MuxSocket::new(udp, Arc::clone(tunnels))),
         };
+        let endpoint = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            Some(quic),
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )?;
         let metrics = Arc::new(Metrics::default());
         let directory = Arc::new(Directory::new(DirectoryConfig {
             secret: config.secret,
@@ -468,11 +472,32 @@ impl ServerStats {
         self.shared.diagnostics.as_ref().map(Diagnostics::list)
     }
 
+    /// Who the session or run `code` is: its sessions and their players,
+    /// by ID and name. `None` when the server keeps none or has none for it.
+    pub fn diagnostics_summary(&self, code: &str) -> io::Result<Option<DiagnosticsSummary>> {
+        match &self.shared.diagnostics {
+            Some(diagnostics) => diagnostics.summary(code),
+            None => Ok(None),
+        }
+    }
+
     /// One session's diagnostics, one JSON object a line; `None` when the
     /// server keeps none or has none for it.
     pub fn session_diagnostics(&self, session: &str) -> io::Result<Option<Vec<u8>>> {
+        self.diagnostics_of(session, None)
+    }
+
+    /// The diagnostics of a session, by its support code, or of a
+    /// launcher's run, by its log session, one JSON object a line, of `source` alone when one is
+    /// given: the newest [`DIAGNOSTICS_READ_LIMIT`] bytes at most. `None`
+    /// when the server keeps none or has none for it.
+    pub fn diagnostics_of(
+        &self,
+        code: &str,
+        source: Option<tpf3mp_proto::LogSource>,
+    ) -> io::Result<Option<Vec<u8>>> {
         match &self.shared.diagnostics {
-            Some(diagnostics) => diagnostics.read(session),
+            Some(diagnostics) => diagnostics.read(code, source),
             None => Ok(None),
         }
     }

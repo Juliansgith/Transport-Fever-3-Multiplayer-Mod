@@ -320,6 +320,11 @@ api = {
             return {}
         end,
         getComponent = function(id, comp)
+            if (id == 11 or id == 12) and comp == CT.TRANSPORT_VEHICLE then
+                -- The state lane reads the native vehicle component as well
+                -- as its position; both fixtures represent active vehicles.
+                return { state = 1 }
+            end
             if id == 0 and comp == CT.GAME_TIME then
                 return { gameTime = s() * 200, updateCount = WITH_UPDATE_COUNT and s() or nil }
             end
@@ -418,6 +423,95 @@ fn in_a_game_with_the_hook_the_samples_go_to_its_log() {
     // The same samples the game's log gets without the hook.
     let (plain, _) = determinism_run_with(2000, 1.0, true);
     assert_eq!(hooked, plain);
+}
+
+#[test]
+fn vehicle_probe_reads_native_vectors_and_refuses_missing_positions() {
+    let (expected, _) = determinism_run_with(300, 1.0, true);
+    let lua = gui("tpf3mp_detprobe_1", WORLD, None);
+    lua.load(
+        r#"
+        api.engine.util.vehicle = { getPosition = function(id)
+            local p = game.interface.getEntity(id).position
+            local v = newproxy(true)
+            getmetatable(v).__index = { x = p[1], y = p[2], z = p[3] }
+            return v
+        end }
+    "#,
+    )
+    .exec()
+    .unwrap();
+    run_probe(&lua, 300, 1.0, true);
+    assert_eq!(
+        samples(&log(&lua)),
+        expected,
+        "native vectors must hash their coordinates"
+    );
+
+    let unreadable = gui("tpf3mp_detprobe_1", WORLD, None);
+    unreadable
+        .load("game.interface.getEntity = function() return nil end")
+        .exec()
+        .unwrap();
+    run_probe(&unreadable, 300, 1.0, true);
+    assert!(
+        samples(&log(&unreadable))
+            .values()
+            .all(|row| row.contains("p=err"))
+    );
+}
+
+#[test]
+fn edge_probe_uses_the_native_node_map_when_generic_enumeration_is_refused() {
+    let (expected, _) = determinism_run_with(300, 1.0, true);
+    let lua = gui("tpf3mp_detprobe_1", WORLD, None);
+    lua.load(
+        r#"
+        local generic = api.engine.getEntitiesWithComponent
+        api.engine.getEntitiesWithComponent = function(comp)
+            if comp == api.type.ComponentType.BASE_EDGE then error("Cannot loop over this component type") end
+            return generic(comp)
+        end
+        api.engine.system.streetSystem = { getNode2SegmentMap = function()
+            return { [43] = {41}, [42] = {41} }
+        end }
+        "#,
+    )
+    .exec()
+    .unwrap();
+    run_probe(&lua, 300, 1.0, true);
+    assert_eq!(samples(&log(&lua)), expected, "hash each edge once");
+}
+
+#[test]
+fn money_probe_compares_all_companies_when_native_player_enumeration_is_refused() {
+    let (expected, _) = determinism_run_with(300, 1.0, true);
+    for local_player in [21, 22] {
+        let lua = gui("tpf3mp_detprobe_1", WORLD, None);
+        lua.load(format!(r#"
+            api.type.ComponentType.GAME_SCRIPT = 10
+            api.engine.util.getPlayer = function() return {local_player} end
+            local generic = api.engine.getEntitiesWithComponent
+            api.engine.getEntitiesWithComponent = function(comp)
+                if comp == api.type.ComponentType.PLAYER then error('Cannot loop over this component type') end
+                return generic(comp)
+            end
+            api.engine.system.gameScriptSystem = {{ getEntityForGameScript = function() return 77 end }}
+            local component = api.engine.getComponent
+            api.engine.getComponent = function(id, comp)
+                if id == 77 and comp == 10 then
+                    return {{ state = {{ companies = {{ list = {{ {{entity=22}}, {{entity=21}} }} }} }} }}
+                end
+                return component(id, comp)
+            end
+        "#)).exec().unwrap();
+        run_probe(&lua, 300, 1.0, true);
+        assert_eq!(
+            samples(&log(&lua)),
+            expected,
+            "the GUI's company must not change the probe"
+        );
+    }
 }
 
 #[test]

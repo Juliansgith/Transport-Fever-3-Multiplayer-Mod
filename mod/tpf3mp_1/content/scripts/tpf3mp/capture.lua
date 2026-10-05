@@ -99,6 +99,355 @@ local function module(name)
 	return require("tpf3mp." .. name)
 end
 
+-- Which of an edit's removed street pieces are the old construction's own
+-- (capture.ownStreets, below), and the street part without them.
+local ownRemovals, withoutOwn
+
+local function stockAirport(file)
+	return file == "::/stations/air/airfield.con" or file == "::/stations/air/airport.con"
+end
+
+-- A stock airport's replacement proposal may remove its generated runway
+-- signals as well as the construction. Allow only signal IDs that occur once
+-- on removed segments frozen into the same old airport; every external object
+-- change stays refused. Return the removed segments with those internal
+-- signal references stripped, or nil and why.
+local function airportRemovalSegments(street, file, oldConstruction, signalType, removes, removeCount)
+	local oldFile = get(oldConstruction, "fileName")
+	if not stockAirport(file) or oldFile ~= file then return nil, "not a replacement of the same stock airport" end
+	local frozenEdges = {}
+	local frozen = get(oldConstruction, "frozenEdges")
+	local frozenCount = length(frozen)
+	if frozenCount == nil or frozenCount == 0 then return nil, "the old airport has no frozen edges" end
+	for i = 1, frozenCount do
+		local id = get(frozen, i)
+		if type(id) ~= "number" or id ~= math.floor(id) or id <= 0 or frozenEdges[id] then
+			return nil, "the old airport's frozen edges are unreadable"
+		end
+		frozenEdges[id] = true
+	end
+	local removedIds = {}
+	for i = 1, removeCount do
+		local row = get(removes, i)
+		local id = type(row) == "number" and row or get(row, "entity")
+		if type(id) ~= "number" or id ~= math.floor(id) or id <= 0 or removedIds[id] then
+			return nil, "the removed airport object IDs are unreadable or repeated"
+		end
+		removedIds[id] = true
+	end
+	local segments = get(street, "removedSegments")
+	local count = length(segments)
+	if count == nil then return nil, "the removed airport segments are unreadable" end
+	local occurrences, safe, signature = {}, {}, {}
+	for i = 1, count do
+		local segment = get(segments, i)
+		local edgeId, comp = get(segment, "entity"), get(segment, "comp")
+		local objects = get(comp, "objects")
+		local objectCount = length(objects)
+		if type(edgeId) ~= "number" or edgeId ~= math.floor(edgeId) or edgeId < 0 or objectCount == nil then
+			return nil, "a removed airport segment is unreadable"
+		end
+		local kept, filtered = {}, false
+		for k = 1, objectCount do
+			local pair = get(objects, k)
+			local objectId, kind = get(pair, 1), get(pair, 2)
+			if removedIds[objectId] then
+				if kind ~= signalType or not frozenEdges[edgeId] then
+					return nil, "a removed object is not a signal on an old airport edge"
+				end
+				occurrences[objectId] = (occurrences[objectId] or 0) + 1
+				if occurrences[objectId] ~= 1 then return nil, "a removed airport signal has more than one carrier" end
+				signature[#signature + 1] = table.concat({ objectId, edgeId, kind }, ":")
+				filtered = true
+			elseif objectCount > 0 then
+				-- The airport's own edge may carry only the signals named for
+				-- removal; an object on a road being split remains unsupported.
+				return nil, "a removed edge carries an object outside the airport signal batch"
+			end
+		end
+		if filtered then
+			local compView = setmetatable({ objects = kept }, {
+				__index = function(_, key) return get(comp, key) end,
+			})
+			safe[i] = setmetatable({ comp = compView }, {
+				__index = function(_, key) return get(segment, key) end,
+			})
+		else
+			safe[i] = segment
+		end
+	end
+	for id in pairs(removedIds) do
+		if occurrences[id] ~= 1 then return nil, "a removed airport signal has no unique old-edge carrier" end
+	end
+	table.sort(signature)
+	return safe, table.concat(signature, "|")
+end
+
+-- Airport constructions generate runway/taxiway signals as part of their
+-- own internal network. Construction replay regenerates that network, so
+-- those signal records must not be carried as a separate road action. The
+-- exception is limited to the stock airport signals: their proposal rows
+-- all use resultEntity=-1, while added-edge object IDs are the unique reserved
+-- range beginning at -400000000. Strip them only when the counts and signal
+-- types agree and each carrier's entire component uses newly added nodes.
+-- Other IDs, categories, and objects on external components stay refused.
+--
+-- Some builds expose the construction's frozen edge list on the proposal;
+-- when it is present, it further narrows the allowed carrier edges. The
+-- Steam 40408 airport proposal does not expose that list, so the all-new
+-- isolated-component check is the conservative fallback.
+local function constructionObjects(proposal, con, oldConstruction)
+	local function refuse(reason) return nil, reason end
+	local street = get(proposal, "proposal")
+	local adds = get(street, "edgeObjectsToAdd")
+	local removes = get(street, "edgeObjectsToRemove")
+	local addCount, removeCount = length(adds), length(removes)
+	if addCount == nil or removeCount == nil then
+		return refuse("a proposal it cannot read", "counts unreadable")
+	end
+	local file = get(con, "fileName")
+	local objectTypes = api.type.enum and api.type.enum.EdgeObjectType
+	local signalType = objectTypes and objectTypes.SIGNAL
+	if type(signalType) ~= "number" then
+		if removeCount > 0 or addCount > 0 then return refuse("a build with a stop or signal", "signal enum", signalType) end
+	end
+	local keptRemovedSegments = get(street, "removedSegments")
+	local removedSignature = ""
+	if removeCount > 0 then
+		local safe, why = airportRemovalSegments(street, file, oldConstruction, signalType, removes, removeCount)
+		if safe == nil then return refuse("a build with a removed stop or signal", "object removals", why) end
+		keptRemovedSegments = safe
+		removedSignature = why
+	end
+	if addCount == 0 and removeCount == 0 then return proposal, "" end
+	if not stockAirport(file) then
+		return refuse("a build with a stop or signal", "construction file", file)
+	end
+	if addCount == 0 then
+		local streetView = setmetatable({ removedSegments = keptRemovedSegments,
+			edgeObjectsToAdd = {}, edgeObjectsToRemove = {} }, {
+			__index = function(_, key) return get(street, key) end,
+		})
+		return setmetatable({ proposal = streetView }, { __index = function(_, key) return get(proposal, key) end }), ""
+	end
+
+	local addedNodes = get(street, "addedNodes")
+	local nodeCount = length(addedNodes)
+	local segments = get(street, "addedSegments")
+	local segmentCount = length(segments)
+	if nodeCount == nil or segmentCount == nil then
+		return refuse("a proposal it cannot read", "graph counts", tostring(nodeCount) .. "/" .. tostring(segmentCount))
+	end
+	local newNodes = {}
+	for i = 1, nodeCount do
+		local id = get(get(addedNodes, i), "entity")
+		if type(id) ~= "number" or id ~= math.floor(id) or id >= 0 or newNodes[id] then
+			return refuse("a build with a stop or signal", "added node id", i .. ":" .. tostring(id))
+		end
+		newNodes[id] = true
+	end
+
+	local segmentIds, segmentNodes, adjacent = {}, {}, {}
+	for i = 1, segmentCount do
+		local seg = get(segments, i)
+		local id, comp = get(seg, "entity"), get(seg, "comp")
+		local a, b = get(comp, "node0"), get(comp, "node1")
+		if type(id) ~= "number" or id ~= math.floor(id) or id >= 0 or segmentIds[id]
+			or type(a) ~= "number" or a ~= math.floor(a) or type(b) ~= "number" or b ~= math.floor(b)
+			or a == b then
+			return refuse("a build with a stop or signal", "added segment shape",
+				i .. ":" .. tostring(id) .. ":" .. tostring(a) .. ">" .. tostring(b))
+		end
+		segmentIds[id] = i
+		segmentNodes[i] = { a, b }
+		for _, node in ipairs({ a, b }) do
+			adjacent[node] = adjacent[node] or {}
+			adjacent[node][#adjacent[node] + 1] = i
+		end
+	end
+
+	-- IDs of frozen edges, where the builder exposes them. If the list exists
+	-- and is nonempty, an object carrier must be one of those edges as well.
+	local frozenEdges = {}
+	local construction = get(con, "construction")
+	local frozenList = get(construction, "frozenEdges")
+	local frozenCount = length(frozenList)
+	if frozenCount == nil then return refuse("a proposal it cannot read", "frozen edges unreadable") end
+	for i = 1, frozenCount do
+		local id = get(frozenList, i)
+		if type(id) ~= "number" or id ~= math.floor(id) then
+			return refuse("a proposal it cannot read", "frozen edge id", i .. ":" .. tostring(id))
+		end
+		frozenEdges[id] = true
+	end
+
+	local function isolated(edgeIndex)
+		local seenEdges, seenNodes, pending = {}, {}, { edgeIndex }
+		while #pending > 0 do
+			local current = table.remove(pending)
+			if not seenEdges[current] then
+				seenEdges[current] = true
+				for _, node in ipairs(segmentNodes[current]) do
+					if node >= 0 or not newNodes[node] then return false end
+					if not seenNodes[node] then
+						seenNodes[node] = true
+						for _, neighbor in ipairs(adjacent[node]) do pending[#pending + 1] = neighbor end
+					end
+				end
+			end
+		end
+		return true
+	end
+
+	local name, player = get(con, "name"), get(con, "playerEntity")
+	if type(name) ~= "string" or name == "" or type(player) ~= "number" then
+		return refuse("a build with a stop or signal", "construction owner/name",
+			tostring(name) .. "/" .. tostring(player))
+	end
+	local rows, seenIds, repeated, allPlaceholder = {}, {}, false, true
+	for i = 1, addCount do
+		local object = get(adds, i)
+		local id = get(object, "resultEntity")
+		if type(id) ~= "number" or id ~= math.floor(id) or id >= 0
+			or get(object, "category") ~= 2 or get(object, "name") ~= name
+			or get(object, "playerEntity") ~= player then
+			return refuse("a build with a stop or signal", "object row",
+				i .. ":id=" .. tostring(id) .. ",category=" .. tostring(get(object, "category"))
+					.. ",name=" .. tostring(get(object, "name")) .. ",player=" .. tostring(get(object, "playerEntity"))
+					.. "; construction=" .. tostring(name) .. "/" .. tostring(player))
+		end
+		if seenIds[id] then repeated = true end
+		if id ~= -1 then allPlaceholder = false end
+		seenIds[id] = true
+		rows[i] = object
+	end
+	if repeated and not allPlaceholder then
+		return refuse("a build with a stop or signal", "duplicate result ids")
+	end
+	local reservedObjects = allPlaceholder
+	local records, resultIds = {}, {}
+	if not reservedObjects then
+		for _, object in ipairs(rows) do
+			local id = get(object, "resultEntity")
+			records[id] = object
+			resultIds[id] = true
+		end
+	end
+
+	local occurrences, signature = {}, {}
+	if removedSignature ~= "" then signature[#signature + 1] = "removed:" .. removedSignature end
+	if reservedObjects then
+		for _, object in ipairs(rows) do
+			signature[#signature + 1] = table.concat({ tostring(get(object, "resultEntity")),
+				tostring(get(object, "category")), tostring(get(object, "left")), tostring(name), tostring(player) }, ":")
+		end
+	end
+	local keptSegments = {}
+	for i = 1, segmentCount do
+		local seg = get(segments, i)
+		local comp = get(seg, "comp")
+		local objects = get(comp, "objects")
+		local objectCount = length(objects)
+		if objectCount == nil then return refuse("a proposal it cannot read", "segment objects unreadable", i) end
+		local keptObjects = {}
+		local filtered = false
+		for k = 1, objectCount do
+			local pair = get(objects, k)
+			local objectId, kind = get(pair, 1), get(pair, 2)
+			if reservedObjects then
+				local offset = type(objectId) == "number" and objectId == math.floor(objectId)
+					and (-400000000 - objectId) or nil
+				if offset == nil or offset < 0 or offset >= addCount then
+					return refuse("a build with a stop or signal", "unreserved object",
+						tostring(objectId) .. ":" .. tostring(kind) .. " on edge " .. tostring(get(seg, "entity")))
+				end
+				if kind ~= signalType then
+					return refuse("a build with a stop or signal", "reserved object type",
+						tostring(objectId) .. ":" .. tostring(kind))
+				end
+				occurrences[objectId] = (occurrences[objectId] or 0) + 1
+				if occurrences[objectId] ~= 1 then
+					return refuse("a build with a stop or signal", "reserved object duplicate", tostring(objectId))
+				end
+				local edgeId = get(seg, "entity")
+				local isIsolated = isolated(i)
+				if not isIsolated or (frozenCount > 0 and not frozenEdges[edgeId]) then
+					return refuse("a build with a stop or signal", "reserved object carrier",
+						tostring(objectId) .. ":edge=" .. tostring(edgeId) .. ",isolated=" .. tostring(isIsolated)
+							.. ",frozen=" .. tostring(frozenCount == 0 or frozenEdges[edgeId]))
+				end
+				signature[#signature + 1] = table.concat({ objectId, edgeId,
+					segmentNodes[i][1], segmentNodes[i][2], kind }, ":")
+				filtered = true
+			elseif records[objectId] then
+				if kind ~= signalType then
+					return refuse("a build with a stop or signal", "object type", tostring(objectId) .. ":" .. tostring(kind))
+				end
+				occurrences[objectId] = (occurrences[objectId] or 0) + 1
+				if occurrences[objectId] ~= 1 then
+					return refuse("a build with a stop or signal", "object duplicate", tostring(objectId))
+				end
+				local edgeId = get(seg, "entity")
+				local object = records[objectId]
+				local namedEdge = get(object, "edgeEntity")
+				if (namedEdge ~= nil and namedEdge ~= edgeId) or not isolated(i)
+					or (frozenCount > 0 and not frozenEdges[edgeId]) then
+					return refuse("a build with a stop or signal", "object carrier",
+						tostring(objectId) .. ":edge=" .. tostring(edgeId) .. ",named=" .. tostring(namedEdge)
+							.. ",isolated=" .. tostring(isolated(i)) .. ",frozen=" .. tostring(frozenCount == 0 or frozenEdges[edgeId]))
+				end
+				signature[#signature + 1] = table.concat({ objectId, edgeId,
+					segmentNodes[i][1], segmentNodes[i][2], kind }, ":")
+				filtered = true
+			else
+				if type(objectId) == "number" and objectId < 0 then
+					return refuse("a build with a stop or signal", "unmatched negative object",
+						tostring(objectId) .. ":" .. tostring(kind) .. " on edge " .. tostring(get(seg, "entity")))
+				end
+				keptObjects[#keptObjects + 1] = pair
+			end
+		end
+		if filtered then
+			local compView = setmetatable({ objects = keptObjects }, {
+				__index = function(_, key) return get(comp, key) end,
+			})
+			keptSegments[i] = setmetatable({ comp = compView }, {
+				__index = function(_, key) return get(seg, key) end,
+			})
+		else
+			keptSegments[i] = seg
+		end
+	end
+	if reservedObjects then
+		for offset = 0, addCount - 1 do
+			local id = -400000000 - offset
+			if occurrences[id] ~= 1 then
+				return refuse("a build with a stop or signal", "reserved object without carrier",
+					tostring(id) .. ":" .. tostring(occurrences[id] or 0))
+			end
+		end
+	else
+		for id in pairs(resultIds) do
+			if occurrences[id] ~= 1 then
+				return refuse("a build with a stop or signal", "object without carrier",
+					tostring(id) .. ":" .. tostring(occurrences[id] or 0))
+			end
+		end
+	end
+	table.sort(signature)
+	local streetView = setmetatable({
+		addedSegments = keptSegments,
+		removedSegments = keptRemovedSegments,
+		edgeObjectsToAdd = {},
+		edgeObjectsToRemove = {},
+	}, { __index = function(_, key) return get(street, key) end })
+	local proposalView = setmetatable({ proposal = streetView }, {
+		__index = function(_, key) return get(proposal, key) end,
+	})
+	table.sort(signature)
+	return proposalView, table.concat(signature, "|")
+end
+
 -- One construction placed with the construction tool: stations, depots and
 -- the rest (tpf3mp_proto action::ConstructionBuild). Returns the action
 -- table, or nil and why the room cannot carry it yet.
@@ -161,17 +510,28 @@ function capture.construction(proposal)
 	if not list then return nil, why end
 	local ok, transform = pcall(capture.transform, get(con, "transf"))
 	if not ok then return nil, tostring(transform) end
+	local safeProposal, objectSignature = constructionObjects(proposal, con, replaced and replaced.component)
+	if safeProposal == nil then return nil, objectSignature end
 	if replaced then
-		-- The street part of an edit is the construction's own: every game
-		-- makes the new one's again as it builds it. One that removes a
-		-- street or track not its own changes the streets around it, which
-		-- an edit does not carry.
-		local own, why = capture.ownStreets(street, replaced.component)
-		if not own then return nil, why end
-		return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
+		-- The street part of an edit is mostly the construction's own: every
+		-- game makes the new one's again as it builds it, and removes the old
+		-- one's with the old construction. What it changes around it (a new
+		-- exit onto a road the station did not join, which splits that road
+		-- through a new junction, 2026-10-03) travels as its connection, as a
+		-- new construction's does, without what the old one takes with it.
+		local action = { BuildConstruction = { file = file, transform = transform, params = list, name = name,
 			replaces = replaces } }
+		local ownSegments, ownNodes, others = ownRemovals(street, replaced.component)
+		if not others then return action end
+		local safeStreet = get(safeProposal, "proposal")
+		local connection, whyNot = capture.connection(withoutOwn(safeStreet, ownSegments, ownNodes))
+		local around = "a construction edit that changes the streets around it"
+		if connection == nil then return nil, around .. ": " .. tostring(whyNot) end
+		if connection == false then return nil, around end
+		action.BuildConstruction.connection = connection
+		return action
 	end
-	local connection, whyNot = capture.connection(proposal)
+	local connection, whyNot = capture.connection(safeProposal)
 	if connection == nil then return nil, whyNot end
 	return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
 		connection = connection or nil } }
@@ -195,26 +555,24 @@ function capture.replaced(component)
 	return { file = file, at = { x = x, y = y, z = z } }
 end
 
--- Whether an edit's street part removes only the old construction's own
--- nodes and edges. Track ends may not be in frozenNodes (Steam 40408:
--- a two-track station has 50 nodes, only 46 frozen). Such a node belongs
--- to the rebuild only if every incident edge is frozen in this construction
--- and is being removed. Shared endpoints touching external tracks refuse.
--- true, or nil and why not.
-function capture.ownStreets(street, component)
+-- Which nodes and edges an edit's street part removes of the old
+-- construction's own, as two sets of entities, and whether it removes
+-- anything else. Track ends may not be in frozenNodes (Steam 40408: a
+-- two-track station has 50 nodes, only 46 frozen). Such a node belongs to
+-- the rebuild only if every incident edge is frozen in this construction
+-- and is being removed; a shared endpoint touching external track is not
+-- its own.
+function ownRemovals(street, component)
 	local own = { frozenNodes = {}, frozenEdges = {} }
 	for _, key in ipairs({ "frozenNodes", "frozenEdges" }) do
 		local list = get(component, key)
 		for i = 1, (length(list) or 0) do own[key][get(list, i)] = true end
 	end
-	local removed = {}
+	local removed, nodesGone, others = {}, {}, false
 	local segments = get(street, "removedSegments")
 	for i = 1, (length(segments) or 0) do
 		local id = get(get(segments, i), "entity")
-		if not own.frozenEdges[id] then
-			return nil, "a construction edit that changes the streets around it"
-		end
-		removed[id] = true
+		if own.frozenEdges[id] then removed[id] = true else others = true end
 	end
 	local function ownEnd(id)
 		local ok, edges = pcall(function() return api.engine.system.streetSystem.getNodeSegments(id) end)
@@ -228,11 +586,135 @@ function capture.ownStreets(street, component)
 	local nodes = get(street, "removedNodes")
 	for i = 1, (length(nodes) or 0) do
 		local id = get(get(nodes, i), "entity")
-		if not own.frozenNodes[id] and not ownEnd(id) then
-			return nil, "a construction edit that changes the streets around it"
-		end
+		if own.frozenNodes[id] or ownEnd(id) then nodesGone[id] = true else others = true end
 	end
+	return removed, nodesGone, others
+end
+
+-- Whether an edit's street part removes only the old construction's own
+-- nodes and edges: true, or nil and why not.
+function capture.ownStreets(street, component)
+	local _, _, others = ownRemovals(street, component)
+	if others then return nil, "a construction edit that changes the streets around it" end
 	return true
+end
+
+-- An edit's street part without the old construction's own removals
+-- (ownRemovals), which every game removes with the old construction: in the
+-- street part as well, the game would be asked to remove them twice.
+function withoutOwn(street, ownSegments, ownNodes)
+	local view = {}
+	for _, key in ipairs({ "addedNodes", "addedSegments", "edgeObjectsToAdd", "edgeObjectsToRemove",
+		"nodeConfigsToAdd", "nodeConfigsToRemove" }) do
+		view[key] = get(street, key)
+	end
+	local function kept(key, own)
+		local out, items = {}, get(street, key)
+		for i = 1, (length(items) or 0) do
+			local item = get(items, i)
+			if not own[get(item, "entity")] then out[#out + 1] = item end
+		end
+		return out
+	end
+	view.removedSegments = kept("removedSegments", ownSegments)
+	view.removedNodes = kept("removedNodes", ownNodes)
+	return { proposal = view }
+end
+
+-- The module editor's edit, as the hook read it (tpf3mp_native.built,
+-- crates/tpf3mp-hook/src/modules.rs): the construction it replaces, the new
+-- one's file, parameters, matrix and name, and of its street part the
+-- entities it removes, but only how many nodes and edges it adds. An edit
+-- whose street part is the old construction's own needs no more
+-- (capture.construction). One that changes the streets around it (a new
+-- exit onto a road the station did not join, which splits that road,
+-- 2026-10-03) is asked of the game again, as the construction menu asks it
+-- for a construction's new parameters (api.engine.util.proposal
+-- .createProposalReplaceConstruction, gui/construction/construction.tl):
+-- with the editor's parameters it proposes the editor's street part (seen
+-- on build 40408). Its street part travels only when it is the same edit
+-- as far as the hook read it: the same construction replaced by the same
+-- file, as many nodes and edges added, the same nodes and edges removed,
+-- no stop or signal on either side, and the construction where the editor
+-- put it; else the edit is refused, with why. The construction itself is
+-- the one the hook read. Returns the action, or nil and why.
+function capture.moduleEdit(native)
+	local street = get(native, "proposal")
+	local toRemove = get(native, "toRemove")
+	local old = length(toRemove) == 1 and get(toRemove, 1) or nil
+	local c = old and api.engine.getComponent(old, api.type.ComponentType.CONSTRUCTION)
+	if c == nil or (length(get(c, "townBuildings")) or 0) > 0 then return capture.construction(native) end
+	local _, _, others = ownRemovals(street, c)
+	local con = get(get(native, "toAdd"), 1)
+	local airportSignalEdit = stockAirport(get(con, "fileName"))
+		and get(con, "fileName") == get(c, "fileName")
+		and ((length(get(street, "edgeObjectsToAdd")) or 0) > 0
+			or (length(get(street, "edgeObjectsToRemove")) or 0) > 0)
+	if not others and not airportSignalEdit then return capture.construction(native) end
+	local proposals = api.engine.util and api.engine.util.proposal
+	local make = proposals and proposals.createProposalReplaceConstruction
+	if make == nil then return nil, "a construction edit that changes the streets around it" end
+	local ok, full = pcall(make, old, get(con, "params"))
+	if not ok or full == nil then
+		return nil, "a construction edit the game will not propose again: " .. tostring(full)
+	end
+	local function differs(what) return nil, "a construction edit the game proposes otherwise: " .. what end
+	local fullRemove, fullAdd = get(full, "toRemove"), get(full, "toAdd")
+	if length(fullRemove) ~= 1 or get(fullRemove, 1) ~= old then return differs("the construction it replaces") end
+	if length(fullAdd) ~= 1 or get(get(fullAdd, 1), "fileName") ~= get(con, "fileName") then
+		return differs("the construction it builds")
+	end
+	local okA, a = pcall(capture.transform, get(get(fullAdd, 1), "transf"))
+	local okB, b = pcall(capture.transform, get(con, "transf"))
+	if not okA or not okB then return differs("where it stands") end
+	local function far(x, y) return math.abs(x - y) > 0.01 end
+	for i = 1, 9 do if far(a.basis[i], b.basis[i]) then return differs("where it stands") end end
+	for _, k in ipairs({ "x", "y", "z" }) do if far(a.origin[k], b.origin[k]) then return differs("where it stands") end end
+	local fullStreet = get(full, "proposal")
+	for _, key in ipairs({ "addedNodes", "addedSegments" }) do
+		local n = length(get(street, key))
+		if n == nil or length(get(fullStreet, key)) ~= n then return differs("what it adds") end
+	end
+	local fullCon = get(fullAdd, 1)
+	local fullSafe = constructionObjects(full, fullCon, c)
+	if fullSafe == nil then return nil, "a construction edit with a stop or signal" end
+	-- This hook record contains counts but empty object rows and segment
+	-- placeholders, so the regenerated proposal supplies the carrier mapping.
+	-- Match its object counts and require every native object row to be empty.
+	local nativeAdds, nativeRemoves = get(street, "edgeObjectsToAdd"), get(street, "edgeObjectsToRemove")
+	local fullAdds, fullRemoves = get(fullStreet, "edgeObjectsToAdd"), get(fullStreet, "edgeObjectsToRemove")
+	if length(nativeAdds) ~= length(fullAdds) or length(nativeRemoves) ~= length(fullRemoves) then
+		return differs("its edge objects")
+	end
+	local function placeholders(items)
+		for i = 1, length(items) or 0 do
+			local row = get(items, i)
+			if type(row) ~= "table" then return false end
+			for _, key in ipairs({ "entity", "resultEntity", "category", "left", "playerEntity", "edgeEntity", "param", "model", "name" }) do
+				if get(row, key) ~= nil then return false end
+			end
+		end
+		return true
+	end
+	if not placeholders(nativeAdds) or not placeholders(nativeRemoves) then
+		return differs("its edge objects")
+	end
+	local function entities(list)
+		local out, seen = {}, {}
+		for i = 1, (length(list) or 0) do
+			local id = get(get(list, i), "entity")
+			if type(id) ~= "number" or seen[id] then return nil end
+			seen[id] = true
+			out[#out + 1] = id
+		end
+		table.sort(out)
+		return table.concat(out, ",")
+	end
+	for _, key in ipairs({ "removedNodes", "removedSegments" }) do
+		local mine, theirs = entities(get(street, key)), entities(get(fullStreet, key))
+		if mine == nil or theirs == nil or mine ~= theirs then return differs("what it removes") end
+	end
+	return capture.construction(full)
 end
 
 -- Keeps of a construction's network part only the edges joined, through each
@@ -283,7 +765,12 @@ end
 -- the road through a new junction and adds an edge from the junction to the
 -- station's own street node), as a polyline whose every link names its
 -- kind; false when it makes none; nil and why the room cannot carry them.
-function capture.connection(proposal)
+function capture.connection(proposal, con)
+	if con ~= nil then
+		local safe, why = constructionObjects(proposal, con)
+		if safe == nil then return nil, why end
+		proposal = safe
+	end
 	local engine = module("engine")
 	local ok, part = pcall(engine.fromProposal, proposal, nil, true)
 	if not ok then return nil, tostring(part) end
@@ -324,6 +811,93 @@ end
 
 function capture.junction(proposal)
 	return module("junctions").edit(proposal)
+end
+
+-- An upgrade tool's build in one line for the log, or nil for any other
+-- (tpf3mp/roads.lua upgradeSummary).
+function capture.upgradeSummary(action)
+	local ok, text = pcall(module("roads").upgradeSummary, action)
+	if ok then return text end
+	return nil
+end
+
+
+-- Most cells one Terraform action carries (tpf3mp_proto
+-- action::MAX_TERRAIN_CELLS is 8192; half keeps every action well inside
+-- the room's 48 KiB payload, two varints a cell).
+capture.TERRAIN_CELLS = 4096
+
+-- The side of the map's height cells, in metres
+-- (api.engine.terrain.getBaseResolution, 4 m on build 40408), or nil and why.
+function capture.terrainCell()
+	local ok, resolution = pcall(function() return api.engine.terrain.getBaseResolution() end)
+	local cell = ok and resolution and (resolution.x or resolution[1])
+	if type(cell) ~= "number" or cell <= 0 or cell ~= cell then
+		return nil, "the terrain's resolution does not read"
+	end
+	return cell
+end
+
+-- A terrain tool's stroke, as the hook read it at the click
+-- (tpf3mp_native.built: `{ terrain = { x0 =, y0 =, width =, height =,
+-- cells = { v1, w1, v2, w2, ... } } }`, crates/tpf3mp-hook/src/terrain.rs),
+-- as Terraform actions (tpf3mp_proto action::Terraform): the grid's first
+-- cell by its index times the cell size, its columns, and every cell's two
+-- values, row by row, in bands of whole rows of at most TERRAIN_CELLS
+-- cells, each its own action. Returns the list of actions, or nil and why.
+function capture.terraform(built)
+	local t = type(built) == "table" and built.terrain
+	if type(t) ~= "table" then return nil, "no terrain grid" end
+	local function whole(v) return type(v) == "number" and v == math.floor(v) end
+	local x0, y0, width, height, cells = t.x0, t.y0, t.width, t.height, t.cells
+	if not (whole(x0) and whole(y0) and whole(width) and whole(height)) or width < 1 or height < 1 then
+		return nil, "a terrain grid it cannot read"
+	end
+	if type(cells) ~= "table" or #cells ~= 2 * width * height then
+		return nil, "a terrain grid of " .. width .. " by " .. height .. " cells with " .. tostring(type(cells) == "table"
+			and #cells or 0) .. " values"
+	end
+	if width > capture.TERRAIN_CELLS or width > 65535 then
+		return nil, "a stroke " .. width .. " cells wide, wider than the room carries: use a smaller brush"
+	end
+	local cell, why = capture.terrainCell()
+	if not cell then return nil, why end
+	local rows = math.floor(capture.TERRAIN_CELLS / width)
+	local actions = {}
+	for first = 0, height - 1, rows do
+		local last = math.min(height, first + rows) - 1
+		local band = {}
+		for r = first, last do
+			for c = 0, width - 1 do
+				local i = 2 * (r * width + c)
+				band[#band + 1] = { target = cells[i + 1], before = cells[i + 2] }
+			end
+		end
+		actions[#actions + 1] = { Terraform = {
+			origin = { x = x0 * cell, y = (y0 + first) * cell },
+			cell = cell,
+			columns = width,
+			cells = band,
+		} }
+	end
+	return actions
+end
+
+-- A Terraform action in one line for the log.
+function capture.terraformSummary(t)
+	if type(t) ~= "table" or type(t.cells) ~= "table" or type(t.columns) ~= "number" or t.columns < 1 then
+		return "an unreadable terraform"
+	end
+	local low, high, changed = nil, nil, 0
+	for _, c in ipairs(t.cells) do
+		low = math.min(low or c.target, c.target)
+		high = math.max(high or c.target, c.target)
+		if c.target ~= c.before then changed = changed + 1 end
+	end
+	local cell = t.cell or 0
+	return string.format("%d by %d cells of %g m from cell (%g, %g), %d changed, heights %.2f to %.2f m",
+		t.columns, #t.cells / t.columns, cell, cell > 0 and t.origin.x / cell or 0,
+		cell > 0 and t.origin.y / cell or 0, changed, low or 0, high or 0)
 end
 
 -- A stop placed on a street or track with the stop tool (tpf3mp_proto
@@ -392,18 +966,33 @@ end
 -- (capture.construction), or refused. One that removes something that is no
 -- construction and adds a construction of no file is the asset
 -- bulldozer's (trees and other assets: their group rebuilt without the ones
--- removed), refused with what it removes (tpf3mp/engine.lua,
--- notConstruction).
+-- removed), as is one that removes an asset group alone (its last assets
+-- taken): carried behind TPF3MP_TREE_BULLDOZE=1 (engine.captureAssets),
+-- else refused with what it removes (tpf3mp/engine.lua, notConstruction).
 function capture.bulldoze(proposal)
 	local toRemove = get(proposal, "toRemove")
 	if (length(get(proposal, "toAdd")) or 0) > 0 and (length(toRemove) or 0) > 0 then
 		for i = 1, length(toRemove) do
 			local entity = get(toRemove, i)
 			local c = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
-			if c == nil then return nil, module("engine").notConstruction(entity) end
+			if c == nil then
+				local engine = module("engine")
+				-- Trees and other assets: carried where the hook lets
+				-- them (TPF3MP_TREE_BULLDOZE=1), for a trial of the replay.
+				local okA, asset = pcall(api.engine.getComponent, entity, api.type.ComponentType.ASSET_GROUP)
+				if okA and asset ~= nil and engine.treesOn() then return engine.captureAssets(proposal) end
+				return nil, engine.notConstruction(entity)
+			end
 			if (length(get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
 		end
 		return nil, "a bulldozer proposal that builds"
+	end
+	-- The last assets of a group taken: the asset bulldozer removes the
+	-- group and adds nothing (CreateProposalAddAsset with no model kept).
+	if (length(get(proposal, "toAdd")) or 0) == 0 and (length(toRemove) or 0) == 1 then
+		local engine = module("engine")
+		local okA, asset = pcall(api.engine.getComponent, get(toRemove, 1), api.type.ComponentType.ASSET_GROUP)
+		if okA and asset ~= nil and engine.treesOn() then return engine.captureAssets(proposal) end
 	end
 	return module("engine").bulldoze(proposal)
 end
@@ -415,7 +1004,52 @@ end
 -- .createProposalReplaceConstruction, gui/construction/construction.tl and
 -- gui/entity_window/entity_window_util.tl, build 40408). Every other build
 -- from a window stays refused. Returns the action table, or raises why not.
+--
+-- A window's build that rebuilds edges in place, nothing else (no
+-- construction, no node added or removed, every new edge between the ends
+-- of one it replaces): the bridge and tunnel window's type
+-- (gui/entity_window/bridge_and_tunnel.tl, api.engine.util.proposal
+-- .createBridgeOrTunnelProposal, build 40408) makes one. It is carried as
+-- the road and track modifiers' rebuild is (capture.modify), once
+-- acceptance.lua's `bridges` is on: until a two-player game shows the
+-- window's proposal reads as the modifiers' does, it is refused, saying so.
+function capture.inPlace(proposal)
+	local p = get(proposal, "proposal")
+	if p == nil or (length(get(proposal, "toAdd")) or 0) > 0 or (length(get(proposal, "toRemove")) or 0) > 0 then
+		return false
+	end
+	if (length(get(p, "addedNodes")) or 0) > 0 or (length(get(p, "removedNodes")) or 0) > 0 then return false end
+	local added, removed = get(p, "addedSegments"), get(p, "removedSegments")
+	local n = length(added)
+	if n == nil or n == 0 or length(removed) ~= n then return false end
+	local used = {}
+	for i = 1, n do
+		local a = get(get(added, i), "comp")
+		local a0, a1 = get(a, "node0"), get(a, "node1")
+		local found = nil
+		for k = 1, n do
+			local r = get(get(removed, k), "comp")
+			local r0, r1 = get(r, "node0"), get(r, "node1")
+			if not used[k] and ((r0 == a0 and r1 == a1) or (r0 == a1 and r1 == a0)) then
+				found = k
+				break
+			end
+		end
+		if found == nil then return false end
+		used[found] = true
+	end
+	return true
+end
+
 function capture.windowBuild(_ctx, proposal)
+	if capture.inPlace(proposal) then
+		if module("acceptance").bridges ~= true then
+			error("rebuilding a bridge or tunnel from its window awaits two-player game acceptance", 0)
+		end
+		local action, why = capture.modify(proposal)
+		if not action then error(why or "a window's rebuild of nothing", 0) end
+		return action
+	end
 	local p = proposal and proposal.proposal
 	if p and #(proposal.toAdd or {}) == 0 and #(proposal.toRemove or {}) == 0
 		and ((p.nodeConfigsToAdd and #p.nodeConfigsToAdd > 0)
@@ -450,7 +1084,7 @@ end
 --                                               (tpf3mp/registry.lua)
 --   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
 --                   construction, and the depot's index among its
---                   depots from 0 (capture.depotRef); or nil
+--                   depots from 0 (capture.depotRef); or nil, nil, why
 --   ctx.model(id) -> a vehicle model's file name, or nil
 --   ctx.parts(e) -> a vehicle's parts, front to back, each
 --                   { model = modelId, purchased = purchaseTime }, or nil
@@ -503,56 +1137,130 @@ local function consistPart(ctx, tvp)
 	}
 end
 
+-- A construction's depots, in the order every game lists them: its
+-- CONSTRUCTION component's `depots`, then each of its subconstructions that
+-- is itself a depot (a VEHICLE_DEPOT) and not listed yet. In build 40408 a
+-- depot is its construction's subconstruction: a road, rail or ship depot's
+-- own (depots/rail/rail_depot.script.lua, `subconstructions = { depot }`),
+-- and an airfield's or airport's hangar module's
+-- (stations/air/airfield/af_hangar.module.lua and
+-- airport/ap_hangar.module.lua: a subconstruction with a `depot`); the
+-- game's store buys at that entity (gui/line_vehicle_mgmt/
+-- vehicle_react_util.tl, makeVehicleBuyCmd(player, depotEntity, config)),
+-- and the construction window finds it among `subconstructions`
+-- (gui/entity_window/make_entity_window.tl). An airfield or airport built
+-- without a hangar module has no depot at all, and a harbour never has one:
+-- ships are bought at a ship depot. Read from the construction alone, the
+-- same in every game. `comp` is the construction's CONSTRUCTION component.
+function capture.depotsOf(api, comp)
+	local out, seen = {}, {}
+	local function add(e)
+		if type(e) == "number" and e >= 0 and not seen[e] then
+			seen[e] = true
+			out[#out + 1] = e
+		end
+	end
+	local depots = get(comp, "depots")
+	for k = 1, (length(depots) or 0) do add(get(depots, k)) end
+	local ok, VEHICLE_DEPOT = pcall(function() return api.type.ComponentType.VEHICLE_DEPOT end)
+	if ok and VEHICLE_DEPOT ~= nil then
+		local subs = get(comp, "subconstructions")
+		for k = 1, (length(subs) or 0) do
+			local e = get(subs, k)
+			if type(e) == "number" and not seen[e] then
+				local found, d = pcall(api.engine.getComponent, e, VEHICLE_DEPOT)
+				if found and d ~= nil then add(e) end
+			end
+		end
+	end
+	return out
+end
+
 -- A depot as actions name one (action::ConstructionRef): its construction's
--- file and place. The street connector names the construction of a depot a
--- street reaches; a ship depot or an aircraft hangar may have none
--- (INFERRED, not seen on build 40408), so failing that, the construction
--- whose CONSTRUCTION component lists the depot among its `depots`, the
--- lowest entity on a tie. Returns { file =, at = { x, y, z } } and the
--- depot's index among the construction's depots, from 0; or nil.
+-- file and place, and the depot's index among that construction's depots
+-- (capture.depotsOf), from 0. The construction is the one the street
+-- connector names for the depot, else the one it names for the depot as a
+-- subconstruction (an airfield's hangar: no street reaches it), else the one
+-- construction whose depots list it. Returns { file =, at = { x, y, z } }
+-- and the index; or nil, nil and why, failing closed: a depot no
+-- construction lists, one two constructions list, or one its construction
+-- does not list is never guessed at (the first depot used to be).
 function capture.depotRef(api, depot)
 	local ok, CONSTRUCTION = pcall(function() return api.type.ComponentType.CONSTRUCTION end)
-	if not ok or CONSTRUCTION == nil then return nil end
+	if not ok or CONSTRUCTION == nil then return nil, nil, "no construction component to read" end
+	local function constructionFor(kind)
+		local con
+		pcall(function()
+			local e = api.engine.system.streetConnectorSystem[kind](depot)
+			if type(e) == "number" and e >= 0 then con = e end
+		end)
+		return con
+	end
 	local c
-	pcall(function()
-		local con = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(depot)
-		if type(con) == "number" and con >= 0 then c = api.engine.getComponent(con, CONSTRUCTION) end
-	end)
-	if c == nil then
+	local con = constructionFor("getConstructionEntityForDepot")
+		or constructionFor("getConstructionEntityForSubconstruction")
+	if con ~= nil then
+		pcall(function() c = api.engine.getComponent(con, CONSTRUCTION) end)
+	else
+		local listing = {}
 		pcall(function()
 			local list = api.engine.getEntitiesWithComponent(CONSTRUCTION)
-			local best
 			for i = 1, #list do
 				local e = list[i]
 				local comp = api.engine.getComponent(e, CONSTRUCTION)
-				local depots = comp and comp.depots
-				for k = 1, (depots and #depots or 0) do
-					if depots[k] == depot and (best == nil or e < best) then best, c = e, comp end
+				if comp ~= nil then
+					for _, d in ipairs(capture.depotsOf(api, comp)) do
+						if d == depot then listing[#listing + 1] = comp break end
+					end
 				end
 			end
 		end)
+		if #listing > 1 then return nil, nil, "a depot " .. #listing .. " constructions list" end
+		c = listing[1]
 	end
-	if c == nil then return nil end
+	if c == nil then return nil, nil, "a depot no construction lists" end
 	local t = get(c, "transf")
 	local file, x, y, z = get(c, "fileName"), get(t, 13), get(t, 14), get(t, 15)
 	if type(file) ~= "string" or file == "" or type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
-		return nil
+		return nil, nil, "a depot whose construction it cannot read"
 	end
-	-- Which of its depots (an airport's second hangar): the first that is
-	-- this one, else the first, as before the index was carried.
-	local index, depots = 0, get(c, "depots")
-	for k = 1, (length(depots) or 0) do
-		if get(depots, k) == depot then index = k - 1 break end
+	-- Which of its depots (an airport's second hangar).
+	for k, d in ipairs(capture.depotsOf(api, c)) do
+		if d == depot then return { file = file, at = { x = x, y = y, z = z } }, k - 1 end
 	end
-	return { file = file, at = { x = x, y = y, z = z } }, index
+	return nil, nil, "a depot " .. file .. " does not list among its depots"
+end
+
+-- What the log says of a purchase's depot: the entity the store passed, its
+-- owner, and the construction and index the room names it by (or why it
+-- cannot), so a vehicle that leaves another depot than the player meant
+-- shows which one the store chose.
+function capture.depotText(depot, owner, ref, index, why)
+	local whose = type(owner) == "number" and ("owned by " .. string.format("%d", owner)) or "owned by no one"
+	if ref == nil then
+		return string.format("the store buys at depot entity %s (%s), which the room cannot name: %s",
+			tostring(depot), whose, tostring(why))
+	end
+	return string.format("the store buys at depot entity %s (%s): depot %d of %s at (%.1f, %.1f, %.1f)",
+		tostring(depot), whose, index or -1, tostring(ref.file), ref.at.x, ref.at.y, ref.at.z)
 end
 
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
-	local ref, index = ctx.depot(depot)
+	local ref, index, why = ctx.depot(depot)
+	if type(ctx.say) == "function" then
+		local owner = type(ctx.owner) == "function" and ctx.owner(depot) or nil
+		pcall(ctx.say, capture.depotText(depot, owner, ref, index, why))
+	end
+	if ref == nil then
+		error("a depot the room cannot name" .. (why and (": " .. tostring(why)) or ""), 0)
+	end
+	if type(index) ~= "number" or index < 0 or index > 255 then
+		error("a depot the room cannot name: its construction has more than 256 depots", 0)
+	end
 	return { BuyVehicle = {
-		depot = named("a depot the room cannot name", ref),
-		depot_index = index or 0,
+		depot = ref,
+		depot_index = index,
 		consist = each(get(config, "vehicles"), function(tvp) return consistPart(ctx, tvp) end),
 		groups = each(get(config, "vehicleGroups"), function(n) return n end),
 		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
@@ -614,9 +1322,13 @@ function capture.vehicleStop(ctx, vehicle, stopped)
 	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { Stop = stopped == true } } }
 end
 
+-- Sold on arrival, build 40408 crashes when the vehicle reaches the depot:
+-- it sells the vehicle, then asks the vehicle it removed where its depot is
+-- (Engine.h:323). TF3's own windows only ever send false.
 function capture.vehicleToDepot(ctx, vehicle, sell, jumpTo)
 	if jumpTo ~= nil then error("moving a vehicle into a depot at once", 0) end
-	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ToDepot = { sell = sell == true } } } }
+	if sell == true then error("selling a vehicle when it reaches the depot (the game crashes there)", 0) end
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ToDepot = { sell = false } } } }
 end
 
 function capture.vehicleReverse(ctx, vehicle)
@@ -764,6 +1476,161 @@ function capture.prospect(ctx, param)
 		industries = industries,
 		permit = permit,
 	} }
+end
+
+-- ------------------------------------------------------------ company perks
+--
+-- The construction menu's perk tools (gui/construction/tools/, build
+-- 40408): each picks a town or an industry and sends the company script an
+-- event, which spends the perk's permit for the player's company and hands
+-- the perk on (game_mechanics/company/company.script.tl, handleEvent).
+
+-- The construction an industry the player picked stands in, as the game's
+-- industry window finds it (gui/entity_window/industry/industry.tl), and
+-- tpf3mp/registry.lua names industries by: a part the game places in no
+-- construction stands for itself. Returns the construction, or nil.
+function capture.industryConstruction(part)
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(part)
+	end)
+	if not ok or type(con) ~= "number" or con < 0 then con = part end
+	return con
+end
+
+-- The industry part of construction `con` a perk acts on: its one industry,
+-- or the construction itself where it is one. nil where it has none, or
+-- more than one, which no id the room carries tells apart. Every game finds
+-- it so (tpf3mp/apply.lua, HANDLERS.Perk).
+function capture.industryPart(con)
+	local CT = api.type.ComponentType
+	local ok, c = pcall(function() return api.engine.getComponent(con, CT.CONSTRUCTION) end)
+	local parts = ok and c and get(c, "industries") or nil
+	local n = length(parts) or 0
+	if n == 1 then return get(parts, 1) end
+	if n == 0 then
+		local isOne, industry = pcall(function() return api.engine.getComponent(con, CT.INDUSTRY) end)
+		if isOne and industry ~= nil then return con end
+	end
+	return nil
+end
+
+local function permitOf(param)
+	local permit = get(param, "permitKey")
+	if permit ~= nil and (type(permit) ~= "string" or permit == "") then error("a permit it cannot read", 0) end
+	return permit
+end
+
+local function ownCompany(ctx, param, what)
+	local player = ctx.player and ctx.player()
+	if player == nil or get(param, "companyEntity") ~= player then
+		error(what .. " for another company", 0)
+	end
+end
+
+-- Industry Greenification (industry_greenify_tool.script.tl): the event
+-- `Companies` `MakeGreen` with the player's company, the industry picked
+-- and the permit, the industry by its id (action::IndustryId).
+function capture.greenify(ctx, param)
+	if type(param) ~= "table" then error("a greenification it cannot read", 0) end
+	ownCompany(ctx, param, "greenifying")
+	local part = get(param, "constructionEntity")
+	if type(part) ~= "number" then error("greenifying no industry", 0) end
+	local con = capture.industryConstruction(part)
+	if capture.industryPart(con) ~= part then error("an industry the room cannot name", 0) end
+	local industry = ctx.industry and ctx.industry(con) or nil
+	return { Perk = { Greenify = {
+		industry = named("an industry the room cannot name", industry),
+		permit = permitOf(param),
+	} } }
+end
+
+-- What the marketing tool charges for a campaign in `year`: the tool's own
+-- price (marketing_campaign_tool.script.tl, GetMarketingCost, build 40408),
+-- with the game's math helpers (scripts/mathutil.lua: round, mapClamp)
+-- written out. The tool books it once the campaign started; the room's
+-- action carries it, so every game books the same sum.
+capture.MARKETING_COST = 10000000
+function capture.marketingCost(year)
+	local function round(x) return math.floor(x + .5) end
+	local lo, hi = math.log(0.4) / math.log(2), math.log(2.5) / math.log(2)
+	local mapped = lo + (hi - lo) * ((year - 1900) / (2020 - 1900))
+	if mapped < lo then mapped = lo elseif mapped > hi then mapped = hi end
+	local rounding = round(capture.MARKETING_COST / 10)
+	return round(capture.MARKETING_COST * math.pow(2, mapped) / rounding) * rounding
+end
+
+-- A marketing campaign (marketing_campaign_tool.script.tl): the event
+-- `Companies` `startMarketingCampaign` with the player's company, the town
+-- picked, the campaign's terms (the tool's town_marketing metadata) and the
+-- permit; and the price the tool books after it (capture.marketingCost).
+function capture.marketing(ctx, param)
+	if type(param) ~= "table" then error("a marketing campaign it cannot read", 0) end
+	ownCompany(ctx, param, "marketing")
+	local terms = get(param, "marketingParams")
+	local duration, factor = get(terms, "durationMs"), get(terms, "lineCostFactor")
+	if type(duration) ~= "number" or duration ~= math.floor(duration) or duration < 0
+		or type(factor) ~= "number" then
+		error("a campaign whose terms it cannot read", 0)
+	end
+	local ok, year = pcall(function() return api.engine.util.getYear() end)
+	if not ok or type(year) ~= "number" then error("a campaign it cannot price", 0) end
+	local town = ctx.town and ctx.town(get(param, "townEntity")) or nil
+	return { Perk = { Marketing = {
+		town = named("a town the room cannot name", town),
+		duration_ms = duration,
+		line_cost_factor = factor,
+		permit = permitOf(param),
+		cost = capture.marketingCost(year),
+	} } }
+end
+
+-- ------------------------------------------------------ town buildings
+--
+-- The construction a town building stands in, and the building's place in
+-- its list of town buildings, from 1 (the construction lists them,
+-- api/tealdef/api/engine.d.tl, Construction.townBuildings): the
+-- construction the game names for the building as a subconstruction,
+-- or the building itself, or else the one construction that lists it.
+-- INFERRED: a town building's window names the TOWN_BUILDING entity, which
+-- its construction lists. Returns the construction's component and the
+-- place, or nil.
+function capture.townBuildingOf(entity)
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local function lists(con)
+		local ok, c = pcall(function() return api.engine.getComponent(con, CONSTRUCTION) end)
+		local buildings = ok and c and get(c, "townBuildings") or nil
+		for i = 1, (length(buildings) or 0) do
+			if get(buildings, i) == entity then return c, i end
+		end
+		return nil
+	end
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(entity)
+	end)
+	if ok and type(con) == "number" and con >= 0 then
+		local c, i = lists(con)
+		if c then return c, i end
+	end
+	local c, i = lists(entity)
+	if c then return c, i end
+	local listed, all = pcall(function() return api.engine.getEntitiesWithComponent(CONSTRUCTION) end)
+	for k = 1, (listed and length(all) or 0) do
+		c, i = lists(get(all, k))
+		if c then return c, i end
+	end
+	return nil
+end
+
+-- A town building's Historic Preservation checkbox (gui/entity_window/
+-- town_building/town_building.tl, HistoricBuildingCard): the building by
+-- its construction's file and place and its index there
+-- (action::Preservation).
+function capture.preserve(_ctx, entity, preserved)
+	if type(preserved) ~= "boolean" then error("a preservation it cannot read", 0) end
+	local c, i = capture.townBuildingOf(entity)
+	local ref = c and capture.replaced(c) or nil
+	if ref == nil or i > 256 then error("a town building the room cannot name", 0) end
+	return { Preserve = { building = ref, index = i - 1, preserved = preserved } }
 end
 
 -- Answering a subsidy offer: the subsidy window's Accept or Decline

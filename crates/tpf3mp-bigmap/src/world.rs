@@ -140,11 +140,15 @@ impl WorldModel {
             112,
             "getNumTiles: Gigantomaniac 1:1 is 112 x 112; its longest axis is 250 (1:5)",
         ),
+        // PROVISIONAL: the memory gate's law lives in crate::memory_gate.
         generation_mb_per_km2: Fact::derived(
-            12.25,
+            crate::memory_gate::GENERATION_MB_PER_KM2,
             "\"Terrain toolkit used 49 maps and 10074 MB\" for a 56 x 224 subarctic map: 49 maps of 4 B per 16 m² sample",
         ),
-        game_base_mb: Fact::assumed(4096, "TPF2's measured own use; TF3's is not measured"),
+        game_base_mb: Fact::assumed(
+            crate::memory_gate::GAME_BASE_MB,
+            "TPF2's measured own use; TF3's is not measured",
+        ),
     };
 
     /// The octree root's half-extent at `depth`, in metres.

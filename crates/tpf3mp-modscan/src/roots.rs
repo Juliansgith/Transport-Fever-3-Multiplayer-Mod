@@ -1,18 +1,33 @@
 //! Where Transport Fever 3 keeps the mods a player can activate (build
 //! 40408, Windows; the other platforms' places are to confirm):
 //!
-//! - Mod Hub (mod.io) downloads: `%LOCALAPPDATA%\mod.io\10640\mods\<mod.io
-//!   id>`, whose `mod.json` names the mod (`celmi_timetables` in
-//!   `...\6037864`);
+//! - Mod Hub (mod.io) downloads: `%PUBLIC%\mod.io\10640\mods\<mod.io id>`
+//!   (58 mods on one PC, 2026-10-03, while `%LOCALAPPDATA%\mod.io\10640`
+//!   held only its user's file), and `%LOCALAPPDATA%\mod.io\10640\mods`,
+//!   where they were found on 2026-09-30; each `mod.json` names the mod
+//!   (`revyn112_towns_de` in `...\6414521`);
 //! - local mods: `<Steam>\userdata\<account>\3493540\local\staging_area\<modId>`
 //!   (investigation/TF3_MODS_2026-09-27.md), and `...\local\mods`;
-//! - the game's own: `<game>\mods` and `<game>\dlcs`.
+//! - the game's own: `<game>\mods`, `<game>\mods\release` and
+//!   `<game>\dlcs`. `release` holds the game's built-in mods, the ones a
+//!   save lists as `urbangames_no_costs_1`, `urbangames_sandbox_1` and so
+//!   on, and the campaign's (21 mods on one PC, 2026-10-04; the `mw_*` among
+//!   them were also in `<game>\mods`, with the same files).
 //!
 //! A mod is found by the id its `mod.json` gives, or else by its folder's
-//! name; which of the two a save lists for a Mod Hub mod is to confirm in
-//! the game (docs/MODS.md).
+//! name. A save lists a Mod Hub mod by the `modId` (`revyn112_towns_de`,
+//! its mod.io number `6414521` only as the hub id; docs/MODS.md).
+//!
+//! A Mod Hub download also says which file of the mod it is: mod.io's cache
+//! index, `mod.io\10640\metadata\state.json` beside the `mods` folder, lists
+//! each mod by its mod.io number (`ID`, the folder's name) with the file it
+//! installed (`Profile.modfile.id`) and its state (`State`, 1 for each of
+//! 58 installed mods on one PC, 2026-10-04). Authors rarely raise a mod's
+//! `revision` (45 of those 58 were at 1), so the file tells two downloads of
+//! one revision apart.
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -22,17 +37,14 @@ pub const MODIO_GAME: u32 = 10640;
 /// Transport Fever 3's Steam app id.
 pub const STEAM_APP: u32 = 3_493_540;
 
-/// The folders mods are kept in, those that exist: the game's own (in
-/// `game`, its install folder), each Steam account's local ones (under
-/// each of `steam_roots`), and Mod Hub's downloads (under `local_data`,
-/// the per-user local data folder).
-pub fn roots(
-    game: Option<&Path>,
-    steam_roots: &[PathBuf],
-    local_data: Option<&Path>,
-) -> Vec<PathBuf> {
+/// The folders mods are kept in, those that exist, the first copy of a mod
+/// counting: Mod Hub's downloads (under each of `data`, the folders that
+/// may hold a `mod.io` folder, in order), each Steam account's local ones
+/// (under each of `steam_roots`), and the game's own (in `game`, its
+/// install folder).
+pub fn roots(game: Option<&Path>, steam_roots: &[PathBuf], data: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(data) = local_data {
+    for data in data {
         out.push(
             data.join("mod.io")
                 .join(MODIO_GAME.to_string())
@@ -54,24 +66,46 @@ pub fn roots(
     }
     if let Some(game) = game {
         out.push(game.join("mods"));
+        out.push(game.join("mods").join("release"));
         out.push(game.join("dlcs"));
     }
     out.retain(|root| root.is_dir());
     out
 }
 
-/// This player's roots, as [`roots`] with the per-user local data folder.
+/// This player's roots, as [`roots`] with the folders mod.io keeps its
+/// downloads in.
 pub fn default_roots(game: Option<&Path>, steam_roots: &[PathBuf]) -> Vec<PathBuf> {
-    roots(game, steam_roots, dirs_local().as_deref())
+    roots(game, steam_roots, &modio_data())
 }
 
-fn dirs_local() -> Option<PathBuf> {
-    // %LOCALAPPDATA% on Windows; $XDG_DATA_HOME or ~/.local/share on Linux;
-    // ~/Library/Application Support on macOS.
+/// The folders that may hold mod.io's `mod.io` folder, the first copy of a
+/// mod counting: on Windows `%PUBLIC%` (the users' shared folder, where
+/// Mod Hub downloads its mods for every user of the PC), then
+/// `%LOCALAPPDATA%`; elsewhere the per-user local data folder.
+fn modio_data() -> Vec<PathBuf> {
     #[cfg(windows)]
-    let found = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let found = windows_modio_data(|var| std::env::var_os(var));
     #[cfg(not(windows))]
-    let found = std::env::var_os("XDG_DATA_HOME")
+    let found = dirs_local().into_iter().collect();
+    found
+}
+
+/// [`modio_data`] on Windows, with `env` reading the environment: those of
+/// the two folders that are set.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_modio_data(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    ["PUBLIC", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(|var| env(var).map(PathBuf::from))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn dirs_local() -> Option<PathBuf> {
+    // $XDG_DATA_HOME or ~/.local/share on Linux; ~/Library/Application
+    // Support on macOS.
+    std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| {
@@ -82,8 +116,7 @@ fn dirs_local() -> Option<PathBuf> {
                     home.join(".local/share")
                 }
             })
-        });
-    found
+        })
 }
 
 /// One mod found in a root.
@@ -94,6 +127,61 @@ pub struct Found {
     /// Its folder's name.
     pub folder: String,
     pub path: PathBuf,
+    /// For a Mod Hub download: which mod and file it is.
+    pub hub: Option<HubFile>,
+}
+
+/// A Mod Hub (mod.io) download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HubFile {
+    /// The mod's mod.io number: its folder's name, a save's hub id.
+    pub mod_id: u64,
+    /// The file mod.io's cache says is installed; `None` when its index does
+    /// not say so for certain (no index, no entry, or not installed).
+    pub file: Option<u64>,
+}
+
+/// The state mod.io's cache index gives an installed mod (SEEN on one PC,
+/// 2026-10-04: every one of 58 installed mods).
+const MODIO_INSTALLED: u64 = 1;
+
+/// Whether `root` is a Mod Hub `mod.io/<game>/mods` folder.
+fn is_modio_mods(root: &Path) -> bool {
+    let name = |p: Option<&Path>| {
+        p.and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+    };
+    name(Some(root)).as_deref() == Some("mods")
+        && name(root.parent()).as_deref() == Some(&MODIO_GAME.to_string())
+        && name(root.parent().and_then(Path::parent)).as_deref() == Some("mod.io")
+}
+
+/// The installed file of each mod in the mod.io cache index `state.json`'s
+/// text, by mod.io number; a mod not installed, or whose entry does not
+/// read, has none.
+pub fn modio_files(state: &str) -> HashMap<u64, Option<u64>> {
+    let Ok(index) = serde_json::from_str::<serde_json::Value>(state) else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for entry in index
+        .get("Mods")
+        .and_then(|m| m.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let Some(id) = entry.get("ID").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        let installed =
+            entry.get("State").and_then(serde_json::Value::as_u64) == Some(MODIO_INSTALLED);
+        let file = entry
+            .pointer("/Profile/modfile/id")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|_| installed);
+        out.insert(id, file);
+    }
+    out
 }
 
 /// Every mod in `roots`: each folder with a `mod.json`, in the roots'
@@ -104,6 +192,13 @@ pub fn installed(roots: &[PathBuf]) -> Vec<Found> {
         let Ok(entries) = fs::read_dir(root) else {
             continue;
         };
+        let modio = is_modio_mods(root).then(|| {
+            root.parent()
+                .map(|game| game.join("metadata").join("state.json"))
+                .and_then(|state| fs::read_to_string(state).ok())
+                .map(|state| modio_files(&state))
+                .unwrap_or_default()
+        });
         let mut dirs: Vec<PathBuf> = entries
             .filter_map(Result::ok)
             .map(|e| e.path())
@@ -120,7 +215,19 @@ pub fn installed(roots: &[PathBuf]) -> Vec<Found> {
                 .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
                 .and_then(|v| v.get("modId").and_then(|id| id.as_str()).map(str::to_owned))
                 .unwrap_or_else(|| folder.clone());
-            out.push(Found { id, folder, path });
+            let hub = modio.as_ref().and_then(|files| {
+                let mod_id = folder.parse::<u64>().ok()?;
+                Some(HubFile {
+                    mod_id,
+                    file: files.get(&mod_id).copied().flatten(),
+                })
+            });
+            out.push(Found {
+                id,
+                folder,
+                path,
+                hub,
+            });
         }
     }
     out
@@ -146,9 +253,18 @@ mod tests {
     #[test]
     fn mods_are_found_in_mod_hub_steam_and_the_game_folders() {
         let dir = tempfile::tempdir().unwrap();
+        let public = dir.path().join("public");
         let data = dir.path().join("data");
         let steam = dir.path().join("steam");
         let game = dir.path().join("game");
+        write(
+            &public.join("mod.io/10640/mods/6414521/mod.json"),
+            r#"{"modId": "revyn112_towns_de"}"#,
+        );
+        write(
+            &public.join("mod.io/10640/metadata/state.json"),
+            r#"{"Mods": [{"ID": 6414521, "State": 1, "Profile": {"modfile": {"id": 8264750}}}], "version": 1}"#,
+        );
         write(
             &data.join("mod.io/10640/mods/6037864/mod.json"),
             r#"{"modId": "celmi_timetables"}"#,
@@ -161,23 +277,97 @@ mod tests {
             &game.join("dlcs/urbangames_preorder_pack/mod.json"),
             r#"{"modId": "urbangames_preorder_pack"}"#,
         );
+        // The game's built-in mods, in a folder of their own; once taken
+        // for not a mod, as it has no mod.json itself (2026-10-04).
+        write(
+            &game.join("mods/release/urbangames_no_costs/mod.json"),
+            r#"{"modId": "urbangames_no_costs_1"}"#,
+        );
         // Not a mod: no mod.json.
-        fs::create_dir_all(game.join("mods/release")).unwrap();
+        fs::create_dir_all(game.join("mods/empty")).unwrap();
 
-        let roots = roots(Some(&game), std::slice::from_ref(&steam), Some(&data));
-        assert_eq!(roots.len(), 4, "{roots:?}");
+        let roots = roots(
+            Some(&game),
+            std::slice::from_ref(&steam),
+            &[public, data, dir.path().join("none")],
+        );
+        assert_eq!(roots.len(), 6, "{roots:?}");
         let found = installed(&roots);
         let ids: Vec<&str> = found.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(
             ids,
             [
+                "revyn112_towns_de",
                 "celmi_timetables",
                 "gw_big_city_1",
+                "urbangames_no_costs_1",
                 "urbangames_preorder_pack"
             ]
         );
+        assert_eq!(
+            find(&found, "urbangames_no_costs_1").unwrap().folder,
+            "urbangames_no_costs"
+        );
         assert_eq!(find(&found, "celmi_timetables").unwrap().folder, "6037864");
+        assert_eq!(
+            find(&found, "revyn112_towns_de").unwrap().hub,
+            Some(HubFile {
+                mod_id: 6414521,
+                file: Some(8264750)
+            })
+        );
+        // In the cache but not in its index: a Mod Hub mod of no known file.
+        assert_eq!(
+            find(&found, "celmi_timetables").unwrap().hub,
+            Some(HubFile {
+                mod_id: 6037864,
+                file: None
+            })
+        );
+        assert_eq!(find(&found, "gw_big_city_1").unwrap().hub, None);
         assert_eq!(find(&found, "6037864").unwrap().id, "celmi_timetables");
         assert!(find(&found, "missing").is_none());
+    }
+
+    /// Two downloads of one revision are told apart by the file mod.io
+    /// installed; one whose download is not finished has no file.
+    #[test]
+    fn the_mod_io_index_gives_each_installed_mods_file() {
+        let files = modio_files(
+            r#"{"Mods": [
+                {"ID": 1, "State": 1, "Profile": {"modfile": {"id": 11}}},
+                {"ID": 2, "State": 3, "Profile": {"modfile": {"id": 22}}},
+                {"ID": 3, "State": 1, "Profile": {}},
+                {"State": 1, "Profile": {"modfile": {"id": 44}}}
+            ], "version": 1}"#,
+        );
+        assert_eq!(files.get(&1), Some(&Some(11)));
+        assert_eq!(files.get(&2), Some(&None), "not installed: no file");
+        assert_eq!(files.get(&3), Some(&None));
+        assert_eq!(files.len(), 3);
+        assert!(modio_files("not json").is_empty());
+    }
+
+    /// Mod Hub's downloads were missed on a PC that keeps them in the
+    /// users' shared folder, so a room's start save listed mods its owner
+    /// had as missing (2026-10-03).
+    #[test]
+    fn mod_hub_downloads_are_looked_for_in_the_shared_folder_first() {
+        let env = |public: bool, local: bool| {
+            move |var: &str| match var {
+                "PUBLIC" if public => Some(r"C:\Users\Public".into()),
+                "LOCALAPPDATA" if local => Some(r"C:\Users\p\AppData\Local".into()),
+                _ => None,
+            }
+        };
+        let public = PathBuf::from(r"C:\Users\Public");
+        let local = PathBuf::from(r"C:\Users\p\AppData\Local");
+        assert_eq!(
+            windows_modio_data(env(true, true)),
+            [public.clone(), local.clone()]
+        );
+        assert_eq!(windows_modio_data(env(false, true)), [local]);
+        assert_eq!(windows_modio_data(env(true, false)), [public]);
+        assert!(windows_modio_data(env(false, false)).is_empty());
     }
 }

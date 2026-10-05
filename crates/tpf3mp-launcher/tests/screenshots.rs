@@ -135,6 +135,7 @@ fn connected() -> State {
         connection: Connection::Connected,
         server_version: Some("0.1.0".into()),
         support_id: Some("S4TK9Q".into()),
+        log_session: Some("AB2CD3".into()),
         ..base()
     }
 }
@@ -157,6 +158,7 @@ fn member(
         owner,
         you,
         content,
+        differs: None,
         banner: None,
         loading: None,
     }
@@ -325,6 +327,7 @@ fn screens() {
         .map(|member| Member {
             ready: true,
             content: MemberContent::Same,
+            differs: None,
             ..member
         })
         .collect();

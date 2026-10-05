@@ -318,7 +318,9 @@ and build profiles (`profiles/*.toml`) in the per-user `TPF3-MP` data
 folder. It also carries the release's own profiles, built in from the
 repository's `profiles/` folder (Transport Fever 3 Steam build 40408 on
 Windows, so far); a profile in the data folder for the same build comes
-first, so one can be tried there without a release. The game's environment says which, so several games on one PC each
+first, so one can be tried there without a release. Per-build directories
+with `hooks.toml` are supported too; flat custom profiles stay supported.
+The game's environment says which, so several games on one PC each
 reach their own agent:
 
 | variable | effect |
@@ -331,6 +333,46 @@ reach their own agent:
 command line. The multiplayer rig (`tpf3mp-rig`, in
 [DEVELOPMENT.md](DEVELOPMENT.md)) sets all three for every game it starts, and starts a real
 game with the hook in it as the launcher does.
+
+### Reviewing the native data for a game update
+
+The compiled Windows native data is grouped with its signature profile in
+`profiles/tf3_build40408_steam_windows/`: `hooks.toml` records the executable
+SHA-256, size and PE timestamp; `native.rs` records the game/Steam build and
+exports each subsystem's data file. Those files hold splice bytes, frame and
+field offsets, structure layouts and GUI register/site descriptions. The
+hook modules reexport the existing names, so their callers and behavioral
+tests use the same data. Algorithms, bounds, kill switches and generic x86
+instruction decoding remain in the hook modules.
+
+`profiles/native-build.txt` explicitly selects the one compiled native
+bundle. The hook build script generates `build_data.rs`'s native module and
+built-in profile from this same selection; the release check reads it too.
+Bootstrap checks its complete executable identity before
+installing the menu or step gate. A TOML profile for another executable is
+insufficient: it cannot enable that build with the previous build's native
+layouts. Custom profiles for the supported executable keep their priority.
+This release still supports only the existing Windows Steam build 40408;
+moving data does not approve the Preview or add another supported platform.
+
+A static signature candidate for Steam Preview 40418 is in
+`profiles/tf3_build40418_steam_windows/hooks.toml`. Its original 145 targets matched
+the private archive. The additional optional `lua_touserdata` signature awaits
+an archive recheck; its directory deliberately has no `native.rs` and is not
+selected. The Release bundle and release archive remain active. The changed
+splice bytes, script review and remaining ABI work are recorded in
+[the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
+
+For a new build, create a separate bundle directory, investigate the audit's
+signature/function/script changes, and review its native data alongside its
+`hooks.toml`. Select that reviewed bundle explicitly in `native-build.txt`.
+Also review the hook code's ABI assumptions (calling conventions and the
+instructions emitted by callbacks); grouping data does not prove those are
+unchanged. Use `tpfre build` for the checked local release build; the release
+workflow also requires `verify-build` against its private archive before
+packaging ([DEVELOPMENT.md](DEVELOPMENT.md#game-update-builds)). Run the normal
+tests and the authorized real-game acceptance before promotion. The archive and audit
+commands are described in [tpfre](../tools/tpfre/README.md#game-update-workflow-windows-pe-builds).
 
 ## The bridge: what travels over the link
 
@@ -376,7 +418,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (D17): sent whenever it changes, before, during and after a room's
     game; only the newest counts (bridge version 9). Since bridge version
     10 it also carries the rules the server offers, the player's saves
-    (newest 40, by name) and the one offered first (`start_save`), where
+    (newest 40, by name; since version 22 the newest 100, the player's
+    own only: no `autosave_…` or `tpf3mp_…` copies) and the one offered
+    first (`start_save`), where
     the room's world is in this game (`world`: none, fetching with its
     bytes, loading, playing) and how the game differs from the room's.
     Since bridge version 14 it carries the page of the server's public
@@ -390,10 +434,19 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     banner id of up to 32 bytes may name one; a member's portrait this game lacks is left
     out, for their default. Since bridge version 15 it carries the
     server's address (`server_address`) and the launcher's default server
-    (`server_default`), for the server setting.
+    (`server_default`), for the server setting. Since version 23 it
+    carries the launcher's log session (`log_session`, empty while
+    diagnostics are off), which the window shows with a Copy on its first
+    page and its Server page (approved D10 amendment).
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
+  - `Preview { from, preview }`: what another member's build tool shows
+    now, an action's payload, or `None` once it shows nothing (bridge
+    version 24; "Build previews" below). Sent only while the game plays the
+    room's world, and only the latest of each member: one still waiting in
+    the agent's queue is replaced. The gate drops one that arrives while a
+    world loads.
 - **From the hook (`ToAgent`):**
   - `Hello`: always first, with the game build.
   - `Loaded { next_step }`: the ordered world is loaded.
@@ -451,8 +504,21 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     owner's pick of the save the room starts from, in its lobby (empty
     for none; LOBBY.md, "Changing the start save in the room"), and the
     lobby's room carries the save it starts from and the owner's upload
-    of it.
+    of it. Since version 25, `ChooseRoomMods { save, map, year, mods,
+    params }` is the owner's pick on the game's Load Game page: the save
+    (absent to keep the room's), the mods in the game's load order with
+    their names and sources, and the settings of the room's mods and the
+    game's own (id `""`) (LOBBY.md, "The room's save and mods"); and
+    `RescanMods` asks the launcher to find the installed mods again after
+    an install from Mod Hub. The lobby carries the room's mods with this
+    player's version of each and whether they have it (`LobbyRoomMod`),
+    and how each member's game differs (`LobbyMember::differs`); `Begin`'s
+    `ModLists` carry the room's settings of its mods.
   - `Log`: a line for the agent's log.
+  - `Preview { preview }`: what the player's build tool shows now, for the
+    other members, or `None` once it shows nothing (`Session::preview`;
+    bridge version 24). The agent sends it on in the room's game only, and
+    not one over `MAX_PREVIEW`.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
   gate hands over, so an event for step `s` is applied after step `s - 1`
@@ -571,7 +637,7 @@ by hand (see [DEVELOPMENT.md](DEVELOPMENT.md)). On release day, what remains for
 ### The main menu's Multiplayer window
 
 The room's lobby is in the game (D17, as amended on 2026-09-30): the
-Multiplayer entry on the game's main menu (docs/LOBBY.md) opens a window
+Multiplayer entry on the game's main menu (docs/LOBBY.md) opens a page
 that connects, creates or joins a room, shows its players and their ready
 marks, chats, gets ready and, for the owner, starts the room's game. It
 drives the launcher that started the game, which still holds the
@@ -585,7 +651,20 @@ connection (D11): the window is only another front end of the launcher's
   hello, sends the lobby whenever it changes and carries out the window's
   actions. A room session's bridge takes the link over already greeted
   (`Bridge::greeted`), passes the lobby both ways (`BridgeOptions::lobby`)
-  and gives the link back when it ends (`Bridge::into_link`).
+  and gives the link back when it ends (`Bridge::into_link`). Before it
+  starts a game or begins a room, the launcher opens the link anew unless
+  a game is on it: the one it started, while it runs, or any whose hook
+  attached and whose process is still there, such as a game it took over
+  (`launcher::renew_unused_link`; a process the system cannot be asked
+  about counts as there). A game that closed never read what was sent
+  last (the room's end, the lobby's updates); the next game's hook,
+  finding that before the launcher's hello, would refuse the link and say
+  the game has no link to the launcher. The link is renewed then, not when
+  a game closes, because the launcher does not always see that: a game it
+  took over may only have fallen silent. Such a game counts as closed once
+  its hook fell silent and its process is gone; until then, and while a
+  room's session still lets go of a game that closed in it, the launcher
+  starts no other game.
 - **Reading the link at the menu.** At the main menu no step of the game
   runs, so nothing else reads the link. The window asks the hook for the
   lobby a few times a second; each request exchanges it through the step
@@ -730,22 +809,22 @@ for the table (`bridge.find`). Its contract is in
   one, scoped to that company (`tpf3mp_proto::Secret`); it goes to the room
   with the action and is never logged, and no refusal quotes it (version
   12).
-- `tpf3mp_native.take()`: the actions the room ordered for this simulation
-  update, as `action_to_lua` tables, or `nil` (below), and second, who
-  sent each, a list of player ids (64 hex digits) beside it ("Companies"
-  below), and third, each one's seal, `{ scope =, tag = }` (the tag as 64
-  hex digits), or `false` (version 12). A list's items are
-  in its table's array part, so `next` walks them in order. The game
-  copies a list it is handed (a stop's loading flags, a consist's groups)
-  into its own vector in the order `next` gives, and what a game script's
-  `update` returns reaches `postUpdate` as the game's own copy, whose
-  lists `next` walks in hash order all the same (build 40408: a bus line's
-  stops set to load grain, one cargo over from passengers). So `apply.lua`
-  hands the game every such list afresh, filled in order (`seq`).
+- `tpf3mp_native.take()`: marks a simulation update begun, so its
+  checkpoint can be read after the batch's last update. Runtime update
+  batches return `nil` actions; ordered actions use the event path below.
+- `tpf3mp_native.takeReplay(token)`: once, in the engine's `handleEvent`,
+  the actions ordered for the next room step, as `action_to_lua` tables;
+  second, each sender (64 hex digits); third, each seal, `{ scope =,
+  tag = }` or `false` (version 13). A stale or duplicate token returns
+  `nil`. Lists keep their array order; `apply.lua` fills every list passed
+  to the game afresh in order (`seq`), because the engine's Lua copies
+  can otherwise expose a list in hash order.
+- `tpf3mp_native.replayed(token, ok, why)`: completes after every action's
+  report and `state:set`; missing reports or a failed script hold the world.
 - `tpf3mp_native.log(line)`: a line for `hook.log`, marked `mod:`.
 - `tpf3mp_native.poll()`: in the GUI, every frame: what the hook asks of
-  it, once, `{ save = name }` or `{ load = name }`, or `nil` ("The room's
-  world" below).
+  it, once, `{ replay = token }`, `{ save = name }` or `{ load = name }`,
+  or `nil` ("Actions in the game" and "The room's world" below).
 - `tpf3mp_native.saved(name, ok, why)`: the GUI's answer to a save.
 - `tpf3mp_native.world()`: a world's GUI started. Before the room begins
   a game, the step gate's next call tells the agent the latest such world
@@ -757,17 +836,28 @@ for the table (`bridge.find`). Its contract is in
   below).
 - `tpf3mp_native.lanes(t)`: the lanes read there, a table from lane
   numbers to strings. Returns `true`, or `false` and why.
+- `tpf3mp_native.hash(s)`: the lanes' text hash of `s`, exactly what the
+  mod's Lua `hashStr` returns (`crate::lanehash`), without a Lua loop over
+  every byte ("What the lanes cost" below); `nil` without a string.
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
 - `tpf3mp_native.built(n)`: in the GUI: the build the module editor
   queued at click `n`, read by the hook, as game scripts see a proposal,
-  once; `nil` and why when it did not read; `nil` when click `n` was not
-  the module editor's ("The module editor" below). An optional function:
-  the bridge's version stays 9, and a mod or hook without it keeps the
-  module editor refused.
+  once, or a terrain tool's stroke as `{ terrain = grid }`; `nil` and why
+  when it did not read (a terrain tool's reason starts `terrain tool: `);
+  `nil` when click `n` was neither's ("The module editor" and
+  "Terraforming" below). An optional function: the bridge's version stays
+  9, and a mod or hook without it keeps both refused.
 - `tpf3mp_native.replaying(on)`: the game script begins or ends applying
   the room's actions, whose builds the hook lets through.
+- `tpf3mp_native.terrain(t)`: in the game script's `postUpdate`, while the
+  room's actions run: arms the next build it sends with the terraform grid
+  `t` (`{ x0 =, y0 =, width =, height =, cells = { ... } }`), which the
+  hook fills in at that build's apply; `true`, or `nil` and why.
+  `terrain()` disarms and answers whether a build was filled (`nil` when
+  none was armed). Optional, as `built`: without it no terraform applies
+  ("Terraforming" below).
 - `tpf3mp_native.applied(index, ok, entity, why)`: in the game script's
   `postUpdate`, after the batch's action `index` (from 1): whether it went,
   the entity it made, if any, and why not.
@@ -796,6 +886,10 @@ for the table (`bridge.find`). Its contract is in
   game script's `postUpdate` at a checkpoint: the lanes the hook wants
   written to its log entry by entry, and each entry ("Lane dumps" below).
   Optional, as `built`.
+- `tpf3mp_native.edgewatch()` and `tpf3mp_native.edgewatched(entity,
+  text)`: in a game script's `update`, the entities the edge watch reads in
+  this update, or `nil`; in its `postUpdate`, what it read of each ("The
+  edge watch" below). Optional, as `built`.
 - `tpf3mp_native.mods(list)`: the mods to load a save with, given the
   save's (names, one a line): that list, then those left out and those
   added, the same way, from the room's `Begin` (`tpf3mp_bridge::mods::plan`);
@@ -805,6 +899,9 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.personal()`: this player's personal mods, names one a
   line, or `nil`: the guards tell a personal mod's commands by it
   ("The player's commands" below). Optional.
+- `tpf3mp_native.preview(action)` and `tpf3mp_native.previews()`: in the
+  GUI, what the player's build tool shows, for the other members, and what
+  theirs show ("Build previews" below). Optional.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -822,22 +919,38 @@ That is every game Steam started (D11).
 ### Actions in the game
 
 A player's action happens in no game until the room orders it, and then in
-every game in the same simulation update:
+every game between the same two simulation steps, including while paused:
 
 1. The mod hands the action to `tpf3mp_native.command`. The step gate
    sends it to the room.
-2. The room orders it as an event for a step `s`. The session ends a
-   batch before every step with events (`Session::batch`), so `s` is
-   always the first update of a batch; the driver hands that batch its
-   actions (`lua::begin_batch`), and runs it.
-3. The mod's game script asks the hook in every `update`
-   (`tpf3mp_native.take`); the first update of the batch gets the actions
-   and returns them, and its `postUpdate` applies them through `api.cmd`
-   (`mod/tpf3mp_1/content/scripts/tpf3mp/apply.lua`).
-4. After the batch, the driver checks the actions were taken
-   (`lua::end_batch`). If they were not, the world ran step `s` without
-   them: none of those steps is reported and the world stands still
-   (fail closed).
+2. The room orders it as an event for step `s`. After step `s - 1`,
+   `StepDriver` gives the ordered actions to `lua::request_replay` and
+   holds updates. This applies to running rooms too, so every replica uses
+   the same engine phase regardless of when the resume arrives.
+3. The GUI polls a `replay` token (Lua contract version 13) and sends only
+   that token in the existing `tpf3mp/command` scripting event (a string
+   token, rather than an action table, so older saves already subscribe).
+   `guard.wakeReplay` can bypass the GUI guard for this wake only; it cannot send an action. The
+   native command loop runs outside `GameSim::Step`'s update loop.
+4. In the engine's `handleEvent`, `takeReplay(token)` takes the hook's
+   actions, origins and seals exactly once. The script uses its existing
+   `postUpdate` action processing through `api.cmd` and saves the registry,
+   companies and progression state. No update, monthly charge, progression
+   sample or checkpoint is requested by the wake. The ordered step scopes
+   the RNG seed for this processing and nested script events.
+5. Each action is reported with `applied`, including normal refusals. Only
+   after `state:set` does `replayed(token, ok, why)` complete the replay.
+   The driver then allows later actions, a save, a load or step `s`. A
+   missing report, failed wake, script exception or 30-second timeout holds
+   the world (fail closed). A hold or closed world invalidates delayed
+   wakes; duplicates and stale tokens take nothing.
+
+The world still runs the game's paused path while waiting: neither room
+steps nor game time advance, and the paused-tick fix keeps `tickCount`
+unchanged. Construction costs are charged normally. Existing update and
+checkpoint processing remains in `update`/`postUpdate`. The engine event
+path requires two-game acceptance on the supported game build; stand-in
+tests alone do not establish that native callbacks are synchronous there.
 
 Measured on build 40408:
 
@@ -900,16 +1013,23 @@ money, ran in the game script's `postUpdate`.
   remove, reputation lost) are logged and built through, as the tool
   builds once the player clicks (`ignoreErrors` true: with it false the
   game dropped such a build without a word, seen on build 40408);
-- `Loan`: the loan script's own event, `makeScriptingSendEventCmd("",
-  "Loan", "Obtain", { next, offer })` or `"Repay", { nil, loan }`, with the
-  tables the finance window sends;
+- `Loan`: for the room's first company, the loan script's own event,
+  `makeScriptingSendEventCmd("", "Loan", "Obtain", { next, offer })` or
+  `"Repay", { nil, loan }`, with the tables the finance window sends. For a
+  founded company, Take must match that company's saved active offer slot;
+  the room books it to that company and puts only its slot on cooldown;
+  Repay names one of its saved loans;
 - `Prospect`: the company script's own event,
   `makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
   companyEntity, townEntity, types, permitKey, cargoType })`, with the
   player's company, the town the registry names, and the industry types in
   the order the action carries them ("Prospecting" below);
+- `Perk`: the company script's own event, `MakeGreen` or
+  `startMarketingCampaign`, for the acting company, and for a campaign the
+  price booked to it after ("Company perks" below);
 - `Subsidy`: the subsidy script's own event, `makeScriptingSendEventCmd("",
-  "Subvention", "onAccept" | "onDecline", { uid })`, once every game has
+  "Subvention", "onAccept" | "onDecline", { uid })`, the accept with the
+  taking company's player entity (`tpf3mpCompany`), once every game has
   checked the offer against its own script's state ("Subsidies" below).
 
 Every other action is refused with a line in `hook.log`, the same on every
@@ -956,11 +1076,37 @@ stands still meanwhile:
   well report itself in between. Then `Session::loaded(next_step)`, and
   the room's steps run on. A world not up within `LOAD_PATIENCE` (600 s)
   is held.
+- **Cleaning up.** Each game's copies carry its process id, so every game
+  played would leave a whole world behind (`tpf3mp_room_<pid>.sav`, and a
+  `tpf3mp_<pid>_<event>.sav` whose save failed or was never moved). The
+  hook removes those of games no longer running
+  (`crate::worlds::sweep`): once its save folder is resolved, after it copies a room's
+  world in, and after a save it moved out. It fails closed:
+  - only files named exactly `tpf3mp_room_<pid>.sav`,
+    `tpf3mp_<pid>_<event>.sav` or the `.jpg` beside either (decimal
+    numbers as the hook writes them, no leading zero, same case), never
+    a folder or a link: every other save, the player's, stays;
+  - never this game's own, `<pid>` its own: its `tpf3mp_room_<pid>.sav`
+    is the world it is loading or plays, replaced by the next load;
+  - never another running game's, two games on one PC sharing the
+    folder: a process the hook cannot ask about counts as running.
+
+  Nothing needs an older copy: every load, a rejoin's, a resume's or a
+  late join's, copies the world the agent fetched from the room in
+  afresh. The Multiplayer window does not offer these copies as a world
+  to start a room from.
 - **The folder** is Steam's for the account playing,
-  `<Steam>/userdata/<account>/3493540/local/save`, from the registry
-  (Steam's `SteamPath` and `ActiveProcess\ActiveUser`), or else the one
-  account with a save folder for the game. Without one, a load holds the
-  world and a save is reported failed.
+  `<Steam>/userdata/<account>/3493540/local/save`, found when first
+  needed and then kept. First as Steam's API in the game names it
+  (`ISteamUser::GetUserDataFolder` through the game's `steam_api64.dll`),
+  which works under Proton too, where the registry names Proton's
+  stand-in for Steam, without accounts' folders. Else under Steam's
+  folders: the registry's (`SteamPath`, `ActiveProcess\ActiveUser`),
+  Program Files', and under Proton the Steam client's that Proton names
+  (`STEAM_COMPAT_CLIENT_INSTALL_PATH`, through drive `Z:`), for the account
+  playing or else the one account with a save folder for the game. The
+  hook's log says which. Without one, a load holds the world and a save
+  is reported failed, with why for both ways.
 
 #### Loading from the main menu
 
@@ -1083,6 +1229,54 @@ money lanes changing alike after the build
 (`investigation/dayone-2026-09-29/6-determinism.md`; the edge lane is
 still unread there).
 
+#### A world the room did not load
+
+A room's world is replaced only by a load the room orders: its first
+world (the start save, or the owner's world saved before step 1 and
+loaded by every game, the owner's too: "The first world" in
+[PROTOCOL.md](PROTOCOL.md)), a rebase after a divergence, a rejoin. Each
+one is the same save, at the same room step, in every game. A new world
+generated in the room's lobby (**New world: choose map and settings**, the
+stock New Game page) takes that path too: the owner's game has it up when
+the room starts, the room has it saved before step 1, and every game
+loads that save.
+
+A world the player starts on their own after the room's world closed
+does not. On 2026-10-02 both games of a running room came to play a
+freshly generated world started from the game's own menus: neither
+launcher fetched a world from the room between the start save and the
+divergence. Each game's step gate,
+still following the room, ran the new world from whatever room step the
+room had reached when it came up, with no load and no
+`playing the room's world from its save, from step N` line. At room step
+450 one game's world had run 58 updates and the other's 75. The same
+`CompanyOp` applied at game time 9800 in one game and 13200 in the
+other, and created different entities (47426 and 47334). The subsidy
+offers parted first, and the room saw the split at step 2250. The owner's
+game then saved its new world for the room as if it were the room's.
+
+So the driver marks the world it takes for the room
+(`crate::step::WorldMark`, taken when a load of the room's is done or the
+owner's world is taken at a `Load` without a file):
+
+- `closed`: the worlds that closed in this game (`CMenuUI::m_game`
+  cleared, seen by the menu's frame), other than for a load the hook
+  started (`lua::load_started`), which closes the world it was asked in;
+- `started`: the worlds whose GUI started (`tpf3mp_native.world`), which
+  decides only where the hook cannot see a close (no `m_game` test in the
+  profile).
+
+In the room's game, with no load of the room's under way, a world up
+with another mark than the room's is none the room loaded. The step's
+detour holds it for good before it runs a step or answers a `Save`
+(`holding the world (fail closed): this game has a world up the room did
+not load ...`). At the main menu after the room's world closed, the menu
+says once that a world started now is held (`at the main menu: the
+room's world closed in this game ...`). A load the room orders there (a
+rejoin, a rebase) takes a new mark, and the room's steps run on. To play
+the room's world again, the player leaves the room and joins it again,
+which loads its latest save.
+
 ### The player's commands
 
 In the room's game a player's command runs in every game at the same
@@ -1182,16 +1376,30 @@ reference of its own to either. Once linked, the GUI wraps every
   line took its stops one by one as in single player (build 40408). So
   far:
   - loans, the finance window's `makeScriptingSendEventCmd("", "Loan",
-    "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms,
-    which every game's game script replays through the loan script's own
-    event;
+    "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms.
+    The first company uses the loan script's event; founded-company offers
+    and loans are checked and booked by the room's companies module;
   - prospecting, the construction menu's `makeScriptingSendEventCmd("",
     "Companies", "spawnIndustry", …)`, as a `Prospect` action ("Prospecting"
     below);
   - taking a rank, the company window's `makeScriptingSendEventCmd("",
     "Companies", "applyLevel", { level })`, as an `ApplyRank` action
-    ("Company ranks" below). The company's other events (greening an
-    industry, `MakeGreen`; a marketing campaign) stay refused;
+    ("Company ranks" below);
+  - the construction menu's perk tools, `makeScriptingSendEventCmd("",
+    "Companies", "MakeGreen" | "startMarketingCampaign", …)`, as a `Perk`
+    action ("Company perks" below), refused in the sender and in every
+    game's replay until `acceptance.lua`'s `perks` is turned on after a
+    two-player game (COVERAGE.md);
+  - a town building's Historic Preservation checkbox
+    (`makeTownBuildingSetBlockedDevelopmentCmd`, the town building window's
+    `HistoricBuildingCard`), as a `Preserve` action: the construction the
+    building stands in, by its file and position, and the building's index
+    in that construction's town buildings (`capture.townBuildingOf`: the
+    construction the game names for it, else the one whose list has it;
+    INFERRED that the window's entity is the listed one). Every game sets
+    the building at that index through the same command. Refused in the
+    sender and in every game's replay until `acceptance.lua`'s
+    `preservation` is turned on after a two-player game (COVERAGE.md);
   - answering a subsidy offer, the subsidy window's
     `makeScriptingSendEventCmd("", "Subvention", "onAccept" | "onDecline",
     { uid })`, as a `Subsidy` action naming the offer by its number and
@@ -1201,10 +1409,24 @@ reference of its own to either. Once linked, the GUI wraps every
     told the player in the game bar;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position and its index among that construction's depots, an
-    airport's second hangar say; a depot no street reaches by the
-    construction that lists it; the consist part by part, as the store configured
-    it), selling, putting on a line, and the vehicle window's stop, start,
-    to the depot (sold there or not), reverse and depart; replacing
+    airport's second hangar say. A construction's depots are its
+    `depots`, then its subconstructions that are depots: an airfield's or
+    airport's hangar is its hangar module's subconstruction, which the
+    store buys at (build 40408). The construction is the one the street
+    connector names for the depot, else for the depot as a subconstruction,
+    else the one construction listing it; a depot two constructions list,
+    or one its construction does not list, is refused at the click, never
+    bought at the first depot. Every game refuses a purchase naming a depot
+    the construction does not have, saying how many it has: an airfield or
+    airport built without its hangar module has none, and a harbour never
+    has one, ships being bought at a ship depot. With more than one company,
+    every game's replay also requires that the depot's `PLAYER_OWNED` is the
+    acting company; another company's depot and a depot with no readable owner
+    are refused. With one company, the game's native purchase behavior stays.
+    The consist part by part,
+    as the store configured it), selling, putting on a line, and the vehicle window's stop, start,
+    to the depot (kept: sell-on-arrival is refused because build 40408 crashes
+    at arrival), reverse and depart; replacing
     (`makeVehicleReplaceCmd`, the vehicle window's "modify" and the store's
     "replace", `ReplaceVehicle`). The store sends one command per vehicle,
     a group's vehicles one by one, and none with a callback
@@ -1319,45 +1541,106 @@ state, which the game saves with the world:
   ownership.
 - *Who acted.* The hook hands each ordered action to the game script with
   the player who sent it (the Lua link's version 10, `tpf3mp_native.version`:
-  `take()` answers the actions
-  and, second, each one's sender as 64 hex digits, and since version 12
+  `takeReplay(token)` answers the actions
+  and, second, each one's sender as 64 hex digits, and
   third, each one's seal; `status()` names each
   player's `id` and the local one's `me_id`). The game script books the
   action to that player's company: `apply.lua` puts the company's player
   entity where it put the save's player before (a build's `Context.player`
   and its constructions' and stops' `playerEntity`, `makeVehicleBuyCmd`'s
   and `makeLineCreateCmd`'s player, prospecting's `companyEntity`).
+- *What a company builds* is its own: after a construction (a station,
+  depot, airport, harbour) is built, every game hands the construction,
+  its depots, its stations, the station groups they alone make up and
+  its own (frozen) edges with what stands on them to the acting company
+  with `makeEntitySetPlayerCmd` wherever anyone else owns them, or no one,
+  as the game's missions hand one over (`setPlayerForConstruction`), and
+  hook.log names each (`the new <file> made the acting company's`). An
+  owner is read through the component's binding (`PLAYER_OWNED` is
+  userdata on build 40408; read as a table only, every owner came back
+  nil until 2026-10-02, so nothing counted as any company's). If the game
+  cannot find the built construction, read an owner, or complete an
+  ownership command, the action is reported as not applied with the failure.
+  The engine may already have built the construction before this check, so
+  a failed settlement can leave that partial result in this game.
 - *What another company owns* is refused, the same in every game, naming
   its owner: an edited, bulldozed or removed construction, road or track
   edge, or stop, and the vehicles and lines an action names, when their
   `PLAYER_OWNED` player is another company's. What no company owns (the
   towns' roads) stays everyone's.
 - *Loans.* The game's loan script (`::/game_mechanics/finance/loan.gs`)
-  keeps the save's own player's loans only. Another company borrows on the
-  terms the loan script offers (its `availableLoans`), and the room keeps
-  that loan: booked to the company as the game books one (a `LOAN` journal
-  entry, `makeJournalBookAssetCmd`, which raises the account's balance and
-  loan alike, seen on build 40408), and paid back each month of the game's
-  calendar as an annuity, the interest as `INTEREST` and the rest as
-  `LOAN`, or all at once. Each company pays its own loans only. Paying
-  one back names it by its id and amount: the game's finance window lists
-  the loan script's loans, the room's first company's, whose ids count
-  from 0 as the room's count from 1, so another company's Repay there is
-  refused unless the amount is its own loan's too. The game script books the months since the last
-  on the first update of a new month, in every game alike.
+  keeps the save's own player's loans only. Each founded company has its
+  own copy of the available loan slots in the room's saved roster. It starts
+  from the native offers, replacing a slot on the first company's cooldown
+  with a fresh offer of that kind. A Take must match the exact type, amount,
+  duration and rate in one of that company's active slots; forged terms and
+  reused or cooling-down offers are refused before any journal entry is
+  booked. On a valid Take, that slot enters its own 4-to-8-month cooldown,
+  as the native loan script does, and `loan_util` draws its replacement
+  when the cooldown expires. The room's update seed makes those draws the
+  same in every game. The native loan table is never changed for a founded
+  company's Take. The room books the money to that company as the game books
+  a loan (a `LOAN` journal entry, `makeJournalBookAssetCmd`, which raises the
+  account's balance and loan alike, seen on build 40408), and pays it back
+  each month of the game's calendar as an annuity, the interest as
+  `INTEREST` and the rest as `LOAN`, or all at once. Each company pays its
+  own loans only. Paying one back names it by its id and amount. A company
+  has four loans at most, as the loan script allows. In GUI states the
+  finance window shows a player of another company that company's persisted
+  offers and loans: `tpf3mp/follow.lua` answers its loan-script
+  `GAME_SCRIPT` component with `companies.loanTable`, so Obtain and Repay go
+  to the room as that company. The room's first company continues using the
+  native loan state and finance window. The game script books the months
+  since the last payment on the first update of a new month, in every game
+  alike.
 - *Subsidies.* The game's subsidy script
-  (`::/game_mechanics/subventions/subventions.gs`) draws its offers in
-  every game alike: in its `update`, from the world and the game time,
-  with `math.random` reseeded per call ("Seeds, as built"); INFERRED from
-  its code (build 40408), not yet compared between games. Offers belong to
-  no company. Accepting one (`Subsidy::Accept`) is checked by every game
-  against its script's state first: the offer under that number must
-  still be offered, of the kind the action names, and the only offer under
-  that number; else it is refused, alike in every game, naming who took
-  it ("the subsidy was taken already, by Rival"). So when two companies
-  accept one offer in the same step, the first in the room's order gets
-  it. Then the script's own `onAccept` runs, which books the money up
-  front. The script books every amount, up front, the reward for
+  (`::/game_mechanics/subventions/subventions.gs`, `subventions.script.tl`
+  on build 40408) draws its offers in its `update`: once the last offer is
+  older than an interval that follows the first company's rank
+  (`subvention_util.getSpawnIntervalDuration`), it reseeds `math.random`
+  from the game time (`math.randomseed(gameTime + math.random(0, 1000))`,
+  after the hook's own reseed of the call, "Seeds, as built"), picks a kind
+  and lets the kind draw the offer from the world (towns and industries in
+  the engine's order, `gridCollision` weights, the first company's
+  balance). So two games draw the same offers only while their worlds and
+  **game times agree at every room step**. They did not in a room seen on
+  2026-10-02 (two games): its world was replaced while the room ran (a new
+  world from the lobby, not the room's load "from its save, from step N"),
+  each game closed the old world and stepped the new one from another room
+  step, so at room step 450 one game's new world had run 58 updates
+  (`ticks: step 450: tickCount=58`) and the other's 75, the same action
+  applied at game time 9800 in one and 13200 in the other, and even the
+  company the room founded got another entity in each (47426 and 47334).
+  The offers then differed, an accept applied in one game and was refused
+  in the other ("the subsidy is no longer offered"), and the room split,
+  noticed only at step 2250 (lane 3): the economy lane read the save's own
+  player alone, whose subsidy money nets to nothing. Two changes make such
+  a split show at once and say where: the economy lane carries every
+  company's balance and the subsidy script's offers, taken, completed and
+  failed subsidies with their terms (`tpf3mp/subsidies.lua`, `rows`), so
+  the first checkpoint after the offers part diverges in lane 4, and its
+  dump lists each subsidy; and the mod's game script says the offers in
+  `hook.log` at a checkpoint whenever they changed (`subsidies at game
+  time T: last=... modifier=... pause=...; N subsidies`, then one
+  `subsidy: <offered|taken|completed|failed> <uid> <kind> spawn= accepted=
+  completed= upfront= complete= failure= deliver= delivered= lapses=
+  taker=` line each), so two games' logs show where they part. A world
+  stepped from different room steps is the step gate's to hold, not the
+  subsidy script's. A world loaded from the room's save starts every game
+  at the same step and game time; that its offers agree there is INFERRED,
+  and these lines check it in the next two-game test with subsidies on.
+  Offers belong to no company. Accepting one (`Subsidy::Accept`) is
+  checked by every game against its script's state first: the offer under
+  that number must still be offered, of the kind the action names, and the
+  only offer under that number; else it is refused, alike in every game
+  whose world agrees, naming who took it ("the subsidy was taken already,
+  by Rival"). So when two companies accept one offer in the same step, the
+  first in the room's order gets it, and the offer leaves every company's
+  list. A game cannot refuse alike what only it lacks: its world already
+  differs from the others', and the economy lane reports that at the next
+  checkpoint. Then the script's own `onAccept` runs, with the taking
+  company's player entity (`{ uid, tpf3mpCompany }`), and books the money
+  up front. The script books every amount, up front, the reward for
   completing and the penalty for failing, to `getPlayer()`, the room's
   first company in a game script's state (`subvention_util.tl`,
   `applyBonusMalus`). For a subsidy another company took, every game moves
@@ -1365,12 +1648,43 @@ state, which the game saves with the world:
   first company's account and into the taker's): the money up front at
   once, and the reward or penalty on the first update of the game day
   after the script completed or failed it, while the room keeps a record
-  of who took which (`roster.subsidies`), saved with the world. Declining
-  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone for
-  every company, as in single player. Not carried: the script counts any
-  company's deliveries towards a subsidy, and its reputation and town
-  growth bonuses are the towns', as the game has them; the pace of new
-  offers follows the first company's rank (`subventions.script.tl`).
+  of who took which (`roster.subsidies`), saved with the world. When the
+  taker is gone (dissolved) by then, its reward and its penalty are no
+  one's: the first company gives back the reward, or gets back the
+  penalty, the script booked to it, so it ends with nothing of a subsidy
+  it did not take. Companies do not merge in a room. Declining
+  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone
+  for every company, as in single player.
+  *Progress is the taker's.* Each kind counts progress in its own
+  `handleEvent`, for anyone's transport: `deliver_passengers` completes
+  when a person starts a direct line between its towns
+  (`OnStartedLineUsage`, SimPersonSystem), then doubles that line's
+  tickets; `deliver_cargo` and `deliver_cargo_town` count each cargo
+  delivered to the industry, or to the town's buildings, by the line that
+  carried it (`OnCalcTicketPrice`, TransportVehicleSystem), then double
+  those lines' cargo. The subsidy script reaches a kind's functions
+  through the kind's resource at every call (`util.useFn(scriptFile ..
+  ".handleEvent")`). The mod's run script (`mod.script.lua`, `runScript`
+  in `mod.json`) adds a resource modifier (`addModifier("loadGameRes",
+  subsidies.redirect)`) that points the four base kinds' resources at
+  `tpf3mp_sim/subsidies.script.lua`, which wraps each kind's own table:
+  on the room's `onAccept` the wrapper keeps the taker in the subsidy's own
+  data (`tpf3mpTaker`, in the script's state, the same in every game), and
+  from then on hands the kind only the entries whose line the taker owns
+  (`PLAYER_OWNED`), mapping the ticket multipliers it answers back to the
+  event's own entries. Resources are the whole game's, so every Lua state
+  runs the same wrapper. A subsidy with no taker kept (single player, a
+  save from before) counts everyone's, as the game does. Only while
+  `acceptance.subsidies` is on. The modifier's name is read from the
+  binary (`loadGameRes`, beside `loadConstruction` and `loadGameScript`):
+  INFERRED to be the one for generic resources until a game shows
+  `taker=` on a taken subsidy and only the taker's deliveries in
+  `delivered=`. Not carried: `deliver_workers` completes when the
+  industry's workers are boosted (`industry_util.isPersonCapacityBoosted`),
+  a state of the industry the engine keeps for no company, so anyone's
+  commuters complete it; the reputation and town growth bonuses are the
+  towns', as the game has them; the pace of new offers follows the first
+  company's rank (`subventions.script.tl`).
 - *Colours.* With more than one company, a vehicle bought is painted in its
   company's colour (`makeEntitySetColorCmd`), and a new colour repaints the
   company's vehicles, in the engine's own order. With one company the
@@ -1392,6 +1706,27 @@ state, which the game saves with the world:
   colour, and the HUD takes only a layout from the recipe ("Recipe child
   must be a layout"). The game's log says what became of the markers
   (`[tpf3mp] company markers: ...`).
+- *Capitals.* Build 40408 crowns one town on the map, the player's
+  capital: the town label's recipe (`town_hud_react_util.TownHudIcon`)
+  asks `town_util.isCapital(town)`, true for the town closest to
+  `getPlayer()`'s PLAYER `headquarters`, and gives that label the class
+  `capital-city` (blue, `hud_icon_master.css.lua`) and a crown; nothing
+  else in the GUI asks it. `gui/tpf3mp/capitals.res.lua`, a
+  `react-replacement-config`, in each GUI Lua state that renders recipes
+  and never in the simulation's, while the room has more than one company:
+  has `isCapital` answer true for every live company's capital as well
+  (each company's PLAYER `headquarters` and its closest town, read again
+  every 10 seconds, `tpf3mp/capitals.lua`), and replaces `TownHudIcon`
+  with a recipe that calls the game's inside a layout of its own, with a
+  line under it, "Capital of Rival" ("... and Pals" when two share a
+  town), and, for a capital not the viewer's company's, the class
+  `tpf3mp-capital-<n>` of that company's palette colour (the nearest for
+  a colour of its own); `gui/tpf3mp/tpf3mp.css.lua` colours the label's
+  tile and line in it in place of the game's blue. The viewer's own
+  capital keeps the game's blue, as it is the company `getPlayer()`
+  answers there (*The GUI's company*). The game's log says what became of
+  it (`[tpf3mp] capitals: ...`), including how many capitals each state
+  read: none where a state cannot read the companies' PLAYER.
 - *The GUI's company.* TF3's windows ask `api.engine.util.getPlayer()`
   whose money to show and what is the player's own ("Foreign" otherwise).
   In the GUI state the mod replaces it (a callable table on build 40408,
@@ -1411,6 +1746,84 @@ state, which the game saves with the world:
   (`status().me_id`) and the game script's roster every 2 seconds
   (`hook.log`: `the GUI's company follows the player's in the HUD's
   state`).
+
+  Seen again on 2026-10-02 (build 9ad8837, competitive room): with every
+  state saying it followed, the line manager showed the first company's
+  stations, not Rival's own, and Rival's stops were "another company's".
+  Every one of those views decides "mine" in Lua at call time
+  (`scripts/entity_util.tl`'s `isOwnedByPlayer` and
+  `isOwnedByPlayerOrNotOwned`, and `getLinesForPlayer(getPlayer())`,
+  `requireOwnedByPlayer = getPlayer()` in `line_vehicle_mgmt/manager_window.tl`,
+  `station_group.tl`, the vehicle and depot lists, the finance window's
+  `getPlayersBalance(getPlayer())`), so the state's getPlayer was the
+  game's own when they ran. No native player stands behind them that the
+  hook could write instead: the GUI's `GameState` (`CGame+0x1e0`, where
+  getPlayer's answer and the bulldozer's list come from, `+0x20c`) is one
+  of the simulation's two buffers (the probe, SEEN: `the GUI's is buffer
+  [0]`, then `[1]`), so writing it would change the simulation.
+  INFERRED: the state's api was made anew after the mod's script ran (a
+  React root reloading its interfaces), and the install, once per Lua
+  state (`package.loaded["tpf3mp.followed"]`), never came back. Now
+  `follow.ensure` puts the company in front of the current api's getPlayer
+  whenever it is not there, and the
+  game's two ownership tests in each state's `entity_util` call it before
+  they answer, so the first window that asks after a new api gets the
+  company. Where a state cannot read the roster, the company the
+  Multiplayer plugin's state notes for the hook (`tpf3mp.company`, which
+  the native tools already act on) answers (`follow.noteSource`). Each
+  state says what its getPlayer answers, and when it had to put the
+  company back:
+
+  ```
+  the GUI's getPlayer answers the player's company 372630 (the HUD's state)
+  the GUI's getPlayer was the game's own again (a new api in this state); it follows the player's company again (the HUD's state)
+  ```
+
+  No state saying it answers the company while a window still shows the
+  first company's things would mean a Lua state the mod's scripts never
+  run in.
+
+  The notes live as long as the game's process, the entities they name
+  as long as their world. When a world closes the hook forgets
+  `tpf3mp.company` and `tpf3mp.companies` (`lua::forget_world_notes`,
+  from the menu frame that sees `CMenuUI::m_game` cleared), and says so:
+
+  ```
+  menu: the closed world's company note(s) forgotten (2): the next world's views follow its own room's roster
+  ```
+
+  Kept, the next world's GUI answered getPlayer with the last world's
+  company, natively and through `follow.noteSource`, and the game's own
+  game bar asked `getPlayersBalance` of an entity that world does not
+  have: the engine's `Account` lookup is unchecked, so a brand-new world
+  started from the Multiplayer lobby crashed in its first frame
+  (2026-10-02: an access violation reported as a hang, entity 372610;
+  then `Engine.h:323 GetComponentDataIndex: Assertion 'it !=
+  components.end()'` for entity 63030, an animal there, followed by the
+  shutdown's "Buffer has not been destroyed" render errors).
+- *In a competitive room* the GUI founds the player a company of their
+  own (`tpf3mp.script.lua`, `foundOwnCompany`): the same `CompanyOp`
+  `Create` **Found** sends, named `<name>'s company`, sent by the
+  player's own game, so the room orders it for every game like any other
+  action (D8: the server never writes an action). Only while
+  `status().competitive` is true, the roster is read and says the player
+  plays for the room's first company, and no company of the room, dissolved
+  ones included, was founded by them; and not before four readings of the
+  room since the world's GUI linked (`OWN_SETTLE`, about a second), so a
+  world that is still catching up has applied what the room ordered
+  before. A reading that lacks the roster or the play style delays it no
+  further: the readings need not agree in a row. At most once a room and
+  player in this Lua state. Each reason not to found is said once in
+  `hook.log`: `not founding the player's own company: <why>` (the
+  launcher has not said whether the room is competitive, the room is
+  co-op, the room's companies are not read yet, the player plays for
+  <company>, the player founded a company in this room before, ...).
+  The player's name is their entry's by id in `status().players`, else
+  the first eight hex digits of their id. The name is the same each
+  time, so a second one sent before the first arrives is refused alike in
+  every game; with another player of the same name in the room, the first
+  four hex digits of the player's id follow it. `hook.log`: `a competitive
+  room: founding the player's own company`.
 - *The Multiplayer window* lists the companies with their money and
   players, the one the player plays for first with its colour to choose
   (the game's colour chooser, `ColorChooserButton`, with the companies'
@@ -1438,8 +1851,13 @@ state, which the game saves with the world:
   it longest (the roster's members are kept in the order they joined),
   alone gives it a password (`CompanyOp::Lock`), takes it away
   (`Unlock`), sends a player out (`Dismiss`: they play for the room's
-  first company again) and opens or closes its stations
-  (`ShareStations`). The room's first company is everyone's: no head, no
+  first company again) and opens or closes its stations by default
+  (`ShareStations`), or for one other company over the default
+  (`StationAccess`, action schema 23; `open` nil puts it back to the
+  default; the roster keeps it as the company's `access` list). The
+  line manager offers a station, and every game refuses a line's stop,
+  by the same rule (`companies.lets`, `mayUse`). The room's first company
+  is everyone's: no head, no
   password, and its stations stay open. `hook.log` names why a refused
   action was refused.
 - *Passwords.* The window hands the password to `command` beside the
@@ -1464,13 +1882,22 @@ state, which the game saves with the world:
   `isOwnedByPlayerOrNotOwned`). In the GUI state the mod wraps that test so
   it also takes a station group or station construction of a company that
   keeps its stations open; `hook.log` says `the line manager offers other
-  companies' open stations`. That the line manager and the mod share one
-  `entity_util` table (one `ug_require` cache) is INFERRED. Every game
+  companies' open stations`. The wrapper is installed in each GUI Lua
+  state, including the HUD's separate state. Two-game GUI acceptance on
+  2026-10-02 confirmed own closed stations, explicit grants and default
+  grants for another company's full bus station and roadside stop.
+  Build 40408 also reports some station clicks as TransportNetworkEdge
+  details: the HUD's `line_util.convertDetails` wrapper recovers ordinary
+  station details after checking access. Genuine edges and explicit terminal
+  selections retain their native interpretation. Only the HUD loads this
+  module, because its React builtin recipes are unavailable in the
+  game-script GUI state. Every game
   checks each stop of a new or changed line (`apply.lua`, `lineComponent`,
   `companies.mayUse`) and refuses one at a closed company's station, naming
   it. TPF2 had to patch a native station filter for this (TPF2MP's shared
-  stations); on TF3 the filter is Lua, and no native patch looks needed
-  (INFERRED: not seen in a game). A company's vehicles still use its own
+  stations); TF3's ordinary picker was exercised without a native ownership
+  patch. Native PLAYER_OWNED components are userdata; `ownerOf` reads their
+  player field instead of discarding them as non-tables. A company's vehicles still use its own
   depots, as TPF2MP left `FindPathToDepot`'s owner check alone.
 
 ### Prospecting
@@ -1526,7 +1953,7 @@ then in every game of the room, at the same step:
 ```
 prospecting for ::/cargos/coal/coal.cargo near town-3 (1234): coal_mine
 prospecting began: ::/cargos/coal/coal.cargo near town-3 at game time 5400000
-the game applied 1 action(s) the room ordered
+the game applied the room's actions between simulation updates
 ```
 
 and, one to six game months later, again in every game at the same step:
@@ -1544,6 +1971,38 @@ alone (`company.script.tl`, its update looks at `getPlayer()` only, in the
 engine state): a prospection of another company is kept and its permit
 used, but its outcome is never drawn (seen in the scripts; not carried yet,
 docs/PLAN.md).
+
+### Company perks
+
+The construction menu's perk tools (`gui/construction/tools/`, build
+40408) each send the company script one event, which spends the perk's
+permit for the company and hands the perk on:
+
+- **Industry Greenification** (`industry_greenify_tool.script.tl`) sends
+  `Companies` `MakeGreen` with the industry part the player picked; the
+  company script tells the emissions script to cut its emissions. The
+  guard captures it (`capture.greenify`) as `Perk::Greenify`, the industry
+  by its canonical id: the registry binds industries by their
+  constructions (`tpf3mp/registry.lua`), and every game takes that
+  construction's one industry part (`capture.industryPart`). A
+  construction with more than one industry is refused, as no id tells its
+  parts apart.
+- **Marketing campaign** (`marketing_campaign_tool.script.tl`) sends
+  `Companies` `startMarketingCampaign` with the town and the campaign's
+  terms (`durationMs`, `lineCostFactor`); the company script starts it in
+  the towns script. The tool books its price in the event's callback with
+  `makeJournalBookAssetCmd`. The guard captures the event
+  (`capture.marketing`) as `Perk::Marketing`, with the price the tool
+  charges in that year (`capture.marketingCost`, the tool's own formula);
+  every game checks the company can pay it, starts the campaign through
+  the company script and books the price itself. The tool's own booking,
+  sent from its callback, is neither sent nor refused (`guard.FOLLOWS`),
+  so the price is paid once, in every game.
+
+Both are refused for another company, an industry or town the registry
+cannot name, and, until a two-player game shows matching permits, town
+reputations, emissions and money, by `acceptance.lua`'s `perks` gate in
+the sender and in every game's replay.
 
 ### Company ranks
 
@@ -1629,10 +2088,82 @@ What the mod does, with more than one company in the room:
   rank. With one company, the game's own counts. `hook.log`: `the game's
   permits count each company's own constructions (N company_util
   table(s))`, and the same `in the HUD's state`.
+- **In the game scripts' GUI state** too, where the game's company script
+  checks a construction's permits as the tool proposes it
+  (`company.script.tl`, `builder.proposalCreate`: an error and
+  `skipRender`, so the tool shows no preview and builds nothing): the mod's
+  game script's `guiHandleEvent` puts on, once a state, getPlayer as the
+  player's company (`follow.lua`), the company's own rank
+  (`progression.follow`) and its own permit counts (`followPermits`), each
+  a no-op where another GUI state sharing the tables did first. Without
+  them a founded company's headquarters showed no preview (2026-10-01): the
+  script read the save's player's rank and counted every company's
+  headquarters. `hook.log`: `the game scripts' GUI state: getPlayer follows
+  the player's company; ranks are each company's; permits count each
+  company's own constructions`. The executable has no headquarters check
+  of its own in the construction tool: `"headquarters"` is read only by the
+  proposal's apply (`sub_9f96e0`, which sets the paying player's
+  headquarters) and the Lua bindings' setup.
 - After a headquarters is built, every game logs what the engine made of
-  it: `headquarters for company entity <e>: its PLAYER names <entity>`
-  (INFERRED that the engine sets `headquarters` for the paying company's
-  player entity; this line says, in a real game).
+  it: `headquarters for company entity <e>: its PLAYER names <entity>`.
+
+What a headquarters gives, and to whom (build 40408, its scripts and its
+executable, read 2026-10-01):
+
+- **Its town's growth.** The construction carries `town_growth` metadata:
+  experience +5% (`landmarks/hq/headquarter.script.tl`), +1% more for each
+  medium wing, and reputation recovery +1% for each large wing (the
+  modules' metadata, summed by `headquarter_addon.script.tl`). The game's
+  town script (`game_mechanics/towns/towns.script.tl`,
+  `updateConstructions`, every 20 updates) sums that metadata of every
+  construction in the world, **whoever owns it**, onto the town closest to
+  it (`landmarks/landmark_util.tl`, `collectTownGrowthMetadata`, without
+  `playerOwnedOnly`); the town's experience then grows by
+  `1 + xpIncrease` (`town_util.getXpFactor`, `town_growth.script.tl`), its
+  reputation recovers faster (`applyEventDecay`), and its "Bonuses" rating
+  in the town window shows Excellent instead of Good
+  (`town_util.getRatingBonuses`). So each company's headquarters gives
+  its town what a single player's gives, in every game alike, at the same
+  step: the mod adds nothing to it. Two headquarters closest to one town
+  add up, as the game adds up any landmarks there.
+- **Workplaces**: 24 industrial places (`personCapacity`), for any owner.
+- **Nothing per company.** No rank, experience, permit or company value
+  comes from having one: the company's experience is the world's
+  population (D23), the headquarters is itself a permit (rank 1) and its
+  wings are permits by rank (`rankAndPermits`, the company window's
+  "Headquarters Upgrades"), and `getCompaniesValue()` has no headquarters
+  term (`api/tealdef/api/type.d.tl`, `CompanyValue`).
+- **Its PLAYER `headquarters`.** The engine sets it in the build's apply
+  (`apply_proposal.cpp`, `sub_9f96e0`, rva 0x9fd78a-0x9fd9b0): for each
+  construction added whose description's company metadata says
+  `headquarters`, for the construction's own `playerEntity` (its assert
+  "ce.playerEntity != ecs::Entity()"), and a removed one clears it for its
+  owner. The room's builds name the acting company as `playerEntity`
+  (`apply.lua`), so each company's PLAYER names its own (read statically;
+  the log line above shows it in a real game). Only the GUI reads it: the
+  town's capital badge (`town_util.isCapital`), the "Headquarters"
+  tooltip and selection (`game_tooltips.tl`, `view_manager_util.tl`),
+  all through `getPlayer()`, which the GUI's states answer with the
+  player's company (`tpf3mp/follow.lua`): each player sees their own
+  company's town as the capital. The native selector filter
+  (`UI::CreateSelectorFilter`) reads the local player's, but selects any
+  owned construction anyway.
+
+With more than one company, at each of the companies' samples (four times
+a game month, `tpf3mp/progression.lua`), each game logs every company's
+headquarters and its town's bonus, read only, a line again only when it
+changed:
+
+```
+headquarters: Rival #1: headquarters 701 (a construction), owned by 901; closest town 31 (Ashford): on it xp +0.05, reputation recovery +0.00; the game's town script applies xp +0.05, reputation recovery +0.00 there
+```
+
+The headquarters is the one the company's PLAYER names; "owned by" another
+entity than the company's, "no construction", or a town script that
+applies less than what is on it, is a fault to report. The report is
+bounded and never waits: a few engine reads for each of at most eight
+companies, no pass over the world's constructions, nothing more while no
+company has a headquarters, every read in a `pcall`.
 
 Once a world is up, with more than one company, each game logs what each
 company owns as the engine records it, read only: `ownership: <company>
@@ -1647,9 +2178,350 @@ company the player plays for, so a company's own stops and stations are
 another player's to them (no snapping), and the HQ's Configure opens the
 native module builder under the same player (its button shows for every
 headquarters: `perk.tl` gates it on `isHeadquarters` alone, and its click
-on `entity_util.isOwnedByPlayer`, which the mod answers). Not solved yet:
-see the investigation of the engine's player in
+on `entity_util.isOwnedByPlayer`, which the mod answers). The street,
+track and modifier tools and the bulldozer now act as the company ("The
+tools' player" below); the other tools not yet: see the investigation of the engine's player in
 [investigation/TF3_LOCAL_PLAYER_2026-10-01.md](../investigation/TF3_LOCAL_PLAYER_2026-10-01.md).
+
+**The probe of the engine's player** (`crates/tpf3mp-hook/src/probe.rs`),
+off unless the game's environment has `TPF3MP_PROBE_PLAYER=1`. Read only:
+it takes field offsets from two optional profile targets (`probe: GUI
+GameState getter`, `probe: engine GameState getter`), checks every pointer
+readable before it reads it, and writes nothing. In `CMenuUI::DoStep`'s
+detour, after the game's frame, for five frames whenever `m_game` changes
+and then every 3 s, `hook.log` says:
+
+```
+probe: reading the engine's player, read only: the GUI's GameState at [[menu+0x6b0]+0x1e0], the engine's at [[game+0x1f0]+0x78+8*i], i at +0x98; 8192 bytes of each scanned every 3 s
+probe: at the menu, no CGame (m_game is 0)
+probe: CGame 0x...: GUI GameState [+0x1e0] 0x...; engine buffers [+0x1f0] 0x...: [0] 0x..., [1] 0x..., i 0; the GUI's is neither buffer
+probe: player 118368 in GUI 0x...: +0x40q +0x1a0d
+probe: player 118368 in engine [0] 0x...: +0x40q
+probe: player 118368 in engine [1] 0x...: none
+```
+
+The player is the save's, as the mod's game script notes it once linked
+(`note("tpf3mp.player")`); until then `probe: the save's player is not known
+yet`. Without the variable: `probe: the engine's player is not probed`.
+
+With the same variable it also counts who asks the proposal street graph
+for an entity's owner (`probe: ProposalStreetGraph::GetPlayerOwnedPtr`,
+rva 0xa46cd0): a pass-through detour that always calls the original and
+returns its answer, counting each caller's return address in a fixed table
+of 64 rows by side (inside `GameSim::Step`, on a simulation pool thread,
+or on the main thread outside the step: the GUI and its tools), with no
+lock and no allocation. Every 3 s, from the menu's frame:
+
+```
+probe: counting the callers of probe: ProposalStreetGraph::GetPlayerOwnedPtr at 0x...; its answer unchanged; flushed every 3 s
+probe: owner read from rva 0x...: in the step 0, sim pool 0, GUI 412
+probe: owner reads: none in 3 s
+```
+
+A caller counted under GUI only is a tool's or the GUI's own; one under
+the step or the pool is the simulation's.
+
+With the same variable it also logs what the native tools' ownership test
+takes for another player's (`probe: street_util IsOwnedByOtherPlayer`, rva
+0x610ea0; investigation/TF3_LOCAL_PLAYER_2026-10-01.md, "Why the street
+tool will not split a road the room built"): a pass-through detour that
+always returns the original's answer. When it answers true it counts the
+entity, under the tool's player, in a fixed table of 64 rows (no lock, no
+allocation), and the first time asks the original again with the company
+this player plays for (the GUI's `note("tpf3mp.company")`,
+`tpf3mp/follow.lua`) and with the save's player (`note("tpf3mp.player")`)
+to say whose the entity is. Every 3 s, from the menu's frame, nothing when
+nothing was answered:
+
+```
+probe: logging what probe: street_util IsOwnedByOtherPlayer at 0x... takes for another player's, its answer unchanged; flushed every 3 s
+probe: a native tool took entity 380001 for another player's: the tool acts as player 214443, the entity is owned by this player's company 372363; 41 time(s), first from rva 0x5fc027
+```
+
+A line like that one, for a road the room built for the player's own
+company, is the street tool refusing to snap into it; rva 0x5fc027 is the
+street builder's snap.
+
+With the same variable it also logs the street bulldozer's answers: its
+edge test (`probe: StreetBulldozerAction edge test`, rva 0x5f2a00, a lambda
+of `UI::StreetBulldozerAction::vf2`) and the owner test every bulldozer
+action calls (`probe: bulldozer owner test`, `sub_5f7db0`), each with the
+entity, the owner list it had and the answer, merged by equal answers,
+merged by equal answers and callers (the return address, as an RVA), every 3 s:
+
+```
+probe: the street bulldozer's edge test on entity 380001: refused with owner list [214443]; 4 time(s), from rva 0x5f2f4b
+probe: the bulldozer's owner test on entity 380001: allowed with owner list [372363]; 4 time(s), from rva 0x5f2ae6
+```
+
+An edge refused by the edge test with the company in its list, and no
+owner-test line for it, was refused before ownership (a construction's
+edge, another network, the underground mode).
+
+**The tools' player** (`crates/tpf3mp-hook/src/toolplayer.rs`), on unless
+`TPF3MP_HOOK_TOOL_COMPANY=0`. `UI::CGameUI`'s constructor reads the save's
+player once and hands each native tool a copy; the room builds roads,
+tracks and constructions as the acting company's (`PlayerOwned`), so for a
+player of any company but the room's first the tools took the company's
+own edges for another player's: the street tool snapped only to their ends
+(`sub_610ea0` from its snap marks another player's edge fixed), the
+bulldozer would not offer them, and the tram track tool would not join the
+company's rail. In a room, at the start of each tool's `Step`, on the main
+thread, the hook writes the company the GUI notes
+(`note("tpf3mp.company")`, `tpf3mp/follow.lua`) into three tools' copies:
+
+| tool | field | its `Step` |
+|---|---|---|
+| `UI::StreetBuilder` (the street and the track builder) | `+0xc0` | `0x585e50` |
+| `UI::TrackModifier` (tram track, bus lane, electrification and the other modifiers) | `+0xa0` | `0x5cbf80` |
+| `UI::ConstructionBuilder` (stations, depots, every construction the menu places) | `+0xa0` | `0x51cd60` |
+| `UI::StreetTerminalBuilder` (the stop builder, and the signal and waypoint builder, a second instance) | `+0xa0` | `0x595f30` |
+| `UI::ModuleBuilder` (a station's modules) | `+0xa8` | `0x545b50` |
+| `UI::Bulldozer` (every bulldozer action) | its own player (`+0x28`), its owner list (`+0xa8`, the one player every query it makes is built from) and the one player of its `BulldozerFilter`'s copy (`[[+0xc0]+0x10]`) | `0x4d6340`, and its list setter `0x4d6220` |
+
+Each field's offset is read from its constructor's code (profile targets
+`... ctor/player store`, `UI::Bulldozer ctor/filter`, which also gives the
+filter's vtable, checked before every write, and its one-player list);
+code that is not exactly the expected shape leaves that tool alone. Each is a UI
+object's field read only by its own class's code (the profile lists every
+reader), so nothing the simulation runs sees it. A field is written only
+where it holds the save's player (`note("tpf3mp.player")`) or the company
+this wrote; any other value is left and said once. Outside a room, for the
+room's first company, or when either note is missing, the game's value
+stays, and one this wrote goes back. The builds go through the room as
+before: capture reads a proposal's ownership as owned or not, the room
+builds for the acting company, and every game refuses an edit of another
+company's edge (`companies.mayTouch`). So the tools now also refuse a split
+or bulldoze of another company's road (the room's first company's
+included), as the room does. hook.log:
+
+```
+tool-company: the street and track builder acts as the player's company in a room (UI::StreetBuilder::Step at 0x...; TPF3MP_HOOK_TOOL_COMPANY=0 turns it off)
+tool-company: the street and track builder at 0x... acts as the player's company 372363 (was player 214443)
+tool-company: the street and track builder at 0x... acts as the save's player 214443 again
+```
+
+In the first game test (2026-10-02, build aaa331c) the street tool split
+the company's road mid-span; stations and stops were still refused before
+capture (the construction and stop builders kept the save's player), and so
+was bulldozing the company's road: the filter's player was written, but
+the bulldozer's own player (`+0x28`), which its proposals are made for
+(`Step` 0x4d687e, 0x4d46b0, 0x4d2b70, its lambda 0x4d2650), was not. Both
+are written now. The second test (95127b2) showed the bulldozer's edge
+test allowing the company's road with the company in its list and refusing
+it with the save's player in its list, from the same frames: the menu's
+step (`CMenuUI::DoStep`'s lambda through `sub_6a1410`) sets the bulldozer's
+owner list (`+0xa8`, and the filter's copy) again to the GUI's player
+(`[[game+0x1e0]+0x20c]`, the save's) through `sub_4d6220`, between the
+tool's frames, and the click's query is built from that list. So the
+setter is detoured too (`UI::Bulldozer set owner list`): the game's own
+assignment, then the bulldozer's fields brought to the company at once. An
+empty list (the setter's other case, which lets every owner through) is
+left alone. A field the game set back and this wrote again is said once,
+then at each power of two (`... was set back to player 214443; the company
+372630 written again (N time(s) so far, all tools)`). Not covered: the town, terrain and other tools CGameUI
+hands the player to (`sub_59b890`, `sub_5a2480` and the rest), which build
+nothing a company owns.
+
+**The views' player** (`crates/tpf3mp-hook/src/guiplayer.rs`), on unless
+`TPF3MP_HOOK_GUI_COMPANY=0`. With the windows following the company (bd3c695),
+the map still showed the first company's station icons and lines and not
+the player's company's: those are drawn natively, and each decides "the
+player's own" by asking the GUI's `IGameStateProvider` for the `GameState`
+and reading its player (`+0x20c`) inline. There is no shared helper to
+hook, and that `GameState` is one of the simulation's two buffers (the
+probe), so its player is never written. Each read in a UI function is
+spliced instead (`Splice`), right after it: in a room, the register that
+holds the save's player gets the company the GUI notes
+(`note("tpf3mp.company")`). Two reads compare the player with an owner at
+once (`mov eax,[player]; cmp [reg],eax`); those splices take the read and
+the compare, and point the owner's pointer at a copy of the save's player
+where the owner is the company, and at no one's where it is the save's
+player, the register being dead after on both paths. The sites:
+
+| what it draws or picks | function | splices |
+|---|---|---|
+| the icons above the map's stations | `UI::HudIconManager::PreemptiveOctreeTraversal` (`0x67b610`) | `0x67b7db` |
+| the station viewer | `UI::StationViewer::vf4` (`0x83a570`) | `0x83a608` |
+| what the selector picks, and its filter | `sub_839c50` (from `UI::CSelector`), `UI::ViewCreator::vf1` (from `CreateSelectorFilter`) | `0x839cd9`, `0x86712a` |
+| the catchment overlay | `UI::layers::CatchmentAreaHelper` (`sub_8764c0`, `sub_8779c0`) | `0x8765f5`, `0x876f36`, `0x8770ba`, `0x8770fd`, `0x877b39` (owner test) |
+| the map layers' colours: lines and stations | `LayerManagerColorMap` (`sub_87b7f0`), `UI::layers::LayerManager` (`0x883020`, `sub_885b10`) | `0x87b840`, `0x87b919`, `0x87b9ef`, `0x88307b`, `0x885c82` (owner test) |
+| two React components | `RendererComponentDelegate` (`sub_29f66d0`), `RailroadCrossingComp` (`sub_289e060`) | `0x29f689a`, `0x289e116` |
+
+Each splice takes whole instructions with no branch, call or RIP-relative
+operand, and no jump of the function lands inside it (tpfre). The
+profile's targets give each with a unique signature, checked again before
+it is spliced. What a site answers is read from two atomics the menu's
+frame refreshes from the notes, so a site on a worker thread (the HUD's
+octree traversal) reads no lock. Outside a room, for the room's first
+company, or while either note is missing, every read answers as the
+game's. Not covered: the scripting bindings that read the same player
+(`sub_24d6f40` and the others under `0x24f…`), which the game scripts call
+too; the GUI's Lua answers those (`tpf3mp/follow.lua`). hook.log:
+
+```
+view-company: 16 of 16 of the views' player reads see the player's company in a room (TPF3MP_HOOK_GUI_COMPANY=0 turns it off)
+view-company: the icons above the map's stations see the player's company 372631 (view: HudIconManager::PreemptiveOctreeTraversal/player)
+```
+
+**The map with every company** (2026-10-02, after eba8614). A room's map
+shows every company's icons and lines, not only the player's own: the
+game's own rule shows only the GUI player's, which was the save's player,
+and after the views took the company it was the company's alone. Two of
+the views' tests are widened, display only, with
+`TPF3MP_HOOK_GUI_ALL_COMPANIES=0` to keep them to the player's own:
+
+- the HUD's icon pass (`sub_674430`, a lambda of
+  `HudIconManager::PreemptiveOctreeTraversal`), which skips an entity whose
+  `PlayerOwned` owner is not the pass's player (`lea rdx,[rax+rcx*4]; test
+  rdx,rdx; je; cmp [rdx],r12d; jne`), spliced at the `lea`: for an owner
+  that is a company of the room, the pointer is formed at a copy of the
+  pass's player, so the icon of every company's station, vehicle and line
+  shows. An entity no one owns passes as the game's;
+- the map layers' colour test (`sub_885b10`, `view: LayerManager
+  colour/owner test`): a line or station of any company of the room takes
+  its own colour (its `Color` component) as the player's do.
+
+The room's companies are the GUI's note `tpf3mp.companies` (their player
+entities, comma separated, `tpf3mp/follow.lua`, `noteCompanies`), read
+with the company once a frame into atomics. Each entity keeps its own
+colour: a line its own (each new line its own colour), a vehicle
+the company's paint (`companies.paintVehicle`). INFERRED, not seen: that
+the station icons' colour is per entity too; where they are one colour for
+every company, a per-company tint needs the renderer's colour read found.
+What a player may select, edit or plan stays their own company's: the
+selector, the station viewer and the catchment overlay keep the company
+alone.
+
+**The GUI's Lua getPlayer, natively.** The map's line overlay is a React
+`LineViewer` whose lines a Lua state lists (`params::LineViewer`,
+`LineVisualization`); a GUI state whose api was made anew (the React roots
+reload their interfaces, `ScriptComponentRoot::ReloadInterfaces`) kept the
+game's getPlayer until a window asked an ownership test. So getPlayer's own
+binding answers the company in a room, in every GUI Lua state: its closure
+(`sub_24ed220`, registered as `getPlayer` by `SetupUtilInterface`) reads
+the player of the `GameState` its state's getter gives and pushes it
+(`call sub_2fbe300`, the Lua integer push); that call is redirected
+(`view: getPlayer binding/push`). The closure's getter is a `std::function`
+(`+0x38`); where its call (vtable slot 2) is one of the GUI's getters,
+`CMenuUI::SwitchToGameUI`'s or `ScriptComponentRoot::ReloadInterfaces`'s
+(both `mov rax,[...+0x1e0]`, the GUI's slot), the answer is the company; the
+game scripts' states, whose getter reads the engine's buffers (`+0x1f0`),
+keep the game's. The getter is told by its code's shape, checked at every
+call. hook.log: `view-company: the GUI's Lua getPlayer answers the player's
+company 372426 natively (view: getPlayer binding/push)`.
+
+**The map's lines, probed.** After 55f81ed the player's own line was still
+not drawn on the map. Every line the game draws over the map is a React
+`LineViewer` (`gui/main/builtin.lua`; the native `UI::LineViewer`,
+`game/ui/util/lineviewer.cpp`) handed `showLines`, LineVisualizations by
+line entity, by a window: the line manager (its map mode hands it
+`getLinesForPlayer(getPlayer())`, `manager_window.tl` 427), the line,
+station, vehicle and town windows, the statistics. The native viewer has
+no owner test (tpfre: its functions read only the `Line` component); it
+draws what it is handed. So with `TPF3MP_PROBE_PLAYER=1` each GUI state
+says what every `LineViewer` is handed and what
+`lineSystem.getLinesForPlayer` answers, each line with its owner, once per
+answer and 40 lines at most (the hook notes `tpf3mp.probe` for the GUI's
+Lua, `follow.watchLines`); what is drawn never changes:
+
+```
+probe: getLinesForPlayer(372553) answers 1 line(s): 373300 (owned by 372553) (the HUD's state)
+probe: a line viewer is handed 1 line(s) to draw: 373300 (owned by 372553) (the HUD's state)
+```
+
+A company's line in that list but not drawn is the viewer's path (the
+line's own route through its stops); one missing from it is the list's.
+
+The 3d91e83 try (p0, company #2, 372671): the company's line 338852 was
+listed by `getLinesForPlayer(372671)` and handed to a viewer, owned by
+372671, and still not drawn. The viewer draws from the simulation's
+per-line data (`ecs::LineSystem::GetData`, `sub_ad2050`, its `line2data`),
+and draws nothing unless that data's revision (`+0x18`) and its per-stop
+segment count match the line's own (`sub_7f01d0`, 0x7f03e7 and 0x7f0444);
+nothing in its call tree reads a player (tpfre: no `+0x20c` read, no
+`PlayerOwned`, to depth 3 from `LineViewer::vf1`, `vf4` and `sub_7f53c0`).
+So the probe also says, for every line a viewer is handed (the first
+company's as well, to compare): each stop's station group, station and
+terminal as the line names them, whether that station and terminal exist,
+their owners, whether the line system lists the line at that terminal, and
+the engine's own verdict (`lineSystem.getProblemLines`,
+`util.line.getLineProblems`, `getDetailedLineProblems`; the values below
+illustrative, not seen):
+
+```
+probe: line to draw: line 338852 owned by 372671; 3 stop(s); stop 1: group 373231 station 0 terminal 1, group of 2 station(s) owned by 372671, station 180929 owned by 372671 with 1 terminal(s), no terminal 1, not listed at the terminal; ...; line system problem 3
+```
+
+The 34a2edf try (p1, company #1, 372571): line 342589, its three stops'
+groups, stations and terminals all there, all the company's, the line
+listed at every terminal, was not drawn; a line made the same way while
+playing for the room's first company (329152, the save's player 214443)
+was. So drawing depends on the owner, but not in the viewer: tpfre finds
+no player read and no `PlayerOwned` six calls deep from
+`UI::LineViewer::vf1`, `vf4`, `sub_7f53c0` and `sub_7f01d0`. The viewer
+draws a line only when the line system's data for it
+(`LineSystem::GetData`) has the revision it expects (`[data+0x18]` against
+`[state+0x80]`) and one segment list per stop (`sub_7f01d0`, 0x7f03e7 and
+0x7f0444). With `TPF3MP_PROBE_PLAYER=1` that test is now spliced and said
+per line, read only (`probe: LineViewer route data test`):
+
+```
+probe: the line viewer's route data for line 342589: revision 0 (it expects 7), 0 segment list(s) (it expects 3); it skips the line
+```
+
+(illustrative). A company's line skipped there and the first company's
+drawn says the line system keeps route data for the save's player's lines
+only, which is the simulation's own and is not changed; the next step is
+then to find what fills `line2data` and its player.
+
+**The line viewers draw every company's lines** (`view: LineViewer lines
+of the player/call`, guiplayer.rs; found 2026-10-02 with the probes of
+4415a50). A line viewer builds a line's whole route (`sub_7f10a0` with
+stop filter -1) only for its candidate lines, and `sub_7f3ea0` (called by
+`LineViewer::Update` and `UI::MetroViewer::vf4`) makes them the lines of
+one player from the line system's player-to-lines index (`sub_ad2620`,
+the index `getLinesForPlayer` reads), that player being the one the viewer
+stored when it was made (`[viewer+0x28]`, from the GUI player read of
+`sub_29f66d0`, `RendererComponentDelegate`). So only the save's player's
+lines were drawn while the GUI was the room's first company, and none
+otherwise (seen: a founded company's line and the first company's both
+got only stop filter 0 geometry, and only the first company's got -1, and
+only while the player played for it). That one call is redirected: in a
+room it answers the lines of every company the GUI notes
+(`tpf3mp.companies`), or with `TPF3MP_HOOK_GUI_ALL_COMPANIES=0` the
+player's company's, in a vector the hook keeps until the next call (the
+caller copies it at once). Outside a room it answers as the game. The
+index function and its other callers, the simulation's among them, are
+untouched: the change is to which lines a viewer draws. hook.log, once:
+`view-company: the line viewers draw the lines of 214443, 372609 (2
+line(s)) in place of player 372609's (view: LineViewer lines of the
+player/call)`.
+
+**The store's depot follows the company** (`view: findBestDepot depot owner
+test`, `view: findBestDepot owner test`, guiplayer.rs; 2026-10-02, build
+45b8ed5: the line window bought company #2's vehicles at depot 317114,
+owned by 214443, the first company's). Opened from a line, the store asks
+`api.engine.util.vehicle.findBestDepotForLine` (`line_util.tl`), and the
+line manager and the store `findBestLineAndDepotForVehicle`. Both reach
+`sub_2689fd0` and through it `sub_2689dd0`, which keep only what the
+`GameState`'s player owns: `mov reg,[GameState+0x20c]; cmp [rax],reg; jne`,
+rax the depot's (or line's) `PlayerOwned`. Nothing but those two bindings
+calls the four functions on the way (tpfre), and only the game's GUI scripts
+call the bindings on build 40408. Each test is spliced as the other owner
+tests are: an owner that is the player's company passes, the save's
+player's does not. Because a game script could call the bindings too,
+these two answer the company only on the GUI's thread (the menu's frame's,
+noted at each refresh) outside the simulation's step; anywhere else they
+answer as the game.
+
+**A purchase's depot**, in hook.log when the store buys (the GUI's
+capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
+by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,
+-8829.4, 7.2)`, or why the room cannot name it. Opened from a line, the
+store asks the engine for the line's depot
+(`api.engine.util.vehicle.findBestDepotForLine`, `line_util.tl`), which
+takes no player from Lua; the line says which depot it chose and whose.
 
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
@@ -1695,8 +2567,9 @@ builds it, paid by the player (`Context.player`) and clearing town
 buildings in its way (`gatherBuildings`), as the tool builds; without a
 context the game builds for free.
 
-Five tools build through the room so far, the module editor through the
-hook, and a construction's window its edits:
+Six tools build through the room so far, the module editor and the
+terrain tools through the hook ("Terraforming" below, gated off), and a
+construction's window its edits:
 
 - **The construction tool** (`constructionBuilder`): a proposal of one
   construction (a station, a depot, anything the tool places) becomes a
@@ -1733,17 +2606,40 @@ hook, and a construction's window its edits:
   where it stands (a `ConstructionRef`, as a depot is named; entity ids are
   no name, docs/BUILDING.md), the new one's file, transform, parameters and
   name (the old one's, where the proposal leaves it out). Its street part
-  is the construction's own entrance, made again with it, and is not
-  carried; an edit that removes a street or track the old construction
-  does not own (its `frozenEdges`, `frozenNodes`) is refused, as is one
-  replacing a construction the room cannot name. Every game finds the old
+  is mostly the construction's own entrance, made again with it, and that
+  is not carried: what it removes of the old construction's own (its
+  `frozenEdges`, `frozenNodes`, and track ends only its frozen edges
+  touch) goes with the old construction. What it changes around it travels
+  as its connection, as a new construction's does, without those: a new
+  exit onto a road the station did not join splits that road through a new
+  junction (seen 2026-10-03, build 40408). One replacing a construction the
+  room cannot name is refused. Every game finds the old
   construction by file and place (within 2 m), then asks the game's
   verdict and builds, as the player's own build (`ignoreErrors`,
   `playerInitiated`), paid by the player and clearing town buildings in
   its way, one `SimpleProposal` that removes it (`constructionsToRemove`,
-  this game's own entity) and adds the new one, mapped old to new
+  this game's own entity), builds the connection as a new construction's
+  (its own entrances peeled off) and adds the new one, mapped old to new
   (`old2new = { [old] = 0 }`), as the game's own upgrade makes one
   (`mission_framework_util_entity.tl`, `upgradeConstruction`). The new
+  construction makes its entrances again unsnapped, as a scripted build
+  does, so every game then refreshes it as it refreshes a build's, free
+  and not as a click of the player's: the refresh snaps its entrances onto
+  the streets beside them (a road station edited by the street came loose
+  from it in both games, 2026-10-03). A refresh with no street change is
+  not sent; one the game refuses leaves the edit standing, unsnapped, the
+  same in every game, and is logged. A connection may not remove or split the old construction's
+  own edges, and no junction's settings may name them: a junction the
+  connection rebuilds next to the old entrance keeps no settings, which the
+  construction and its refresh give it, the game's own (logged `left to
+  the construction: the settings of N junction(s) at its old edges`),
+  only where the acting company may change every edge at it.
+  Every edge a construction's connection removes or splits, a new one's or
+  an edit's, must be the acting company's or no company's (D21), as a
+  bulldozed one. Seen in two games on 2026-10-03: a plain edit's refresh
+  (`snapping 72194 +e-2:-1>57114 -e71473`), and an edit adding an exit
+  onto another road, replayed with the road split and both entrances
+  snapped alike in both games (docs/BUILDING.md). The new
   construction stands where the old one stood, so the next edit, a depot
   bought at it or a line finds it by the same reference; what stood on it
   passes to it through `old2new`, and the registry binds, after the
@@ -1777,7 +2673,19 @@ hook, and a construction's window its edits:
     nil, false, true)`, `gui/construction/construction.tl`,
     `gui/entity_window/entity_window_util.tl`). The guard carries such a
     command as the same edit (`guard.CARRY.makeWorldBuildProposalCmd`,
-    `capture.windowBuild`); any other build a window sends stays refused
+    `capture.windowBuild`). A window's build that only rebuilds edges in
+    place (no construction, no node added or removed, every new edge
+    between the ends of one it replaces), as the bridge and tunnel window's
+    type change makes one (`gui/entity_window/bridge_and_tunnel.tl`,
+    `createBridgeOrTunnelProposal`), is read as the road and track
+    modifiers' rebuild is (`capture.inPlace`, `capture.modify`) and travels
+    as a `BuildRoad` or `BuildTrack`, its edges' bridge or tunnel type
+    included; a stop or signal on those edges must be kept in place, as
+    for the modifiers. It is refused, saying it awaits two-player game
+    acceptance, until `acceptance.lua`'s `bridges` is on: it travels as an
+    ordinary build, so the gate is at the capture. INFERRED: the window's
+    proposal has the shape the API declares (`Proposal`, `StreetProposal`),
+    not yet seen in the game. Any other build a window sends stays refused
     ("building from this window");
   - a bulldozer proposal that removes a construction of the player's and
     adds one (a module removed, if the module bulldozer reaches game
@@ -1807,10 +2715,24 @@ hook, and a construction's window its edits:
   (`module editor: click N queued …`, or `module editor: click N does not
   read: …`). The GUI's `guiUpdate`, handing on click N, asks
   `tpf3mp_native.built(N)` first, ahead of any preview another tool
-  showed: the proposal is made an action by `capture.construction`, as
+  showed: the proposal is made an action by `capture.moduleEdit`, as
   the construction tool's, and must replace a construction (else
   refused: `an edit that replaces no construction`); one that did not
-  read is refused with why. The click's apply is stopped as every
+  read is refused with why. The hook reads only how many nodes and edges
+  the street part adds, so an edit that changes the streets around its
+  construction (a new exit splitting a road) is asked of the game again:
+  `api.engine.util.proposal.createProposalReplaceConstruction(old,
+  params)` with the editor's parameters, as the construction menu asks
+  for a construction's new parameters (`gui/construction/construction.tl`),
+  proposed the editor's street part exactly in the game (2026-10-03, build
+  40408: the same three nodes and four edges added, the same node and two
+  edges removed). Its street part travels only if it is the same edit as
+  far as the hook read it: the same construction replaced by the same
+  file, standing where the editor put it (within 0.01), as many nodes and
+  edges added, the same nodes and edges removed (none twice), and no stop
+  or signal on either side; else it is refused with why (`a construction
+  edit the game proposes otherwise: …`). The construction itself (file,
+  parameters, matrix, name) is the one the hook read. The click's apply is stopped as every
   player's build is, and the room orders the edit for every game, which
   replaces the construction as above. `built` is optional in the bridge:
   a mod or hook without it keeps the module editor refused. Without the
@@ -1825,9 +2747,13 @@ hook, and a construction's window its edits:
   adds, each edge in its own kind (the street it joins is rebuilt through
   the new junction in that street's template), and the edges and nodes it
   removes. The replay builds it as the game's own scripted track builder
-  does, `nodesToRemove` included. A build that moves or removes an edge
-  with a stop or signal on it, or that places stops, signals or
-  constructions, is refused.
+  does, `nodesToRemove` included. Each new track edge gets its template's
+  distance between track centres (`StreetTemplate.trackDistance`, the
+  edge's `distance`): without it the game laid no shared ballast bed or
+  catenary with the tracks beside it, and the ground showed between them
+  (seen 2026-10-02, tracks laid side by side in a room). A build that
+  moves or removes an edge with a stop or signal on it, or that places
+  stops, signals or constructions, is refused.
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -1849,7 +2775,48 @@ hook, and a construction's window its edits:
   and other assets: the asset group removed and rebuilt without them as
   a construction of no file) and anything else that is no construction
   are refused, naming what was hit (an asset group, or the components
-  the entity has). A stop it
+  the entity has). The log line of such a refusal also says what the
+  rebuilt group holds (its desc's type, its models, the thin ones, and
+  the first one's model and place) and what the group removed holds
+  (full and thin instances): what a replay of it would have to build.
+  On build 13090a8 the rebuilt group read as plain models: each a model's
+  file (`::/assets/...`) and its world matrix, none thin, one construction
+  of no file and no desc type, for a group of thin instances. With
+  `TPF3MP_TREE_BULLDOZE=1` in the player's game (the hook's `trees()`),
+  that proposal travels as a `Bulldoze::Assets`: the group by its first
+  asset and how many it holds, the assets taken out by model and position,
+  and which way the tool turned them (read off its matrices; a rebuilt
+  group that holds any asset the group did not, turns a thin one
+  otherwise or moves a full one, or a removed asset with another of its
+  model at its place, is refused). The tool's own shape, decompiled on
+  build 40408 (`UI::AssetBulldozerAction`,
+  `construction_builder_util::CreateProposalAddAsset`): the group in
+  `toRemove` and, unless every asset of it went, one
+  `Proposal.ConstructionEntity` at the origin whose desc is
+  `autoRemovable` and whose one subconstruction's `models` are the assets
+  kept, the thin instances first (matrix from position, turn and scale),
+  then the full ones (their own matrix), none `thin`. When the last
+  assets of a group go (a lone tree or rock), nothing is added. TF3 binds
+  these types otherwise than TF2 and its own tealdef say:
+  `Proposal.ConstructionEntity` has `desc`, `construction`, `transf`,
+  `frozenNodes`, `segmentsBefore`, `name`, `playerEntity` and
+  `setAsHeadquarterHack` as data, and `fileName`, `params` and
+  `hasCargoPlatform` read-only (writing `fileName` raises "no writable
+  member"); its `construction` is a `Proposal.ConstructionResult`
+  (`subconstructions`, `metadata`, `cost`, `maintenanceCost`,
+  `maintenanceCarrier`, `streetTerminal`, `params`), not the
+  `Construction` component; a `Proposal.Subconstruction` has `models`,
+  `station`, `depot`, `industry`, `metadata`, `laneLists` and
+  `colliders`; a `Proposal.TransformedModel` `id`, `tag`, `transf` and
+  `thin` (the binding's registration, `RegisterUsertypesTransport`). The
+  tool also gives its subconstruction one empty terrain alignment list,
+  which no binding reaches; it aligns no terrain. Every game finds the
+  one group of that size holding them all, builds the same full proposal
+  (`api.type.Proposal`) from its own copy less those assets, sends it as
+  the player's company's build, and logs the group, its assets before,
+  and the group holding the first asset kept (or, with none kept, the
+  first removed) after (`trees:` lines). The flag keeps it to trials. A
+  stop it
   removes is carried as the stop tool's builds are (below): its edge
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and
@@ -1859,8 +2826,25 @@ hook, and a construction's window its edits:
 - **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
   tool queues a `WorldBuildProposal` (command 52 from
   `UI::StreetTerminalBuilder`, found statically), which the hook's gate
-  stops like the others. Its proposal has the shape the game's own mission
-  scripts check a stop by (`checkStop`,
+  stops like the others. The tool waits for each click's answer before it
+  takes another (build 40408, read with tpfre: `MousePressed` 0x594f50
+  returns at once while its busy byte `+0x2c8` is set, sets it before it
+  queues the click, and only the command's callback clears it, once the
+  simulation applied the command; `Step` shows no preview meanwhile). In
+  a room that answer is the refused apply, and the stop comes later from
+  the room, so a row of stops clicked quickly lost every click after the
+  first (2026-10-02). So in the room's game the add's detour finds the tool
+  from the click's own callback before `Add` (a `std::function` on
+  `MousePressed`'s stack whose impl pointer, `+0x38`, is itself, the tool
+  at `+8`) and clears the byte once the click is queued, where it reads 1
+  as `MousePressed` set it (`crates/tpf3mp-hook/src/stoptool.rs`, profile
+  targets `StreetTerminalBuilder::MousePressed/Add call` and `/busy set`,
+  whose signature holds the offset). Each click is then its own
+  `PlaceStop`, handed on in click order; the late callback, with the
+  refused build's empty result, clears the byte again. Without the
+  targets, or on anything that does not read so, the tool waits as the
+  game has it, and hook.log says why once (`stop tool: ...`). Its
+  proposal has the shape the game's own mission scripts check a stop by (`checkStop`,
   `mission_task_build_construction_util.tl`): one edge removed and the same
   edge added again between the same nodes, whose `objects` list its stops
   as `{ entity, EdgeObjectType }`, as many as `edgeObjectsToAdd`. The new
@@ -1889,9 +2873,65 @@ hook, and a construction's window its edits:
   other stops kept under their own entities, the new stop
   `edgeObjectsToAdd[1]` (edge -1, the parameter where it stands, `left`,
   the model, the player), named in the edge's objects as `{ -1, side }`,
-  the lane configurations at the edge's ends removed as for any edge a
-  replay removes; then the game's verdict, and the build as the player's
-  own (`ignoreErrors`, `playerInitiated`), paid by the player. A receiver
+  the lane configurations at the edge's ends replaced by the same turns,
+  crosswalks and light phases naming the rebuilt edge
+  (`junctions.renamed`: only references to the old edge change, the other
+  edges keep their entities, nothing is searched for by position; one
+  that no longer fits its lanes refuses the stop in every game). Removed
+  alone, a junction with traffic lights kept its lights with no
+  configuration, a fatal assert
+  (`ecs::Engine::GetComponentDataIndex`, `BaseNodeConfig`) that crashed
+  every game of a room on 2026-10-04 (build 40408). Then the game's
+  verdict, and the build as the player's
+  own (`ignoreErrors`, `playerInitiated`), paid by the player. The
+  rebuilt edge keeps its own `PlayerOwned` (a company's road stays the
+  company's). Once built, the stop is settled as the acting company's
+  (2026-10-02: a company's stops came out another company's, and its
+  player could not open them, nor see its station icon): each new
+  object on the edge, which for a street stop is its station itself
+  (`EDGE_OBJECT` and `STATION`, `mission/name_util.tl`), its station
+  group (`stationGroupSystem.getStationGroup` of the object), and for a
+  stop built as a construction that construction and its stations, are
+  handed over with `makeEntitySetPlayerCmd` where anyone else owns them,
+  as the game's own missions hand a stop over
+  (`transfer_ownership_util.tl`); the windows, the icons and the line
+  manager ask the station group's owner (`station_group.tl`). A group
+  that also holds another stop's station is left as it is. hook.log says
+  what each new object is and which group holds it (`the new <stop>: 600
+  a station in group 610 (owner nil); ...`), and each one handed over
+  with its owner before (`the new <stop> made the acting company's`). The
+  stop is named as the game's tool named it. Build 40408's stop tool
+  (`UI::StreetTerminalBuilder`, through `street_util::MakeEdgeObjectName`
+  in `construction_util_terminal.cpp`, `sub_2647e60`) gives a new stop
+  the name a station already there has, else the first street name of the
+  town's name list (the `streetNamesScript` of `names/*.names.lua`) that
+  no station has yet, else `Stop #n` with the first free n
+  (`sub_25d5a80`); signals and waypoints get `{townName} Signal #n` and
+  `Waypoint #n` (`sub_25d4540`). The choice reads the originator's world
+  and runs the name script, so it is made once: the capture reads it
+  from the proposal's edge object (`Proposal.EdgeObject.name`, which the
+  game binds for scripts), `PlaceStop::name` carries it (schema 25), and
+  every game builds the stop with it. A name longer than the schema's 64
+  bytes is left out. Where none is carried, or with
+  `apply.NATIVE_STOP_NAMES` false (the kill switch), the stop's edge
+  objects carry `Stop` (never empty: a script build with an empty name
+  leaves the stop with no `NAME` and no owner, docs/BUILDING.md), and once
+  built its own group and stations are named after the town the game
+  counts the stop in (`stationSystem.getTown`), with a number after it
+  where another station group of that town has that name (`Didcot`,
+  `Didcot 2`), the same in every game. A construction (a station, depot,
+  airport, harbour or truck station) is named natively the same way at
+  the originator, by `UI::ConstructionBuilder`'s
+  `CreateProposalAddConstruction` (`sub_a34a50`: `{townName}
+  {constructionName}`, or for a station `sub_25d4800`: `{townName}
+  Station`, a direction from the town centre, or one of nine suffixes,
+  `Annex` to `Upper`, in an order shuffled by a hash of the position, no
+  RNG, then `{stationName} #{number}`), and `BuildConstruction::name`
+  already carries that name to every game.
+  A construction the room builds (a station, an airport, a harbour) names
+  its own stations' group by the name the tool gave the construction
+  where the game left it unnamed (`named station group N "..."` in
+  hook.log). A receiver
   whose edge runs the other way flips `left`; a side already taken is
   refused (two stops on one side is a fatal assert in the game's lane
   creation on TPF2). Refused: a stop dropped where one stood (the game
@@ -1922,6 +2962,55 @@ onto an existing junction ($94,231), a street onto another's middle, a
 track across open ground ($22,054), a track across a street, and a bus
 depot snapped onto a town street, clearing three town buildings
 ($825,816): identical in both games, towns included.
+
+### Scripts' follow-up builds
+
+*Proposed (D27).* A mod's game script that builds after the player builds
+(Parallel Tracks, Parallel Roads) hears the build in `onPostBuildProposal`,
+in every game, and sends its own build from its GUI half (`guiUpdate`)
+with `api.cmd.makeWorldBuildProposalCmd`. Every game that runs the mod
+sends it, from its own player's settings, for whichever player built. The
+hook counts each as a click and stops it at the apply, so none of them
+builds (seen on build 40408, 2026-10-02: Parallel Tracks' tracks for one
+player's track, sent and stopped in both games, `[parallel_tracks] ...
+build failed`, the worlds equal).
+
+The mod's game script wraps `makeWorldBuildProposalCmd` in the game
+scripts' GUI state, from its first `guiUpdate`
+(`mod/tpf3mp_1/content/scripts/tpf3mp/modbuild.lua`). hook.log: `scripts'
+builds from the game scripts' GUI state go to the room as their player's
+follow-ups`. In the room's game:
+
+- every build made through it is marked `playerInitiated`, whatever the
+  script asked (`makeWorldBuildProposalCmd`'s fourth argument): the hook
+  counts it and stops it at the apply. One the script marked `false` would
+  otherwise build in this game alone, as the hook lets builds that are not
+  player-initiated through. Where `clicks()` is nil the factory raises
+  instead (`Not in multiplayer yet: building from a script`);
+- the game script's `postUpdate` notes, after the room's builds of an
+  update, whether the last of them was this player's own
+  (`tpf3mp_native.note("tpf3mp.lastbuild", "<n> mine|other")`, the sender
+  against `status().me_id`). A script's build within `FOLLOW_FRAMES` (120)
+  of the GUI's frames after this player's build is its follow-up: its
+  SimpleProposal is read in the shape the build tools hand game scripts
+  (`nodesToAdd`, `edgesToAdd` as `addedNodes`, `addedSegments`), made the
+  street or track tool's action (`engine.captureBuild`) and kept for the
+  click its command counts, which `guiUpdate` hands the room as a tool's
+  (`handed the player's build to the room [a script's follow-up build from
+  <mod>]`);
+- any other is stopped with why: `a script's follow-up of another player's
+  build: that player's game hands it to the room`, `a script's build with
+  no build of this player's just before it`, or what it holds that is not
+  carried from a script yet (constructions, removals, stops and signals).
+
+Seen on build 40408 (2026-10-02, two games on one PC, Parallel Tracks):
+the mod's `guiUpdate` runs in the state the wrapper is on, its
+SimpleProposal reads back as lists, and the hook counts its build as one
+click. P1's parallels went to the room from P1's game alone, P2's from
+P2's alone, the other game's stopped, each built once in both games, and
+the room found no divergence ([MODS.md](MODS.md), "Parallel Tracks,
+Parallel Roads, Auto Signals"). The stack there named no mod
+(`guard.callers`), so the log says no mod's name.
 
 
 ### The road and track modifiers
@@ -1955,6 +3044,36 @@ is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
 lets the road and track tools build through an edge with a stop on it.
+
+A track's catenary and type travel the same way, as far as the game's
+scripts say (build 40408's `construction_react_util.tl`: the
+electrification tool, the track upgrade and the track decorations are
+`TrackEdgeModifier`s, as the street ones are `StreetEdgeNodeModifier`s,
+and every such tool is the GUI's `streetTrackModifier`): the track
+template is the type, and catenary is the lanes' `ELECTRIC_TRAIN` mode, as
+a tram track is the road lanes' `TRAM_TRACK` (`TransportMode`, 0 to 15).
+INFERRED, not yet seen in the game: that the track tools' proposals have
+the street tools' shape and reach game scripts.
+
+Each upgrade is said in `hook.log`: in the player's game when it is handed
+to the room, and in every game, the player's included, once built, the
+same text everywhere (`roads.upgradeSummary`: what every rebuilt edge has
+after it, not what it had):
+
+```
+handed the player's build to the room [+e-1/0:8(...)>9(...) -e100:8(...)>9(...)]
+upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; template ::/street/standard/town_medium_new.lua; 4 lane(s) carrying PERSON CAR BUS TRUCK TRAM ELECTRIC_TRAM TRAM_TRACK ELECTRIC_TRAM_TRACK; lane speeds 13.89 to 13.89; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+building +e-1/0:8>9 ::/street/standard/town_medium_new.lua -e100 -n -c8,9
+upgrade applied: street upgrade of 1 edge(s) rebuilt in place; template ...; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+```
+
+(the template, modes and speeds illustrative), and for an electrified
+track `track upgrade of N edge(s) rebuilt in place; template ...; M
+lane(s) carrying TRAIN ELECTRIC_TRAIN; ...`. A game whose build fails says
+`action 1 of this step was not applied: ...` instead of `upgrade
+applied`, and the room's check of the lanes (the network lane reads every
+edge's template) finds it.
+
 ### Junction tools
 
 Build 40408's native lane/crosswalk tools do not emit a Lua proposal preview.
@@ -2035,6 +3154,223 @@ complete the playtest above. AGENTS.md currently prohibits automated game
 launches/modifications; a human must run this check or explicitly override
 that restriction before an agent runs it.
 
+### Build previews
+
+What a player's build tool shows before the click, the road, track,
+station or building it would build, the other members see in their own
+games while it shows. Advisory: a preview is never applied, ordered,
+logged by the room or saved, and nothing of it reaches the world.
+Ported from TpF2 Multiplayer's shared build previews (`mp/previews.lua`
+and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
+
+- **What is shown.** The action the tool's proposal would build, as the
+  capture makes it for the click (`tpf3mp/capture.lua`): the room's own
+  action schema, in millimetres and resource names (D8), so no engine id
+  travels. Only the tools that build something new: constructions
+  (stations, depots, buildings, a station's edit), streets, tracks and
+  stops (`tpf3mp/previews.lua`, `SHOWN`). Not the bulldozer, the
+  modifiers or the junction tools; not the module editor or the terrain
+  tools, which tell game scripts nothing of their proposals.
+- **Out.** The game script's GUI half (`guiHandleEvent`) hands each such
+  proposal's action to `tpf3mp_native.preview(action)`, and `nil` when the
+  tool shows nothing: an empty proposal, one the room cannot carry, one of
+  a tool not shown, a click (the room then orders the real build), or the
+  game's active tools changed since the tool's last proposal
+  (`api.gui.contextHelper.getIdsOfActiveTool()`, looked at four times a
+  second: build 40408 lists its tools by their window, "Construction" or
+  "variant-tracks", never by the event's id, so the list changing is the
+  tool closing or another opening; where the game gives no list, the
+  preview hides on its next proposal or click only).
+  A right-click abort can keep that tool list unchanged. On build 40408,
+  the hook also withdraws the street/track preview when the native
+  `StreetBuilder::ResetProposal` runs, before calling the game's original
+  reset. Both road and track tools use that builder. The target is checked
+  by the profile; without it this additional withdrawal is unavailable and
+  said in the hook log. A new proposal can publish a fresh preview.
+  The hook converts it with the schema, refuses one over
+  `tpf3mp_proto::MAX_PREVIEW` (16 KiB) and keeps the latest
+  (`crate::previews`); the step driver sends it (`Session::preview`) at
+  most five times a second, and again every two seconds while it shows,
+  in the room's game only.
+- **The room.** The server relays it (`GameMessage::Preview`,
+  `ServerMessage::Preview`, protocol 17) to the other members of the
+  running game, on the control stream, in a queue of its own behind
+  everything else and dropped when full (PROTOCOL.md, "Game messages from
+  the client"). Not over QUIC datagrams: a road's or a station's action is
+  several kilobytes, more than one datagram carries.
+- **In.** The hook keeps each member's latest (`crate::previews`); one not
+  heard of again for six seconds is gone. `tpf3mp_native.previews()` gives
+  the GUI what changed, `{ { from =, action = } }`, without `action` for
+  one gone; the room's end tells each one still shown as gone. The
+  Multiplayer plugin (`gui/tpf3mp/tpf3mp.script.lua`), which stays mounted
+  in the game bar, takes them every frame, in a room or not
+  (`tpf3mp/previews.lua`, `take`), and says each
+  member's first in the log ("another member's build preview arrived:
+  ...").
+- **Showing them.** Each preview is made into the proposal its action
+  would build in this game, for the sender's company:
+  `apply.proposalOf(action, ctx)` runs the build's handler dry, stopping
+  it at the proposal it would send, so nothing is sent, built or logged
+  (construction, road, track and stop builds only). One this game cannot
+  make (a street type it lacks, an edge it has not) does not show, and the
+  log says why. A road or construction build's junction settings are left
+  out (`junctions.into` is skipped in the dry run; a stop's rebuild keeps
+  the settings at its own road's ends, which this game reads itself):
+  they name nodes of the sender's game, and
+  checking them failed every station snapped to a street ("the junction
+  no longer exists").
+- **Drawing them** (`crate::drawing`), as TpF2 Multiplayer did
+  (`native/src/preview_plugin.cpp`): the hook keeps a `UI::BuilderRenderer`
+  of its own for each other member, made by the game's own
+  `RendererFactory` (`CGameUI+0x588`) and registered once with the main
+  `CRendererComponent` ("mainView", `CGameUI+0xbf0`), at most 16. To draw
+  one, the plugin arms the GUI thread for the member
+  (`tpf3mp_native.draw(from)`), has the game evaluate the proposal with
+  `api.engine.util.proposal.makeProposalData(proposal, context)`, and
+  disarms (`drawn()`). The hook redirects that binding's one call of
+  `CreateProposalData`: after the game's own call, on the armed thread
+  only, it clears the member's renderer and fills it with
+  `builder_renderer_util::AddToRenderer` from the toolkit, the converted
+  proposal and the `ProposalData` just made, as the game's own
+  ProposalViewer does (`ModelData` from `CGameUI+0x538`, no offset, an
+  empty entity map, no catchment-area job). Every other call of the
+  binding, the mod's own game script's included, is the game's alone. A
+  proposal the game calls critical ("Construction Not Possible",
+  `errorState.critical`, `ProposalData+0x570`) is drawn too, as the
+  game's own street, track and construction builders draw theirs:
+  `AddToRenderer` draws that state itself (`0x5e3357`); only the
+  ProposalViewer skips it (`0x2aa39d5`), and the hook once did, so a track
+  dragged through a road showed nothing to the others.
+  `undraw(from)` clears a member's renderer when their tool shows
+  nothing. `~CGameUI` is detoured: its renderers are cleared, leave its main
+  component and are destroyed before the game's own destructor runs.
+  The tint is this game's verdict, blue, or red where this game finds
+  errors in the build (a collision) or calls it critical. `drawPreview`
+  answers the game's `ProposalData`, and the log says what this game says
+  of each member's preview whenever that changes ("another member's
+  BuildTrack preview, as this game sees it: critical, errors Construction
+  Not Possible"; the entities it collides with by kind, edge, node,
+  construction or town building, and their ids).
+- **Their terrain**, composed as TpF2 Multiplayer composed it. A preview's
+  cuts and embankments are terrain heights its renderer uploads into the
+  one view terrain every renderer shares: `EndHeightMod` (`0x7bbae0`)
+  calls `terrain::ViewTerrain::ApplyBlocks(*(r+0x50), *(r+0x1b8)+0x1af8,
+  *(r+0xf3))` while the renderer's flag at `+0xf0` is set. A renderer's
+  `Clear` with its second flag resets that view terrain whole (`0x398600`
+  walks every changed block of it, not the renderer's own), so a reset by
+  the player's own tool takes a member's embankments away, and a member's
+  preview gone would leave its embankments behind. The hook detours
+  `Clear`, `EndHeightMod` and the renderer's destructor (`vf0`): after
+  every `Clear` that reset the view terrain, whoever's, each renderer's
+  heights are applied again, the members' first and this player's own
+  tools last, so where both change the same ground the player's tool
+  shows. The game's renderers that upload heights are noted in
+  `EndHeightMod` (at most 64) and forgotten in their destructor and with
+  the world's GUI; the hook clears its own as the ProposalViewer does
+  (`Clear(r, 1, 1, 1)`, through the trampoline) and composes after. Every
+  offset is read from the upload's own instructions (`0x7bbb6a`), and its
+  call must be the profile's `ApplyBlocks`. Without every part, the hook's
+  renderers upload no heights (their flag cleared before and after each
+  fill): the preview then shows no cut or embankment, and is drawn paler,
+  partly under the ground, but never leaves terrain behind; the log says
+  which ("drawn, with their terrain, composed" or "their terrain is not
+  shown"). Composing runs on the GUI thread only, never while a world's
+  GUI is destroyed.
+- **Every target and offset** is in the
+  profile, each offset read from the game's own instruction that uses it;
+  a build without all of them draws nothing (fail closed), and the log
+  says so ("the others' build previews are (not) drawn").
+  The game's own `builtin.ProposalViewer` cannot draw them: build 40408
+  allows it only inside a tool's `ActionDescriptor`, and mounted anywhere
+  else (the plugin's layout, tried 2026-10-03) every game that received a
+  preview stopped with the fatal assertion `!IsTransformWithContext`
+  (`react_transform.cpp:97`). Inside the action slot it would take the
+  player's own tool's place.
+
+### Terraforming
+
+The terrain tools (raise, lower, smooth, flatten and the heightmap brush,
+`UI::TerrainModifier`), the terrain painter and the asset brush tell game
+scripts nothing on build 40408. All three are `UI::ProposalAction`s
+(their `vf17` tail-calls `ProposalAction::DoApply`, 0x549ac0), which makes
+a `WorldBuildProposal` with `playerInitiated` 1 (the factory 0x9ee860's
+seventh argument, stored at payload + 0x3d2) and queues it with its one
+call of `CommandList::Add` (0x549be5, profile target
+`ProposalAction::DoApply/Add call`). So the click was counted and its
+apply stopped as every player's build is, and a stroke in the room's game
+changed nothing: "no proposal seen".
+
+The add's detour reads a click whose call returns to 0x549bea
+(`crates/tpf3mp-hook/src/terrain.rs`): the payload's `Proposal`, which
+must change nothing but its height grid. `Proposal.terrain` is at 0x2d8
+(`RegisterUsertypesTransport`, 0x22c1ab0, binds `terrain` there and
+`ProposalTerrain.baseHeightMod` at its start); the `Proposal`'s
+destructor (0x48ee90) frees three grids there, `{ x0, y0, width, height;
+data }` of 0x28 bytes each: the heights (`Vec2f` cells), the paint's
+materials (bytes) and its mask (words). A grid whose cell count is not
+width times height, a cell that is not finite, more than 65,536 cells, a
+street part, a construction (the asset brush), or paint (the painter) is
+refused with why. The grid is kept for the click like the module
+editor's, as `{ terrain = { x0, y0, width, height, cells = { v1, w1, ...
+} } }`, a reason as `terrain tool: ...`. The GUI takes it with `built(n)`
+and hands the room `Terraform` actions (`capture.terraform`): the first
+cell's index times the cell size (`api.engine.terrain.getBaseResolution`,
+4 m) as the corner, the columns, every cell's two values in millimetres,
+in bands of whole rows of at most 4,096 cells (the largest fits the
+48 KiB payload at any heights).
+
+Every game, the player's own included, applies a `Terraform` in its game
+script (`tpf3mp/apply.lua`): it checks the map's cell size, arms the hook
+with the grid (`tpf3mp_native.terrain(t)`, optional in the bridge
+contract), sends an empty `api.type.Proposal` as the player's build
+(`makeWorldBuildProposalCmd(proposal, context, true, true)`, paid by the
+acting company), and disarms (`terrain()`, which answers whether a build
+was filled). While the room's actions run, the apply's detour fills the
+next build with the armed grid: it must be an empty proposal (every list
+and the three grids zero), the cells go into a vector of the game's own
+heap (the UCRT's `malloc`, which the game's `operator new` calls, with
+MSVC's 32-byte alignment and the block's address before the data for
+4 KiB or more, as its `operator delete` expects), and the grid's header is
+set. A script cannot fill it: Lua's `GridVec2f` has `width`, `height`,
+`x0`, `y0` and `at`, no setter. A carrier that is not empty is answered
+false; a grid nobody filled fails the action in every game.
+
+INFERRED, not yet seen in the game: the order of a grid's four integers
+(TPF2's), that the cells go row by row, that the apply sets the heights
+from the grid alone, so every game gets the same ground, that an empty
+`api.type.Proposal` reaches the apply with its grids empty, and that the
+tool's click is one `DoApply` per stroke part. The lanes do not read the
+terrain (`tpf3mp/lanes.lua`).
+
+What `hook.log` says, in the player's game:
+
+```
+terraform: click 12 queued 18 by 17 cells from cell (-212, 455), 241 changed, heights 104.20 to 109.85 m
+terraform handed to the room: 18 by 17 cells of 4 m from cell (-212, 455), 241 changed, heights 104.20 to 109.85 m
+```
+
+and in every game, the player's included, when it applies:
+
+```
+terraform: filled the room's carrier with 18 by 17 cells from cell (-212, 455), 241 changed, heights 104.20 to 109.85 m
+terraform applied: 18 by 17 cells from cell (-212, 455), heights 104.20 to 109.85 m
+```
+
+(the numbers illustrative; a stroke cut in bands says `(part i of n)`).
+The `Terraform` action is enabled in `tpf3mp/acceptance.lua` after the
+2026-10-02 local two-game validation of all five height brushes on build
+40408. Native base/surface heights matched, including after save/reload;
+see `investigation/STATION_TERRAIN_2026-10-02.md` for measurements and limits.
+The gate remains available: with it off, the hook still reads a stroke at
+its click, but the GUI's sender
+refuses the actions (`terraform awaits two-player game acceptance`), and
+so would every game's replay; nothing is armed and no carrier is filled.
+
+The painter's and the asset brush's clicks are stopped with
+`terrain tool: click N cannot go to the room: terrain paint: the room
+does not carry it yet` (or `the asset brush: ...`), and the GUI's
+`stopped a build the room cannot carry: terrain tool: ...`.
+
 ### The world's lanes
 
 A room finds a game that drifted from the others by comparing the world's
@@ -2048,10 +3384,10 @@ mod's game script, which sees the world between updates:
   at (`RoomGate::next_step`) and so whether it ends at one, and tells the
   hook's Lua side (`lua::begin_batch`), which counts the batch's updates by
   their `take()`.
-- In that last update, `tpf3mp_native.checkpoint()` answers true; the game
-  script's `update` returns that, and its `postUpdate` reads the lanes
-  (`mod/tpf3mp_1/content/scripts/tpf3mp/lanes.lua`) and hands them over
-  (`tpf3mp_native.lanes`).
+- `tpf3mp_native.checkpoint()` returns whether a report is due and the
+  absolute simulation step (Lua bridge version 14). Every `postUpdate`
+  reads a small part of the world at that step. The last update hands over
+  the accumulated observations through `tpf3mp_native.lanes`.
 - After the batch the driver takes them (`lua::end_batch`), makes a
   SHA-256 digest of each lane's text (`step::lane_digests`), and the
   session reports them for the checkpoint step. A batch that ended at a
@@ -2069,16 +3405,202 @@ matter:
 | 1 constructions | every construction by its file and position (0.1 m) |
 | 2 lines | every line's number of stops |
 | 3 vehicles | each vehicle's state, stop and place on its path: the path edge, the distance along it (1 cm) and the speed (1 cm/s), the simulation's own (`MOVE_PATH.dyn`) |
-| 4 economy | the player's balance |
+| 4 economy | the save's own player's balance; with more than one company, each company's balance by its roster id; the subsidy script's offers, taken, completed and failed subsidies with their terms (`tpf3mp/subsidies.lua`, `rows`) |
 | 5 towns | each town's number of buildings |
 | 6 people | the number of people |
 
 Nothing is read by an entity id that two games agreeing on the world could
 number differently, except where the save carries it (towns, the player).
-A lane the engine cannot read is `err` on every game alike and says why in
-`hook.log`, once per Lua state. On build 40408 `getEntitiesWithComponent`
+On build 40408 `getEntitiesWithComponent`
 refuses `BASE_EDGE`, `LINE` and `PLAYER` ("Cannot loop over this component
 type"), hence the street and line systems.
+
+#### Rolling observations
+
+Normal checkpoints no longer scan the whole network and construction list
+in one update. `lanes.rolling` visits 1 km squares of the map through the
+engine's octree, collecting IDs in its callback and reading components only
+after it returns. Intersecting edges include their endpoint junctions,
+including endpoints outside the square. Border squares extend outside the
+terrain bounds. All component references and per-read caches die in the
+same update.
+
+A square with more than 32 edges and constructions subdivides into four
+before canonicalization. The split's static counts are observations too:
+different inventories cannot silently select different read schedules.
+Subdivision stops at 32 m cells, where all remaining objects are read;
+extreme concentrations can therefore still exceed the usual per-update
+cost. A wall-clock deadline never changes which objects or steps are read.
+
+One of lanes 2–6 is also read each update, rotating every five steps (one
+second at the room's normal five steps/s). Lanes 0–1 cover a full spatial
+sweep, whose duration depends on map area and density. This trades immediate
+whole-map comparison for bounded-area observations: a persistent static
+change is detected when its area is visited and the next checkpoint is
+reported. It is not a snapshot of the entire world at the report step.
+
+Each observed lane hashes its sorted rows together with the simulation
+step and area. The window hashes, pending subdivision queue and cursor are
+saved in `worldCheck` in the mod's game-script state after every update.
+Joining or rebasing from a mid-window save resumes that history; starting
+a room at step 1 starts a new history. Missing history, skipped/repeated
+steps or a failed lane read hold the game through `scanned(false, why)`.
+`lua::end_batch` also refuses requested reads that were not acknowledged.
+Matching `err` strings are not accepted as successful rolling checks.
+
+The old full reader remains for diagnostic dumps and stand-in engines.
+`rolling world check` logs the window and cursor; `rolling world sweep`
+logs completed coverage. `rolling-check-cost` reports the mean and maximum
+per-update read cost, including saving the scan state. These diagnostic
+times are never saved or hashed. The older measurements below concern
+the synchronous full reader, not the rolling implementation.
+
+On the large Silver fixture, two real games completed the same first sweep
+in 2,412 updates (8 minutes 2.4 seconds at 1x). Across 7,400 retained reads,
+the mean was 3.73 ms and the maximum 21 ms, including saving the rolling
+state. There was no reported divergence. This removes the recurring full
+scan; game saves and industry generation can still pause independently.
+Methodology, raw data and limits are in
+[the rolling-check investigation](../investigation/TF3_ROLLING_CHECKS_2026-10-05.md).
+
+#### What the lanes cost
+
+Build 40408 also has optional bulk readers, `tpf3mp_native.laneRows` and
+`junctionConfig`. The mod first copies a borrowed component with
+`api.type.BaseEdge.new(component)` or `BaseNodeConfig.new(component)`.
+Rust verifies the owned userdata's exact class and inline payload before
+reading its bounded vectors. Lane settings become the existing sorted lane
+text; junction settings become a plain Lua table for the existing canonical
+row builder. Unsupported userdata uses the Lua reader. Older profiles without
+`lua_touserdata` do not advertise these functions, avoiding needless copies.
+The layouts and live ownership check are recorded in
+`investigation/TF3_CHECKPOINT_SNAPSHOTS_2026-10-05.md`.
+
+Junction checks also reuse the complete street/track adjacency maps that
+enumerate their nodes. Each map is fetched once per checkpoint, instead of
+asking the engine for each node's street and track segments again. Capture and
+replay retain their live queries. Nothing is cached across checkpoints.
+
+These changes still run synchronously at the agreed simulation step. They
+retain the full network, crosswalk, lane and traffic-light checks and the
+existing checkpoint frequency; they do not introduce a rolling/background
+scan. A future background reader needs an immutable snapshot or complete
+change tracking so that worlds are compared at the same step.
+
+The read runs inside the game's step, on its main thread, so the whole
+game stands still while it runs, and the step after it catches up with
+several updates at once: players see a stutter, and vehicles jump, at every
+checkpoint (every 10 s at 1x, every 2.5 s at 4x). The mod's game script
+logs what each read cost:
+
+```
+mod: lanes read in 201.0 ms: network 173.0, constructions 26.0, lines 0.0, vehicles 0.0, economy 1.0, towns 0.0, people 1.0; of it sort+concat 5.0 ms, hash 6.0 ms over 1905931 bytes; network: map 2.0 ms, 2212 edges' getComponent 3.0 ms, their 8836 lane configs 47.0 ms, junctions 85.0 ms
+```
+
+The network lane is most of it, and it grows with the map. Measured on
+build 40408 in a room of two games on a save with 2212 edges and 2126
+junction rows (`MP_crash_1004`), the checkpoint's step took about 950 ms
+(20 ms otherwise): the junction rows 290-460 ms, the edges' lane configs
+260-400 ms, the Lua hash over the lanes' 1.9 MB of text about 150 ms. What
+made them cheaper, with the lanes' text unchanged (checked in the game
+against the old read at every checkpoint):
+
+- `junctions.rows` reads each node, edge and position once per read
+  (`remembered` in `tpf3mp/junctions.lua`), makes each edge's key once and
+  names each light preference and light resource once: every junction at
+  an edge's ends named it again, each time from the engine.
+- An edge's lane configs and each config's modes are read once: every
+  field read of a component asks the engine again.
+- The hash runs in the hook (`tpf3mp_native.hash`), with the Lua `hashStr`
+  where a state has no hook: 5-12 ms instead of about 150.
+
+Together the read took 200-275 ms there, the checkpoint's step 240-300 ms:
+still a visible stutter, about a quarter of it. Reading the network natively
+would take most of the rest; the layouts it would need are in
+`investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
+
+The follow-up shares the network lane's already-read edge components with
+junction rows and memoizes each node's street/track adjacency within that
+read. Counting lane configs also uses the already-read collection. No cache
+survives a checkpoint, and capture/replay continue to read fresh components.
+In the four-arm junction fixture, this reduces edge component reads from
+8 to 4, adjacency queries from 9 to 2, and lane-config field reads from
+8 to 4. These are API call counts, not a measured frame-time improvement.
+A comparison with PR #102's original head (`2039a96`) produced identical
+digests in 48 road/track cases with shifted entity IDs and successive
+geometry, lane-speed and traffic-light edits. Real-game timings above
+precede this follow-up. A missing diagnostic clock no longer prevents a
+checkpoint from being read.
+
+Measured follow-up (2026-10-05): two local build-40408 games, the shared
+`tpf3mp_silver_ab_20261001` save, roughly 5,850 edges and 19,660 lane
+configs. Baseline `2039a96` and candidate `24d4827` read the same checkpoint
+back to back, with the same native hash. After discarding each game's first
+four observations, the first ten baseline-first and ten candidate-first
+pairs per game were retained: 40 pairs total. The game's Lua pool makes a
+module-local counter non-global, so balancing uses the logged execution
+order, not that counter. Raw observations and selection flags are in
+`investigation/checkpoint_ab_2026-10-05.csv`.
+
+| Reader cost | Original PR median | Follow-up median |
+|---|---:|---:|
+| Full checkpoint read | 637 ms | 620 ms |
+| Network lane | 569 ms | 547 ms |
+| Junction portion | 259.5 ms | 265 ms |
+
+Mean full-read cost was 642.525 -> 626.875 ms; median paired saving was
+14 ms (2.2%), and the candidate was faster in 31/40 retained pairs. The
+incremental gain is modest: junction-only time did not improve in this run.
+All 64 observations collected before cleanup had identical baseline and
+candidate digests and zero failed lane reads; no room divergence was
+reported during the measured interval. These are paired reader timings
+(`os.clock` on Windows), not an FPS benchmark or a normal checkpoint-step
+duration: benchmark steps run both readers. The games were quit normally
+and the staging copy restored without instrumentation afterwards.
+
+Measured native follow-up (same save, 2026-10-05): baseline `6af232e`
+versus the owned-snapshot readers and complete adjacency-map reuse. In each
+game, the first four pairs were warm-up; the next ten alternate execution
+order using a hook note shared across Lua states. Twenty retained pairs:
+
+| Reader cost | Same-run baseline median | Native follow-up median |
+|---|---:|---:|
+| Full checkpoint read | 809.5 ms | 653.5 ms |
+| Network lane | 718.5 ms | 543 ms |
+| Junction portion | 330.5 ms | 316.5 ms |
+
+Median paired saving is 155.5 ms (19.96%). All 28 pairs, including warm-up,
+had identical digests, zero failed lanes and zero native fallbacks. Each read
+used the native paths for roughly 5,850 edges and 5,050 configured nodes.
+After the paired phase, each game ran six checkpoints with only the candidate:
+12 reads had a 645.5 ms median; their whole checkpoint steps had a 713.5 ms
+median. Step traces are buffered: match the 20 checkpoint-marked frames to
+the 20 reads in order per game, not to adjacent log lines. The hitch remains
+significant. No room divergence was reported during this run.
+
+The PC ran two games at once; compare paired timings within this run, not its
+absolute numbers against the earlier 620 ms run. Builds and automated checks
+were finished before the retained observations. This measures checkpoint
+latency, not average FPS. Raw observations are in
+`investigation/checkpoint_native_ab_2026-10-05.csv`,
+`checkpoint_native_only_2026-10-05.csv` and
+`checkpoint_native_steps_2026-10-05.csv` in the same directory.
+Both games were quit normally and the staged mod restored. Earlier diagnostic
+runs (a sandbox-global failure and rejected borrowed userdata) are excluded;
+they established no valid speedup.
+
+The Windows rig's successful injection tests use a test-only DLL that
+signals the normal hook-ready event. A system DLL is still used to test
+startup timeout cleanup; production readiness checks are unchanged.
+
+`TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
+`step-trace:` line for every call of the game's step
+(`crates/tpf3mp-hook/src/steptrace.rs`): when it came, how many updates it
+ran and why (`run`; `wait` for the room's next step, `actions`/`replaying`
+for the room's actions, `save`, `load` for the room's world, `hold`; `own`
+outside the room's game), the game's step and the whole call in
+milliseconds (timed for the trace even with `TPF3MP_HOOK_PERF=0`), and
+`lanes` on a checkpoint's batch.
 
 Vehicles are compared by their place on their paths, not in the world. On
 build 40408, with a bus running a line in two games in one room, the bus's
@@ -2142,12 +3664,24 @@ and nothing more.
   lanes (both diverged games of a room of three say one). A line heard is
   checked: at most 16 lanes and two steps, each a checkpoint step, not past,
   and no more than 20 checkpoints ahead. One checkpoint writes at most
-  `lua::MAX_DUMP_LINES` (5000) entries, all its lanes together, each cut to
+  `lua::MAX_DUMP_LINES` (20,000: room for the whole network lane of
+  `twomptest`, about 10,800 entries) entries, all its lanes together, each cut to
   2000 bytes; the rest are counted.
 - **By hand.** `TPF3MP_HOOK_LANE_DUMP` in the game's environment dumps
   lanes at every checkpoint, for chasing a desync on purpose: `all`, or
   lane numbers (`3`, `0,3`). `off` dumps nothing, not even after a
   divergence. The hook says in its log what it read.
+- **A box of the network.** `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (the
+  world's x and y, metres, any two opposite corners) dumps the network lane
+  at every checkpoint in `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to` (steps,
+  both included; unset, every checkpoint), only the edges with an end
+  inside the box, and no junctions; the lane's `summary` line is still the
+  whole lane's. It works with `TPF3MP_HOOK_LANE_DUMP=off`, and gives way to
+  a whole dump of the lane asked for at the same checkpoint (a divergence,
+  or `TPF3MP_HOOK_LANE_DUMP` naming lane 0). The order carries the box to
+  the mod (`dump()` answers `{ step =, lanes =, box = { x0, y0, x1, y1 }
+  }`). A value that does not read is refused in `hook.log`, and nothing is
+  cut.
 - **In the game.** The driver passes the dump with the batch that ends at
   the checkpoint (`step::Batch::dump`, `lua::begin_batch`). In that
   batch's last update `tpf3mp_native.dump()` answers `{ step =, lanes = {
@@ -2172,16 +3706,34 @@ and nothing more.
 
   | lane | fields |
   |---|---|
-  | 0 network | `p0`, `p1` (the edge's ends), `template` |
+  | 0 network | `p0`, `p1` (the edge's ends, `x,y,z`, read from the game's `Vec3f` userdata), `template` |
   | 1 constructions | `file`, `x`, `y`, `z` |
   | 2 lines | `stops`, then `stop<i>=<group>/<station>/<terminal>` |
-  | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`) |
-  | 4 economy | `balance` |
-  | 5 towns | `buildings` |
+  | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`); dump only: `arrival`, `arrival_locked`, `load` (`loadState`), `pending` (`unloadPendingIncome.amount`), `free` (`lineStop2cargo2available`: free capacity per cargo type, stops apart by `\|`), the path fields |
+  | 4 economy | `balance`; dump only: `loan`, `time` (`GAME_TIME`), `income` (`finance.calcIncomeSince(0)`), `last_income` (`finance.getLastIncomeTime`), the finance window's table (`finance.computeFinanceTable`, four periods: `transport<carrier>.<kind>`, `investment<kind>`, `other<kind>`, `loan`, `interest`, `total`, ..., sorted), and one entry per vehicle and per line, `takings=` (`finance.calculateBalance({e}, 0, now, true)`: its income and maintenance since the game began, as the game's vehicle and line windows sum them) |
+  | 5 towns | `buildings`, `size` (the three size factors), `experience`, `level` (the town growth script's state) |
   | 6 people | `count` |
 
   A vehicle's line, a line's stops and their station groups are read for
-  the dump only; the lanes hash what the table above says.
+  the dump only; the lanes hash what the table above says. A finance read
+  the engine refuses dumps as `nil`, the finance table as `err`; the
+  balance is dumped all the same.
+
+  Why lane 4 names vehicles: in the round of 2026-10-02 on `twomptest`
+  (three games, no input, `136d775`), cat's game alone said `Diverged {
+  step: 36400, lanes: [4] }` after 36,350 steps in step. The other lanes,
+  vehicles and people among them, agreed. Its balance was 310 above the
+  others' at steps 36450 and 36500 alike (37969976 against 37969666;
+  37992005 against 37991695): one booking of 310 between the checkpoints
+  after steps 36350 and 36400, the balance alike before and after it. The
+  vehicles lane hashes where the vehicles are, not what they carry, and
+  income is the game's `cargo_income.script.lua` over the distance a
+  unit or passenger travelled; maintenance is booked per vehicle and
+  construction too. The balance alone could not say whose booking split;
+  each vehicle's and line's `takings` can. Every checkpoint's
+  (`TPF3MP_HOOK_LANE_DUMP=4`) names the first checkpoint and the vehicle
+  and line whose takings differ, and its `free` and `pending` (lane 3)
+  what it carried.
 
 After a divergence, gather each game's `hook.log` (a second player in a
 Sandboxie box has its own under the box's copy of the data folder) and run:
@@ -2197,6 +3749,417 @@ by key and prints the ones that differ, grouping the games that agree and
 showing only the fields that differ, and whether the lane's text itself
 differed (a difference below the lane's rounding leaves it alike). It exits
 1 when an entry differs. `python tools/test_lane_diff.py` tests it.
+
+#### The town street field
+
+On save `twomptest`, three games diverged at step 12800 in two of four
+soaks. Traced down, every input, seed and try of town growth's street
+developer at step 12771 was alike in all three games but one: node
+261290's open pass (`TownDeveloper::Develop`, then
+`StreetDeveloper::TryCandidate`) built street 325514 at 27.03 degrees in
+two games and 19.72 in the third, from the same node and so the same
+position-seeded turn. The turn is not where they part. After it the open
+pass bends the street's end by the town's street field (`TryCandidate`,
+`0x967dc8..0x967ebc`, when the town has one):
+
+- `StreetField::At` (`0x2b76a90`, our name; `rcx` the field, `r8` the
+  street's end) answers the field's two axes there: a sum over the field's
+  sources (16 bytes each, `[field]..[field+8]`) of each source's axis,
+  weighted by `exp(-d/100)` within the field's radius (`0x2b769a0`), and the
+  axis at right angles to it. `0x2b76820` then snaps the street's direction
+  to whichever axis lies within its angle, or leaves it.
+- `At` caches its answer in a `std::map` at `field+0x18`, keyed by the
+  point's 50 m cell (`round(x/50 + 0.5)`, likewise `y`), and answers any
+  later point in that cell from the cache: the answer computed at the
+  first point that asked there, not at this one.
+- The field hangs off the town developer's context (`GameState+0x200`,
+  `[[ctx+0x1f0]+8]+0x30`, read in `0x95a080`), one per `GameState`, and no
+  lane reads the cache. Which points asked in a cell earlier, in this game
+  and on whichever buffer ran those updates, decides the answer, and with
+  it whether the street snaps.
+
+**The fix** (`town-field-cache`, `crates/tpf3mp-hook/src/townfield.rs`; on
+unless `TPF3MP_HOOK_TOWN_FIELD_CACHE=0`) splices `At`'s lookup at its end
+test (`0x2b76b4a`, `cmp byte [r9+0x19], 0`, 5 bytes stolen; the only branch
+to it is the lookup loop's `jne` at `0x2b76b1c`, to its first byte) and
+points `r9`, the node found, at the map's head (`r10`, whose nil flag is
+set). Every call then takes the miss path (`0x2b76b86`): the answer is
+computed at the point asked, from the sources, and the engine's own insert
+(`0x2b76660`) runs as before. The answer is a function of the point and the
+sources alone. A head whose nil flag does not read leaves that lookup to
+the game, said once in `hook.log`; a panic switches the fix off. Before
+splicing, the site must lie at `At+0xba` and its `jne` reach `At+0xf6`; the
+static proof checks that the open pass calls `At` (`0x967e0e`) and that the
+miss path inserts through `0x2b76660`. `hook.log` says
+
+```
+order fix town-field-cache: installed (at 0x..., the town street field is computed at every point asked, never answered from its per-cell cache)
+order fix town-field-cache: alive, calls=<n> cache-entries-passed=<n> refused=<n>
+```
+
+the second at the first call and every 4,096th; `cache-entries-passed`
+counts the lookups that found a cached answer and were made to compute
+instead. Every game of a room must run it alike: a game with it off builds
+some town streets at other angles than one with it on.
+#### The town trace
+
+`TPF3MP_HOOK_TOWN_TRACE=1` (or `on`; off unless set; logging only,
+`crates/tpf3mp-hook/src/towntrace.rs`). Round of 2026-10-02 on
+`twomptest`: one town street (entity 325514, a `town_old_small` dead end)
+was built at another angle in one of three games between steps 12750 and
+12800, with `tickCount`, `updateCount` and so the town developer's seed
+equal in all three. The trace tells apart three readings: the size
+factors the `town_growth` script sends differ; the developer's context at
+`GameState+0x200`, which `GameState::Replicate` (`0x255de0`) does not
+copy, differs with the frames' batching; or the developer read world
+input the lanes do not hash.
+
+`TownUpdateSize::Apply` (`0x9dfb10`, our name) applies the script's
+`makeTownUpdateSizeCmd`: it writes the size factors into the town, seeds
+a `minstd_rand` from an FNV-1a of `updateCount` and calls
+`TownDeveloper::Develop` (`0x8dc240`) with `GameState+0x200` and the
+generator. Two splices in the applier (`+0x17a`, right before the call
+is set up, the seed in `ecx`; `+0x1c7`, at the return, the generator after
+`Develop` still in the frame) say one line a call; a splice at `Develop`'s
+entry says one line a call from any caller:
+
+```
+town: step <s> update <n> town <e> size <hex>,<hex>,<hex> (<f>,<f>,<f>) flag <0|1> seed <n> (expected <n>) gamestate <ptr> buffer <0|1> engine <ptr> developer <ptr> developer-engine <own|other(buffer n)|ptr> gen-after <n> entity-ids <before>-><after>
+town: step <s> develop from +<call rva> town <e> flag <0|1> gen <n> developer <ptr> engine <ptr>
+```
+
+The size factors are the command's raw float bits, then their values.
+`expected` is the seed recomputed from `updateCount` (`towntrace::
+town_seed`). `buffer` numbers the `GameState`s in the order this game first
+saw them; `developer-engine` names the engine the developer's context holds
+at `+0xb0` (where `Develop` reads the town): this update's, the other
+buffer's, or another. `gen-after` is the generator after `Develop`: equal
+seeds and different `gen-after` mean `Develop` drew a different number of
+times, so its input differed. `entity-ids` is the length of the engine's
+entity table before and after. `step` is `-` outside a released update,
+`update` `?` when unread. Pointers differ between games by nature; the
+other fields of one step's lines must agree.
+
+Before splicing, the two sites must lie at their offsets from the
+applier's start, the call between them must reach `Develop`, and each
+site's bytes must be the expected ones (the profile states them; the static
+proof checks the call and that every target resolves uniquely); otherwise
+nothing is spliced and `hook.log` says why (`town trace: ... not traced,
+...`). A panic switches the trace off.
+
+The switch also dumps the towns lane at every checkpoint (lane dumps
+above, even with `TPF3MP_HOOK_LANE_DUMP=off`): one line a town,
+
+```
+lane 5 step <s> town-<id> buildings=<n> size=<f1>,<f2>,<f3> experience=<n> level=<n> entity=<e> row=<row>
+```
+
+the size factors at full precision (`%.17g`) from the `TOWN` component,
+experience and level from the base game's town growth script's state, read
+as its own `town_cargo_util.getTownCargoState` reads it (`nil` when it
+cannot be read). `tools/lane_diff.py` diffs them like any lane.
+
+#### The edge watch
+
+`TPF3MP_HOOK_EDGE_WATCH=<entities>` (`325514,220468`, edges or nodes, at
+most 32) with `TPF3MP_HOOK_EDGE_WATCH_STEPS=<from>-<to>` (both included;
+unset, every step). Off unless the first is set; logging only
+(`crates/tpf3mp-hook/src/edgewatch.rs`). The round of 2026-10-02 on
+`twomptest` found the town trace's town updates alike in every game while
+an existing town street (entity 325514, a `town_old_small` dead end) had its
+free end moved between steps 12750 and 12800, to (-2356.4, -20690.8) in some
+runs and games and (-2360.9, -20680.5) in others. The watch finds the update
+that moves it and what was applied then.
+
+**Each update** in the window, the mod's game script asks the hook which
+entities to read (`edgewatch()` in its `update`, which then always hands
+`postUpdate` its work), and at the end of its `postUpdate` reads each with
+`lanes.watch` (`tpf3mp/lanes.lua`) and hands the text over
+(`edgewatched(entity, text)`). The hook logs it the first time and whenever
+it differs from the last:
+
+```
+edge watch: step <s> update <n> entity <e> first|changed edge node0=<n> node1=<n> p0=<x,y,z> p1=<x,y,z> t0=<x,y,z> t1=<x,y,z> n0=<x,y,z> n1=<x,y,z> type=<t> template=<t>
+edge watch: step <s> update <n> entity <e> first|changed node pos=<x,y,z>
+edge watch: step <s> update <n> entity <e> first|changed absent
+```
+
+`p0`/`p1` and `t0`/`t1` are the `BASE_EDGE`'s ends and tangents, `n0`/`n1`
+its nodes' `BASE_NODE` positions, all at full precision (`%.17g`); `update`
+is the game's `updateCount`. A change in update `n` happened after the
+watch's read in update `n-1` (after every system and every game script's
+`postUpdate` the mod's ran after) and before its read in `n`.
+
+**Every command applied** in the window, from any path, one line, by two
+logging-only splices in `CommandApply::One` (`0x9e1c10`, our name;
+"Simulation Thread: Apply Command", `apply_command.cpp`; `rcx` the
+`GameState`, `rdx` the `Command`): at its entry, whose return address names
+the path, and at its epilogue after the cookie check (`+0x352`), which both
+ways out reach:
+
+```
+apply: step <s>|after <s> update <n> from +<rva> (<path>) kind <k> result <r> entities <n> [<e>,...] -> <n> [<e>,...] entity-ids <before>-><after>[ watched]
+```
+
+- `step <s>`: applied inside the room's update of step `s`; `after <s>`:
+  between updates, after the batch that ended at step `s`.
+- `from` and the path: `queue` (`+0x11eb96`), the commands
+  `CGame::RunGameSimLoop` drains from `CommandList` between updates, which
+  is where everything the GUI queues lands (the street builder's
+  proposals among them), at whatever step the drain falls on; `script`
+  (`+0x1204bf`), a script's `sendCommand` applied at once by the send
+  lambda `0x120410`; `direct` (`+0x120334`), CGame's other send lambda;
+  `other`, any other site. In a game script's `update` the send lambda
+  does not apply a command: it appends it to that script's buffer
+  (`GameScriptSystem::Update` points a thread-local at it, `0xaad5f0`),
+  and the buffers are applied later through `GameState`'s command
+  function (`0x268ed0`), a tail jump into `One`, so those lines name the
+  site that called that function.
+- `kind`: the payload's variant index, the byte at `payload+0x9b8` that
+  `One` hands the dispatcher (`0x9d7350`), which switches on `kind + 1`
+  (its jump table at `0x9d8bbc`; entry 0 is the empty variant). The kinds
+  the round of 2026-10-02 saw, named by each case's scope string: 9
+  `EntitySetEmissions`, 16 `GameSetCloudCoverage`, 17 `GameSetSpeed`, 23
+  `LogBookValue`, 27 `ScriptingSendEvent`, 40 `TownUpdateSize` (the
+  applier `0x9dfb10` the town trace splices), 52 `WorldBuildProposal`.
+- `result`: the byte `One` leaves at `Command+0x30`.
+- `entities`: the command's entity list (`Command+8`, 16-byte entries, the
+  id in the first four bytes), its length and up to 8 ids, before and after
+  the apply. `watched` marks a line that lists a watched entity.
+- `entity-ids`: the length of the engine's entity table before and after
+  (more after: the command made entities).
+
+`step`, `update` and `from` of a line are `-`, `?` and `?` when unread.
+Before splicing, the epilogue site must lie at `One+0x352`, `One+0xaf` must
+be the kind's read (`movsx rcx, byte [r8+0x9b8]`), and each site's bytes the
+expected ones (the profile states them; the static proof checks the four
+paths reach `One` and the dispatcher's call); otherwise nothing is spliced,
+`hook.log` says why, and the edges are still watched. A panic switches the
+watch off. Calls nest (a command's apply can apply another): each entry is
+paired with its own epilogue by the stack pointer.
+
+**The street builder's pool.** `StreetBuilderPool` is the GUI tool's: it
+is made in `UI::StreetBuilder`'s constructor (`0x56a740`, with
+`action-streetbuilder`), as `TrackModifierPool` is in the track modifier's,
+and computes the player's proposals. Their results reach the world only as
+commands the GUI queues with `CommandList::Add`, which `One` applies from the
+`queue` path above, so the `apply:` lines are where such a job lands. The
+simulation's own pool work (`TownSystem::Update2`, `TransportNetworkSystem::
+Update2`, the street shape factories, ...) is `ThreadPool::Enqueue` returning
+a `JoiningFuture`, joined within the call that made it (read from the
+lambdas' RTTI names, not traced), so none of it lands on a later step; no
+separate hook is added for it.
+
+For the round after 2026-10-02 (the edge, its two neighbours, and a box
+around them):
+
+```
+TPF3MP_HOOK_EDGE_WATCH=325514,220468,261291
+TPF3MP_HOOK_EDGE_WATCH_STEPS=12700-12850
+TPF3MP_HOOK_LANE_DUMP_BOX=-2460,-20790,-2260,-20580
+TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=12700-12850
+```
+
+then, from each game's `hook.log`, `grep -E '^\[[0-9]+\] (edge watch|apply):'`
+and compare the games line by line by `step` and `update`.
+
+`GameSetSpeed` (kind 17) writes the `GameSpeed` component's speed on the
+game's entity (`0xbacc90`, `+4`) and nothing else. In the third round only
+the host applied it, 1,654 times from the `queue` path between steps 12700
+and 12850 (about eleven an update), each with no entities and result 1;
+the guests none. The simulation does not read that speed in the room's
+game: `GameSim::Step` asks it through `CGameTime::GetSpeed`, which the step
+gate redirects, and the other readers are `CGame::Sync`, the UI, the
+camera, the rail vehicles' sounds and their transformators. So it changes
+no lane; it does leave the host's saved `GameSpeed` unlike the guests'.
+
+#### The street trace
+
+`TPF3MP_HOOK_STREET_TRACE=1` (or `on`; off unless set; logging only,
+`crates/tpf3mp-hook/src/streettrace.rs`), with
+`TPF3MP_HOOK_STREET_TRACE_STEPS=<from>-<to>` (both included; unset, every
+step) and `TPF3MP_HOOK_STREET_TRACE_BOX=x0,y0,x1,y1` (the tried node's x
+and y, metres; unset, anywhere). The rounds of 2026-10-02 found the street
+the edge watch watches (325514, the id reused) built new at step 12771
+(update 105104) by town 214465's `TownUpdateSize`, from node 261290 out of a
+straight street through it, 88 m long in every game, but at a right angle
+to that street in some games ((-2360.9, -20680.5)) and 7.3 degrees off in
+the others ((-2356.4, -20690.8)), with the update's inputs, the developer's
+generator after it and every lane before it alike.
+
+What decides the angle, read with `tools/tpfre`:
+
+- `TownDeveloper::Develop` (`0x8dc240`) calls the street step (`0x967720`,
+  our name) until it builds nothing. The step lists the town's street
+  nodes (an octree query, `0x965fa0`, sorted by distance to the town's
+  centre with `std::sort`, `0x964930`), and tries each with
+  `StreetDeveloper::TryCandidate` (`0x967920`, our name) in two passes:
+  **block**, then **open**. The first street built ends the step.
+- `TryCandidate` expands the node into directions (`Expand`, `0x968130`:
+  along and at right angles to each street at the node, 88 m, the two
+  right angles in an order a `minstd_rand` seeded from the node's position
+  picks). The block pass takes a direction only if it points into a closed
+  street loop around the node (`StreetLoopFactory::Extract`, `0x8d9180`, at
+  most 50 streets a loop, cached per step), and builds it exactly; the open
+  pass takes only the others, turned by a random angle from the same
+  position-seeded generator (`0x967d23`). Neither pass draws from the
+  developer's generator, so `gen-after` cannot see this choice.
+- So the right-angle street is the block pass's, and the turned one the
+  open pass's: where the street came out turned, the block pass refused the
+  node's right-angle direction, or never reached it.
+
+Every refusal goes into a `std::set` (`0x963320`; key: the node, its
+streets, the pass, its loops, the direction's index) from one of six slots
+of `TryCandidate`'s frame, and the slot names the reason. The trace logs,
+for the tries its filter covers:
+
+```
+street: step <s> try <k> node <e> at <x>,<y> pass block|open -> built dir <dx>,<dy> end <x>,<y>
+street: step <s> try <k> node <e> at <x>,<y> pass block|open -> no
+street: step <s> try <k> reject node <e> edges <n> loops <n> dir <i> pass block|open reason <reason>
+street: step <s> try <k> proposal errors <bytes>/<bytes> [<hex>] [<hex>]
+```
+
+| reason | refused by |
+|---|---|
+| `branches` | `0x966470` (the branches' angles, `CheckBranchesRec`) |
+| `not-in-block` | the block pass: the direction leaves every closed loop |
+| `in-block` | the open pass: the direction enters a closed loop |
+| `off-map` | `0x388e60`: the end is off the terrain |
+| `snapped` | `0x9689c0`, for an end the block pass snapped to a street |
+| `build` | `0x9692c0`: water at the end, the proposal's checks (`0x2638c00`, `0x2639860`) or its errors |
+
+`try <k>` numbers the tries within a step, so two games' lines pair up by
+step and number; the first line that differs is the decision that split.
+A `proposal` line (from a splice in `0x9657c0` right after
+`CreateProposalData`, `0xa1fd10`) gives the proposal's two error vectors'
+lengths in bytes and first 32 bytes: both empty builds the street. A
+`build` refusal without a `proposal` line before it failed before the
+proposal was made. Differing `loops` say the street loops around the node
+were found differently; a `build` refusal in one game only, with errors,
+says the proposal's collision or terrain checks answered differently,
+which points at the thread pool's collision jobs
+(`street_util::CheckCollision`'s `ThreadPool::LoopImpl`, `0x2631ba0`).
+
+Before splicing, the try's return site must lie at `TryCandidate+0x7bc`,
+`TryCandidate`'s three calls of the reject function must reach it, and
+each site's bytes must be the expected ones (the profile states them; the
+static proof checks the call chain from `Develop` to every site); otherwise
+nothing is spliced and `hook.log` says why. A panic switches the trace off.
+
+For the next round, with the town trace and the edge watch as before; no
+box, so every try of the developments around the split is logged (an
+order of tries that differs elsewhere in the town shows too):
+
+```
+TPF3MP_HOOK_TOWN_TRACE=1
+TPF3MP_HOOK_STREET_TRACE=1
+TPF3MP_HOOK_STREET_TRACE_STEPS=12740-12775
+```
+
+then `grep -E '^\[[0-9]+\] (street|town):'` in each game's `hook.log` and
+compare by step and try number.
+
+#### The road entry trace
+
+Soak 7 of 2026-10-02 on `twomptest` (three games, no input, `51e1e4d`, each
+with `TPF3MP_HOOK_LANE_DUMP=4`): cat's game alone said `Diverged { step:
+25950, lanes: [3] }`, the economy equal at every checkpoint to the end.
+At step 26000 one horse bus, vehicle-11 (entity 198452, line-10, en route to
+stop 2, a road vehicle: never in the land claim loop, whose six contenders
+are the save's trains), was 9.83 m along its path edge in cat's game and
+10.45 m in the others', at the same 4.276 m/s; at 26050 53.25 against 54.12
+m, and a second bus, vehicle-40 (282046, line-12), which stood at stop 5 in
+every game at 26000, 28.00 m from it against 30.83 m at 4.722 m/s. At 200 ms
+an update (`GAME_TIME` 10,000 ms per 50 steps) the first lag is about 0.15 s,
+less than an update: the bus was held back for part of one (braking behind
+something, or its stop time ended later), not started a whole update late;
+the second left its stop about 0.6 s, three updates, later. Every order fix
+said `refused=0` throughout; the land-vehicle samples and the `ticks:`
+lines were equal in all three games. The `vehicles-at-stop-order` count of
+lists it reordered differs from cat's second `alive` line on (65,536 calls
+in), with no split for 25,000 steps: those lists' engine order is each
+buffer's history, which the fix sorts away, so that count is not one games
+must agree on. The road fix's in-step milestone line is: it was equal in
+all three games for 77 milestones and differed in cat's at the one reached
+near step 25850 (`in-step appends=5111808 reordered=1383817`, the others
+`1383824`), while every vehicle's place still agreed to the centimetre at
+the checkpoint of step 25900. So the simulation's own appends to
+`EdgeUseManager`'s edge lists went another way somewhere in steps
+25520..25850, before any vehicle's place did. (Earlier rounds' logs show
+the same: the step-3300 splits' games parted at the milestone near step
+3300. Soak 6's lane-4 split at step 36400 shows no such difference through
+the milestones after it.)
+
+A milestone comes every 65,536 appends, about 330 steps. The trace
+(`crates/tpf3mp-hook/src/roadtrace.rs`, logging only, on the road fix's two
+detours, so nothing new is hooked) narrows it:
+
+- **At every checkpoint**, when `TPF3MP_HOOK_ROAD_ENTRY_DIGEST=1`, a trace window or recorder is enabled, after the `ticks:`
+  line, the appends inside the game's step since the last checkpoint line:
+
+  ```
+  road-entry: step <s>: in-step appends=<n> persons=<n> vehicles=<n> reordered=<n> set=<fnv64> sequence=<fnv64>
+  ```
+
+  `persons` are `Add`'s (`PersonMoveSystem`), `vehicles` `AddRange`'s
+  (`LandVehicleMoveSystem`). Each append is hashed over its kind, entity,
+  component, current path index, range, `{back, front}` bits and each
+  edge's entity, index and direction byte; `set` sums the hashes (equal
+  whatever their order), `sequence` chains them in order. Two games' lines
+  for one step must be equal; the first that differs bounds the first
+  append that differs to 50 steps, and `set` against `sequence` says
+  whether different appends were made or the same ones in another order.
+  The first line after a load also holds the load's own appends.
+- **In a window**, `TPF3MP_HOOK_ROAD_ENTRY_TRACE=<from>-<to>` (room steps,
+  both included), one line per append inside the step:
+
+  ```
+  road: step <s> #<k> person|vehicle <entity> comp <c> cur <i>|- range <from>..<to>|- bounds <back>,<front> edges <n> <entity>/<index>/<dir>,... reordered <n>[ on <edge>: <count> <entity>:<component>:<back>:<front> ...]
+  ```
+
+  `#k` numbers the appends of a step, so two games' lines pair by step and
+  number; at most 8 edges are listed (`+n` more). `step` is the room's step
+  of the update running; an append made before an update's systems run
+  (applying a command) carries the step before, or `-` at a batch's first
+  update. About 200 appends a step on `twomptest`.
+- **A recorder**, `TPF3MP_HOOK_ROAD_ENTRY_RECORD=<n>` (1 to 4000 steps):
+  the same lines for the last `n` steps are kept in memory (at most 100,000
+  lines and 64 MiB of text; oldest lines are dropped with an explicit
+  truncation marker) and written when
+  the game takes a lane dump asked for in the room's chat (every game hears
+  the ask a diverged game makes, itself included), after a line
+  `road-entry record: <n> in-step append(s) of steps <a> to <b> (...)`. A
+  split no one can predict then leaves the appends before it in every
+  game's log. A game with `TPF3MP_HOOK_LANE_DUMP=off` takes no ask and
+  writes nothing.
+- For the entities `TPF3MP_HOOK_WATCH_ENTITIES` lists (comma-separated
+  entity ids), a traced or
+  recorded append also lists, for each edge it touched, the edge's entries
+  after the sort (`on <edge>:`, at most 16): the vehicles and persons ahead
+  of and behind a watched vehicle, and their places.
+
+All road tracing is off by default; ordinary play does not allocate or hash
+these diagnostic records. hook.log says what it read at start-up (`road-entry trace: ...`).
+
+For the round after soak 7, in every game:
+
+```
+TPF3MP_HOOK_LANE_DUMP=3,4
+TPF3MP_HOOK_ROAD_ENTRY_RECORD=600
+TPF3MP_HOOK_ROAD_ENTRY_TRACE=25500-25960
+TPF3MP_HOOK_WATCH_ENTITIES=198452,282046
+```
+
+Runs of this save are repeatable: bob's soak-6 milestones and every game's
+soak-7 milestones are equal through step 25500. If cat's game splits at
+the same place, the window holds it; if elsewhere, the checkpoint lines
+name the 50 steps and the recorder holds them. Then
+`grep -E '^\[[0-9]+\] road-entry: ' hook.log` in each game, and from the
+first step whose line differs, `grep -E '^\[[0-9]+\] road: step <s> '`,
+compared by step and number: the first append that differs names the
+person or vehicle, its edges and range, and with the watched vehicles'
+`on` lists what held the bus back.
 
 ### Seeds, as built
 
@@ -2493,6 +4456,12 @@ on hand-written functions in the test binary.
 | 3, road edge entries | `road-entry-order` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | keeps each edge's entries in entity order after every append (kill switch `TPF3MP_HOOK_ROAD_ENTRY_ORDER=0`) |
 | 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop (kill switch `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER=0`) |
 | 5, platform choice | `platform-order` | `ecs::TransportVehicleSystem::Update2/visit` (`0xb8bccb`), `FindNextFreeTerminal/candidate sort` (`0xb85430`) | asks the vehicles for a free platform in entity order, and puts the candidate terminals in one order before their cost sort (kill switch `TPF3MP_HOOK_PLATFORM_ORDER=0`) |
+| (soak 4 of 2026-10-02), town street angles | `town-field-cache` | `StreetField::At/cache found` (`0x2b76b4a`) | the town street field is computed at every point asked, not answered from its per-50-m-cell cache ("The town street field"; kill switch `TPF3MP_HOOK_TOWN_FIELD_CACHE=0`) |
+| TF2 `candidates` (person-order) | `person-candidates-order` | `destination_util::GetTargetsByLandUse/candidates` (`0x8e3d65`) | sorts the PersonCapacity candidates by entity id before their capacities are summed for the destination draw ("The person-order fixes"; kill switch `TPF3MP_HOOK_PERSON_CANDIDATES_ORDER=0`) |
+| TF2 `departures` (person-order) | `person-departures-order` | `ecs::SimEntityAtBuildingSystem::Update2/leave batches` (`0xb05f92`) | sorts the persons and cargo leaving buildings by entity id before they are signalled (kill switch `TPF3MP_HOOK_PERSON_DEPARTURES_ORDER=0`) |
+| TF2 `arrivals` (person-order) | `person-arrivals-order` | `ecs::PersonMoveSystem::Update2/arrival batch` (`0xaecfcd`) | sorts the walk arrivals by entity id before they are signalled (kill switch `TPF3MP_HOOK_PERSON_ARRIVALS_ORDER=0`) |
+| TF2 `idle` (person-order) | `person-needs-path-order` | `ecs::SimEntityNeedsPathSystem::Update/list` (`0xb18213`) | sorts the persons waiting for a path by entity id before `PathFactory::Compute` seeds by their place (kill switch `TPF3MP_HOOK_PERSON_NEEDS_PATH_ORDER=0`) |
+| TF2 `freed ids` (person-order) | `freed-id-order` | `ecs::Engine::EndModification/free-id append` (`0x2bb4fd1`) | sorts each modification's freed ids before they join the free-id queue (kill switch `TPF3MP_HOOK_FREED_ID_ORDER=0`; all five off with `TPF3MP_HOOK_PERSON_ORDER=0`, alike in every game of a room) |
 
 **The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
 the two fixes hook with. A whole-function detour cannot reach a point in
@@ -2753,6 +4722,265 @@ directly; a lane that differs names the container. The hashes are FNV-1a
 too; TF3's ids are expected equal (the survey), and the `reordered`
 counts say whether the sorts changed anything.
 
+### The person-order fixes
+
+`crates/tpf3mp-hook/src/persons.rs` ports silver2127's TPF2 Multiplayer
+person-order sorts (`tpf2-multiplayer`: `docs/re/HOTJOIN_ORDER.md`,
+"Mechanism" and "The fix"; `native/src/slice/hotjoin_order.inl`; the Linux
+reference `native/linux/src/order_canon_linux.cpp`) to TF3 Steam build
+40408. In TF2 the person simulation read its batches in ECS node-list
+order, which is add/swap-remove history in a running world and
+registration order in a loaded one, and drew one random stream across a
+batch in that order. The same draw then picked another building, or gave
+another person the stay. The fix sorts each batch ascending by entity id
+right before the engine reads it, so each decision depends on the batch's
+contents only.
+
+**Why now.** On `twomptest` three games split at step 25950. One bus ran
+about 0.15 s behind in one game. The first evidence was the road edge
+appends between steps 25520 and 25850: persons' `Add` and vehicles'
+`AddRange` came in another order, inside the `road-entry-order` fix's
+counters. A later split, at step 36400, differed only by a fare (+310).
+Both look like the person simulation drifting, and the TF3 port had none of
+TF2's person-order sorts.
+
+**Every game of a room must run the same person-order settings.** The
+sorts change what the simulation decides. A game with a batch sorted and a
+game with it in the engine's order pick different buildings for the same
+draw. All five fixes are on by default. `TPF3MP_HOOK_PERSON_ORDER=0` (or
+`off`, `false`, `no`) turns all of them off, and each fix's own switch
+turns it off alone (table below). Either kind of switch must be set alike
+on every machine of the room. hook.log's first line of the group says so:
+
+```
+person-order: on (TPF3MP_HOOK_PERSON_ORDER=0 turns every person-order fix off); every game of a room must run the same person-order settings
+```
+
+The sites were read statically with `tools/tpfre` (build 40408). Every
+batch is a `std::vector<Entity>` (4-byte ids) that the engine reads next,
+and nothing indexes it by position across the sort. The hook splices in
+(`tpf3mp_hookcore::detour::Splice`, as the order fixes do) and sorts the
+ids in place.
+
+| TF2 batch (TF2 Windows site) | TF3 fix | TF3 site (RVA) | what reads the batch in order | status |
+|---|---|---|---|---|
+| 1, candidates (`0x927df6`) | `person-candidates-order` | `destination_util::GetTargetsByLandUse/candidates` (`0x8e3d65`) | `BinarySearchIndex` (`0x8e4400`) sums free capacity in entry order and binary-searches one draw | ported |
+| 2, departures (`0xa7c9fd`) | `person-departures-order` | `ecs::SimEntityAtBuildingSystem::Update2/leave batches` (`0xb05f92`) | `SimPersonSystem::NoteAtBuildingPersonsLeave` (`0xb2e950`): one generator seeded from `updateCount`, drawn in batch order | ported |
+| 3, arrivals (`0xa59928`) | `person-arrivals-order` | `ecs::PersonMoveSystem::Update2/arrival batch` (`0xaecfcd`) | `SimPersonSystem::NoteWalkPersonsArrived` (`0xb33a30`): stay draws in batch order | ported |
+| 4, idle (`0xa867ce`) | `person-needs-path-order` | `ecs::SimEntityNeedsPathSystem::Update/list` (`0xb18213`) | `PathFactory::Compute` (`0x8d11e0`): one generator per chunk, seeded from `updateCount` and the chunk's start index | ported |
+| 5, capacity maps (`0x21234de`) | none | (`~SimEntityUpdateHelper` `0x256b0c0`, `0x256b349`) | `ApplySimPersonData` (`0x256da20`) walks five phmap flat maps in slot order with one shared stream | skipped (below) |
+| 6, freed ids (`0x23de385`) | `freed-id-order` | `ecs::Engine::EndModification/free-id append` (`0x2bb4fd1`) | the FIFO free-id deque `AddEntity` (`0x2bb37b0`) pops | ported |
+| person target-set, network person and network index order (Linux only) | none | none | none | not needed (below) |
+
+| switch (`0`, `off`, `false` or `no`) | turns off |
+|---|---|
+| `TPF3MP_HOOK_PERSON_ORDER` | all five fixes below |
+| `TPF3MP_HOOK_PERSON_CANDIDATES_ORDER` | `person-candidates-order` |
+| `TPF3MP_HOOK_PERSON_DEPARTURES_ORDER` | `person-departures-order` |
+| `TPF3MP_HOOK_PERSON_ARRIVALS_ORDER` | `person-arrivals-order` |
+| `TPF3MP_HOOK_PERSON_NEEDS_PATH_ORDER` | `person-needs-path-order` |
+| `TPF3MP_HOOK_FREED_ID_ORDER` | `freed-id-order` |
+
+Each fix installs on its own and fails closed on its own:
+
+- Its profile target must resolve (`required = false`, so a build without
+  the site loses that fix, not the profile).
+- The splice compares the site's bytes with the fix's: the stolen
+  instructions and every instruction after them up to the call that hands
+  the vector on, so the frame slot it sorts is the one the engine passes.
+- Each fix also checks the code around its site (below), and refuses
+  with the reason in hook.log on any mismatch.
+- Every read on the game's thread goes through `image::Readable`.
+- A vector of another shape (pointers out of order, not whole aligned ids,
+  more than 2^24 of them) is refused for that call. The refusal is said
+  once per reason and the engine's order stands.
+- A panic switches the fix off for the rest of the game.
+
+hook.log carries one line per fix: `order fix <name>: installed (at <rva>,
+...)` or `order fix <name>: off, <why>`.
+
+**Candidates** (`person-candidates-order`). `GetTargetsByLandUse`
+(`0x8e3ac0`, our name) gets the `PersonCapacity` family and copies its
+node list (8-byte `{entity, index}` records) into a local
+`vector<Entity>` at `[rsp+0x70]` (`0x8e3d10..0x8e3d3f`). It then builds
+one 0x24-byte `TargetDataEntry` per entity, in that order, on the thread
+pool. The chunks are joined in index order, not in completion order, so
+threads add nothing but the list's order.
+
+`BinarySearchIndex` later sums the entries' free capacity in entry order
+and binary-searches one draw. The entries also index a sibling vector, so
+the fix sorts the entity list before the build, not the entries after it.
+
+- *Site:* `mov dword [rsp+0x60], 1` (`0x8e3d65`, 8 bytes stolen), after
+  the copy loop and before the build. Nothing branches into its bytes.
+- *Checks:* `lea rbx, [rsp+0x70]` before the copy loop (`site-0x8c`), and
+  the build's size computation from `[rsp+0x78] - [rsp+0x70]` after the
+  site. At run time the hook refuses unless `rbx` names `rsp+0x70`.
+- *Reach:* the leave handler reaches it through the destination
+  assignment (`0xb2b040`) and `GetRandomTargets` (`0x8e2e10`). The town
+  system's new-person path and the Lua `getTargetsByLandUse` reach it too.
+  It is called synchronously from all of them.
+
+**Departures** (`person-departures-order`).
+`SimEntityAtBuildingSystem::Update2` (vf12, `0xb05ea0`) gathers the
+entities whose stay ran out on the thread pool, in node order. The pool
+loop is `0xb052c0`, chunks of 256 joined in index order. The result is
+two `vector<Entity>`, at `[rbp+7]` and `[rbp+0x1f]`, and each is emitted to
+its signal (`0xaeaeb0`). `NoteAtBuildingPersonsLeave` seeds one generator
+from an FNV hash of `updateCount` and draws, person by person in batch
+order, whether the person recomputes its destination.
+
+- *Site:* the test of the first vector after the pool loop (`0xb05f92`,
+  `mov rcx, [rbp+7]; cmp rcx, [rbp+0xf]`, 8 bytes stolen). The only branch
+  to it is the `je` at `0xb05f51`, to its first byte.
+- *Sorting:* both vectors are sorted (persons and cargo).
+- *Checks:* the second emit's bytes, and both emits must call one function.
+
+**Arrivals** (`person-arrivals-order`). `PersonMoveSystem::Update2` (vf12,
+`0xaecaa0`) gathers the walk arrivals on the pool, in node order (chunks
+of 128 joined in index order), into a `vector<Entity>` at `[rbp-0x78]`. It
+emits that vector (`0xaecfe8`) to `NoteWalkPersonsArrived`, which seeds
+from `updateCount` and draws stay durations in batch order.
+
+- *Site:* `0xaecfcd` (`mov rax, [rbp-0x70]; cmp [rbp-0x78], rax`, 8 bytes
+  stolen), reached only by the `je` at `0xaecf11`, to its first byte.
+- *Checks:* its emit must call the signal that the departures' two emits
+  call, so it needs the departures target to resolve.
+
+**Needs-path, TF2's idle** (`person-needs-path-order`). TF3 has no
+`SimEntityIdleSystem`. Its counterpart is
+`ecs::SimEntityNeedsPathSystem::Update` (vf11, `0xb181b0`, on odd
+`updateCount`s), the only caller of `PathFactory::Compute`. It builds one
+`PathFactoryInput` per entry of its own list `m_systemData->add`
+(`[[this+0x10]]`). That list is a `vector<Entity>` that `EntityAdded`
+appends to and `EntityToBeRemoved` erases from in place, so it is in
+insertion history.
+
+Compute runs three items per person (one per mode) in chunks. Each chunk
+seeds one generator from `updateCount` and the chunk's start index and
+draws for every item in it, so each trip's path and mode follow the
+person's place in the list. The results are matched back to `add` by
+position in the same call (`0xb183c0`, which the fix checks). Sorting the
+list in place before its first read therefore keeps them paired.
+
+- *Site:* that first read (`0xb18213`, `mov rax, [r13+0x10]; mov rdx,
+  [rax+8]`, 8 bytes stolen).
+- *Shared data:* the list's data is copy-on-write, a `shared_ptr` that
+  the replicated engine's copy may share. The system's own writers take a
+  private copy through a getter (`0xb186c0`) before they write.
+- *What the fix does when it is shared:* if the use count in the control
+  block (`[[this+0x18]+8]`) is above 1, the fix calls the same getter, the
+  way `EntityToBeRemoved` does (`0xb18121`, the profile target
+  `.../data getter call`; the getter's head is checked at install). Only
+  then does it sort.
+- *Why not refuse instead:* that would apply the sort in some games and
+  not in others, depending on the frame pacing.
+
+**Freed ids** (`freed-id-order`). `ecs::Engine::EndModification`
+(`0x2bb4d90`) appends the modification's removed ids to the FIFO free-id
+deque at `engine+0xd8`, through the deque's insert `0x2bb1110` at its end.
+The removed ids are `m_betweenChanges` (`[[engine+0x1f0]]`), a
+`vector<Entity>` that `RemoveEntity` pushes to in call order.
+`AddEntity` (`0x2bb37b0`) pops the deque's front, and the deque is saved
+(`Engine::Load` asserts `m_freeIds.empty()` before it reads it).
+
+Sorting each batch before the append makes the deque depend only on which
+ids each modification removed. The order matters because the 40 callers
+of `RemoveEntity` include walks of node lists and hash maps.
+
+- *Site:* `lea rcx, [r13+0xd8]` (`0x2bb4fd1`, 7 bytes stolen), reached only
+  by the `je` at `0x2bb4fbf`. `r12` there is `engine+0x1f0`.
+- *The second engine:* `Replicator::Apply` (`0x2bb4430`) replays the sim's
+  modifications one by one, Begin, the removals, then End through the same
+  `EndModification`. So it sorts the same batches, and its `AddEntity`
+  check (`entity == c.entity`) still holds.
+
+**Not ported**:
+
+- *Capacity maps* (TF2's `capacity`). TF3's `SimEntityUpdateHelper` keeps
+  its affected persons and cargo in nine phmap flat maps and sets at its
+  data block (`[helper+0x130]`), not in MSVC `unordered_map`s with a list.
+  `~SimEntityUpdateHelper` seeds one generator from `updateCount * 3 mod
+  (2^31-1)`, not mt19937 with 5489. `ApplySimPersonData` walks the five
+  person maps in slot order and hands the shared seed to every apply
+  function. There is no list to relink.
+- *Why the slots cannot just be permuted:* the walks also look entries up
+  in the same maps.
+- *When slot order can differ:* it is a function of the key set, the
+  capacity and the insertion order among colliding keys, and phmap's hash
+  has no per-process seed. Two games part here only if the builder
+  (`PrepareSimPersonData`, `0x2574d70`) inserts in history order, which was
+  not traced.
+- *The possible fix, not built:* rebuild each map in ascending key order
+  with phmap's exact insert at `0x256b349` (`mov rdi, [r13+0x130]`, the
+  twin of TF2's site). It is risky enough to need its own measurement
+  first.
+- *The Linux-only orders* (`target_order_linux.cpp`,
+  `network_person_order_linux.cpp`, `network_index_order_linux.cpp`,
+  `person_map_order_linux.cpp`; `RESUME_STATUS.md`,
+  `LINE_COST_DESYNC.md`). These make a libstdc++ build walk its sets, and
+  hash its costs, the way the Windows build does. Every TF3 game in a room
+  runs the same Windows executable, so they are not needed. A native Linux
+  TF3 game in a room would need their counterparts.
+- *The step canon* (TF2's `step`, every family's node list in entity order
+  at each `Engine::Update`). It is a different fix, and still the
+  candidate the order fixes above name for the ship and aircraft families.
+
+**PathFactory's chunks do not depend on the core count.**
+`PathFactory::Compute`'s chunk size is `max(1, ceil(3n / [pool+0xc4]))`
+(`0x8ceec1..0x8ceeef`), and each chunk's seed comes from its start index.
+`[pool+0xc4]` is a constant cap of 100, written only in
+`ThreadPool::ThreadPool` (`0x3055a9f`), not the pool's thread count. So the
+chunk boundaries, and with the list sorted the path seeds, are the same on
+every machine whatever its number of cores.
+
+The one machine-dependent case is a pool with exactly one worker thread.
+`LoopImpl`'s shortcut (`0x8cf502..0x8cf517`) then runs the whole batch as
+one chunk with one seed. That happens on a 1-vCPU machine, or with the
+debug "Num. Sim. threads" slider at 1. Such a game would draw other paths
+than a game with a bigger pool.
+
+**What the log says.**
+
+- At the first call of each fix and every `2^12` calls (`2^14` for
+  candidates, `2^16` for freed ids), an alive line:
+
+  ```
+  order fix <name>: alive, calls=<n> reordered=<n> refused=<n> (in the step <calls>/<reordered>)
+  ```
+
+- At every such multiple of calls inside the game's step, the counts two
+  games of a room must agree on:
+
+  ```
+  order fix <name>: in-step calls=<n> reordered=<n>
+  ```
+
+  `freed-id-order` also counts the second engine's modifications, which
+  run outside the step as often as frames come. That is why the in-step
+  counts are the ones to compare.
+
+The time goes to the `person-order` piece of the `perf:` line.
+
+**Tested without the game:**
+
+- `persons::tests`: the sort, the vector checks, each site's frame
+  slots, the departures, freed-id and needs-path hooks on vectors in
+  memory, the switches and the off lines, the master line, and that the
+  profile states each site's bytes.
+- `persons::splice_tests`: the freed-id hook through its real 35 site
+  bytes on a hand-written function.
+- The static proof (`tf3_static_proof.rs`): the six targets resolve
+  uniquely at their RVAs in the installed game, plus the calls the checks
+  rely on. Those are the emits to `0xaeaeb0`, the pool loop, the
+  `updateCount` seeds, Compute's caller, the results loop's re-read, the
+  getter and the deque insert.
+
+**In the game:** soak 9 on `twomptest` (three games on one PC, all five
+fixes on) passed step 26100 in sync, past the step-25950 split. Whether it
+also passes the step-36400 fare split was not yet known when this was
+written.
+
 ### What the hook costs: the `perf:` lines
 
 `crates/tpf3mp-hook/src/perf.rs` times the hook's per-update work where
@@ -2773,7 +5001,7 @@ hook.log (nothing while no step runs, at the main menu):
 
 ```
 perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses
-perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
+perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, person-order 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
 ```
 
 The first line: the window's length; the game's step, its total time,
@@ -2793,6 +5021,7 @@ one `VirtualQuery` or more). Each piece of the second line is
 | `platform-candidates` | `platform-order`'s candidate sort | `FindNextFreeTerminal` sorts |
 | `land-vehicle` | `land-vehicle-order`'s sort | reservation updates |
 | `vehicles-at-stop` | `vehicles-at-stop-order`'s sort | stop lookups |
+| `person-order` | the person-order fixes' sorts ("The person-order fixes") | batches: candidate lists, leave and arrival batches, needs-path lists, freed-id batches |
 | `reseed` | the per-call reseed of the game scripts (update, postUpdate, handleEvent), its checks and `math.randomseed` | script calls |
 | `paused-tick` | the paused-tick redirect's decision (the game's own advance, when passed on, is not counted) | paused frames |
 | `lanes` | `tpf3mp_native.lanes(t)`: the lanes' text read off the Lua stack at a checkpoint (the mod's own reading of the world is Lua, inside the game's step) | checkpoints |
@@ -2820,6 +5049,7 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_PLATFORM_ORDER` | `platform-order`, both sites |
 | `TPF3MP_HOOK_LAND_VEHICLE_ORDER` | `land-vehicle-order` |
 | `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER` | `vehicles-at-stop-order` |
+| `TPF3MP_HOOK_PERSON_ORDER` | every person-order fix; each also has its own ("The person-order fixes") |
 | `TPF3MP_HOOK_PAUSED_TICK` | the paused-tick redirect |
 | `TPF3MP_HOOK_SCRIPT_RESEED` | the game scripts' per-call reseed (the per-update detour stays, so the mod's own `tpf3mp_native.seed` still works) |
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
@@ -2829,6 +5059,23 @@ lines' `ms/update` and the piece's total:
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
 every game has the same switches, or alone.
+
+The desync diagnostics are off unless set, and logging only: they change
+nothing the game computes, so one game of a room may run them alone.
+
+| switch | turns on |
+|---|---|
+| `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (with `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to`) | the network lane (0) dumped at every checkpoint of those steps, only its edges with an end in the box, even with lane dumps off ("Lane dumps") |
+| `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump at every checkpoint ("The town trace") |
+| `TPF3MP_HOOK_STEP_TRACE` (`1` or `on`) | a `step-trace:` line for every call of the game's step ("What the lanes cost") |
+| `TPF3MP_HOOK_EDGE_WATCH=<e>,...` (with `TPF3MP_HOOK_EDGE_WATCH_STEPS=from-to`) | the `edge watch:` lines for those entities and an `apply:` line for every command applied ("The edge watch") |
+| `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
+| `TPF3MP_HOOK_ROAD_ENTRY_TRACE=from-to` | a `road:` line for every in-step road edge append in those steps ("The road entry trace") |
+| `TPF3MP_HOOK_ROAD_ENTRY_RECORD=<n>` | the last `n` steps' `road:` lines kept in memory and written when the room asks for a lane dump |
+| `TPF3MP_HOOK_WATCH_ENTITIES=<e>,...` | each traced or recorded append of those entities lists the entries of the edges it touched |
+
+The `road-entry:` digest at every checkpoint needs no switch: it is on
+while `road-entry-order` sorts.
 
 ## Release-day procedure: adding a target for a new build
 
@@ -3039,9 +5286,15 @@ never cancelled.
   `+0x28`/`+0x2c` (1 bridge, 2 tunnel), and an optional `PlayerOwned` as
   `{int32 player +0x70; uint8 present +0x74}`.
 - `TransportNetwork` and the other components are reached through the engine's
-  type index: `GetComponentDataIndex` (`0xd0920`) with the component's
-  `RTTI_Type_Descriptor`, then `engine+0x88[typeIndex]`, entries of 0x48
-  bytes, data at `+0x68` (indices below `0x40000000`) or paged at `+0x80`.
+  type index. *Corrected (2026-10-04, from the disassembly):* the type index
+  comes from `ComponentManager::GetComponentTypeIndex` (`0xa4cc0`, at
+  `engine+0x48`) with the component's `RTTI_Type_Descriptor`, the data
+  index from `Engine::GetComponentDataIndex` (`0xa4b90`; `0xd0920` is inside
+  a phmap rehash), the pool is `engine+0x78[typeIndex]` (not `+0x88`), and
+  its entries are `sizeof(T)` bytes (0x48 is `GameTime`'s), data at `+0x68`
+  (indices below `0x40000000`) or paged at `+0x80`. The details, with the
+  street network's layouts, are in
+  `investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
 
 ### The game has two engines
 
@@ -3104,3 +5357,52 @@ change disables one feature rather than the mod.
 
 The GUI hook exposes `copy(text)` for the room invite. The lobby uses the
 local `copy` action; clipboard errors are reported and never sent to the server.
+
+### Upgrade diagnostics
+
+Road and track modifiers log a bounded summary when handed to the room and
+again when applied in each game. The summary identifies the modifier and
+edge count without changing its payload. Track proposal tests use the Lua
+API stand-in; they do not establish native track-tool acceptance. Action
+handoff logs also include the action kind, without a wire format change.
+
+## Company tool integration (2026-10-03)
+
+The newer company tool, stop ownership/naming, station junction and asset
+bulldozer changes from `local/combined-dev` through `34a2edf` are ported onto
+current dev. The snapshot exporter and duplicate contributor guidelines
+were already present. Existing loading behavior, automatic-company policy,
+HUD callback bounds and acceptance gates are retained. The older branch's
+finance-window wrapper is not added: it depends on a separate loan-table
+implementation that is absent here.
+
+The first company also gets the map's all-companies display; its selection
+and editing checks still use its own player. The line-viewer probe diagnoses
+unrendered route data and does not fix it. Tree/rock bulldozing remains opt-in
+with `TPF3MP_TREE_BULLDOZE=1`; brushes remain refused. Action schema 25 adds
+`PlaceStop::name` and `Bulldoze::Assets` to dev's existing schema 24, without
+renumbering its perk or preservation actions. Native playtest observations
+above are the contributor's evidence; this integration has no new live-game
+acceptance run.
+
+### Startup readiness and stalled menu recovery
+
+On Windows the launcher keeps the main thread suspended until hook bootstrap
+finishes, including the main-menu `RegisterAppUsertypes` and world-loading
+detours. Installing only the lobby entry before resuming can miss the menu's
+Lua state: the save downloads, but the game never loads it. The launcher waits
+up to 120 seconds; a missing readiness event or timeout stops the suspended
+process with an error instead of running with incomplete hooks.
+
+Menu room control continues even if its Lua loading state is unavailable,
+provided the native checks establish that no world is loaded or loading.
+This keeps Start and Leave processing alive; entering menu Lua remains guarded
+by the loading API's state checks. No game simulation runs from this path.
+
+The launcher must continue servicing the shared-memory Hello handshake while
+Windows waits for readiness. Launch runs on a blocking worker; the async
+launcher pumps the idle link through Hello and keeps its heartbeat alive until
+startup completes. Otherwise hook attachment waits for a launcher reply while
+the launcher waits for hook attachment, causing multiplayer to disable itself.
+Menu actions after Hello stay queued for the normal launcher loop. An existing
+room session continues servicing its own link on the async runtime.

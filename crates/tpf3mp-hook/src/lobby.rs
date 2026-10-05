@@ -74,6 +74,12 @@ pub struct Member {
     pub loading: String,
     /// How much of the world it has fetched, in percent, while `fetching`.
     pub percent: u8,
+    /// How the player's game differs from the room's, in counts: the room's
+    /// mods it lacks, has in another version, and runs besides; all 0 while
+    /// it does not differ that way.
+    pub missing: u16,
+    pub changed: u16,
+    pub extra: u16,
 }
 
 /// The room the player is in.
@@ -137,13 +143,23 @@ pub struct ModEntry {
     pub choosable: bool,
 }
 
-/// One of the room's shared mods.
+/// One of the room's mods.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomMod {
     pub id: String,
+    /// Its name for players, as the owner's game has it.
+    pub name: String,
+    /// The room's version.
     pub version: String,
+    /// This player's version; empty when it lacks the mod.
+    pub yours: String,
     /// `yes`, `no` or `other_version`: whether this player has it.
     pub have: &'static str,
+    /// Where the owner's game has it from: `mod.io`, `StagingArea`, ...
+    pub source: String,
+    /// Its Mod Hub number as text, empty for none: the owner's claim, which
+    /// the window resolves through this player's game before offering it.
+    pub modio: String,
 }
 
 /// Everything the lobby window shows.
@@ -190,12 +206,22 @@ pub struct LobbyState {
     pub differences: Option<String>,
     /// The player's installed mods, the choosable first.
     pub mods: Vec<ModEntry>,
-    /// The room's shared mods, and whether this player has each.
+    /// The room's mods, and whether this player has each.
     pub room_mods: Vec<RoomMod>,
-    /// The room's shared mods beyond `room_mods`.
+    /// The room's mods beyond `room_mods`.
     pub room_mods_more: u32,
+    /// Of all the room's mods, how many this player lacks, and how many it
+    /// has in another version.
+    pub room_mods_missing: u16,
+    pub room_mods_other: u16,
+    /// The settings of the room's mods, as its owner picked them: mod,
+    /// setting, value.
+    pub room_params: Vec<(String, String, i64)>,
     /// The page of public rooms last asked for.
     pub rooms: Option<LobbyRoomList>,
+    /// The launcher's run, which every line of its diagnostics carries:
+    /// shown with a Copy. Empty while diagnostics are off.
+    pub log_session: String,
 }
 
 /// What the window sends, as JSON: the tag `action` plus the fields, e.g.
@@ -280,6 +306,45 @@ enum WindowAction {
         #[serde(default)]
         year: u16,
     },
+    /// The owner's choice of the room's mods on the game's Load Game page,
+    /// in its activation order, with the settings it holds, and of the save
+    /// the room starts from (none when `save` is empty).
+    ChooseRoomMods {
+        #[serde(default)]
+        save: String,
+        #[serde(default)]
+        map: String,
+        #[serde(default)]
+        year: u16,
+        #[serde(default)]
+        mods: Vec<WindowSelected>,
+        #[serde(default)]
+        params: Vec<WindowSetting>,
+    },
+    /// Find the installed mods again.
+    RescanMods,
+}
+
+/// One mod of the owner's selection, as the window names it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct WindowSelected {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    source: String,
+    /// The Mod Hub number, as text; empty for none.
+    #[serde(default)]
+    modio: String,
+}
+
+/// One setting of a mod of the selection.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct WindowSetting {
+    #[serde(rename = "mod")]
+    id: String,
+    key: String,
+    value: i64,
 }
 
 fn default_max_players() -> u32 {
@@ -301,7 +366,7 @@ fn password(value: &str) -> Result<Option<Text<64>>, String> {
 }
 
 /// A player named by 64 hex digits, as [`Member::id`] names them.
-fn player(hex: &str) -> Option<PlayerId> {
+pub(crate) fn player(hex: &str) -> Option<PlayerId> {
     let hex = hex.trim();
     if hex.len() != 64 || !hex.is_ascii() {
         return None;
@@ -427,6 +492,59 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             map: Text::lossy(map.trim()),
             year,
         },
+        WindowAction::ChooseRoomMods {
+            save,
+            map,
+            year,
+            mods,
+            params,
+        } => {
+            // A mod's id names it whole: one too long is refused, never cut
+            // short. Its name and source are only shown.
+            let mods = mods
+                .iter()
+                .map(|m| {
+                    Ok(tpf3mp_bridge::LobbySelected {
+                        id: ModName::new(m.id.trim())
+                            .map_err(|_| "that mod's id is too long".to_owned())?,
+                        name: Text::lossy(m.name.trim()),
+                        source: Text::lossy(m.source.trim()),
+                        modio: match m.modio.trim() {
+                            "" => None,
+                            id => Some(id.parse().map_err(|_| "that is not a Mod Hub number")?),
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let params = params
+                .iter()
+                .map(|p| {
+                    Ok(tpf3mp_bridge::LobbySetting {
+                        id: ModName::new(p.id.trim())
+                            .map_err(|_| "that mod's id is too long".to_owned())?,
+                        key: Text::new(p.key.as_str())
+                            .map_err(|_| "that mod setting's name is too long".to_owned())?,
+                        value: p.value,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            LobbyAction::ChooseRoomMods {
+                save: match save.trim() {
+                    "" => None,
+                    _ => Some(text::<{ tpf3mp_bridge::MAX_SAVE_NAME }>(
+                        &save,
+                        "save name",
+                    )?),
+                },
+                map: Text::lossy(map.trim()),
+                year,
+                mods: tpf3mp_proto::BoundedVec::new(mods)
+                    .map_err(|_| "more mods than a room runs".to_owned())?,
+                params: tpf3mp_proto::BoundedVec::new(params)
+                    .map_err(|_| "more mod settings than a room carries".to_owned())?,
+            }
+        }
+        WindowAction::RescanMods => LobbyAction::RescanMods,
     })
 }
 
@@ -448,6 +566,8 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::SetServer { .. } => "set_server",
         LobbyAction::SetBanner { .. } => "set_banner",
         LobbyAction::ChooseStart { .. } => "choose_start",
+        LobbyAction::ChooseRoomMods { .. } => "choose_room_mods",
+        LobbyAction::RescanMods => "rescan_mods",
     }
 }
 
@@ -511,6 +631,10 @@ impl LobbyState {
             mods: Vec::new(),
             room_mods: Vec::new(),
             room_mods_more: 0,
+            room_mods_missing: 0,
+            room_mods_other: 0,
+            room_params: Vec::new(),
+            log_session: String::new(),
             rooms: None,
         }
     }
@@ -601,6 +725,9 @@ impl LobbyState {
                             }
                             _ => 0,
                         },
+                        missing: member.differs.map_or(0, |d| d.missing),
+                        changed: member.differs.map_or(0, |d| d.changed),
+                        extra: member.differs.map_or(0, |d| d.extra),
                     })
                     .collect(),
             }),
@@ -671,15 +798,31 @@ impl LobbyState {
                 .iter()
                 .map(|m| RoomMod {
                     id: m.id.as_str().to_owned(),
+                    name: m.name.as_str().to_owned(),
                     version: m.version.as_str().to_owned(),
+                    yours: m
+                        .yours
+                        .as_ref()
+                        .map(|v| v.as_str().to_owned())
+                        .unwrap_or_default(),
                     have: match m.have {
                         LobbyHave::Yes => "yes",
                         LobbyHave::No => "no",
                         LobbyHave::OtherVersion => "other_version",
                     },
+                    source: m.source.as_str().to_owned(),
+                    modio: m.modio.map(|id| id.to_string()).unwrap_or_default(),
                 })
                 .collect(),
             room_mods_more: view.room_mods_more,
+            room_mods_missing: view.room_mods_missing,
+            room_mods_other: view.room_mods_other,
+            room_params: view
+                .room_params
+                .iter()
+                .map(|p| (p.id.as_str().to_owned(), p.key.as_str().to_owned(), p.value))
+                .collect(),
+            log_session: view.log_session.as_str().to_owned(),
             rooms: view.rooms.clone(),
         }
     }
@@ -779,13 +922,31 @@ impl LobbyState {
         out.push_str(" }, room_mods = {");
         for m in &self.room_mods {
             out.push_str(&format!(
-                " {{ id = {}, version = {}, have = {} }},",
+                " {{ id = {}, name = {}, version = {}, yours = {}, have = {}, source = {}, modio = {} }},",
                 lua_str(&m.id),
+                lua_str(&m.name),
                 lua_str(&m.version),
-                lua_str(m.have)
+                lua_str(&m.yours),
+                lua_str(m.have),
+                lua_str(&m.source),
+                lua_str(&m.modio)
             ));
         }
-        out.push_str(&format!(" }}, room_mods_more = {}", self.room_mods_more));
+        out.push_str(&format!(
+            " }}, room_mods_more = {}, room_mods_missing = {}, room_mods_other = {}, room_params = {{",
+            self.room_mods_more, self.room_mods_missing, self.room_mods_other
+        ));
+        for (id, key, value) in &self.room_params {
+            out.push_str(&format!(
+                " {{ mod = {}, key = {}, value = {} }},",
+                lua_str(id),
+                lua_str(key),
+                value
+            ));
+        }
+        out.push_str(" }");
+        out.push_str(", log_session = ");
+        out.push_str(&lua_str(&self.log_session));
         out.push_str(", chat = {");
         for line in &self.chat {
             out.push_str(&format!(
@@ -811,7 +972,7 @@ impl LobbyState {
                 ));
                 for member in &room.members {
                     out.push_str(&format!(
-                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {}, banner = {}, loading = {}, percent = {} }},",
+                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {}, banner = {}, loading = {}, percent = {}, missing = {}, changed = {}, extra = {} }},",
                         lua_str(&member.id),
                         lua_str(&member.name),
                         member.ready,
@@ -821,7 +982,10 @@ impl LobbyState {
                         lua_str(&member.content),
                         lua_str(&member.banner),
                         lua_str(&member.loading),
-                        member.percent
+                        member.percent,
+                        member.missing,
+                        member.changed,
+                        member.extra
                     ));
                 }
                 out.push_str(" }");
@@ -1129,6 +1293,7 @@ mod tests {
                     owner: true,
                     you: true,
                     same_content: None,
+                    differs: None,
                     banner: None,
                     loading: None,
                 }])
@@ -1180,9 +1345,17 @@ mod tests {
                 id: Text::new("vehicles_pack").unwrap(),
                 version: Text::new("3").unwrap(),
                 have: LobbyHave::OtherVersion,
+                name: Text::lossy("Pack"),
+                yours: None,
+                source: Text::lossy("StagingArea"),
+                modio: None,
             }])
             .unwrap(),
             room_mods_more: 2,
+            room_mods_missing: 0,
+            room_mods_other: 0,
+            room_params: tpf3mp_proto::BoundedVec::empty(),
+            log_session: Text::new("AB2CD3").unwrap(),
             rooms: Some(tpf3mp_bridge::LobbyRoomList {
                 page: 0,
                 more: false,
@@ -1291,6 +1464,7 @@ mod tests {
         let pack: mlua::Table = room_mods.get(1).unwrap();
         assert_eq!(pack.get::<String>("have").unwrap(), "other_version");
         assert_eq!(state.get::<u32>("room_mods_more").unwrap(), 2);
+        assert_eq!(state.get::<String>("log_session").unwrap(), "AB2CD3");
     }
 
     /// A step driver that records what the window handed it and answers
@@ -1320,6 +1494,7 @@ mod tests {
         }
         fn chosen_speed(&mut self, _speedup: u64) {}
         fn say(&mut self, _text: tpf3mp_proto::ChatText) {}
+        fn preview(&mut self, _preview: Option<tpf3mp_proto::Payload>) {}
         fn on_menu(&mut self) {}
         fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
             self.heard.extend(actions);

@@ -91,15 +91,24 @@ It prints each mod's class and every reason, `!` for those that make it
 shared, and a count at the end. `--installed` scans every mod this player
 has, from each place the game keeps them (`tpf3mp_modscan::roots`):
 
-- Mod Hub (mod.io) downloads: `%LOCALAPPDATA%\mod.io\10640\mods\<mod.io id>`,
-  whose `mod.json` names the mod (`celmi_timetables` in `...\6037864`) (SEEN
-  on Windows; Linux and macOS to confirm);
+- Mod Hub (mod.io) downloads: `%PUBLIC%\mod.io\10640\mods\<mod.io id>`,
+  then `%LOCALAPPDATA%\mod.io\10640\mods\<mod.io id>`, each `mod.json`
+  naming the mod (`revyn112_towns_de` in `...\6414521`) (SEEN on Windows:
+  58 mods under `%PUBLIC%` on one PC on 2026-10-03, while
+  `%LOCALAPPDATA%\mod.io\10640` held only its user's file; on 2026-09-30
+  they were found under `%LOCALAPPDATA%`. Linux and macOS to confirm);
 - local mods: `<Steam>\userdata\<account>\3493540\local\staging_area\<modId>`
   and `...\local\mods`;
-- the game's own: `<game>\mods` and `<game>\dlcs`.
+- the game's own: `<game>\mods`, `<game>\mods\release` and `<game>\dlcs`.
+  `release` holds the game's built-in mods, which saves list as
+  `urbangames_no_costs_1`, `urbangames_sandbox_1`, `urbangames_tycoon_1`
+  and so on, and the campaign's (SEEN on Windows, 2026-10-04: 21 mods;
+  until then the launcher missed them, and a save listing one had it
+  "not found among the installed mods").
 
-A mod is found by its `mod.json`'s `modId`, else its folder's name. Which of
-the two a save lists for a Mod Hub mod is to confirm (below).
+A mod is found by its `mod.json`'s `modId`, else its folder's name. A save
+lists a Mod Hub mod by its `modId`, the mod.io number only as its hub id
+(SEEN, below).
 
 ## At run time
 
@@ -199,7 +208,10 @@ Nothing there changes: the agent declares only the shared mods.
 - Without `--mods`, the launcher finds the player's mods itself and the
   player chooses their personal ones ("Choosing mods" below). With
   `--mods <file>`, one mod a line in load order with its version, that list
-  overrides it, as before; the picker is then off.
+  overrides it, as before; the picker is then off. A room that tells its
+  mods still has its worlds loaded with its list and settings in such a
+  game (the content check covers the mods, not their settings), with the
+  file's personal mods after them.
 - Each listed mod is found among the installed ones and scanned
   (`crates/tpf3mp-agent/src/content.rs`, `split`). A personal one stays out of
   the manifest; a carried one too, with `--personal-game-scripts`; a shared
@@ -216,6 +228,27 @@ the room's actions; the room checks it by its files, not only by its
 revision. A player's game once loaded an old copy of the same revision (a
 Sandboxie box's own copy, 2026-10-01): nothing noticed, and a road was
 built differently in that game.
+
+A room's world must have the mod among its save's mods: a world loads with
+its save's mods (or the room's plan of them, which keeps `tpf3mp_1` only
+when the save lists it), and without the mod's game script it held paused
+for good, without a word (2026-10-01). So:
+
+- a room's list always runs `tpf3mp_1`, and every game loads the room's
+  list (`mods::plan`), so a start save without it is taken when the room's
+  list is made of it: the owner's pick on the Load Game page, or, with
+  the picker, a save whose mods read and fit a room's list. Otherwise
+  (`--mods`, too many mods, or no picker) each game loads the save's own
+  mods, and the launcher refuses a start save whose mods read and do not
+  list `tpf3mp_1` (creating a room, and the owner's pick in the room), saying
+  "This save doesn't have the TPF3-MP mod enabled: load it once, turn
+  TPF3-MP on in its mods, save it, then pick it again"
+  (`crates/tpf3mp-agent/src/save_check.rs`);
+- the agent does not load a world from the room that does not list it,
+  when it loads the world with the save's own mods: the session ends, and
+  both windows say why;
+- the hook's log says when a world's plan leaves it out, which a save whose
+  mods the agent could not read may still bring.
 
 - **What is compared** (`crates/tpf3mp-agent/src/own_mod.rs`): a SHA-256
   over the files the game loads from the mod, sorted by path, each path with
@@ -254,8 +287,8 @@ shared mods only.
 Without `--mods`, the launcher (`crates/tpf3mp-agent/src/picker.rs`):
 
 - **finds every installed mod** by itself when it starts: Mod Hub's cache
-  (`%LOCALAPPDATA%\mod.io\10640\mods`), each Steam account's
-  `staging_area` and `mods`, the game's `mods` and `dlcs` (the first of each
+  (`mod.io\10640\mods` under `%PUBLIC%`, then `%LOCALAPPDATA%`), each Steam account's
+  `staging_area` and `mods`, the game's `mods`, `mods\release` and `dlcs` (the first of each
   id counts), scans each and keeps its class and first reason, its name
   (`_metadata/modinfo.json`) and its `revision`. Each goes to the launcher's
   log: `mod schbrongx_minimap 1 is personal: only what this player sees`;
@@ -266,15 +299,46 @@ Without `--mods`, the launcher (`crates/tpf3mp-agent/src/picker.rs`):
   (`"mods"`), and the room's worlds load with the chosen ones (the lists of
   `Begin`, read when the game begins; a choice made later loads with the
   next world);
-- **makes the owner's start save the room's shared mods.** When the player
+- **takes the room's mods as the owner picks them** (bridge version 25,
+  protocol 18). The owner picks the room's save on the game's own Load Game
+  page (LOBBY.md, "The room's save and mods"), and with it its mods and
+  their settings on the page's Mods and Gameplay Settings tabs, as the game
+  would load the save. The window sends them with the save
+  (`LobbyAction::ChooseRoomMods`: the mods in the game's load order, each
+  with its name and source as the owner's game knows it, and the settings
+  of the room's mods and the game's own, `GAME_SETTINGS`), and the
+  launcher (`Mods::choose_room`) makes them the room's: each in the
+  owner's installed version, TPF3-MP's own last, the owner's personal
+  mods left out. A mod the owner's game has from Mod Hub is named with its
+  Mod Hub number, read from the installed copy, whatever source the save
+  recorded (a save made while the mod was a local copy still says
+  `StagingArea`). The launcher declares them with the save's upload
+  (`DeclareRoom`), and the room tells every member (`RoomMods`). Changing
+  them marks every member not ready;
+- **makes the owner's start save the room's shared mods** when nothing was
+  picked on the Load Game page (a `--start-save`, or the first pick of a
+  room made from the Host page before its mods arrive). When the player
   creates a room from a start save, the launcher reads the save's mods
   (`tpf3mp_modscan::save`, below) and takes those that are not the player's
   personal mods (chosen or not) as the room's, each in the player's version
   (a mod the save lists and this player lacks is still the room's, with no
   version: fail closed). It declares them before the room exists. A save
   whose mods do not read leaves the room's mods unknown, and says so:
-  worlds then load with their saves' own mods, as without the picker;
-- **learns them as a guest.** Joining a room, the launcher declares no mods
+  worlds then load with their saves' own mods, as without the picker.
+  A save with more mods than a room's list holds (256) is still compared
+  whole, but not told as the room's list: every game loads the save's
+  own mods;
+- **adopts them as a guest.** The room tells its mods (`RoomMods`) on
+  joining and whenever they change, and the launcher (`Mods::adopt`)
+  declares at once those this player has, in their own versions; one
+  missing or in another version shows on the lobby's Room's mods tab and
+  on the player's card, and holds the start. A guest installs a missing
+  Mod Hub mod from that tab (LOBBY.md, "Installing from Mod Hub"), and the
+  launcher finds the installed mods again (`LobbyAction::RescanMods`).
+  Mods are compared by version, and a Mod Hub download's version names the
+  file installed, so two downloads of different Mod Hub files differ;
+- **learns them as a guest** from a room that tells none (its owner declared only their
+  content, `DeclareContent`). Joining a room, the launcher declares no mods
   but TPF3-MP's own ("TPF3-MP's own mod" above);
   the room answers with what this game lacks (`ContentDiff`: the owner's
   mods in load order, the first 32 named, with the owner's versions), and
@@ -296,11 +360,19 @@ this player has each (`yes`, `no`, `other_version`).
 A save is a zstd frame; near its start, after the `tf**` magic and a few
 settings, is its list of mods as the game writes it (`GameSaveCommandData`'s
 `modDescs`): a `u32` count, then per mod five `u32`-length strings (id,
-source, hub id as `<source>,<id>`, name, url) and an `i32` severity. SEEN in
-build 40408's saves (the DLCs, `DLC`; TPF3-MP, `StagingArea`). The reader
-tries each offset in the first 64 KiB and takes the first whole list that
-holds together; a save where none does is refused. `tpf3mp-modscan --save
-<file>` prints it.
+source, hub id, name, url) and an `i32` severity. The hub id is
+`<source>,<id>`, or for a mod.io mod its mod.io number (`6414521`). SEEN in
+build 40408's saves (the DLCs, `DLC`; TPF3-MP and local mods,
+`StagingArea`; `mod.io` mods; lists of over a hundred mods). The reader
+tries each offset in the first 64 KiB and takes the first whole list whose
+every entry holds together (a mod id, the hub id as above, a severity of 0
+to 2); the list may run on for up to 4 MiB. Where the real list does not
+hold together, its tail does (an entry's severity of 1 reads as a count of
+one): a save listing a mod.io mod once read as the Pre-Order Pack alone, so
+the launcher refused it for lacking TPF3-MP (2026-10-03). So a list found
+right behind something shaped like an entry, an id and four more strings
+matched by their lengths, is taken for such a tail and the save is
+refused. `tpf3mp-modscan --save <file>` prints it.
 
 ## The save's mod list
 
@@ -318,10 +390,16 @@ with `mods : {Mod.ModId}`) (SEEN).
 So nothing is stripped from a save. Every game loads the room's world with
 its own list instead (`tpf3mp_bridge::mods::plan`):
 
-1. the save's mods that are shared (the room's list, the same for everyone),
-   or this player's personal ones, or TPF3-MP itself, in the save's order;
-2. then this player's personal mods the save lacks;
+1. the room's mods, in the room's order, TPF3-MP's own among them, whatever
+   the save lists: a mod the owner added on the Load Game page is added in
+   every game alike, one they left out is left out;
+2. then this player's personal mods;
 3. the save's other mods, another player's personal ones, are left out.
+
+The settings follow the same way (`tpf3mp_bridge::mods::settings`): the
+save's, with each of the room's mods that has settings in the room's list,
+and the game's own (`""`) when the room carries them, taking exactly the
+room's.
 
 Each is checked with the user profile's `ModRep:exists`; a shared mod not
 installed fails the load and holds the world, saying which. The lists reach
@@ -355,7 +433,8 @@ nine, build 40391), `mods web/tf3mod-minimap`, the Mod Hub cache on this PC
 | **Timetables** (celmi, mod.io 6037864) | carried | its game script (`timetable/game_script/celmi_timetables.gs.lua`); its run scripts only print; commands `makeVehicleSetManualDepartureCmd`, `makeVehicleTryToDepartCmd`, `makeScriptingSendEventCmd` (game script), `makeScriptingSendEventCmd` and `makeLineUpdateCmd` (GUI); says `"cosmetic": true` | personal-safe after the measurements below, with `--personal-game-scripts`: see "Timetables" |
 | **Auto Line Namer** (mod.io 6414403) | carried | a game script renaming lines (`aln.script.lua:43`, `makeEntitySetNameCmd`, from `update` on `os.time` timers), and a rename scheme for the line manager (GUI) | personal-safe after the measurements below, with `--personal-game-scripts`: its renames go to the room as `EditLine` renames of the player's own lines. Its line manager button already works as a personal GUI mod (the game sends the rename, which the guard carries) |
 | **Automatic Signal Spacing** (mod.io 6414934) | shared | a run script with `addModifier` on signal constructions (it adds two parameters to every signal), and a game script whose `guiUpdate` builds signals (`makeWorldBuildProposalCmd`, removing and re-adding the track edges by entity id with the new signals) | must be shared, and even shared its builds are refused in a room today: see "Automatic Signal Spacing" |
-| signal_distance_1, auto_signals_1 (mod.io) | shared | run scripts with `addModifier`; auto_signals a game script building | must be shared |
+| signal_distance_1, auto_signals_1 (mod.io) | shared | run scripts with `addModifier`; auto_signals a game script building | must be shared. Signal Distance works in a room (2026-10-02). Auto Signals builds nothing yet: see "Parallel Tracks, Parallel Roads, Auto Signals" |
+| parallel_tracks_1, parallel_roads_1 (mod.io) | shared | a game script whose GUI half builds new tracks or roads beside the one drawn (`makeWorldBuildProposalCmd`), and a `construction_tool` resource adding the tool's settings | must be shared; with D27 their builds go to the room: see "Parallel Tracks, Parallel Roads, Auto Signals" |
 | Urban Games legacy packs (6, mod.io) | shared | vehicles: 189 to 449 model files each | must be shared |
 | GW Bigger Station Range, GW Buy Industries, GW HQ Growth Boost | shared | run scripts with `addModifier` | must be shared |
 | DLCs (deluxe, preorder), the campaign missions, sandbox, no costs, tycoon, no end year | shared | archives of content (`.zip`), run scripts, resource writes | must be shared |
@@ -424,6 +503,50 @@ for three reasons, and all three are needed:
    placed the first signal may hand it to the room, as the build tools'
    clicks are (HOOKS.md, "The build tools").
 
+### Parallel Tracks, Parallel Roads, Auto Signals
+
+Three shared mods that build after the player builds, played in a room of
+two games on one PC (2026-10-02, build 40408, the save with Parallel
+Tracks, Auto Signals, Signal Distance and No Costs; runs `run-1002-205516`
+and, with D27, `run-1002-212743`).
+
+Before D27:
+
+- **Parallel Tracks.** The drawn track went to the room and was built in
+  both games. Every game whose own toolbar asked for parallels then sent
+  them, for whichever player drew (with both set to 3, both games sent 21
+  edges for P1's track); the hook stopped each at the apply (`stopped a
+  build the room cannot carry: no proposal seen`), and the mod said `build
+  failed`. Its settings are each game's own (`api.gui.fireGuiScriptEvent`
+  to its game script's GUI half), and the signal tool sets them to 0.
+- **Auto Signals.** The first signal went to the room as a `PlaceStop` and
+  stood in both games; the mod queued no job. `PlaceStop` does not carry a
+  signal's parameters, so the signal the room built has no distance, which
+  is what the mod reads (`distanceFromParams`).
+- **Signal Distance** works: it only changes resources as they load.
+- No divergence in 56 checkpoints; both games applied the same 6 actions.
+
+With D27 (`tpf3mp/modbuild.lua`, HOOKS.md "Scripts' follow-up builds"):
+
+- P1 set 3 parallels and drew a track: P1's game handed the parallels to
+  the room (`a script's follow-up build goes to the room`, a `BuildTrack`
+  of 3 edges), and both games built them. Both accounts paid the same.
+- P2 set 3 parallels as well and drew a track, P1 still at 3: P2's game
+  handed its parallels; P1's game stopped its own (`a script's follow-up of
+  another player's build: that player's game hands it to the room`). The
+  parallels were built once, in both games.
+- The parallels the room built did not set the mod off again: it knows its
+  own tracks by their middles (`OWN_TOLERANCE`).
+- In the game scripts' GUI state the stack named no mod for the call
+  (`guard.callers`): the log says `a script's follow-up build` without
+  `from parallel_tracks_1`. The rule does not depend on it.
+
+Auto Signals still needs, beyond D27: the signal's parameters carried with
+`PlaceStop`, and its spacing (edges removed and re-added with signals)
+carried as signals on existing edges ("Automatic Signal Spacing" above,
+reasons 1 and 2). Parallel Roads takes the same path as Parallel Tracks;
+it was not played.
+
 ## To measure in the game
 
 INFERRED until seen on build 40408; each is a check before carried mods may
@@ -432,8 +555,9 @@ be personal, and the first three before personal GUI mods are relied on:
 1. **A save loads with the room's mods.** `app.loadGame(id, false, info)`
    with `info.mods` replaced loads the world with those mods active, from
    the main menu and in a world, and without a Start Game click.
-2. **A Mod Hub mod's name in a save.** Whether a save lists `celmi_timetables`
-   (the `modId`) or the mod.io id; the scan finds either.
+2. **A Mod Hub mod's name in a save.** SEEN (2026-10-03): a save lists the
+   `modId` (`revyn112_towns_de`), the mod.io id (`6414521`) only as its hub
+   id; the scan finds either.
 3. **Leftover `modParams`.** A dropped personal mod's parameters stay in
    `info.modParams`; the game ignores them (expected).
 4. **`debug.getinfo` in the simulation's Lua states**, and what a mod file's

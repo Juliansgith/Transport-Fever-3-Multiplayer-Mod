@@ -14,7 +14,7 @@ use tpf3mp_hookcore::pe::PeHeaders;
 use tpf3mp_hookcore::profile::{self, BuildIdentity, Profile};
 
 const DEFAULT_EXE: &str = r"F:\SteamLibrary\steamapps\common\Transport Fever 3\TransportFever3.exe";
-const PROFILE: &str = include_str!("../../../profiles/tf3_build40408_steam_windows.toml");
+const PROFILE: &str = include_str!("../../../profiles/tf3_build40408_steam_windows/hooks.toml");
 
 /// Addresses found on release day (RVAs, image base 0x140000000).
 const TARGETS: &[(&str, u64)] = &[
@@ -28,6 +28,10 @@ const TARGETS: &[(&str, u64)] = &[
     ("CommandList::Add", 0x9d29c0),
     ("WorldBuildProposal apply", 0x9e1160),
     ("ModuleBuilder::MousePressed/Add call", 0x543b25),
+    ("ProposalAction::DoApply/Add call", 0x549be5),
+    // The stop tool (crates/tpf3mp-hook/src/stoptool.rs).
+    ("StreetTerminalBuilder::MousePressed/Add call", 0x5954e8),
+    ("StreetTerminalBuilder::MousePressed/busy set", 0x595305),
     ("BaseNodeConfig/field offsets", 0x1768337),
     ("StreetProposal/node configuration offsets", 0x22c395f),
     ("BaseNodeConfig/crosswalk set layout", 0xa4990d),
@@ -50,6 +54,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("lua_tolstring", 0x2fbed30),
     ("lua_tonumberx", 0x2fbedd0),
     ("lua_type", 0x2fbef90),
+    ("lua_touserdata", 0x2fbef50),
     // The main menu's load (crates/tpf3mp-hook/src/menu.rs).
     ("UI::CMenuUI::DoStep", 0x6a0160),
     ("UI::CMenuUI::DoStep/m_game test", 0x6a01c0),
@@ -94,9 +99,106 @@ const TARGETS: &[(&str, u64)] = &[
         0xf41770,
     ),
     ("TownDevelopAt::Apply", 0x9dedf0),
+    // The town street field's cache fix (crates/tpf3mp-hook/src/townfield.rs).
+    ("StreetField::At", 0x2b76a90),
+    ("StreetField::At/cache found", 0x2b76b4a),
+    // The town trace (crates/tpf3mp-hook/src/towntrace.rs).
+    ("TownUpdateSize::Apply", 0x9dfb10),
+    ("TownUpdateSize::Apply/develop", 0x9dfc8a),
+    ("TownUpdateSize::Apply/return", 0x9dfcd7),
+    ("TownDeveloper::Develop", 0x8dc240),
+    // The edge watch (crates/tpf3mp-hook/src/edgewatch.rs).
+    ("CommandApply::One", 0x9e1c10),
+    ("CommandApply::One/return", 0x9e1f62),
+    // The street trace (crates/tpf3mp-hook/src/streettrace.rs).
+    ("StreetDeveloper::TryCandidate", 0x967920),
+    ("StreetDeveloper::TryCandidate/return", 0x9680dc),
+    ("StreetDeveloper::Reject", 0x963320),
+    ("StreetDeveloper::BuildStreet/errors", 0x9659ed),
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
+    // The probe of the engine's player (crates/tpf3mp-hook/src/probe.rs).
+    ("probe: GUI GameState getter", 0x6aa800),
+    ("probe: engine GameState getter", 0x11ffd0),
+    ("probe: ProposalStreetGraph::GetPlayerOwnedPtr", 0xa46cd0),
+    ("probe: street_util IsOwnedByOtherPlayer", 0x610ea0),
+    // The tools' player (crates/tpf3mp-hook/src/toolplayer.rs).
+    ("UI::StreetBuilder::Step", 0x585e50),
+    ("UI::StreetBuilder ctor/player store", 0x56a7f4),
+    ("UI::TrackModifier::Step", 0x5cbf80),
+    ("UI::TrackModifier ctor/player store", 0x5b4238),
+    ("UI::Bulldozer::Step", 0x4d6340),
+    ("UI::Bulldozer ctor/filter", 0x4c4c32),
+    ("UI::ConstructionBuilder::Step", 0x51cd60),
+    ("UI::ConstructionBuilder ctor/player store", 0x50b438),
+    ("UI::StreetTerminalBuilder::Step", 0x595f30),
+    ("UI::StreetTerminalBuilder ctor/player store", 0x590773),
+    ("UI::ModuleBuilder::Step", 0x545b50),
+    ("UI::ModuleBuilder ctor/player store", 0x540431),
+    ("UI::Bulldozer ctor/player store", 0x4c4a41),
+    ("UI::Bulldozer ctor/owner list", 0x4c4ad5),
+    ("UI::Bulldozer set owner list", 0x4d6220),
+    // The views' player (crates/tpf3mp-hook/src/guiplayer.rs).
+    (
+        "view: HudIconManager::PreemptiveOctreeTraversal/player",
+        0x67b7db,
+    ),
+    ("view: StationViewer::vf4/player", 0x83a608),
+    ("view: CSelector pick/player", 0x839cd9),
+    ("view: ViewCreator::vf1/player", 0x86712a),
+    ("view: CatchmentAreaHelper/player 1", 0x8765f5),
+    ("view: CatchmentAreaHelper/player 2", 0x876f36),
+    ("view: CatchmentAreaHelper/player 3", 0x8770ba),
+    ("view: CatchmentAreaHelper/player 4", 0x8770fd),
+    ("view: CatchmentAreaHelper/owner test", 0x877b39),
+    ("view: LayerManagerColorMap/player 1", 0x87b840),
+    ("view: LayerManagerColorMap/player 2", 0x87b919),
+    ("view: LayerManagerColorMap/player 3", 0x87b9ef),
+    ("view: LayerManager colour lambda/player", 0x88307b),
+    ("view: LayerManager colour/owner test", 0x885c82),
+    ("view: react RendererComponentDelegate/player", 0x29f689a),
+    ("view: react RailroadCrossingComp/player", 0x289e116),
+    ("view: HudIconManager icon pass/owner", 0x674906),
+    ("view: getPlayer binding/push", 0x24ed2d2),
+    ("view: LineViewer lines of the player/call", 0x7f3f12),
+    ("view: findBestDepot depot owner test", 0x2689eeb),
+    ("view: findBestDepot owner test", 0x268a335),
+    ("probe: StreetBulldozerAction edge test", 0x5f2a00),
+    ("probe: bulldozer owner test", 0x5f7db0),
+    ("probe: LineViewer route data test", 0x7f03e7),
+    ("probe: LineViewer GetEdgeGeometries", 0x7f10a0),
     ("lua_cached_loadfile", 0x2fa8130),
+    // The person-order fixes (crates/tpf3mp-hook/src/persons.rs).
+    ("destination_util::GetTargetsByLandUse/candidates", 0x8e3d65),
+    (
+        "ecs::SimEntityAtBuildingSystem::Update2/leave batches",
+        0xb05f92,
+    ),
+    ("ecs::PersonMoveSystem::Update2/arrival batch", 0xaecfcd),
+    ("ecs::SimEntityNeedsPathSystem::Update/list", 0xb18213),
+    (
+        "ecs::SimEntityNeedsPathSystem::EntityToBeRemoved/data getter call",
+        0xb18121,
+    ),
+    ("ecs::Engine::EndModification/free-id append", 0x2bb4fd1),
+    // The other players' build previews (crates/tpf3mp-hook/src/drawing.rs).
+    ("UI::RendererFactory::Create", 0x8266d0),
+    ("UI::CRendererComponent::AddRenderable", 0x6ae970),
+    ("UI::CRendererComponent::RemoveRenderable", 0x6afdf0),
+    ("UI::BuilderRenderer::Clear", 0x7ba590),
+    ("UI::BuilderRenderer::vf0", 0x7b89a0),
+    ("builder_renderer_util::AddToRenderer", 0x5e2b20),
+    ("CreateProposalData", 0xa1fd10),
+    ("makeProposalData/CreateProposalData call", 0x25122da),
+    ("UI::CGameUI::~CGameUI", 0x650470),
+    ("UI::CMenuUI::StartGame/CGameUI store", 0x6a4f52),
+    ("UI::CGameUI::CreateUI/RendererFactory field", 0x65be0c),
+    ("UI::CGameUI::CreateUI/mainView store", 0x65b1bc),
+    ("ProposalViewer/ModelData read", 0x2aa3b06),
+    ("BuilderRenderer::EndHeightMod/upload flag", 0x7bbb6a),
+    ("UI::BuilderRenderer::EndHeightMod", 0x7bbae0),
+    ("terrain::ViewTerrain::ApplyBlocks", 0x396a00),
+    ("UI::StreetBuilder::ResetProposal", 0x576330),
 ];
 
 #[test]
@@ -173,6 +275,89 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
         &text_bytes[at(0x255ea6d)..at(0x255ea6d) + 5],
         &[0x48, 0x83, 0x41, 0x08, 0x14]
     );
+    // The field fix: the open pass asks StreetField::At for the street's
+    // end; At's found test jumps to its miss path, which computes the
+    // answer and inserts it with 0x2b76660; the only branch to the site is
+    // the lookup loop's.
+    assert_eq!(callee(0x967e0e), 0x2b76a90);
+    assert_eq!(callee(0x2b76c6d), 0x2b76660);
+    assert_eq!(&text_bytes[at(0x2b76b4f)..at(0x2b76b4f) + 2], &[0x75, 0x35]);
+    assert_eq!(0x2b76b51 + 0x35, 0x2b76b86);
+    assert_eq!(&text_bytes[at(0x2b76b1c)..at(0x2b76b1c) + 2], &[0x75, 0x2C]);
+    // The person-order fixes (crates/tpf3mp-hook/src/persons.rs).
+    // candidates: the leave handler reaches GetTargetsByLandUse through the
+    // destination assignment and GetRandomTargets, whose draw is
+    // BinarySearchIndex's; the vector at the site is the one the copy loop
+    // filled (`lea rbx, [rsp+0x70]`).
+    assert_eq!(callee(0xb2ec5f), 0xb2b040);
+    assert_eq!(callee(0x8e37d8), 0x8e3ac0);
+    assert_eq!(callee(0x8e24ae), 0x8e4400);
+    assert_eq!(
+        &text_bytes[at(0x8e3cd9)..at(0x8e3cd9) + 5],
+        &[0x48, 0x8D, 0x5C, 0x24, 0x70]
+    );
+    // departures and arrivals: their emits all reach one signal function;
+    // the thread-pool loop the departures come from is the call before
+    // their site; the leave handler and the arrival handler draw from a
+    // generator seeded by updateCount.
+    for site in [0xb05fad, 0xb05fd1, 0xaecfe8] {
+        assert_eq!(callee(site), 0xaeaeb0, "{site:#x} emits the batch");
+    }
+    assert_eq!(callee(0xb05f8d), 0xb052c0);
+    assert_eq!(callee(0xb2e9d2), 0x2a9680);
+    assert_eq!(callee(0xb33abc), 0x2a9680);
+    // needs-path: Update is PathFactory::Compute's caller, its results loop
+    // re-reads the list by position, and the getter call reaches the
+    // copy-on-write getter.
+    assert_eq!(callee(0xb1833a), 0x8d11e0);
+    assert_eq!(
+        &text_bytes[at(0xb183c0)..at(0xb183c0) + 11],
+        &[
+            0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1
+        ]
+    );
+    assert_eq!(callee(0xb18121), 0xb186c0);
+    assert_eq!(callee(0xb17d0a), 0xb186c0);
+    // freed ids: the call after the site is the free-id deque's insert.
+    assert_eq!(callee(0x2bb4ff3), 0x2bb1110);
+    // The town trace: the applier calls Develop between its two sites, and
+    // reads updateCount for the seed through its getter.
+    assert_eq!(callee(0x9dfccb), 0x8dc240);
+    assert_eq!(callee(0x9dfbf0), 0x2a9680);
+    // The edge watch: every path into CommandApply::One the log names
+    // reaches it (the sim loop's drain, CGame's two send lambdas, and
+    // GameState's command function by a tail jump), and One reads the
+    // payload's kind at +0x9b8 right before it calls the dispatcher.
+    for site in [0x11eb96, 0x120334, 0x1204bf] {
+        assert_eq!(callee(site), 0x9e1c10, "{site:#x} calls One");
+    }
+    {
+        let i = at(0x268ed4);
+        assert_eq!(text_bytes[i], 0xE9, "a tail jump at 0x268ed4");
+        let rel = i32::from_le_bytes(text_bytes[i + 1..i + 5].try_into().unwrap());
+        assert_eq!((0x268ed4_i64 + 5 + i64::from(rel)) as u64, 0x9e1c10);
+    }
+    assert_eq!(
+        &text_bytes[at(0x9e1cbf)..at(0x9e1cbf) + 8],
+        &[0x49, 0x0F, 0xBE, 0x88, 0xB8, 0x09, 0x00, 0x00]
+    );
+    assert_eq!(callee(0x9e1cce), 0x9d7350);
+    // The street trace: Develop runs the street step, which tries each
+    // candidate; the try refuses through the reject function at its three
+    // sites, builds through 0x9692c0 and 0x9657c0, and the errors site
+    // follows the build's call of CreateProposalData.
+    assert_eq!(callee(0x8dca13), 0x967720);
+    assert_eq!(callee(0x96785e), 0x967920);
+    for site in [0x967bd5, 0x967c5f, 0x968035] {
+        assert_eq!(
+            callee(site),
+            0x963320,
+            "{site:#x} calls the reject function"
+        );
+    }
+    assert_eq!(callee(0x96801b), 0x9692c0);
+    assert_eq!(callee(0x9695b4), 0x9657c0);
+    assert_eq!(callee(0x9659e7), 0xa1fd10);
     // The land-vehicle shuffle's seed is the tickCount getter's answer.
     assert_eq!(callee(0xac1b23), 0x2a95c0);
     // The main menu's m_game test reads CMenuUI+0x6b0, the field StartGame

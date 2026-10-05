@@ -231,6 +231,10 @@ tested on all three platforms.
 
 ## D10 (2026-09-27): players' diagnostics go to the server by themselves
 
+*The owner-approved amendment below adds the hook's and the game's
+logs and the game's error reports to what goes, under one log session
+code for a launcher's run.*
+
 The launcher sends the lines of its log, redacted, to the server the player
 plays on, which keeps them by session: the operator reads what went wrong
 for a player from the support ID alone, as TPF2MP's relay let its operator
@@ -266,6 +270,94 @@ own log and crash dumps, which are never sent, come from `tpf3mp-agent
 collect-logs` when an operator asks for them. The page's
 `/api/collect-logs`, a way for the page to make the launcher write files,
 is gone with the button.
+
+### D10 amendment (approved by the owner, 2026-10-02): the hook's and the game's logs go too
+
+**Approved by the owner (Juliansgith) on 2026-10-02 after the collection
+scope was explained: "you can merge those in". Live-game acceptance may
+follow integration into dev; this does not claim that acceptance passed.**
+
+A contributor, silver2127, asked for all of a player's logs to reach the
+server with one code naming them, and asked for D10 to change for it.
+Today an operator sees the launcher's side of a failure and must ask the
+player for the zip `tpf3mp-agent collect-logs` writes to see the hook's
+and the game's, which, as D10 says of files, comes late and often not at
+all. Most failures in the real game show only there.
+
+- **What changes: the content, not the destination.** The launcher's
+  diagnostics still go to the one server the player plays on, over the
+  game's connection, as D10 has them. Besides the launcher's and the
+  agent's lines, they now carry the in-game hook's `hook.log` and the
+  game's own `stdout.txt`, each read from where it stood when the
+  launcher started, and the text of the game's error reports (the `.txt`
+  and `.json` files in its `crash_dump` folder) as they appear. Every line
+  says its source (`launcher`, `agent`, `hook`, `game`, `crash`).
+- **One code for a launcher's run.** Each line carries a *log session*: a
+  code like a support code (D13's generator and format), chosen when the
+  launcher starts and kept until it closes. The support code names one
+  connection and changes with every reconnection; the log session names
+  the whole run, so the operator reads all of it with one code, by source
+  if they like (`diagnostics <code> hook`). The launcher's window, its
+  page and the game's Multiplayer window show it, with Copy, while
+  diagnostics are on. Like a support code it lets nobody into anything.
+- **Sessions are labelled with the player.** The server already knows
+  each session's player ID (`p-…`) and the name the launcher gave in its
+  handshake, the one the lobby shows; it now keeps both with every line
+  and in a run's index, lists them with each session, heads
+  `diagnostics <code>` with them, and finds a player's sessions by name
+  (`diagnostics --name <name>`) or ID (`--player`). The client sends
+  nothing more for it. Names are not unique and can change: the player ID
+  is the stable link between a player's sessions. The name is redacted
+  like a line.
+- **Why.** The failures that matter now happen in the game, after the
+  launcher's part went well; the operator should see them from one code
+  the player posts, as D10 meant for the launcher's.
+
+What keeps it safe:
+
+- **Lines, never files.** Text read line by line and sent as D10's lines
+  are, each cut to 1 KiB. Never the game's `.dmp` minidumps, which are
+  large, binary and hold memory nobody can redact; never a file whose
+  name looks like a key, certificate or token; never the saves, the
+  identity key or `launcher.json`. `collect-logs` stays for the dumps, on
+  the player's say.
+- **Redacted on both sides, with D10's rules and one more.** Paths, IP
+  addresses, invites, keys and passwords, e-mail addresses and Steam IDs
+  are taken out by `tpf3mp_proto::redact` before a line leaves and again
+  on the server; the game's error reports name the Steam account as
+  `"userId"`, so values after keys naming an account (`userId`,
+  `account_id`, `steamid`, …) go too.
+- **Bounded at every step.** On the player's machine each source has a
+  budget of bytes a minute (the hook's log 192 KiB, the game's 96 KiB,
+  error reports 512 KiB); a log that grows faster loses its oldest unread
+  part, and the launcher's log says how much. At most 10,000 lines wait,
+  the oldest going first, and a run sends 256 MiB at most. Files are read
+  on a thread of their own, never the game's or a connection's. On the
+  server the diagnostics budget is two requests a second with a burst of
+  sixteen (one and eight before), on its own as before; a session keeps
+  64 MiB at most (`--diagnostics-session-mib`, 8 before), all sessions
+  within `--diagnostics-mib`, for `--diagnostics-days`, the oldest going
+  first; the writer still never makes a connection wait.
+- **The switch stops all of it.** **Send diagnostics** Off stops every
+  source and forgets what waited; what the logs gain meanwhile is passed
+  over, never sent later. The choice is remembered, as before.
+
+This reverses D10's rejection of **whole log files** in part: the hook's
+and the game's logs now go, as redacted lines within budgets rather than
+as files, while crash dumps stay rejected. The rejection of **an HTTP
+upload**, a second way in, stands: nothing here opens another service,
+port or credential. It changes the protocol (version 16: each line's
+source and the log session, `Request::Telemetry`) and the link to the
+game (version 23: the window shows the log session).
+
+Rejected:
+
+- **Reusing the support code for every line.** It names a connection,
+  and a launcher makes several in a run (reconnections, server changes);
+  a run's logs would be split over codes the player never saw.
+- **Sending to more servers than the one played on** (dev servers listed
+  in the build or the settings), as first asked: a second destination for
+  players' logs, held by the user for now.
 
 ## D11 (2026-09-27): the hook runs only in a game the launcher starts
 
@@ -768,6 +860,28 @@ Rejected:
   what a player can see and understand; a list per company or station can
   follow if players ask.
 
+### D22 station-access decision (2026-10-02)
+
+The owner approved the station-access proposal from PR #49 on 2026-10-02:
+"i think we can do the station access permissions". This decides the station
+access portion and extends it with per-company overrides; the other proposed
+D22 topics above are not decided by this entry.
+
+- Stations start open. A founded company's head controls its default and may
+  allow or deny individual other companies. An explicit choice overrides the
+  default; **Default** removes that choice. Newly founded companies follow the
+  default. Access is per company, not per individual station or player.
+- The existing head rule applies: founder while a member, then the longest
+  standing member. The room's first company stays shared, with open stations
+  and no head. A company always uses its own stations.
+- Every replica checks the same permissions for new and changed line stops,
+  and the line manager offers stations by the same rule. Existing services
+  are not forcibly removed when permission changes. The controls must explain
+  that the change applies when adding or changing a route.
+- Station upkeep remains the owner's; vehicle costs and line income remain
+  the operating company's. This permission never grants construction editing,
+  demolition or use of another company's depots.
+
 ## D23 (proposed, 2026-09-30): a company's progression is its share of each town, by deliveries and rating
 
 **Proposed, not decided: the owner (Juliansgith) approves or changes it.**
@@ -880,6 +994,35 @@ Rejected:
   Multiplayer window has the room, and a copy of the pause menu is one
   more game file to carry over on every patch.
 
+**Revised proposal (2026-10-02, not decided; for the owner).** A player
+(silver2127) asked on 2026-10-02 to "move all lobby management stuff to the
+mp menu as that is working pretty well now", after rooms were created,
+joined, readied and started from the game's Multiplayer window in several
+real-game playtests (two and three games a room, competitive and co-op).
+This revision replaces the second and third points above and reverses the
+first rejected option:
+
+- **Every lobby action lives in the game's Multiplayer window only.**
+  Connecting and choosing the server, creating and joining rooms (the
+  start save, rules, password, public listing), the players and their
+  ready marks, chat, companies, the owner's start, leaving and kicking.
+- **The launcher's window has no lobby.** It starts Transport Fever 3 with
+  the hook (D11 stays), holds the connection, and shows read-only where
+  things stand: the server, the room's name and players, the support code
+  and log session, the session log, updates and settings.
+- **A rescue, not a second lobby.** The launcher's lobby (the page's
+  `view::present`) stays in the build but hidden. It shows by itself only
+  when the hook reports that it cannot reach the game's menu (a game
+  update moved it), and from a "Lobby in this window" switch in Settings,
+  off by default. So the risk the rejected option named, players unable
+  to play until TPF3-MP catches up with a game patch, stays covered.
+- **The browser page (`--browser`) and the auto-room flags keep the whole
+  lobby**, for tests and headless use; the launcher's backend keeps every
+  lobby action.
+
+The rejected option "Removing the lobby from the launcher" is reversed in
+part: its window loses the lobby, but the backend and the rescue keep it.
+
 ## D25 (2026-09-30, *proposed*): players may differ in personal mods
 
 *Proposed, for the owner (Juliansgith) to approve or refuse. Nothing here is
@@ -961,3 +1104,110 @@ Rejected:
   shared one with friends did not agree to strangers joining.
 - **Listing without the invite, joining by room id**: a second way into a
   room beside the invite, for the same result.
+
+## D27 (2026-10-02, owner-approved for integration): a shared mod's follow-up build goes to the room from its player's game
+
+*Approved for integration by the owner on 2026-10-02 when authorizing the
+new PRs to be merged alongside telemetry.* The user asked on 2026-10-02 to get their mods Parallel Tracks
+and Auto Signals working in a room, as a pull request to TPF3-MP. It
+answers, for builds, the question PLAN.md (Part 3) leaves open for the
+team: "a rule for mods that send commands from the GUI".
+
+Some shared mods build after the player builds: Parallel Tracks lays
+tracks beside the one drawn, Parallel Roads roads, Auto Signals more
+signals after the first. Each hears the build in its game script
+(`onPostBuildProposal`), which runs in every game, and builds from its GUI
+half (`guiUpdate`) with `makeWorldBuildProposalCmd`. So **every game that
+runs the mod sends the follow-up**, each from its own player's settings,
+for whichever player built (seen in the game, 2026-10-02: both games sent
+Parallel Tracks' tracks for one player's track). Today the hook stops each
+of them, in every game alike: the mod does nothing in a room.
+
+- **The follow-up of this player's build goes to the room from this game.**
+  In the game scripts' GUI state, a script's build is carried, as the
+  action the build tools' capture makes of it, when the last build this
+  game applied was its own player's, at most a few frames before
+  (`tpf3mp/modbuild.lua`, `FOLLOW_FRAMES`). The room orders it for every
+  game, as a tool's click.
+- **Another player's build is left to that player's game**, which sends
+  its own follow-up from its own settings. A script's build with no build
+  of the player's just before it is stopped.
+- **Every script's build there is the hook's to stop**: it is marked
+  `playerInitiated` whatever the script asked, so none builds in one game
+  alone. A script that asked for `false` would otherwise build in its own
+  game only (the hook lets builds that are not player-initiated through,
+  as towns' growth).
+- **What the build tools' capture does not carry stays stopped**:
+  constructions, removals, stops and signals, for now. Auto Signals needs
+  more: the room's signal (`PlaceStop`) does not carry the signal's
+  parameters, and its spacing removes and re-adds edges with signals on
+  them.
+
+Two players whose builds apply within one window may both hand a mod's
+follow-up: the room orders both and every game applies both alike, a
+duplicate or a collision the game refuses, never a world of one game alone.
+This is as precise as the room can be while mods do not say which build
+they follow.
+
+Rejected:
+
+- **Forward every game's follow-up**: one per player who runs the mod, each
+  from a different player's settings.
+- **The host's game alone sends follow-ups**: a guest's track would get the
+  host's settings, or none.
+- **Mods must change first**: the rule works for the mods as they are;
+  a mod that wants to be exact may still build only for its own player's
+  builds.
+
+## D28 (2026-10-04, *proposed*): the room's owner picks its mods on the game's own pages, and members install what they lack from Mod Hub
+
+*Proposed, for the owner (Juliansgith) to approve or refuse. Nothing here is
+decided until then.* The user asked on 2026-10-04 for the lobby to show a
+room's mods, what each player lacks, and to install missing Mod Hub mods
+from it, "as native as possible"; they decided that a mod's settings travel
+with the room and that Mod Hub mods are compared by the file installed.
+
+- **The owner picks the room's save, its mods and their settings on the
+  game's own Load Game page**, opened from the room: the page's details
+  tabs (Mods, Gameplay Settings) are the game's, and what they hold for
+  the save becomes the room's instead of loading it (LOBBY.md, "The
+  room's save and mods"). The room's mods are that list, not the start
+  save's; TPF3-MP's own is always among them, last.
+- **The owner declares content and the room's mods together**
+  (`DeclareRoom`, protocol 18): the manifest, and beside it what players
+  are told of each mod (name, source, Mod Hub number) and the settings,
+  the game's own included. The room takes it whole or refuses it, and
+  tells every member (`RoomMods`), before refusing a join to a running
+  game too. The content fingerprint stays the only gate for starting and
+  joining.
+- **Every game loads the room's world with the room's mods in the room's
+  order and the room's settings**, then its player's personal mods (D25),
+  adding a mod the save lacks when the owner picked it.
+- **A member installs a missing Mod Hub mod through their own game and
+  Mod Hub account**, on the game's own Mod Hub page of the mod, or asked
+  once for all, showing what their own Mod Hub resolves for the number.
+  Mods never pass between players, and the launcher never talks to
+  mod.io. The owner's Mod Hub number is a claim: a mod installed for it
+  counts only when its id is the room's.
+- **A Mod Hub mod's version names the file installed** (its `revision`,
+  `+m` and Mod Hub's file id), so two downloads of one revision with
+  different files differ; one whose file cannot be read matches no other
+  (fail closed).
+
+Rejected:
+
+- **The game's mod selector page in our own window**: it worked, but the
+  Load Game page already holds the save, its mods and settings in the
+  player's habits, and a second copy of the page drifts on every patch.
+- **The owner loads the save and the room takes what loaded**: the
+  owner's game would enter the world before the room starts.
+- **Our own mod list instead of the game's**: duplicates the game's
+  activation order, dependencies, severities and presets.
+- **The launcher downloads from mod.io's REST API**: needs an API key in
+  the package and the player's login; the game already holds both.
+
+Touches: PLAN.md, Part 3, "The room's required mods from Mod Hub IDs; a
+missing mod is installed from Mod Hub, never received from another player":
+this builds it. Not covered yet: the new world path (a room started from a
+new world keeps the mods the game's New Game page picks), and the game's
+experimental economy settings (`configDict`), which do not travel.

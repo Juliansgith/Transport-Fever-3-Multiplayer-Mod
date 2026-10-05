@@ -17,17 +17,19 @@
 //!   action, or when it never will. A password, for joining or locking a
 //!   company only, goes with the action to the room, which seals it
 //!   ([`tpf3mp_proto::Secret`]); nothing here logs it.
-//! - `take()`: the actions the room ordered for this simulation update, as
-//!   tables ([`action_to_lua`]), or `nil`; second, who sent each (64 hex
-//!   digits); third, each one's seal, `{ scope =, tag = }` (the tag as 64
-//!   hex digits), or `false`. The step gate begins a batch of
-//!   updates at the step the room ordered them for ([`begin_batch`]), and
-//!   the first update that asks gets them: the mod's game script asks in its
-//!   `update`, which the game runs once per simulation update, where a
-//!   command runs at once, the same update on every game.
+//! - `take()`: marks one simulation update begun, so the last update of a
+//!   batch can read checkpoint lanes. Runtime action batches use the
+//!   engine-event path below; `take()` also supports the legacy batch
+//!   action tables in the link's isolated tests.
+//! - `takeReplay(token)`: the engine event takes the matching ordered
+//!   actions once, plus their player identities and seals. The hook keeps
+//!   the actions until this call; the GUI carries only a wake token.
+//! - `replayed(token, ok, why)`: the engine script has applied and reported
+//!   every action and persisted its state, or failed. The step gate then
+//!   releases updates and world operations, or holds the world.
 //! - `log(line)`: a line for `hook.log`.
 //! - `poll()`: in the GUI, every frame: what the hook asks of the game, a
-//!   table `{ save = name }` or `{ load = name }` (a save of the game's own
+//!   table `{ replay = token }`, `{ save = name }` or `{ load = name }` (a save of the game's own
 //!   save folder), once, or `nil`. The GUI saves with `app.saveGame` and
 //!   loads with `app.loadGame` ([`request_save`], [`request_load`]).
 //! - `saved(name, ok, why)`: the GUI's answer to a save ([`take_save_answer`]).
@@ -51,12 +53,20 @@
 //!   so far, or `nil` where the hook cannot take them to the room
 //!   ([`crate::builds`]).
 //! - `built(n)`: in the GUI: the build the module editor queued at click
-//!   `n`, read natively, as game scripts see a proposal; `nil` and why when
-//!   it did not read; `nil` when click `n` was not the module editor's
+//!   `n`, read natively, as game scripts see a proposal, or a terrain
+//!   tool's stroke as `{ terrain = grid }` ([`crate::terrain`]); `nil` and
+//!   why when it did not read; `nil` when click `n` was neither's
 //!   ([`crate::modules`]). Optional in the contract: a mod that does not
-//!   call it keeps the module editor refused.
+//!   call it keeps both refused.
 //! - `replaying(on)`: the game script begins or ends applying the room's
 //!   actions, whose builds the hook lets through ([`crate::builds`]).
+//! - `terrain(t)`: in a game script's `postUpdate`, while the room's actions
+//!   run: arms the next build it sends with the terraform `t` (`{ x0 =, y0
+//!   =, width =, height =, cells = { ... } }`), which the hook fills in at
+//!   the build's apply ([`crate::terrain`]). Returns `true`, or `nil` and
+//!   why. `terrain()` disarms, and answers whether a build was filled
+//!   (`nil` when none was armed). Optional in the contract: a hook without
+//!   it applies no terraform.
 //! - `applied(index, ok, entity, why)`: in a game script's `postUpdate`,
 //!   after applying the batch's action `index` (from 1): whether it went,
 //!   what it made, if anything, and why not. For one of the player's own,
@@ -65,13 +75,37 @@
 //!   `{ ticket =, ok =, entity =, why = }`, oldest first ([`refused`]).
 //! - `dump()`: in a game script's `postUpdate`, at a checkpoint whose lanes
 //!   the driver wants dumped ([`crate::lanedump`]): `{ step =, lanes = {
-//!   ... } }`, once, or `nil`. Optional in the contract, as `dumped` is.
+//!   ... }, box = { x0, y0, x1, y1 } }` (`box` only when the network lane
+//!   is cut to one), once, or `nil`. Optional in the contract, as `dumped`
+//!   is.
 //! - `dumped(lane, entry)`: one entry of a lane dumped there, which goes to
 //!   `hook.log` as `lane <lane> step <step> <entry>`, up to
 //!   [`MAX_DUMP_LINES`] a checkpoint. Returns `true`, or `false` once no
 //!   more are taken.
 //! - `note(key[, value])`: a short string one Lua state notes for the
 //!   others ([`native_note`]).
+//! - `edgewatch()`: in a game script's `update`: the entities to watch in
+//!   this update, a list, or `nil` (the edge watch is off or this step is
+//!   outside its window, [`crate::edgewatch`]).
+//! - `edgewatched(entity, text)`: what the script read of a watched entity
+//!   in this update's `postUpdate`; the hook logs it when it changed. Both
+//!   optional in the contract.
+//! - `preview(action)`: in the GUI: what the player's build tool shows now,
+//!   the action its proposal would build, or `nil` once it shows nothing,
+//!   for the room's other members to see ([`crate::previews`]). Returns
+//!   `true`, or `false` and why (an action the schema does not take, or
+//!   one over `tpf3mp_proto::MAX_PREVIEW`). Never applied, in any game.
+//! - `previews()`: in the GUI: what the other members' tools show that
+//!   changed since the last call, `{ { from =, action = }, ... }`, `from`
+//!   as 64 hex digits and `action` as `take()` gives one, absent once that
+//!   member's tool shows nothing. Both optional in the contract.
+//! - `draw(from)`, `drawn()` and `undraw(from)`: in the GUI, draws another
+//!   member's preview ([`crate::drawing`]): `draw` arms the GUI thread for
+//!   member `from` (64 hex digits), the GUI then has the game evaluate the
+//!   preview's proposal (`api.engine.util.proposal.makeProposalData`), which
+//!   the hook draws in that member's renderer, and `drawn` disarms: `true`,
+//!   or `false` and why, or `nil` when the game evaluated nothing. `undraw`
+//!   clears the member's renderer. Optional in the contract.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -95,7 +129,7 @@ use std::{
 
 use tpf3mp_bridge::{ModLists, Notice, Plan, RoomInfo};
 use tpf3mp_proto::{
-    ChatText, Payload, PlayerId, Seal, Secret, Text,
+    ChatText, MAX_PREVIEW, Payload, PlayerId, Seal, Secret, Text,
     action::{Action, CompanyOp},
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
@@ -117,7 +151,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 12.0;
+pub const VERSION: f64 = 14.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -148,8 +182,10 @@ const MAX_NOTE_KEY: usize = 64;
 pub const PERSONAL_UNGUARDED: &str = "personal-mods-unguarded";
 const MAX_NOTE_VALUE: usize = 512;
 /// Most entries one checkpoint's lane dump writes, all its lanes together,
-/// and the longest entry kept.
-pub const MAX_DUMP_LINES: usize = 5000;
+/// and the longest entry kept. Room for the whole network lane of a large
+/// map: `twomptest`'s lane 0 has about 10,800 entries (round of
+/// 2026-10-02), which 5000 cut short. At most about 40 MB a checkpoint.
+pub const MAX_DUMP_LINES: usize = 20_000;
 const MAX_DUMP_LINE: usize = 2000;
 
 /// Where a Lua state keeps its globals.
@@ -179,6 +215,7 @@ pub struct LuaApi {
     pub toboolean: unsafe extern "C-unwind" fn(State, c_int) -> c_int,
     pub tonumberx: unsafe extern "C-unwind" fn(State, c_int, *mut c_int) -> f64,
     pub tolstring: unsafe extern "C-unwind" fn(State, c_int, *mut usize) -> *const c_char,
+    pub touserdata: Option<unsafe extern "C-unwind" fn(State, c_int) -> *mut c_void>,
     pub next: unsafe extern "C-unwind" fn(State, c_int) -> c_int,
     pub pushnil: unsafe extern "C-unwind" fn(State),
     pub pushnumber: unsafe extern "C-unwind" fn(State, f64),
@@ -210,6 +247,22 @@ pub fn api() -> Option<&'static LuaApi> {
 enum Request {
     Save(String),
     Load(String),
+    Replay(String),
+}
+
+/// A replay is separate from update batches: paused frames may run while
+/// the GUI's wake command is in flight. No frame may overwrite this work.
+struct Replay {
+    token: String,
+    step: u64,
+    actions: Option<Vec<LuaValue>>,
+    origins: Vec<String>,
+    seals: Vec<Option<Seal>>,
+    tickets: Vec<Option<u64>>,
+    applied: Vec<bool>,
+    taken: bool,
+    previous_step: Option<u64>,
+    result: Option<Result<(), String>>,
 }
 
 /// What the table's functions share with the step gate.
@@ -230,6 +283,10 @@ struct Batch {
     /// update.
     lanes_wanted: bool,
     lanes: Option<Vec<(u16, String)>>,
+    /// Rolling world reads requested/completed by the game script this batch.
+    scan_requested: u32,
+    scan_done: u32,
+    scan_error: Option<String>,
     /// The lanes to dump at its checkpoint.
     dump: Option<Dump>,
 }
@@ -238,6 +295,8 @@ struct Batch {
 struct Dump {
     step: u64,
     lanes: Vec<u16>,
+    /// The network lane cut to this box.
+    network_box: Option<[f64; 4]>,
     /// `dump()` handed it to the mod.
     taken: bool,
     written: usize,
@@ -264,6 +323,10 @@ struct Shared {
     answers: VecDeque<Answer>,
     /// The batch running.
     batch: Batch,
+    /// Diagnostic timer costs only; never part of a saved world or checksum.
+    scan_cost: (u64, f64, f64),
+    replay: Option<Replay>,
+    next_replay: u64,
     /// Lines for the hook's log.
     log: VecDeque<String>,
     /// Lane dump entries for the hook's log, after `log`'s lines.
@@ -334,8 +397,14 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         begun: 0,
         lanes_wanted: false,
         lanes: None,
+        scan_requested: 0,
+        scan_done: 0,
+        scan_error: None,
         dump: None,
     },
+    replay: None,
+    scan_cost: (0, 0.0, 0.0),
+    next_replay: 0,
     log: VecDeque::new(),
     dumped: Vec::new(),
     request: None,
@@ -382,6 +451,68 @@ pub fn in_room() -> bool {
 /// tickets and passwords.
 pub fn take_commands() -> Vec<Handed> {
     shared().commands.drain(..).collect()
+}
+
+/// Publish one ordered replay. Its token wakes the engine's game script;
+/// the actions and identities stay in the hook until that script takes them.
+pub fn request_replay(step: u64, actions: &[Ordered]) -> Result<(), String> {
+    if actions.is_empty() || step == u64::MAX {
+        return Err("an ordered replay needs actions and a valid step".into());
+    }
+    let tables = actions
+        .iter()
+        .map(|o| {
+            action_to_lua(&o.action).map_err(|e| format!("an ordered action has no Lua form: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut s = shared();
+    if s.replay.is_some() || s.request.is_some() {
+        return Err("another replay or world request is still pending".into());
+    }
+    s.next_replay = s
+        .next_replay
+        .checked_add(1)
+        .ok_or("replay numbers exhausted")?;
+    let token = s.next_replay.to_string();
+    s.replay = Some(Replay {
+        token: token.clone(),
+        step,
+        actions: Some(tables),
+        origins: actions
+            .iter()
+            .map(|o| crate::lobby::hex(&o.player))
+            .collect(),
+        seals: actions.iter().map(|o| o.seal).collect(),
+        tickets: actions.iter().map(|o| o.ticket).collect(),
+        applied: vec![false; actions.len()],
+        taken: false,
+        previous_step: None,
+        result: None,
+    });
+    s.request = Some(Request::Replay(token));
+    Ok(())
+}
+
+pub fn take_replay_result() -> Option<Result<(), String>> {
+    let mut s = shared();
+    let result = s.replay.as_mut()?.result.take()?;
+    s.replay = None;
+    Some(result)
+}
+
+/// On the simulation thread, after it held or closed the old world.
+/// No Lua state pointer is kept or called here.
+pub fn cancel_replay() {
+    let mut s = shared();
+    if let Some(r) = s.replay.take()
+        && r.taken
+        && r.result.is_none()
+    {
+        crate::seeds::command_step(r.previous_step);
+    }
+    if matches!(s.request, Some(Request::Replay(_))) {
+        s.request = None;
+    }
 }
 
 /// One of the player's actions will never happen: `results()` says so for
@@ -433,9 +564,13 @@ pub fn begin_batch(
         begun: 0,
         lanes_wanted: lanes,
         lanes: None,
+        scan_requested: 0,
+        scan_done: 0,
+        scan_error: None,
         dump: dump.filter(|_| lanes).map(|order| Dump {
             step: order.step,
             lanes: order.lanes.clone(),
+            network_box: order.network_box,
             taken: false,
             written: 0,
             left_out: 0,
@@ -475,6 +610,15 @@ pub fn end_batch() -> Result<Option<Vec<(u16, String)>>, String> {
         shared.dumped.push(line);
     }
     let batch = &mut shared.batch;
+    if let Some(why) = batch.scan_error.take() {
+        return Err(format!("rolling world check failed: {why}"));
+    }
+    if batch.scan_requested > 0 && batch.scan_done != batch.updates {
+        return Err(format!(
+            "the mod checked {} of this batch's {} updates",
+            batch.scan_done, batch.updates
+        ));
+    }
     batch.lanes_wanted = false;
     batch.updates = 0;
     batch.begun = 0;
@@ -598,6 +742,12 @@ pub fn any_world_started() -> bool {
     shared().worlds > 0
 }
 
+/// How many worlds' GUIs have started in this process
+/// (`crate::step::WorldMark::started`).
+pub fn worlds_started() -> u64 {
+    shared().worlds
+}
+
 /// Forgets every world's GUI start (the menu frame's tests, which run
 /// only where the hook installs).
 #[cfg(all(test, windows, target_arch = "x86_64"))]
@@ -621,7 +771,7 @@ pub fn take_world_up() -> Option<u64> {
     }
 }
 
-fn log(line: String) {
+pub(crate) fn log(line: String) {
     let mut shared = shared();
     if shared.log.len() < MAX_LOG_LINES {
         shared.log.push_back(line);
@@ -658,17 +808,24 @@ pub unsafe fn register(api: &LuaApi, l: State) {
             for (name, function) in [
                 (&b"command"[..], native_command as CFunction),
                 (b"take", native_take),
+                (b"takeReplay", native_take_replay),
+                (b"replayed", native_replayed),
                 (b"log", native_log),
                 (b"poll", native_poll),
                 (b"saved", native_saved),
                 (b"world", native_world),
                 (b"room", native_room),
                 (b"checkpoint", native_checkpoint),
+                (b"scanned", native_scanned),
+                (b"hash", native_hash),
+                (b"laneRows", native_lane_rows),
+                (b"junctionConfig", native_junction_config),
                 (b"seed", native_seed),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
                 (b"built", native_built),
                 (b"replaying", native_replaying),
+                (b"terrain", native_terrain),
                 (b"applied", native_applied),
                 (b"results", native_results),
                 (b"status", native_status),
@@ -678,10 +835,22 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
                 (b"mods", native_mods),
+                (b"modparams", native_mod_params),
                 (b"personal", native_personal),
                 (b"shared", native_shared),
                 (b"note", native_note),
+                (b"trees", native_trees),
+                (b"edgewatch", native_edgewatch),
+                (b"edgewatched", native_edgewatched),
+                (b"preview", native_preview),
+                (b"previews", native_previews),
+                (b"draw", native_draw),
+                (b"drawn", native_drawn),
+                (b"undraw", native_undraw),
             ] {
+                if api.touserdata.is_none() && matches!(name, b"laneRows" | b"junctionConfig") {
+                    continue;
+                }
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
                 (api.rawset)(l, table);
@@ -1056,6 +1225,104 @@ unsafe fn string_arg(api: &LuaApi, l: State, index: c_int, max: usize) -> Option
     }
 }
 
+/// `takeReplay(token)`: only a matching wake may take the pending actions,
+/// once. It is called from handleEvent on the simulation side.
+unsafe extern "C-unwind" fn native_take_replay(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua's live state, on its own thread.
+    let token = unsafe { string_arg(api, l, 1, 32) };
+    let mut s = shared();
+    let Some(r) = s
+        .replay
+        .as_mut()
+        .filter(|r| Some(&r.token) == token.as_ref() && !r.taken && r.result.is_none())
+    else {
+        unsafe { (api.pushnil)(l) };
+        return 1;
+    };
+    let list = |values: Vec<LuaValue>| {
+        LuaValue::Table(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    (
+                        LuaValue::Integer(i64::try_from(i + 1).unwrap_or(i64::MAX)),
+                        v,
+                    )
+                })
+                .collect(),
+        )
+    };
+    let Some(actions) = r.actions.as_ref() else {
+        unsafe { (api.pushnil)(l) };
+        return 1;
+    };
+    let top = unsafe { (api.gettop)(l) };
+    let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| unsafe {
+        push(api, l, &list(actions.clone()), 0)?;
+        push(
+            api,
+            l,
+            &list(r.origins.iter().map(|p| LuaValue::string(p)).collect()),
+            0,
+        )?;
+        push(
+            api,
+            l,
+            &list(r.seals.iter().map(|v| seal_to_lua(v.as_ref())).collect()),
+            0,
+        )
+    }));
+    if matches!(pushed, Ok(Ok(()))) {
+        r.actions = None;
+        r.taken = true;
+        r.previous_step = crate::seeds::command_step(Some(r.step));
+        return 3;
+    }
+    unsafe {
+        (api.settop)(l, top);
+        (api.pushnil)(l);
+    }
+    1
+}
+
+/// Complete after state:set. Missing action reports or a script exception
+/// hold the room's world; a command refused normally still has a report.
+unsafe extern "C-unwind" fn native_replayed(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let (token, ok, why) = unsafe {
+        (
+            string_arg(api, l, 1, 32),
+            (api.toboolean)(l, 2) != 0,
+            string_arg(api, l, 3, MAX_LOG_LINE),
+        )
+    };
+    let mut s = shared();
+    if let Some(r) = s
+        .replay
+        .as_mut()
+        .filter(|r| Some(&r.token) == token.as_ref() && r.result.is_none())
+    {
+        let result = if !ok {
+            Err(why.unwrap_or_else(|| "the replay wake or game script failed".into()))
+        } else if !r.taken || r.applied.iter().any(|reported| !reported) {
+            Err("the game script did not report every ordered action".into())
+        } else {
+            Ok(())
+        };
+        if r.taken {
+            crate::seeds::command_step(r.previous_step);
+        }
+        r.result = Some(result);
+    }
+    0
+}
+
 /// `poll()`.
 unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -1077,6 +1344,9 @@ unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
         }
         Some(Request::Load(name)) => {
             LuaValue::Table(vec![(LuaValue::string("load"), LuaValue::string(&name))])
+        }
+        Some(Request::Replay(token)) => {
+            LuaValue::Table(vec![(LuaValue::string("replay"), LuaValue::string(&token))])
         }
     };
     // SAFETY: Lua calls this with its own state, on its thread.
@@ -1149,9 +1419,171 @@ pub fn notice(notice: &Notice) {
         Notice::Ended(_) => {
             room.info = None;
             room.diverged = None;
+            crate::previews::clear();
         }
         Notice::Refused { .. } => {}
+        Notice::Preview { from, preview } => {
+            crate::previews::heard(*from, preview.clone(), std::time::Instant::now());
+        }
     }
+}
+
+/// `preview(action)`: what the player's build tool shows now, or `nil`
+/// once it shows nothing: `true`, or `false` and why not.
+unsafe extern "C-unwind" fn native_preview(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let read = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as above.
+        unsafe { preview_from(api, l) }
+    }))
+    .unwrap_or_else(|_| Err("the hook failed reading the preview".into()));
+    // SAFETY: as above.
+    unsafe { (api.settop)(l, top) };
+    let shown = read.map(crate::previews::show);
+    // SAFETY: as above; a C function's call has room for its results.
+    unsafe {
+        match shown {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(reason) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, reason.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// # Safety
+///
+/// Lua's own state, on its thread.
+unsafe fn preview_from(api: &LuaApi, l: State) -> Result<Option<Payload>, String> {
+    // SAFETY: the caller's.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) == TNIL {
+            return Ok(None);
+        }
+        if (api.type_of)(l, 1) != TTABLE {
+            return Err("a preview is an action table, or nil".into());
+        }
+        let mut nodes = 0;
+        let tree = read(api, l, 1, 0, &mut nodes)?;
+        let action = action_from_lua(&tree).map_err(|error| error.to_string())?;
+        let payload = action.to_payload().map_err(|error| error.to_string())?;
+        if payload.len() > MAX_PREVIEW {
+            return Err(format!(
+                "a preview of {} bytes, over the {MAX_PREVIEW} the room shows",
+                payload.len()
+            ));
+        }
+        Ok(Some(payload))
+    }
+}
+
+/// The member a GUI call names by its first argument, 64 hex digits.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread.
+unsafe fn member_arg(api: &LuaApi, l: State) -> Result<PlayerId, String> {
+    // SAFETY: the caller's.
+    let hex = unsafe { string_arg(api, l, 1, 64) };
+    hex.as_deref()
+        .and_then(crate::lobby::player)
+        .ok_or_else(|| "a member is 64 hex digits".to_owned())
+}
+
+/// Pushes `true`, or `false` and why.
+///
+/// # Safety
+///
+/// Lua's own state, inside a C function's call.
+unsafe fn push_outcome(api: &LuaApi, l: State, outcome: Result<(), String>) -> c_int {
+    // SAFETY: the caller's; a C function's call has room for its results.
+    unsafe {
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// `draw(from)`: arms this thread to draw member `from`'s preview with the
+/// next `makeProposalData` ([`crate::drawing::arm`]).
+unsafe extern "C-unwind" fn native_draw(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let outcome = unsafe { member_arg(api, l) }.and_then(crate::drawing::arm);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// `drawn()`: disarms, and says what the armed call came to: `true`, or
+/// `false` and why, or `nil` when the game evaluated nothing.
+unsafe extern "C-unwind" fn native_drawn(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    match crate::drawing::disarm() {
+        // SAFETY: Lua calls this with its own state.
+        Some(outcome) => unsafe { push_outcome(api, l, outcome) },
+        None => 0,
+    }
+}
+
+/// `undraw(from)`: member `from`'s tool shows nothing now.
+unsafe extern "C-unwind" fn native_undraw(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let outcome = unsafe { member_arg(api, l) }.map(crate::drawing::hide);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// `previews()`: the other members' previews that changed since the last
+/// call, `{ { from =, action = }, ... }`, without `action` for one gone.
+unsafe extern "C-unwind" fn native_previews(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let changes = crate::previews::take_in(std::time::Instant::now());
+    #[allow(clippy::cast_precision_loss)]
+    let list = LuaValue::Table(
+        changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let mut entry = vec![(
+                    LuaValue::string("from"),
+                    LuaValue::string(&crate::lobby::hex(&change.from)),
+                )];
+                // One with no table form shows nothing, as one gone.
+                if let Some(Ok(action)) = change.action.as_ref().map(action_to_lua) {
+                    entry.push((LuaValue::string("action"), action));
+                }
+                (LuaValue::Number((index + 1) as f64), LuaValue::Table(entry))
+            })
+            .collect(),
+    );
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, Some(&list)) }
 }
 
 /// The local player, as the room's `Begin` names it.
@@ -1206,7 +1638,61 @@ pub fn plan_mods(save: &str) -> Option<Plan> {
         named(&plan.dropped),
         named(&plan.added)
     ));
+    if !save.iter().any(|name| name == tpf3mp_bridge::mods::OWN_MOD) {
+        // Seen live: a world without the mod loads, and then holds paused
+        // for good. The room's list adds it; the agent refuses such a save
+        // before it gets here, and one whose mods it could not read still
+        // may come.
+        log(without_own_mod());
+    }
     Some(plan)
+}
+
+/// What the hook's log says of a world whose save lacks TPF3-MP's mod.
+fn without_own_mod() -> String {
+    format!(
+        "the room's save does not have TPF3-MP's mod ({}) enabled: it loads with it added; should the world hold paused, load the save once, turn TPF3-MP on in its mods, save it, and start a room from it again",
+        tpf3mp_bridge::mods::OWN_MOD
+    )
+}
+
+/// The settings of the room's mods the room's owner picked, one a line:
+/// the mod, a tab, the setting, a tab, its value; `None` without the room's
+/// lists or with no settings (the save's then stay).
+pub fn mod_params_text() -> Option<String> {
+    let shared = shared();
+    let lists = shared.mods.as_ref()?;
+    if lists.params.is_empty() {
+        return None;
+    }
+    let mut text = String::new();
+    for of in &lists.params {
+        for param in &of.params {
+            text.push_str(&format!(
+                "{}\t{}\t{}\n",
+                of.id.as_str(),
+                param.key.as_str(),
+                param.value
+            ));
+        }
+    }
+    Some(text)
+}
+
+/// `modparams()`: [`mod_params_text`], or nil. The main menu's load gets
+/// it too (`crate::menu`).
+pub(crate) unsafe extern "C-unwind" fn native_mod_params(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: a C function's call has room for its result.
+    unsafe {
+        match mod_params_text() {
+            Some(text) => push_str(api, l, text.as_bytes()),
+            None => (api.pushnil)(l),
+        }
+    }
+    1
 }
 
 /// `personal()`: this player's personal mods, one name a line, or nil
@@ -1548,18 +2034,156 @@ unsafe extern "C-unwind" fn native_copy(l: State) -> c_int {
     }
 }
 
+/// `hash(text)`: the lanes' text hash ([`crate::lanehash`]), exactly what
+/// the mod's Lua `hashStr` returns for the same bytes; nil without a string.
+unsafe extern "C-unwind" fn native_hash(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it,
+    // and a string's bytes stay valid while it is on the stack. A C
+    // function's stack has LUA_MINSTACK free slots for the result.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != TSTRING {
+            (api.pushnil)(l);
+            return 1;
+        }
+        let mut len = 0;
+        let text = (api.tolstring)(l, 1, &raw mut len);
+        if text.is_null() {
+            (api.pushnil)(l);
+            return 1;
+        }
+        let hash = crate::lanehash::hash(std::slice::from_raw_parts(text.cast::<u8>(), len));
+        push_str(api, l, hash.as_bytes());
+    }
+    1
+}
+
+/// Only full userdata is eligible. Tables, light userdata and foreign classes
+/// use the Lua fallback; network additionally checks the exact owned vtable.
+unsafe fn component_userdata(api: &LuaApi, l: State) -> Option<usize> {
+    // SAFETY: called by Lua with its argument stack; conversion does not pop it.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != 7 {
+            return None;
+        }
+        let address = (api.touserdata?)(l, 1) as usize;
+        (address != 0).then_some(address)
+    }
+}
+
+unsafe extern "C-unwind" fn native_lane_rows(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua's callback stack holds its arguments and has room for results.
+    unsafe {
+        let result = component_userdata(api, l).and_then(|address| {
+            if (api.type_of)(l, 2) != TBOOLEAN {
+                return None;
+            }
+            crate::network::lanes(address, (api.toboolean)(l, 2) != 0).ok()
+        });
+        if let Some((rows, count)) = result {
+            push_str(api, l, rows.as_bytes());
+            (api.pushnumber)(l, count as f64);
+            return 2;
+        }
+        (api.pushnil)(l);
+    }
+    1
+}
+
+unsafe extern "C-unwind" fn native_junction_config(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua owns and retains the snapshot while decoding and pushing.
+    unsafe {
+        let top = (api.gettop)(l);
+        if let Some(config) =
+            component_userdata(api, l).and_then(|address| crate::network::junction(address).ok())
+            && push(api, l, &config, 0).is_ok()
+        {
+            return 1;
+        }
+        (api.settop)(l, top);
+        (api.pushnil)(l);
+    }
+    1
+}
+
 /// `checkpoint()`: whether the update running is the last of a batch that
 /// ends at a checkpoint step, and its lanes are not read yet.
 unsafe extern "C-unwind" fn native_checkpoint(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
+    let step = crate::seeds::current_step();
     let due = {
-        let batch = &shared().batch;
+        let batch = &mut shared().batch;
+        if step.is_some() && batch.begun > 0 && batch.begun <= batch.updates {
+            batch.scan_requested = batch.begun;
+        }
         batch.lanes_wanted && batch.begun == batch.updates && batch.lanes.is_none()
     };
     // SAFETY: a C function's stack has LUA_MINSTACK free slots.
-    unsafe { (api.pushboolean)(l, c_int::from(due)) };
+    unsafe {
+        (api.pushboolean)(l, c_int::from(due));
+        match step {
+            Some(step) => (api.pushnumber)(l, step as f64),
+            None => return 1,
+        }
+    };
+    2
+}
+
+/// A failed or missing rolling read holds the game; it is never a matching
+/// "err" checksum on all players. Called once per simulation postUpdate.
+unsafe extern "C-unwind" fn native_scanned(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: arguments belong to this Lua callback; string_arg bounds copies.
+    let ok = unsafe { (api.type_of)(l, 1) == 1 && (api.toboolean)(l, 1) != 0 };
+    let why = if ok {
+        None
+    } else {
+        Some(
+            unsafe { string_arg(api, l, 2, MAX_LOG_LINE) }
+                .unwrap_or_else(|| "the mod could not read the world".into()),
+        )
+    };
+    let mut shared = shared();
+    let batch = &mut shared.batch;
+    if batch.scan_requested == 0 || batch.scan_requested != batch.scan_done + 1 {
+        batch
+            .scan_error
+            .get_or_insert_with(|| "world checks were skipped or repeated".into());
+    } else {
+        batch.scan_done += 1;
+        if let Some(why) = why {
+            batch.scan_error.get_or_insert(why);
+        }
+    }
+    let accepted = batch.scan_error.is_none();
+    let checkpoint = batch.lanes_wanted && batch.begun == batch.updates;
+    // SAFETY: an optional number is read only after checking its Lua type.
+    let ms = unsafe { number_arg(api, l, 3) };
+    if let Some(ms) = ms.filter(|ms| ms.is_finite() && *ms >= 0.0) {
+        shared.scan_cost.0 += 1;
+        shared.scan_cost.1 += ms;
+        shared.scan_cost.2 = shared.scan_cost.2.max(ms);
+    }
+    if checkpoint && shared.scan_cost.0 > 0 {
+        let (count, total, max) = std::mem::replace(&mut shared.scan_cost, (0, 0.0, 0.0));
+        if shared.log.len() < MAX_LOG_LINES {
+            shared.log.push_back(format!("rolling-check-cost: samples={count} mean_ms={:.3} max_ms={max:.3} total_ms={total:.3}", total / count as f64));
+        }
+    }
+    // SAFETY: one result fits the callback stack.
+    unsafe { (api.pushboolean)(l, c_int::from(accepted)) };
     1
 }
 
@@ -1740,6 +2364,46 @@ unsafe fn number_arg(api: &LuaApi, l: State, index: c_int) -> Option<f64> {
     }
 }
 
+/// `terrain(t)`: arms the next build the room's actions send with the
+/// terraform `t`; `terrain()` disarms and answers whether a build was
+/// filled ([`crate::terrain`]).
+unsafe extern "C-unwind" fn native_terrain(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; index 1 is
+    // the argument, if any; a C function's stack has LUA_MINSTACK free
+    // slots.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) == TNIL {
+            match crate::terrain::disarm() {
+                Some(filled) => (api.pushboolean)(l, c_int::from(filled)),
+                None => (api.pushnil)(l),
+            }
+            return 1;
+        }
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut nodes = 0;
+            let value = read(api, l, 1, 0, &mut nodes)?;
+            let grid = crate::terrain::Grid::from_lua(&value)?;
+            crate::terrain::arm(grid);
+            Ok::<(), String>(())
+        }))
+        .unwrap_or_else(|_| Err("reading the terrain grid failed".to_owned()));
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
 /// `applied(index, ok, entity, why)`.
 unsafe extern "C-unwind" fn native_applied(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -1758,12 +2422,22 @@ unsafe extern "C-unwind" fn native_applied(l: State) -> c_int {
         return 0;
     };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let ticket = shared()
-        .batch
-        .tickets
-        .get(index as usize - 1)
-        .copied()
-        .flatten();
+    let ticket = {
+        let mut s = shared();
+        let i = index as usize - 1;
+        if let Some(r) = s.replay.as_mut().filter(|r| r.taken && r.result.is_none()) {
+            let Some(reported) = r.applied.get_mut(i) else {
+                return 0;
+            };
+            if *reported {
+                return 0;
+            }
+            *reported = true;
+            r.tickets.get(i).copied().flatten()
+        } else {
+            s.batch.tickets.get(i).copied().flatten()
+        }
+    };
     if let Some(ticket) = ticket {
         answer(Answer {
             ticket,
@@ -1824,6 +2498,28 @@ unsafe extern "C-unwind" fn native_results(l: State) -> c_int {
     1
 }
 
+/// Whether this game may hand the room the asset bulldozer's removals,
+/// trees and other assets taken out of their group: only with
+/// [`TREES_ENV`] set to `1`, for a trial of the replay (docs/HOOKS.md, "The
+/// build tools"). Read once.
+pub const TREES_ENV: &str = "TPF3MP_TREE_BULLDOZE";
+
+fn trees_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var(TREES_ENV).is_ok_and(|v| v == "1"))
+}
+
+/// `trees()`: whether the asset bulldozer's removals go to the room
+/// ([`TREES_ENV`]).
+unsafe extern "C-unwind" fn native_trees(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe { (api.pushboolean)(l, c_int::from(trees_on())) };
+    1
+}
+
 /// `room()`: `true` while the room's game runs.
 unsafe extern "C-unwind" fn native_room(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -1848,14 +2544,14 @@ unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
         match batch.dump.as_mut() {
             Some(dump) if due && !dump.taken => {
                 dump.taken = true;
-                Some((dump.step, dump.lanes.clone()))
+                Some((dump.step, dump.lanes.clone(), dump.network_box))
             }
             _ => None,
         }
     };
     #[allow(clippy::cast_precision_loss)]
-    let table = order.map(|(step, lanes)| {
-        LuaValue::Table(vec![
+    let table = order.map(|(step, lanes, network_box)| {
+        let mut fields = vec![
             (LuaValue::string("step"), LuaValue::Number(step as f64)),
             (
                 LuaValue::string("lanes"),
@@ -1872,7 +2568,19 @@ unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
                         .collect(),
                 ),
             ),
-        ])
+        ];
+        if let Some(rect) = network_box {
+            fields.push((
+                LuaValue::string("box"),
+                LuaValue::Table(
+                    rect.iter()
+                        .enumerate()
+                        .map(|(i, v)| (LuaValue::Number((i + 1) as f64), LuaValue::Number(*v)))
+                        .collect(),
+                ),
+            ));
+        }
+        LuaValue::Table(fields)
     });
     // SAFETY: Lua calls this with its own state, on its thread.
     unsafe { push_or_nil(api, l, table.as_ref()) }
@@ -1921,6 +2629,52 @@ unsafe extern "C-unwind" fn native_dumped(l: State) -> c_int {
     1
 }
 
+/// What a Lua state last noted under `key` (`note`), for the hook's own
+/// readers; `None` when nothing is, or when the notes are busy (never
+/// waits).
+pub fn noted(key: &str) -> Option<String> {
+    let shared = SHARED.try_lock().ok()?;
+    shared
+        .notes
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+/// The notes that name entities of the loaded world: the player's company
+/// (`tpf3mp/follow.lua`, `noteCompany`) and the room's companies
+/// (`noteCompanies`). The notes outlive a world, the hook's process being
+/// the game's, but these entities do not: the next world, a new one above
+/// all, has other entities under those numbers or none. Handed on, the
+/// GUI's `getPlayer` answered the last world's company and the game's own
+/// game bar read its balance (`getPlayersBalance`, the engine's `Account`
+/// lookup, unchecked): an access violation in the first frame of a new
+/// world (entity 372610, a hang report, 2026-10-02), or the engine's
+/// assertion on an animal (entity 63030, the same day).
+pub const WORLD_NOTES: [&str; 2] = ["tpf3mp.company", "tpf3mp.companies"];
+
+/// Forgets the [`WORLD_NOTES`], when a world closes: the next world's GUI
+/// notes its own once it reads its room's roster. Returns how many there
+/// were.
+pub fn forget_world_notes() -> usize {
+    let mut shared = shared();
+    let before = shared.notes.len();
+    shared
+        .notes
+        .retain(|(k, _)| !WORLD_NOTES.contains(&k.as_str()));
+    before - shared.notes.len()
+}
+
+/// Notes `value` under `key` from the hook itself, as `note(key, value)`
+/// does from Lua ("" forgets it): what the hook tells every Lua state.
+pub fn set_note(key: &str, value: &str) {
+    let mut shared = shared();
+    shared.notes.retain(|(k, _)| k != key);
+    if !value.is_empty() && shared.notes.len() < MAX_NOTES {
+        shared.notes.push((key.to_owned(), value.to_owned()));
+    }
+}
+
 /// `log(line)`.
 /// `note(key)`: what a Lua state last noted under `key`, or nil;
 /// `note(key, value)`: notes `value` (a string; "" forgets it) under `key`
@@ -1965,6 +2719,48 @@ unsafe extern "C-unwind" fn native_note(l: State) -> c_int {
         None => unsafe { (api.pushnil)(l) },
     }
     1
+}
+
+/// `edgewatch()`: the entities to read in this update, or nil
+/// ([`crate::edgewatch`]).
+unsafe extern "C-unwind" fn native_edgewatch(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let table = crate::edgewatch::due_now().map(|entities| {
+        LuaValue::Table(
+            entities
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    (
+                        LuaValue::Number((i + 1) as f64),
+                        LuaValue::Number(f64::from(*e)),
+                    )
+                })
+                .collect(),
+        )
+    });
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, table.as_ref()) }
+}
+
+/// `edgewatched(entity, text)`: logged when it changed.
+unsafe extern "C-unwind" fn native_edgewatched(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (entity, text) = unsafe { (number_arg(api, l, 1), string_arg(api, l, 2, MAX_DUMP_LINE)) };
+    if let (Some(entity), Some(text)) = (entity, text)
+        && entity.fract() == 0.0
+        && (0.0..=f64::from(u32::MAX)).contains(&entity)
+    {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        crate::edgewatch::watched_now(entity as u32, &text);
+    }
+    0
 }
 
 unsafe extern "C-unwind" fn native_log(l: State) -> c_int {
@@ -2077,6 +2873,7 @@ pub(crate) mod tests {
             toboolean,
             tonumberx,
             tolstring,
+            touserdata: Some(test_touserdata),
             next,
             pushnil,
             pushnumber,
@@ -2090,6 +2887,32 @@ pub(crate) mod tests {
             globals: Globals::Pseudo(ffi::LUA_GLOBALSINDEX),
         });
         api().unwrap()
+    }
+
+    unsafe extern "C-unwind" fn test_touserdata(l: State, index: c_int) -> *mut c_void {
+        unsafe { ffi::lua_touserdata(l.cast(), index) }
+    }
+
+    #[test]
+    fn native_snapshots_fall_back_for_non_component_arguments() {
+        let _serial = SERIAL.lock().unwrap();
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(
+            lua.run(
+                r#"
+            local n = tpf3mp_native
+            for _, value in ipairs({false, 42, 'text', {}, newproxy(true)}) do
+                assert(n.laneRows(value, false) == nil)
+                assert(n.junctionConfig(value) == nil)
+            end
+            assert(n.laneRows() == nil and n.junctionConfig() == nil)
+            return 'fallback'
+        "#
+            )
+            .unwrap(),
+            "fallback"
+        );
     }
 
     /// A Lua state with its libraries, closed when dropped.
@@ -2212,6 +3035,8 @@ pub(crate) mod tests {
         take_log();
         let mut shared = shared();
         shared.answers.clear();
+        shared.replay = None;
+        shared.request = None;
         shared.room = RoomStatus {
             info: None,
             me: None,
@@ -2231,6 +3056,136 @@ pub(crate) mod tests {
             player: PlayerId(FixedBytes([7; 32])),
             seal: None,
         }
+    }
+
+    #[test]
+    fn a_replay_survives_paused_frames_and_reports_each_action_once() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        lua51();
+        let lua = Lua::new();
+        lua.register();
+        let previous = crate::seeds::current_step();
+        request_replay(
+            42,
+            &[
+                ordered(depot_build(), Some(77)),
+                ordered(depot_build(), None),
+            ],
+        )
+        .unwrap();
+        lua.run("TOKEN = tpf3mp_native.poll().replay").unwrap();
+        assert_eq!(
+            lua.run("return tpf3mp_native.takeReplay('wrong')"),
+            Ok("nil".into())
+        );
+        begin_batch(&[], 0, false, None).unwrap();
+        end_batch().unwrap();
+        assert_eq!(
+            lua.run("local a,p = tpf3mp_native.takeReplay(TOKEN) return #a, #p"),
+            Ok("2|2".into())
+        );
+        assert_eq!(crate::seeds::current_step(), Some(42));
+        assert_eq!(
+            lua.run("return tpf3mp_native.takeReplay(TOKEN)"),
+            Ok("nil".into())
+        );
+        assert!(request_replay(42, &[ordered(depot_build(), None)]).is_err());
+        lua.run(
+            "tpf3mp_native.applied(1, true, 123) tpf3mp_native.applied(1, true, 123) \
+            tpf3mp_native.applied(2, false, nil, 'collision') tpf3mp_native.replayed(TOKEN, true)",
+        )
+        .unwrap();
+        assert_eq!(take_replay_result(), Some(Ok(())));
+        assert_eq!(crate::seeds::current_step(), previous);
+        assert_eq!(
+            lua.run("local r=tpf3mp_native.results() return #r,r[1].ticket,r[1].entity"),
+            Ok("1|77|123".into())
+        );
+        lua.run("tpf3mp_native.replayed(TOKEN, true)").unwrap();
+        assert_eq!(take_replay_result(), None);
+    }
+
+    #[test]
+    fn a_replay_cannot_finish_without_reports_and_a_failed_wake_is_reported() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        lua51();
+        let lua = Lua::new();
+        lua.register();
+        for take in [false, true] {
+            request_replay(1, &[ordered(depot_build(), None)]).unwrap();
+            lua.run("TOKEN=tpf3mp_native.poll().replay").unwrap();
+            if take {
+                lua.run("tpf3mp_native.takeReplay(TOKEN)").unwrap();
+            }
+            lua.run("tpf3mp_native.replayed(TOKEN, true)").unwrap();
+            assert!(take_replay_result().unwrap().is_err());
+        }
+        request_replay(1, &[ordered(depot_build(), None)]).unwrap();
+        lua.run("local token=tpf3mp_native.poll().replay tpf3mp_native.replayed(token, false, 'wake failed')").unwrap();
+        assert_eq!(take_replay_result(), Some(Err("wake failed".into())));
+    }
+
+    #[test]
+    fn cancelling_a_replay_invalidates_delayed_wakes_even_in_another_world() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        lua51();
+        let lua = Lua::new();
+        lua.register();
+        request_replay(1, &[ordered(depot_build(), None)]).unwrap();
+        lua.run("OLD=tpf3mp_native.poll().replay").unwrap();
+        cancel_replay();
+        request_replay(1, &[ordered(depot_build(), None)]).unwrap();
+        lua.run("NEW=tpf3mp_native.poll().replay").unwrap();
+        assert_eq!(
+            lua.run("return OLD ~= NEW, tpf3mp_native.takeReplay(OLD)"),
+            Ok("true|nil".into())
+        );
+        lua.run("tpf3mp_native.replayed(OLD, false, 'old world')")
+            .unwrap();
+        assert_eq!(take_replay_result(), None);
+        cancel_replay();
+        assert_eq!(
+            lua.run("return tpf3mp_native.takeReplay(NEW)"),
+            Ok("nil".into())
+        );
+    }
+
+    /// A brand-new world after a room's world: the last world's company,
+    /// noted by its GUI, is forgotten with it, so a GUI state of the new
+    /// world that reads the note (`tpf3mp/follow.lua`, `noteSource`) finds
+    /// none and its getPlayer stays the game's. Handed on, the game's game
+    /// bar read the balance of an entity the new world does not have and
+    /// the game crashed (2026-10-02). Notes of other kinds stay.
+    #[test]
+    fn a_closed_worlds_company_notes_are_forgotten() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let gui = Lua::new();
+        gui.register();
+        gui.run(
+            "tpf3mp_native.note('tpf3mp.company', '372610') \
+             tpf3mp_native.note('tpf3mp.companies', '372553,372610') \
+             tpf3mp_native.note('tpf3mp.hud.tickets', '42')",
+        )
+        .unwrap();
+        assert_eq!(forget_world_notes(), 2);
+        let next = Lua::new();
+        next.register();
+        assert_eq!(
+            next.run(
+                "return tostring(tpf3mp_native.note('tpf3mp.company')), \
+                 tostring(tpf3mp_native.note('tpf3mp.companies')), \
+                 tpf3mp_native.note('tpf3mp.hud.tickets')"
+            ),
+            Ok("nil|nil|42".into())
+        );
+        assert_eq!(noted("tpf3mp.company"), None);
+        // Nothing left to forget: a second close says none.
+        assert_eq!(forget_world_notes(), 0);
+        shared().notes.clear();
     }
 
     /// What one Lua state notes, another reads; "" forgets it; the number
@@ -2266,6 +3221,45 @@ pub(crate) mod tests {
         shared().notes.clear();
     }
 
+    /// Seen live: the room's world loaded with the save's two DLC packs and
+    /// not TPF3-MP's mod, and held paused with nothing in the log to say
+    /// why. The log says so now, and how to fix it.
+    #[test]
+    fn a_world_without_tpf3mps_mod_is_said_in_the_log() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let name = |n: &str| tpf3mp_proto::Text::new(n).unwrap();
+        set_mods(Some(ModLists {
+            shared: tpf3mp_proto::BoundedVec::new(vec![
+                name("urbangames_deluxe_upgrade_pack"),
+                name("urbangames_preorder_pack"),
+                name("tpf3mp_1"),
+            ])
+            .unwrap(),
+            personal: tpf3mp_proto::BoundedVec::default(),
+            params: Vec::new(),
+        }));
+        let _ = take_log();
+        let plan = plan_mods("urbangames_deluxe_upgrade_pack\nurbangames_preorder_pack").unwrap();
+        assert!(plan.mods.iter().any(|name| name == "tpf3mp_1"), "added");
+        let said = take_log();
+        assert!(
+            said.iter().any(
+                |line| line.contains("does not have TPF3-MP's mod (tpf3mp_1) enabled")
+                    && line.contains("turn TPF3-MP on in its mods")
+            ),
+            "{said:?}"
+        );
+        plan_mods("urbangames_preorder_pack\ntpf3mp_1").unwrap();
+        assert!(
+            !take_log()
+                .iter()
+                .any(|line| line.contains("does not have TPF3-MP's mod")),
+            "not for a world that has it"
+        );
+        set_mods(None);
+    }
+
     /// A simulation state that cannot guard the personal mods says so, and
     /// every load after leaves them out, however many other notes there are.
     #[test]
@@ -2276,6 +3270,7 @@ pub(crate) mod tests {
         set_mods(Some(ModLists {
             shared: tpf3mp_proto::BoundedVec::new(vec![name("vehicles_pack")]).unwrap(),
             personal: tpf3mp_proto::BoundedVec::new(vec![name("my_timetables")]).unwrap(),
+            params: Vec::new(),
         }));
         let save = "vehicles_pack
 tpf3mp_1
@@ -2352,6 +3347,47 @@ my_timetables";
         assert_eq!(end_batch(), Ok(None));
     }
 
+    #[test]
+    fn rolling_reads_are_numbered_and_missing_or_failed_reads_hold_the_batch() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let previous = crate::seeds::command_step(Some(20));
+        begin_batch(&[], 2, false, None).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(
+            lua.run("return tpf3mp_native.checkpoint()"),
+            Ok("false|20".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.scanned(true)"),
+            Ok("true".into())
+        );
+        crate::seeds::command_step(Some(21));
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint()")
+            .unwrap();
+        assert!(
+            end_batch()
+                .unwrap_err()
+                .contains("checked 1 of this batch's 2")
+        );
+
+        begin_batch(&[], 1, false, None).unwrap();
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint() tpf3mp_native.scanned(false, 'no spatial index')").unwrap();
+        assert!(end_batch().unwrap_err().contains("no spatial index"));
+
+        begin_batch(&[], 1, false, None).unwrap();
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint() tpf3mp_native.scanned(true)")
+            .unwrap();
+        assert_eq!(end_batch(), Ok(None));
+
+        begin_batch(&[], 1, false, None).unwrap();
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint() tpf3mp_native.scanned(true) tpf3mp_native.scanned(true)").unwrap();
+        assert!(end_batch().unwrap_err().contains("skipped or repeated"));
+        crate::seeds::command_step(previous);
+    }
+
     /// What `dump()` hands the mod, as text.
     const DUMP: &str = "local d = tpf3mp_native.dump() \
                         if d == nil then return 'nil' end \
@@ -2367,6 +3403,7 @@ my_timetables";
             step: 300,
             lanes: vec![1, 3],
             why: "step 250 diverged".into(),
+            network_box: None,
         };
         begin_batch(&[], 2, true, Some(&order)).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
@@ -2433,10 +3470,15 @@ my_timetables";
             step: 50,
             lanes: vec![0, 3],
             why: String::new(),
+            network_box: Some([-2460.0, -20790.0, -2260.0, -20580.5]),
         };
         begin_batch(&[], 1, true, Some(&order)).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
-        lua.run(DUMP).unwrap();
+        // The box goes to the mod with the order.
+        assert_eq!(
+            lua.run("local d = tpf3mp_native.dump() return table.concat(d.box, ',')"),
+            Ok("-2460,-20790,-2260,-20580.5".into())
+        );
         let taken = lua
             .run(&format!(
                 "local n = 0 \
@@ -2541,7 +3583,7 @@ my_timetables";
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
             ),
-            Ok("12|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("14|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -2787,6 +3829,127 @@ my_timetables";
             lua.run("return tostring(tpf3mp_native.status())"),
             Ok("nil".into())
         );
+    }
+
+    #[test]
+    fn previews_go_out_as_payloads_and_come_in_as_tables() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        crate::previews::clear();
+        let lua = Lua::new();
+        lua.register();
+        let start = std::time::Instant::now();
+        // The player's tool shows the depot, then nothing.
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.preview({DEPOT_TABLE})")),
+            Ok("true".into())
+        );
+        assert_eq!(
+            crate::previews::take_out(start),
+            Some(Some(depot_build().to_payload().unwrap()))
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.preview(nil)"),
+            Ok("true".into())
+        );
+        assert_eq!(
+            crate::previews::take_out(start + crate::previews::MIN_INTERVAL),
+            Some(None)
+        );
+        // What the schema refuses is not shown, and says why.
+        assert!(
+            lua.run("return tpf3mp_native.preview({ Nonsense = {} })")
+                .unwrap()
+                .starts_with("false|"),
+        );
+        assert!(
+            lua.run("return tpf3mp_native.preview(42)")
+                .unwrap()
+                .starts_with("false|"),
+        );
+        // Another member's preview comes in as take() gives an action, and
+        // goes with the game's end: told once as gone, so the GUI clears it.
+        let ann = PlayerId(tpf3mp_proto::FixedBytes([0xab; 32]));
+        notice(&Notice::Preview {
+            from: ann,
+            preview: Some(depot_build().to_payload().unwrap()),
+        });
+        assert_eq!(
+            lua.run(
+                "local c = tpf3mp_native.previews() \
+                 return #c, c[1].from:sub(1, 4), c[1].action.BuildConstruction.name, \
+                     #tpf3mp_native.previews()"
+            ),
+            Ok("1|abab|Depot|0".into())
+        );
+        notice(&Notice::Ended(Text::new("the owner left").unwrap()));
+        assert_eq!(
+            lua.run(
+                "local c = tpf3mp_native.previews()                  return #c, c[1].from:sub(1, 4), tostring(c[1].action), #tpf3mp_native.previews()"
+            ),
+            Ok("1|abab|nil|0".into())
+        );
+    }
+
+    #[test]
+    fn a_build_that_cannot_draw_says_so_and_draws_nothing() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let member = "ab".repeat(32);
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.draw('{member}')")),
+            Ok("false|this build cannot draw the others' previews".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.draw('nobody')"),
+            Ok("false|a member is 64 hex digits".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.drawn()"),
+            Ok(String::new()),
+            "nothing armed"
+        );
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.undraw('{member}')")),
+            Ok("true".into()),
+            "nothing drawn, nothing to clear"
+        );
+    }
+
+    #[test]
+    fn terrain_arms_a_checked_grid_and_disarming_says_whether_it_was_used() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let _armed = crate::terrain::TEST_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
+        assert_eq!(
+            lua.run(
+                "return tpf3mp_native.terrain({ x0 = -3, y0 = 4, width = 2, height = 1, \
+                 cells = { 101.5, 100, 102.25, 100 } })"
+            ),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.terrain(nil)"),
+            Ok("false".into()),
+            "armed, and no build filled"
+        );
+        let refused = lua
+            .run(
+                "return tpf3mp_native.terrain({ x0 = 0, y0 = 0, width = 2, height = 1, \
+                 cells = { 1, 2, 3 } })",
+            )
+            .unwrap();
+        assert!(
+            refused.starts_with("nil|") && refused.contains("3 values"),
+            "{refused}"
+        );
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
     }
 
     #[test]

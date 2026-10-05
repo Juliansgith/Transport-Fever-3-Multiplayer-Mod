@@ -7,6 +7,7 @@ pub mod bridge;
 pub mod content;
 pub mod diagnostics;
 mod follower;
+pub mod game_logs;
 pub mod launcher;
 pub mod logs;
 pub mod own_mod;
@@ -295,6 +296,16 @@ pub enum ClientEvent {
     ContentDiff(Option<ContentDiff>),
     /// The server's operator says something to everyone connected.
     Notice(ChatText),
+    /// The room's mods, as its owner declared them, or `None` while it has
+    /// none (protocol 18's `ServerMessage::RoomMods`).
+    RoomMods(Option<Box<tpf3mp_proto::RoomMods>>),
+    /// What another member's build tool shows now, or `None` once it shows
+    /// nothing. Dropped rather than queued when events are not taken fast
+    /// enough: another comes within seconds.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
     /// The connection ended.
     Closed(quinn::ConnectionError),
 }
@@ -470,7 +481,14 @@ async fn over_udp(options: &ConnectOptions) -> Result<Opened, ConnectError> {
     } else {
         (Ipv4Addr::UNSPECIFIED, 0).into()
     };
-    let mut endpoint = quinn::Endpoint::client(local)?;
+    // Through tpf3mp_net::udp, which falls back to a plain socket where the
+    // network stack refuses quinn's socket options (Wine and Proton).
+    let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        None,
+        tpf3mp_net::udp::bind(local)?,
+        Arc::new(quinn::TokioRuntime),
+    )?;
     endpoint.set_default_client_config(client_config(options.trust.clone())?);
     let connection = endpoint
         .connect(options.server, &options.server_name)?
@@ -698,6 +716,21 @@ impl Client {
         self.done(Request::DeclareContent(content)).await
     }
 
+    /// Declares what this player's game runs, or as the room's owner, that
+    /// and the room's mods ([`picker::Declaration`]).
+    pub async fn declare(&self, declaration: picker::Declaration) -> Result<(), ClientError> {
+        self.done(declaration.request()).await
+    }
+
+    /// The room's owner declares what their game runs and the room's mods,
+    /// together: for this connection, and to the room it owns.
+    pub async fn declare_room(
+        &self,
+        declaration: tpf3mp_proto::RoomDeclaration,
+    ) -> Result<(), ClientError> {
+        self.done(Request::DeclareRoom(Box::new(declaration))).await
+    }
+
     pub async fn start_game(&self) -> Result<(), ClientError> {
         self.done(Request::StartGame).await
     }
@@ -739,6 +772,12 @@ impl Client {
             secret,
         })
         .await
+    }
+
+    /// Shows the room's other members what this player's build tool shows
+    /// now, an action's payload, or that it shows nothing.
+    pub async fn send_preview(&self, preview: Option<Payload>) -> Result<(), ClientError> {
+        self.send(GameMessage::Preview(preview)).await
     }
 
     /// Tells the room where this player's game is with its world while it
@@ -913,6 +952,15 @@ async fn read_control(
             ServerMessage::Chat { from, text } => ClientEvent::Chat { from, text },
             ServerMessage::ContentDiff(diff) => ClientEvent::ContentDiff(diff),
             ServerMessage::Notice(text) => ClientEvent::Notice(text),
+            ServerMessage::RoomMods(room) => ClientEvent::RoomMods(room),
+            ServerMessage::Preview { from, preview } => {
+                // Advisory: never a reason to stop reading the control
+                // stream, which carries the responses.
+                match events.try_send((ClientEvent::Preview { from, preview }, None)) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => continue,
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
             ServerMessage::Welcome(_) | ServerMessage::Reject(_) => {
                 connection.close(close::PROTOCOL_VIOLATION, b"unexpected handshake message");
                 break;

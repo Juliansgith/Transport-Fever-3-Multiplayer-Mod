@@ -25,7 +25,9 @@ pub fn lua(world: &WorldModel, config: &Config) -> String {
          -- edit. The added size rows, in the order the size dropdown shows them,\n\
          -- and the shape each ratio gives them, in tiles (x, y); false where the\n\
          -- settings cannot build that shape. peakMb: generation's expected peak\n\
-         -- memory for the row's largest shape, in MB, the game's own included.\n\
+         -- memory for the row's largest shape, in MB, the game's own included;\n\
+         -- PROVISIONAL until Stage 0 measures it (the law is in\n\
+         -- crates/tpf3mp-bigmap/src/memory_gate.rs).\n\
          return {\n",
     );
     for row in config.rows(world) {

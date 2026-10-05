@@ -22,8 +22,10 @@
 -- buy, run lines, borrow, rename and recolour it; its head (the player who
 -- founded it while they play for it, else the one who has played for it
 -- longest) alone gives it a password or takes it away, sends a player out of
--- it and opens or closes its stations to other companies' lines. Joining a
--- company with a password needs it: the room seals the password the player
+-- it and opens or closes its stations to other companies' lines: by default,
+-- and for single companies on their own (`StationAccess`), per company
+-- rather than per player, as a company's players share everything it owns.
+-- Joining a company with a password needs it: the room seals the password the player
 -- typed (tpf3mp_proto::Secret) and every game compares that seal with the
 -- one the company keeps, so no game ever holds the password. The room's
 -- first company is everyone's: it has no head, no password, and its
@@ -33,7 +35,9 @@
 --     next = n,                          -- the next company id
 --     list = { { id =, entity =, name =, color = { r, g, b }, gone = true?,
 --                founder = "<64 hex digits>"?, lock = { scope =, tag = }?,
---                closed = true? }, ... },
+--                closed = true?,          -- the default: stations closed
+--                access = { { company =, open = }, ... }? }, ... },
+--                                        -- its head's choice per company
 --     members = { { player = "<64 hex digits>", company = id }, ... },
 --                                        -- in the order they joined
 --   }
@@ -202,18 +206,40 @@ function companies.locked(c)
 end
 
 -- Whether other companies' lines may stop at company `c`'s stations: yes
--- unless its head closed them.
+-- unless its head closed them. The default, for every company without a
+-- choice of its own (companies.lets).
 function companies.open(c)
 	return not (type(c) == "table" and c.closed == true)
+end
+
+-- Its head's choice for company `other`: true, false, or nil for the
+-- default.
+function companies.choice(c, other)
+	for _, a in ipairs(type(c) == "table" and c.access or {}) do
+		if a.company == other then return a.open end
+	end
+	return nil
+end
+
+-- Whether company `other`'s lines may stop at company `c`'s stations: its
+-- head's choice for `other`, else the default.
+function companies.lets(c, other)
+	local choice = companies.choice(c, other)
+	if choice ~= nil then return choice end
+	return companies.open(c)
 end
 
 -- Who owns `entity` (its PLAYER_OWNED player), or nil: the game's own, or
 -- no one's.
 function companies.ownerOf(api, entity)
 	if type(entity) ~= "number" or entity < 0 then return nil end
-	local ok, c = pcall(api.engine.getComponent, entity, api.type.ComponentType.PLAYER_OWNED)
-	if not ok or type(c) ~= "table" then return nil end
-	local owner = c.player
+	-- Native components are userdata on build 40408, while fixtures use
+	-- tables. Read the field through the binding instead of discarding it.
+	local ok, owner = pcall(function()
+		local c = api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED)
+		return c and c.player
+	end)
+	if not ok then return nil end
 	if type(owner) ~= "number" or owner < 0 then return nil end
 	return owner
 end
@@ -389,6 +415,96 @@ function companies.ownership(roster, api)
 	return table.concat(out, "; ")
 end
 
+-- What a headquarters gives, and to whom (docs/HOOKS.md, "Headquarters").
+-- Build 40408 keeps no headquarters bonus per company: the game's town
+-- script (game_mechanics/towns/towns.script.tl, updateConstructions, every
+-- 20 updates) sums the `town_growth` instance metadata of every
+-- construction in the world, whoever owns it, onto the town closest to it
+-- (landmarks/landmark_util.tl, collectTownGrowthMetadata), and that town's
+-- experience grows by that much more (town_util.getXpFactor: 1 +
+-- xpIncrease). A headquarters carries xp +5% itself and +1% for each
+-- medium wing, and reputation recovery +1% for each large wing
+-- (landmarks/hq/headquarter.script.tl, headquarter_addon.script.tl, the
+-- modules' metadata). So each company's headquarters already gives its
+-- town what a single player's gives, in every game alike; the mod adds
+-- nothing to it. Its PLAYER `headquarters` the engine sets for the
+-- proposal's `playerEntity` (apply_proposal.cpp, "ce.playerEntity !=
+-- ecs::Entity()"), which only the GUI reads: the capital badge, the
+-- "Headquarters" tooltip and selection.
+companies.TOWN_SCRIPT = "::/game_mechanics/towns/town.gs"
+
+local function number(v)
+	if type(v) ~= "number" then return 0 end
+	return v
+end
+
+-- For hook.log, read only: one line per live company whose PLAYER names a
+-- headquarters, saying which construction it is and who owns it, the town
+-- it is closest to, the bonus on it, and the bonus the game's town script
+-- applies to that town. Bounded work that never waits: at most
+-- `REPORT_MAX` companies, a few engine reads each, no pass over the world's
+-- constructions, and nothing at all read while no company has one; every
+-- read in a pcall. Nil and why where the roster is not readable.
+companies.REPORT_MAX = 8
+function companies.headquartersReport(roster, api)
+	if type(roster) ~= "table" or type(roster.list) ~= "table" then return nil, "no roster" end
+	local found = {}
+	for _, c in ipairs(companies.live(roster)) do
+		if #found >= companies.REPORT_MAX then break end
+		local hq = nil
+		pcall(function()
+			local p = api.engine.getComponent(c.entity, api.type.ComponentType.PLAYER)
+			hq = p and p.headquarters
+		end)
+		if type(hq) == "number" and hq >= 0 then found[#found + 1] = { c = c, hq = hq } end
+	end
+	local out = {}
+	if #found == 0 then return out end
+	local towns = nil
+	pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.TOWN_SCRIPT)
+		if type(entity) ~= "number" or entity < 0 then return end
+		local script = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		towns = script and script.state and script.state.townStates
+	end)
+	for _, f in ipairs(found) do
+		local c, hq = f.c, f.hq
+		local owner, town, name, xp, recovery, built = nil, nil, nil, 0, 0, false
+		pcall(function() owner = companies.ownerOf(api, hq) end)
+		pcall(function()
+			local con = api.engine.getComponent(hq, api.type.ComponentType.CONSTRUCTION)
+			if not con then return end
+			built = true
+			local growth = con.persistentMetadata and con.persistentMetadata.town_growth
+			if growth then xp, recovery = number(growth.xpIncrease), number(growth.reputationRecoveryBoost) end
+		end)
+		if built then
+			pcall(function()
+				local t = api.engine.system.streetConnectorSystem.getConstructionClosestTown(hq)
+				if type(t) == "number" and t >= 0 then town = t end
+			end)
+		end
+		if town then pcall(function() name = api.engine.util.getEntityName(town) end) end
+		local applied = "the game's town script has no state for that town"
+		if town and type(towns) == "table" then
+			for k = 1, math.min(#towns, 4096) do
+				local t = towns[k]
+				local te = type(t) == "table" and t.townEntity
+				if type(te) == "table" and te.entity == town and type(t.constructionBoni) == "table" then
+					applied = string.format("the game's town script applies xp +%.2f, reputation recovery +%.2f there",
+						number(t.constructionBoni.xpIncrease), number(t.constructionBoni.reputationRecoveryBoost))
+					break
+				end
+			end
+		end
+		out[#out + 1] = string.format("%s #%s: headquarters %s (%s), owned by %s; closest town %s%s: "
+			.. "on it xp +%.2f, reputation recovery +%.2f; %s",
+			tostring(c.name), tostring(c.id), tostring(hq), built and "a construction" or "no construction",
+			tostring(owner), tostring(town), name and (" (" .. tostring(name) .. ")") or "", xp, recovery, applied)
+	end
+	return out
+end
+
 -- Whether `company` (a player entity) may change `entity`: what no company
 -- owns, and what it owns itself. Else false and why, naming the owner.
 function companies.mayTouch(roster, company, entity, api, what)
@@ -397,6 +513,19 @@ function companies.mayTouch(roster, company, entity, api, what)
 	local other = roster and companies.byEntity(roster, owner)
 	local name = other and other.name or "another company"
 	return false, "the " .. (what or "thing") .. " belongs to " .. name
+end
+
+-- A company's vehicles use its own depots (DECISIONS.md, D22 station-access
+-- decision). Unlike mayTouch, a depot with no readable owner is not usable in
+-- a multi-company room: do not let a missing PLAYER_OWNED component turn into
+-- permission. With one company, keep the game's native purchase behavior.
+function companies.mayBuyAtDepot(roster, company, depot, api)
+	if not companies.painting(roster) then return true end
+	local owner = companies.ownerOf(api, depot)
+	if owner == company then return true end
+	if owner == nil then return false, "the depot has no company owner" end
+	local other = roster and companies.byEntity(roster, owner)
+	return false, "the depot belongs to " .. (other and other.name or "another company")
 end
 
 -- Whether `company` (a player entity) may have its lines stop at the
@@ -408,10 +537,90 @@ function companies.mayUse(roster, company, group, api)
 	local owner = companies.ownerOf(api, group)
 	if owner == nil or owner == company then return true end
 	local other = roster and companies.byEntity(roster, owner)
-	if other and not companies.open(other) then
+	local mine = roster and companies.byEntity(roster, company)
+	if other and not companies.lets(other, mine and mine.id) then
+		if mine and companies.choice(other, mine.id) == false then
+			return false, "the station belongs to " .. other.name .. ", which keeps its stations from " .. mine.name
+		end
 		return false, "the station belongs to " .. other.name .. ", which keeps its stations to itself"
 	end
 	return true
+end
+
+-- The line manager runs in more than one GUI Lua state. Install the same
+-- station predicate in each state's entity_util, including the HUD state.
+-- Resolve the company from the room roster; native GUI ownership can still
+-- refer to the save's original player. Never extend this to depots/assets.
+local stationUtilities = setmetatable({}, { __mode = "k" })
+local stationSelections = setmetatable({}, { __mode = "k" })
+function companies.followStations(api, require_, current, inHudState)
+	local changed, seen = 0, {}
+	for _, path in ipairs({ "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }) do
+		local ok, util = pcall(require_, path)
+		if ok and type(util) == "table" and stationUtilities[util] and not seen[util] then
+			changed = changed + 1
+		end
+		if ok and type(util) == "table" and not stationUtilities[util]
+			and type(util.isOwnedByPlayerOrNotOwned) == "function" then
+			local original = util.isOwnedByPlayerOrNotOwned
+			util.isOwnedByPlayerOrNotOwned = function(entity, ...)
+				local roster, me = current()
+				if roster and me then
+					local known, station = pcall(function()
+						local CT = api.type.ComponentType
+						if api.engine.getComponent(entity, CT.STATION_GROUP) ~= nil then return true end
+						local c = api.engine.getComponent(entity, CT.CONSTRUCTION)
+						return c ~= nil and c.stations ~= nil and #c.stations > 0
+					end)
+					if known and station then
+						local mine = companies.of(roster, me)
+						if not mine or not mine.entity then return false end
+						return companies.mayUse(roster, mine.entity, entity, api)
+					end
+				end
+				return original(entity, ...)
+			end
+			stationUtilities[util] = true
+			changed = changed + 1
+		end
+		if ok and type(util) == "table" then seen[util] = true end
+	end
+	-- line_util loads React's builtin recipes. Only the HUD state has that
+	-- registry; requiring it from the game-script GUI produces native errors.
+	if not inHudState then return changed end
+	-- Build 40408's native selector can return a STATION entity with
+	-- TransportNetworkEdge details for a station built by another engine
+	-- player. The line manager then treats even our own company's station as
+	-- a waypoint. Recover the ordinary station details from that entity;
+	-- leave genuine network edges and detailed terminal selections alone.
+	local ok, line = pcall(require_, "/gui/line_vehicle_mgmt/line_util.tl")
+	if ok and type(line) == "table" and not stationSelections[line]
+		and type(line.convertDetails) == "function" then
+		local original = line.convertDetails
+		line.convertDetails = function(entity, details)
+			local converted = original(entity, details)
+			local roster, me = current()
+			if roster and me and converted and converted.transportNetworkEdge then
+				local read, group = pcall(function()
+					local CT = api.type.ComponentType
+					if api.engine.getComponent(entity, CT.STATION_GROUP) then return entity end
+					if api.engine.getComponent(entity, CT.STATION) then
+						return api.engine.system.stationGroupSystem.getStationGroup(entity)
+					end
+				end)
+				if read and type(group) == "number" and group >= 0 then
+					local mine = companies.of(roster, me)
+					if not mine or not mine.entity or not companies.mayUse(roster, mine.entity, group, api) then
+						return nil
+					end
+					return original(entity, nil)
+				end
+			end
+			return converted
+		end
+		stationSelections[line] = true
+	end
+	return changed
 end
 
 -- Whether anything is owned by the player entity `entity`; nil when this
@@ -534,6 +743,12 @@ function companies.markerClass(index)
 	return "tpf3mp-company-" .. tostring(index)
 end
 
+-- The style class of the town label of a capital in palette colour
+-- `index` (tpf3mp/capitals.lua; gui/tpf3mp/tpf3mp.css.lua).
+function companies.capitalClass(index)
+	return "tpf3mp-capital-" .. tostring(index)
+end
+
 -- The mod's game script, by the names the game gives it: game scripts are
 -- entities, named by their file (the game's loan window finds the loan
 -- script so).
@@ -588,6 +803,132 @@ end
 --                      paid =, rate = (a month), payment = }, ... }
 --   roster.nextLoan = n
 --   roster.month = the last month whose payments were booked
+--   roster.loanOffers = { { company = id, availableLoans = { Loan, ... } }, ... }
+
+companies.LOAN_SCRIPT = "::/game_mechanics/finance/loan.gs"
+
+local function loanState(api)
+	local ok, state = pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.LOAN_SCRIPT)
+		if type(entity) ~= "number" or entity < 0 then return nil end
+		local component = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		return component and component.state
+	end)
+	return ok and type(state) == "table" and state or nil
+end
+
+local function copyOffer(offer)
+	if type(offer) ~= "table" then return nil end
+	local out = {}
+	for key, value in pairs(offer) do out[key] = value end
+	return out
+end
+
+local function loanOfferGroup(roster, id)
+	for _, group in ipairs(type(roster) == "table" and roster.loanOffers or {}) do
+		if type(group) == "table" and group.company == id then return group end
+	end
+	return nil
+end
+
+local function createLoan(api, kind)
+	if type(ug_require) ~= "function" or type(kind) ~= "string" then return nil end
+	local ok, util = pcall(ug_require, "::/game_mechanics/finance/loan_util.tl")
+	if not ok or type(util) ~= "table" then return nil end
+	local make = util["create" .. kind .. "Loan"]
+	if type(make) ~= "function" then return nil end
+	ok, util = pcall(make)
+	if not ok or type(util) ~= "table" or util.type ~= kind or type(util.amount) ~= "number"
+		or type(util.duration) ~= "number" or type(util.percentage) ~= "number" then return nil end
+	return copyOffer(util)
+end
+
+-- A founded company starts with its own copy of the native loan offers. A
+-- native cooldown belongs only to the save's player, so draw a fresh offer
+-- of that kind from the game's utility, as the native loan update does.
+-- Called from the ordered simulation update, where the room has seeded
+-- math.random identically in every game.
+local function seedLoanOffers(roster, id, api)
+	if id == 0 or loanOfferGroup(roster, id) then return loanOfferGroup(roster, id) end
+	local real = loanState(api)
+	if type(real) ~= "table" or type(real.availableLoans) ~= "table" then return nil end
+	local offers = {}
+	for i, source in ipairs(real.availableLoans) do
+		local offer = copyOffer(source)
+		if offer and offer.cooldownUntil ~= nil then
+			offer = createLoan(api, offer.type) or offer
+		end
+		if offer then offers[i] = offer end
+	end
+	if #offers == 0 then return nil end
+	roster.loanOffers = roster.loanOffers or {}
+	local group = { company = id, availableLoans = offers }
+	roster.loanOffers[#roster.loanOffers + 1] = group
+	return group
+end
+
+-- Seed companies on the simulation side, including a roster saved before
+-- company offers became persistent. GUI reads never mutate the roster.
+function companies.ensureLoanOffers(roster, api)
+	if type(roster) ~= "table" then return false end
+	local changed = false
+	for _, c in ipairs(companies.live(roster)) do
+		if c.id ~= 0 and not loanOfferGroup(roster, c.id) then
+			if seedLoanOffers(roster, c.id, api) then changed = true end
+		end
+	end
+	return changed
+end
+
+-- Keep the simulation update alive when an old roster needs its offers
+-- initialized, or when one of its independent cooldowns expires.
+function companies.loanOffersNeedInit(roster, api)
+	local real = loanState(api)
+	if type(roster) ~= "table" or type(real) ~= "table" or type(real.availableLoans) ~= "table" then return false end
+	for _, c in ipairs(companies.live(roster)) do
+		if c.id ~= 0 and not loanOfferGroup(roster, c.id) then return true end
+	end
+	return false
+end
+
+local function gameTimeNow(api)
+	local ok, gameTime = pcall(function()
+		local world = api.engine.util.getWorld()
+		local time = api.engine.getComponent(world, api.type.ComponentType.GAME_TIME)
+		return time and time.gameTime
+	end)
+	return ok and type(gameTime) == "number" and gameTime or nil
+end
+
+function companies.loanOffersDue(roster, api)
+	local now = gameTimeNow(api)
+	if now == nil then return false end
+	for _, group in ipairs(type(roster) == "table" and roster.loanOffers or {}) do
+		for _, offer in ipairs(type(group) == "table" and group.availableLoans or {}) do
+			if type(offer) == "table" and type(offer.cooldownUntil) == "number" and offer.cooldownUntil < now then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function companies.refreshLoanOffers(roster, api)
+	local now = gameTimeNow(api)
+	if now == nil then return false, "this game does not say what time it is" end
+	local changed = false
+	for _, group in ipairs(type(roster) == "table" and roster.loanOffers or {}) do
+		for i, offer in ipairs(type(group) == "table" and group.availableLoans or {}) do
+			if type(offer) == "table" and type(offer.cooldownUntil) == "number" and offer.cooldownUntil < now then
+				local fresh = createLoan(api, offer.type)
+				if not fresh then return false, "the game's loan utility cannot replace a cooled-down offer" end
+				group.availableLoans[i] = fresh
+				changed = true
+			end
+		end
+	end
+	return changed
+end
 
 -- The month of the game's calendar now, counted from the game's start; nil
 -- where the game does not say.
@@ -633,25 +974,79 @@ function companies.loansOf(roster, id)
 	return out
 end
 
--- Company `id` takes the loan `terms` (the loan script's own: amount, the
--- duration in the game's milliseconds, the interest a year as a fraction).
-function companies.borrow(roster, id, terms, send, api)
+-- The most loans a company has at once, as the game's loan script allows
+-- (loan_util.tl, maximalObtainableLoans).
+companies.MAX_LOANS = 4
+
+-- The loan script's state (LoanTable, loan.d.tl) as the game's finance
+-- window should show it to a player of company `id`, not the room's first:
+-- the company's persisted offers and loans, each by its room id and amount,
+-- which its Repay sends back (companies.repay). The first company continues
+-- to use the game's own loan state. `monthLength` is the game's.
+function companies.loanTable(roster, id, real, monthLength, fresh)
+	local offers = {}
+	local group = id ~= 0 and loanOfferGroup(roster, id) or nil
+	local source = group and group.availableLoans
+	if not group and id == 0 then source = type(real) == "table" and real.availableLoans end
+	for _, offer in ipairs(type(source) == "table" and source or {}) do
+		local copyOfOffer = copyOffer(offer)
+		if copyOfOffer then offers[#offers + 1] = copyOfOffer end
+	end
+	local obtained = {}
+	for _, loan in ipairs(type(roster) == "table" and companies.loansOf(roster, id) or {}) do
+		obtained[#obtained + 1] = { type = loan.type or "Custom", amount = loan.amount,
+			duration = loan.months * monthLength, percentage = loan.rate * 12,
+			timesPaid = loan.paid, id = loan.id }
+	end
+	return { availableLoans = offers, obtainedLoans = obtained, freeId = type(roster) == "table" and roster.nextLoan or 1 }
+end
+
+local function sameOffer(offer, terms)
+	return type(offer) == "table" and type(terms) == "table"
+		and offer.type == terms.type and offer.amount == terms.amount
+		and offer.duration == terms.duration and offer.percentage == terms.percentage
+end
+
+-- Company `id` takes an exact offer in its own slot. `next` is the fresh
+-- loan the native finance window draws before clicking; like loan.script.tl,
+-- only its type identifies the slot that goes on cooldown.
+function companies.borrow(roster, id, terms, nextTerms, send, api)
 	local c = companies.find(roster, id)
 	if not c or c.gone then return false, "there is no such company" end
-	local amount = type(terms) == "table" and tonumber(terms.amount)
-	local duration = type(terms) == "table" and tonumber(terms.duration)
-	local percentage = type(terms) == "table" and tonumber(terms.percentage) or 0
-	if not amount or amount <= 0 or not duration or duration <= 0 then return false, "a loan needs an amount and a duration" end
+	if #companies.loansOf(roster, id) >= companies.MAX_LOANS then
+		return false, c.name .. " has " .. companies.MAX_LOANS .. " loans already"
+	end
+	local state = loanOfferGroup(roster, id) or seedLoanOffers(roster, id, api)
+	if not state or type(state.availableLoans) ~= "table" then return false, "this company's loan offers are not available" end
+	if type(terms) ~= "table" or type(terms.type) ~= "string" or type(terms.amount) ~= "number"
+		or type(terms.duration) ~= "number" or type(terms.percentage) ~= "number" then
+		return false, "a loan needs a current offered term"
+	end
+	if type(nextTerms) ~= "table" or nextTerms.type ~= terms.type then
+		return false, "the replacement must match the offered loan type"
+	end
+	local slot
+	for i, offer in ipairs(state.availableLoans) do
+		if sameOffer(offer, terms) and offer.cooldownUntil == nil then slot = i break end
+	end
+	if not slot then return false, "that loan offer is no longer available" end
 	local length = monthLength(api)
 	if not length then return false, "this game does not say how long a month is" end
+	local amount, duration, percentage = terms.amount, terms.duration, terms.percentage
+	if amount <= 0 or duration <= 0 or percentage < 0 then return false, "the offered loan terms are invalid" end
 	local months = math.max(1, math.floor(duration / length + 0.5))
-	local rate = math.max(0, percentage) / 12
-	amount = math.floor(amount)
+	local rate = percentage / 12
+	local now = gameTimeNow(api)
+	if now == nil then return false, "this game does not say what time it is" end
+	local minCooldown, maxCooldown = length * 4, length * 8
+	if maxCooldown > 2147483647 then return false, "this game's loan cooldown is out of range" end
+	local cooldown = math.random(minCooldown, maxCooldown)
 	book(api, send, c.entity, amount, "LOAN")
+	state.availableLoans[slot] = { type = terms.type, cooldownUntil = now + cooldown }
 	roster.loans = roster.loans or {}
 	roster.nextLoan = (roster.nextLoan or 1)
 	roster.loans[#roster.loans + 1] = { id = roster.nextLoan, company = id, amount = amount, remaining = amount,
-		months = months, paid = 0, rate = rate, payment = annuity(amount, rate, months) }
+		months = months, paid = 0, rate = rate, payment = annuity(amount, rate, months), type = terms.type }
 	roster.nextLoan = roster.nextLoan + 1
 	roster.month = roster.month or companies.monthNow(api)
 	return true
@@ -717,9 +1112,11 @@ end
 -- ------------------------------------------------------------- subsidies
 --
 -- The game's subsidy script (::/game_mechanics/subventions/subventions.gs,
--- build 40408's subventions.script.tl) draws the offers in every game alike:
--- in its update, from the world and the game time, its math.random reseeded
--- per call by the hook (docs/HOOKS.md, "Seeds, as built"). It keeps them in
+-- build 40408's subventions.script.tl) draws the offers in its update, from
+-- the world and the game time, its math.random reseeded per call by the hook
+-- (docs/HOOKS.md, "Seeds, as built"): alike in every game only while their
+-- worlds and game times agree at every room step, which the economy lane
+-- checks (tpf3mp/lanes.lua, tpf3mp/subsidies.lua). It keeps them in
 -- its state, offered (`proposedSubventions`), taken (`activeSubventions`),
 -- completed and failed, each by its number (`uid`) and its kind (`id`, the
 -- subsidy resource). Accepting moves an offer to the taken and books its
@@ -732,7 +1129,8 @@ end
 -- moves what the script booked to the first company on to the company that
 -- took it, as SUBSIDY journal entries (the first company's books show the
 -- money in and out again, so they net to nothing), at accepting and when the
--- script completes or fails it, at the same update in every game.
+-- script completes or fails it, at the same update in every game. Only the
+-- taker's transport counts towards it (tpf3mp/subsidies.lua).
 --
 --   roster.subsidies = { { uid =, kind =, company =, state = "taken" |
 --                          "completed" }, ... }
@@ -887,8 +1285,11 @@ end
 -- Settles the subsidies the room keeps against the script's `state`: a
 -- subsidy another company took that the script completed has its reward
 -- moved on to that company, one that failed its penalty; one the script no
--- longer has, or one settled for good, is forgotten. Returns what it did,
--- as lines for the log.
+-- longer has, or one settled for good, is forgotten. A taker that is gone
+-- (dissolved) gets nothing and pays nothing: the first company gives back
+-- the reward, or gets back the penalty, the script booked to it, so it
+-- ends with nothing of a subsidy it did not take. Returns what it did, as
+-- lines for the log.
 function companies.settleSubsidies(roster, state, day, send, api)
 	if not acceptance.subsidies then return end
 	local said, kept = {}, {}
@@ -898,17 +1299,34 @@ function companies.settleSubsidies(roster, state, day, send, api)
 		local where, s = companies.findSubsidy(state, r.uid)
 		local c = companies.find(roster, r.company)
 		local keep = s ~= nil and s.id == r.kind and where ~= "failed"
-		if s ~= nil and s.id == r.kind and c and not c.gone and c.id ~= 0 and r.state == "taken" then
+		if s ~= nil and s.id == r.kind and c and c.id ~= 0 and r.state == "taken" then
 			local data = type(s.data) == "table" and s.data or {}
+			local first = companies.find(roster, 0)
 			if where == "completed" then
 				local amount = companies.subsidyMoney(data.complete)
-				moveSubsidy(roster, c, amount, send, api)
 				r.state = "completed"
-				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+				if not c.gone then
+					moveSubsidy(roster, c, amount, send, api)
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+				elseif first and amount ~= 0 then
+					-- Its taker is gone: the reward is no one's, and the
+					-- first company gives back what the script booked it.
+					book(api, send, first.entity, -amount, "SUBSIDY")
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name
+						.. ", gone: its reward of " .. amount .. " is no one's"
+				end
 			elseif where == "failed" then
 				local amount = companies.subsidyMoney(data.failure)
-				moveSubsidy(roster, c, -amount, send, api)
-				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+				if not c.gone then
+					moveSubsidy(roster, c, -amount, send, api)
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+				elseif first and amount ~= 0 then
+					-- Its taker is gone: no one pays its penalty, and the
+					-- first company gets back what the script charged it.
+					book(api, send, first.entity, amount, "SUBSIDY")
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name
+						.. ", gone: its penalty of " .. amount .. " is no one's"
+				end
 			end
 		end
 		-- Completed, it stays the company's in the script for years: kept
@@ -942,6 +1360,7 @@ function companies.run(roster, player, op, send, api, seal)
 		roster.next = id + 1
 		roster.list[#roster.list + 1] = { id = id, entity = entity, name = name, color = color, founder = player }
 		setMember(roster, player, id)
+		companies.ensureLoanOffers(roster, api)
 		return true, nil, id
 	elseif kind == "Join" then
 		local c = companies.find(roster, body)
@@ -1027,6 +1446,24 @@ function companies.run(roster, player, op, send, api, seal)
 		local ok, why = headOf(roster, player, c, body.open and "opens the stations of" or "closes the stations of")
 		if not ok then return false, why end
 		c.closed = (not body.open) or nil
+		return true, nil, c.id
+	elseif kind == "StationAccess" then
+		-- Its head's choice for one other company, over the default; nil
+		-- leaves that company to the default again.
+		local c = type(body) == "table" and companies.find(roster, body.company)
+		if not c or c.gone then return false, "there is no such company" end
+		if body.open ~= nil and type(body.open) ~= "boolean" then return false, "stations are open or not" end
+		local ok, why = headOf(roster, player, c, "decides whose lines stop at the stations of")
+		if not ok then return false, why end
+		local other = companies.find(roster, body.other)
+		if not other or other.gone then return false, "there is no company " .. tostring(body.other) end
+		if other.id == c.id then return false, c.name .. "'s stations are always its own" end
+		local kept = {}
+		for _, a in ipairs(c.access or {}) do
+			if a.company ~= other.id then kept[#kept + 1] = a end
+		end
+		if body.open ~= nil then kept[#kept + 1] = { company = other.id, open = body.open } end
+		c.access = #kept > 0 and kept or nil
 		return true, nil, c.id
 	end
 	return false, "a company operation of no kind"

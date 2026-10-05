@@ -79,6 +79,7 @@ pub const ROOM_CARRIED: &[&str] = &[
     "makeLineDestroyCmd",
     "makeLineUpdateCmd",
     "makeScriptingSendEventCmd",
+    "makeTownBuildingSetBlockedDevelopmentCmd",
     "makeVehicleBuyCmd",
     "makeVehicleReplaceCmd",
     "makeVehicleReverseCmd",

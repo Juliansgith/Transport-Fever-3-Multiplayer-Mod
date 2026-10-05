@@ -35,22 +35,40 @@ use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 
 pub mod at_menu;
 pub mod autoload;
+pub mod build_data;
 pub mod builds;
 pub mod clipboard;
+pub mod drawing;
+pub mod edgewatch;
+pub mod guiplayer;
 pub mod image;
 mod install;
 pub mod junctions;
 pub mod lanedump;
+pub mod lanehash;
 pub mod log;
 pub mod lua;
 pub mod menu;
 pub mod modules;
+pub mod network;
 pub mod order;
 pub mod perf;
+pub mod persons;
 mod platform;
+pub mod previewcancel;
+pub mod previews;
+pub mod probe;
+pub mod roadtrace;
 pub mod seeds;
 pub mod step;
+pub mod steptrace;
+pub mod stoptool;
+pub mod streettrace;
+pub mod terrain;
 pub mod ticks;
+pub mod toolplayer;
+pub mod townfield;
+pub mod towntrace;
 pub mod worlds;
 
 /// The lobby as the main menu's Multiplayer window sees it (docs/LOBBY.md).
@@ -99,15 +117,10 @@ pub fn bootstrap() {
                 profile.targets.len(),
                 profiles.len()
             ));
-            // The main menu's Multiplayer entry first, and then the game may
-            // run: it loads its main menu soon after it starts, and a menu
-            // loaded before the entry is armed stays the game's own (seen
-            // 2026-09-30, when the slower installs below came first). The
-            // entry stands on its own: without the step gate it still
-            // opens, and says the launcher is not answering; without its
-            // own targets the menu is the game's.
+            // Arm the menu entry and every native hook while the game's main
+            // thread is suspended. RegisterAppUsertypes must not run before
+            // the world-loading hook can capture the menu's Lua state.
             install_menu(&profiles, &mut log, data_dir.as_deref());
-            ready.signal(&mut log);
             match install::install(&profile, &link_name, Logger::open(data_dir.as_deref())) {
                 install::Installed::Yes { step_rva } => log.line(&format!(
                     "step gate installed on {} at {step_rva:#x}; the session is attached to {link_name:?}",
@@ -124,6 +137,7 @@ pub fn bootstrap() {
     }
 
     log.line("hook bootstrap complete");
+    ready.signal(&mut log);
 }
 
 /// Arms the main-menu Multiplayer entry (docs/LOBBY.md) from the matched
@@ -212,15 +226,12 @@ fn resolve_build(log: &mut Logger, data_dir: Option<&Path>) -> BuildOutcome {
         }
     }
 
-    match select_profile(&profiles, &identity) {
-        Some(profile) => BuildOutcome::Matched {
+    match select_native_profile(&profiles, &identity) {
+        Ok(profile) => BuildOutcome::Matched {
             profile: profile.clone(),
             profiles: matching_profiles(&profiles, &identity),
         },
-        None => BuildOutcome::FailedClosed(format!(
-            "no profile in {:?} or built in matches build {}",
-            profiles_dir, identity.sha256
-        )),
+        Err(reason) => BuildOutcome::FailedClosed(reason),
     }
 }
 
@@ -241,12 +252,9 @@ pub struct LoadedProfile {
 
 /// The profiles this release was built with, from the repository's
 /// `profiles/` folder: the game builds it can hook without a profile file.
-/// A new game build needs a new profile, and so a new release (DAY_ONE.md,
-/// patch duty).
-pub const BUILT_IN_PROFILES: &[(&str, &str)] = &[(
-    "tf3_build40408_steam_windows.toml",
-    include_str!("../../../profiles/tf3_build40408_steam_windows.toml"),
-)];
+/// A new game build needs a reviewed profile and native data bundle, and so
+/// a new release (DAY_ONE.md, patch duty).
+pub use build_data::BUILT_IN_PROFILES;
 
 /// [`BUILT_IN_PROFILES`], parsed, each under the path `built-in/<file>`.
 pub fn built_in_profiles() -> Vec<LoadedProfile> {
@@ -259,19 +267,16 @@ pub fn built_in_profiles() -> Vec<LoadedProfile> {
         .collect()
 }
 
-/// Reads and parses every `*.toml` in `dir`. Missing directory yields an empty
-/// list; unreadable or malformed files are kept as `Err` so they can be logged.
+/// Reads flat `*.toml` profiles and immediate build directories' `hooks.toml`.
+/// A missing directory yields an empty list; unreadable or malformed profiles
+/// are kept as `Err` so they can be logged.
 pub fn load_profiles(dir: &Path) -> Vec<LoadedProfile> {
     let mut out = Vec::new();
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
+    let paths = match tpf3mp_hookcore::profile::profile_files(dir) {
+        Ok(paths) => paths,
         Err(_) => return out,
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-            continue;
-        }
+    for path in paths {
         let profile = match fs::read_to_string(&path) {
             Ok(text) => Profile::from_toml(&text).map_err(LoadError::Parse),
             Err(error) => Err(LoadError::Read(error.to_string())),
@@ -291,6 +296,20 @@ pub fn select_profile<'a>(
         .iter()
         .filter_map(|loaded| loaded.profile.as_ref().ok())
         .find(|profile| profile.verify_identity(identity).is_ok())
+}
+
+/// Native installation requires the compiled layouts as well as a profile.
+fn select_native_profile<'a>(
+    profiles: &'a [LoadedProfile],
+    identity: &BuildIdentity,
+) -> Result<&'a Profile, String> {
+    build_data::verify_identity(identity)?;
+    select_profile(profiles, identity).ok_or_else(|| {
+        format!(
+            "no profile matches supported native build {}",
+            identity.sha256
+        )
+    })
 }
 
 /// Every profile whose declared build identity matches the running build, in
@@ -570,6 +589,53 @@ prologue = "40 53"
         assert_eq!(
             selected,
             Some("Transport Fever 3 Build 40408 (Steam, Windows x64)")
+        );
+        assert!(select_native_profile(&built_in, &steam_40408).is_ok());
+    }
+
+    #[test]
+    fn bootstrap_selection_refuses_external_profiles_for_another_native_build() {
+        let dir = TempDir::new("unknown-native");
+        let known = Profile::from_toml(build_data::native::PROFILE_TOML)
+            .unwrap()
+            .build;
+        let mut unknown = known.clone();
+        unknown.sha256 = "01".repeat(32);
+        fs::write(
+            dir.0.join("patched.toml"),
+            profile_toml("Patched", &unknown.sha256),
+        )
+        .unwrap();
+        let profiles = load_profiles(&dir.0);
+        assert!(
+            select_profile(&profiles, &unknown).is_some(),
+            "generic signature matching alone would accept this"
+        );
+        assert!(
+            select_native_profile(&profiles, &unknown).is_err(),
+            "bootstrap must refuse the old compiled layouts"
+        );
+        assert!(
+            select_native_profile(&[], &known).is_err(),
+            "a native layout alone is not a profile"
+        );
+    }
+
+    #[test]
+    fn load_profiles_finds_bundles_and_flat_custom_profiles_in_stable_order() {
+        let dir = TempDir::new("bundles");
+        let bundle = dir.0.join("z-build");
+        fs::create_dir(&bundle).unwrap();
+        fs::write(bundle.join("hooks.toml"), profile_toml("Bundled", "bbbb")).unwrap();
+        fs::write(bundle.join("metadata.toml"), "not a profile").unwrap();
+        fs::write(dir.0.join("a-custom.toml"), profile_toml("Custom", "aaaa")).unwrap();
+        let profiles = load_profiles(&dir.0);
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|p| p.profile.as_ref().unwrap().name.as_str())
+                .collect::<Vec<_>>(),
+            ["Custom", "Bundled"]
         );
     }
 

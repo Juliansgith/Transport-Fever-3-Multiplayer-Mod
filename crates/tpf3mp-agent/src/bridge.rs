@@ -31,16 +31,17 @@ use tpf3mp_bridge::{
 };
 use tpf3mp_net::close;
 use tpf3mp_proto::{
-    BoundedVec, ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom,
-    LaneDigest, LoadingStage, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase,
-    RoomView, SavedWorld, SessionId, SnapshotId, Speed, StartSave, Text, WorldOffer,
+    BoundedVec, ChatText, ContentDiff, Event, EventBody, Invite, JoinRoom, LaneDigest,
+    LoadingStage, MAX_PREVIEW, MAX_ROOM_MEMBERS, Payload, PlayerId, Request, RequestError, Resume,
+    RoomPhase, RoomView, SavedWorld, SessionId, SnapshotId, Speed, StartSave, Text, TurnStart,
+    WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
 
 use crate::{
     Action, Client, ClientError, ClientEvent, ConnectOptions, Events, FollowError, Playout,
-    TurnFollower, Worlds, connect, transfer,
+    TurnFollower, Worlds, connect, picker::Declaration, transfer,
 };
 
 /// The agent's end of the link to the hook.
@@ -138,13 +139,18 @@ pub struct BridgeOptions {
 pub type ListsNow = Arc<dyn Fn() -> Option<ModLists> + Send + Sync>;
 /// Takes in how the room says this game differs; returns what to declare
 /// anew, if that changed.
-pub type Learn = Arc<dyn Fn(&ContentDiff) -> Option<ContentManifest> + Send + Sync>;
+pub type Learn = Arc<dyn Fn(&ContentDiff) -> Option<Declaration> + Send + Sync>;
+/// Takes in the room's mods as the room tells them, and whether this player
+/// owns the room now; returns what to declare anew, if that changed.
+pub type Adopt =
+    Arc<dyn Fn(Option<&tpf3mp_proto::RoomMods>, bool) -> Option<Declaration> + Send + Sync>;
 
 /// The launcher's mod picker, as a bridge asks it (`crate::picker::Mods`).
 #[derive(Clone)]
 pub struct PickerLink {
     pub lists: ListsNow,
     pub learn: Learn,
+    pub adopt: Adopt,
 }
 
 impl std::fmt::Debug for PickerLink {
@@ -199,8 +205,11 @@ pub enum Control {
     /// Everyone is asked to get ready again.
     StartWorld {
         start: Option<(PathBuf, StartSave)>,
-        declare: Option<ContentManifest>,
+        declare: Option<Declaration>,
     },
+    /// Declare this anew: the room's owner's new list of the room's mods,
+    /// or this player's content after the mods installed changed.
+    Declare(Declaration),
     /// Leave the room, which ends the session.
     Leave,
     /// The game the front end started has exited. Once its hook attached,
@@ -236,6 +245,8 @@ pub struct Status {
     pub notices: VecDeque<String>,
     /// How this player's game differs from the room's, while it does.
     pub content_diff: Option<ContentDiff>,
+    /// The room's mods, as its owner declared them and the room told them.
+    pub room_mods: Option<tpf3mp_proto::RoomMods>,
     /// The server's name for the current connection, which its log uses:
     /// what a player quotes to the server's operator.
     pub session: Option<SessionId>,
@@ -269,6 +280,7 @@ impl Default for Status {
             chat: VecDeque::new(),
             notices: VecDeque::new(),
             content_diff: None,
+            room_mods: None,
             session: None,
             outdated: false,
             announcement: None,
@@ -346,6 +358,10 @@ fn push_bounded<T>(list: &mut VecDeque<T>, item: T) {
     list.push_back(item);
 }
 
+/// What the player is told when rejoining finds the room gone, in the
+/// launcher's window and the game's Multiplayer window alike.
+pub const ROOM_GONE: &str = "The room is gone (closed or the server restarted)";
+
 #[derive(Debug, Error)]
 pub enum BridgeFault {
     #[error("the link to the hook failed: {0}")]
@@ -362,8 +378,18 @@ pub enum BridgeFault {
     Client(#[from] ClientError),
     #[error("the server broke a turn invariant: {0}")]
     Follow(#[from] FollowError),
-    #[error("lost the server and could not rejoin: {0}")]
+    #[error(
+        "Lost the room and could not rejoin it ({0}); it may be gone (closed or the server restarted)"
+    )]
     Rejoin(String),
+    /// Rejoining found no room: it closed, or the server restarted without
+    /// it. Rejoining stops; the player is back on the server, in no room.
+    #[error("{ROOM_GONE}")]
+    RoomGone,
+    /// The room's world does not run TPF3-MP's mod: loaded, it would hold
+    /// paused for good, without a word.
+    #[error("{}", crate::save_check::WORLD_WITHOUT_OWN_MOD)]
+    WorldWithoutOwnMod,
     #[error("the game loaded its world to run step {got} next, but step {expected} was ordered")]
     LoadedElsewhere { expected: u64, got: u64 },
     #[error("the room sent a world to load, but this agent keeps no worlds")]
@@ -462,6 +488,53 @@ fn file_stamp(file: &Path) -> Option<FileStamp> {
     Some((metadata.len(), metadata.modified().ok()?))
 }
 
+/// The lists a game without the picker (`--mods`) loads the room's world
+/// with: the room's mods and settings as its owner declared them, when it
+/// did, then the player's listed personal mods; the listed ones alone
+/// otherwise. The content check made the listed shared mods the room's,
+/// but not the settings: without the room's, this game would load the
+/// save's while every other game loads the owner's.
+fn told_lists(
+    told: Option<&tpf3mp_proto::RoomMods>,
+    listed: Option<&ModLists>,
+) -> Option<ModLists> {
+    let Some(told) = told else {
+        return listed.cloned();
+    };
+    let shared = told
+        .mods
+        .iter()
+        .map(|m| tpf3mp_bridge::ModName::new(m.id.as_str()).ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some(ModLists {
+        shared: tpf3mp_proto::BoundedVec::new(shared).ok()?,
+        personal: listed
+            .map(|lists| lists.personal.clone())
+            .unwrap_or_default(),
+        params: told.params.clone(),
+    })
+}
+
+/// Most events held after a game's turn stream until the room said its mods
+/// (which it does right after the join): far more than that moment brings.
+const MAX_HELD_EVENTS: usize = 4096;
+
+/// Most bytes held so, far below what the client's turn budget
+/// and the hook's outbox allow a hostile server to make this game hold.
+const MAX_HELD_BYTES: usize = 16 << 20;
+
+/// What any other held event is taken to cost.
+const HELD_EVENT_OVERHEAD: usize = 256;
+
+/// What a held event costs to hold: a turn as the follower weighs one.
+fn held_weight(event: &ClientEvent) -> usize {
+    match event {
+        // As the follower weighs a turn it holds: every event costs.
+        ClientEvent::Turn(turn) => crate::follower::turn_weight(turn),
+        _ => HELD_EVENT_OVERHEAD,
+    }
+}
+
 /// Couples one game's hook to one client.
 pub struct Bridge<L> {
     link: L,
@@ -473,6 +546,11 @@ pub struct Bridge<L> {
     hook_ready: bool,
     begun: bool,
     world: World,
+    /// Every load sent to the hook still awaiting its answer, in send order.
+    /// A server restart can replace a load before its answer arrives.
+    sent_loads: VecDeque<(u64, u64)>,
+    /// Identifies the latest load order even if it starts at the same step.
+    load_generation: u64,
     /// Whether the game has loaded a world since the last load was ordered.
     loaded: bool,
     /// The room's speed as the hook was last told it; none before the
@@ -517,7 +595,7 @@ pub struct Bridge<L> {
     start_held: Option<SnapshotId>,
     /// What to declare to the room before naming the save on its way: the
     /// room's shared mods follow it.
-    start_declare: Option<ContentManifest>,
+    start_declare: Option<Declaration>,
     /// The save told to the room to start from, and its file's size and
     /// time as it was read.
     start_told: Option<(SavedWorld, FileStamp)>,
@@ -542,10 +620,51 @@ pub struct Bridge<L> {
     build: Option<String>,
     /// What this game last declared to the room in the session, when the
     /// picker changed it: declared again on a new connection.
-    declared: Option<ContentManifest>,
+    declared: Option<Declaration>,
+    /// The room's mods and settings as its owner last declared them
+    /// (`RoomMods`), for a game without the picker (`--mods`).
+    told: Option<Box<tpf3mp_proto::RoomMods>>,
+    /// Whether the room said its mods on this session (`RoomMods`, which it
+    /// sends every member once a connection, `None` included), and the
+    /// turn stream that would begin the game held until it has: the lists
+    /// the game begins with carry the room's mods and settings.
+    room_heard: bool,
+    held_stream: Option<TurnStart>,
+    /// What came after that stream until then, taken up in order after it.
+    held_events: VecDeque<ClientEvent>,
+    /// The commands' bytes among them.
+    held_bytes: usize,
+    /// What the hook said while the bridge had no connection, rejoining:
+    /// read so the game's window still reaches the launcher (its Leave
+    /// above all), and taken up first once the room is back.
+    held: VecDeque<Result<ToAgent, BridgeError>>,
 }
 
+/// Most hook messages held while rejoining; past it, the rest wait in the
+/// link, as they did before.
+const MAX_HELD: usize = 4096;
+
 impl<L: HookLink> Bridge<L> {
+    /// A new connection to the room: it is told the room's mods anew, which
+    /// may have changed while this game was away, and what was held for the
+    /// one before goes with it.
+    fn on_new_connection(&mut self) {
+        self.room_heard = false;
+        self.held_stream = None;
+        self.held_events.clear();
+        self.held_bytes = 0;
+    }
+
+    /// The lists this game loads the room's worlds with: the picker's, or
+    /// without it the room's as told (`--mods`); none, and a world loads
+    /// with its save's own mods.
+    fn load_lists(&self) -> Option<ModLists> {
+        match &self.options.picker {
+            Some(picker) => (picker.lists)(),
+            None => told_lists(self.told.as_deref(), self.options.mods.as_ref()),
+        }
+    }
+
     pub fn new(link: L, options: BridgeOptions) -> Self {
         let now = Instant::now();
         let (done_tx, done_rx) = mpsc::unbounded_channel();
@@ -558,6 +677,8 @@ impl<L: HookLink> Bridge<L> {
             hook_ready: false,
             begun: false,
             world: World::Ready,
+            sent_loads: VecDeque::new(),
+            load_generation: 0,
             loaded: false,
             speed: None,
             commands: 0,
@@ -601,6 +722,12 @@ impl<L: HookLink> Bridge<L> {
             options,
             build: None,
             declared: None,
+            told: None,
+            room_heard: false,
+            held_stream: None,
+            held_events: VecDeque::new(),
+            held_bytes: 0,
+            held: VecDeque::new(),
         }
     }
 
@@ -767,9 +894,45 @@ impl<L: HookLink> Bridge<L> {
         Ok(())
     }
 
+    /// The hook's next message: those held while rejoining first.
+    fn next_from_hook(&mut self) -> Result<Option<ToAgent>, BridgeFault> {
+        if let Some(held) = self.held.pop_front() {
+            return Ok(Some(held?));
+        }
+        if !self.link.recv(&mut self.buf)? {
+            return Ok(None);
+        }
+        Ok(Some(decode(&self.buf)?))
+    }
+
+    /// While rejoining: keeps the hook waiting, shows it the launcher's
+    /// lobby, passes the game window's actions to the launcher (a Leave
+    /// among them, which ends the rejoining), and holds everything else
+    /// the hook says for when the room is back.
+    fn away(&mut self) {
+        self.link.heartbeat();
+        while self.held.len() < MAX_HELD {
+            match self.link.recv(&mut self.buf) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    debug!(%error, "reading the hook while rejoining failed");
+                    break;
+                }
+            }
+            match decode::<ToAgent>(&self.buf) {
+                Ok(ToAgent::Lobby(action)) if self.hook_ready => self.lobby_action(action),
+                other => self.held.push_back(other),
+            }
+        }
+        self.lobby_news();
+        if let Err(error) = self.flush() {
+            debug!(%error, "writing to the hook while rejoining failed");
+        }
+    }
+
     async fn read_hook(&mut self, client: &Client) -> Result<(), BridgeFault> {
-        while self.link.recv(&mut self.buf)? {
-            let message: ToAgent = decode(&self.buf)?;
+        while let Some(message) = self.next_from_hook()? {
             if !self.hook_ready && !matches!(message, ToAgent::Hello { .. }) {
                 return Err(BridgeFault::Unexpected("a message before its hello"));
             }
@@ -793,17 +956,10 @@ impl<L: HookLink> Bridge<L> {
                     });
                 }
                 ToAgent::Loaded { next_step } => {
-                    let World::Loading {
-                        next_step: expected,
-                    } = self.world
-                    else {
-                        return Err(BridgeFault::Unexpected("a world nobody ordered"));
-                    };
-                    if next_step != expected {
-                        return Err(BridgeFault::LoadedElsewhere {
-                            expected,
-                            got: next_step,
-                        });
+                    // The hook finishes loads in order. A previous world's
+                    // answer may arrive after rejoining ordered a replacement.
+                    if !self.current_load_ack(next_step)? {
+                        continue;
                     }
                     self.world = World::Ready;
                     self.status(|status| status.world = WorldStatus::Playing);
@@ -840,6 +996,13 @@ impl<L: HookLink> Bridge<L> {
                 ToAgent::MenuUp { menu } => self.menu_up(menu, client),
                 ToAgent::Log { message } => info!(hook = %message),
                 ToAgent::Lobby(action) => self.lobby_action(action),
+                // Advisory and over the size the room relays: not shown.
+                ToAgent::Preview { preview }
+                    if current && preview.as_ref().is_none_or(|p| p.len() <= MAX_PREVIEW) =>
+                {
+                    client.send_preview(preview).await?;
+                }
+                ToAgent::Preview { .. } => {}
             }
         }
         Ok(())
@@ -1058,7 +1221,7 @@ impl<L: HookLink> Bridge<L> {
     fn change_start_world(
         &mut self,
         start: Option<(PathBuf, StartSave)>,
-        declare: Option<ContentManifest>,
+        declare: Option<Declaration>,
         client: &Client,
     ) {
         if self.begun || self.room_phase != Some(RoomPhase::Lobby) {
@@ -1084,13 +1247,18 @@ impl<L: HookLink> Bridge<L> {
         {
             info!(file = %file.display(), "the owner describes the save the room starts from");
             self.options.start_save = Some(save.clone());
-            self.request(
-                client,
-                Request::StartWorld {
-                    world: *told,
-                    save: save.clone(),
-                },
-            );
+            // Its mods or their settings picked anew: the room takes them
+            // before what it shows of the save, in that order.
+            let mut requests = Vec::new();
+            if let Some(declaration) = declare {
+                self.declared = Some(declaration.clone());
+                requests.push(declaration.request());
+            }
+            requests.push(Request::StartWorld {
+                world: *told,
+                save: save.clone(),
+            });
+            self.requests_in_order(client, requests);
             return;
         }
         self.options.start_generated_world = start.is_none();
@@ -1126,7 +1294,7 @@ impl<L: HookLink> Bridge<L> {
                 let attempt = self.start_attempt;
                 tokio::spawn(async move {
                     let declared = match declare {
-                        Some(manifest) => requests.done(Request::DeclareContent(manifest)).await,
+                        Some(declaration) => requests.done(declaration.request()).await,
                         None => Ok(()),
                     };
                     match declared.and(requests.done(Request::ClearStartWorld).await) {
@@ -1274,7 +1442,37 @@ impl<L: HookLink> Bridge<L> {
         event: ClientEvent,
         client: &Client,
     ) -> Result<Option<BridgeEnd>, BridgeFault> {
+        // A held stream's game follows it, never before it: its turns and
+        // what the game is asked. The room's view, its mods, chat, previews
+        // and losing the connection are taken up at once (the room's owner
+        // among them, before its mods are adopted).
+        if self.held_stream.is_some()
+            && matches!(
+                event,
+                ClientEvent::TurnStream(_)
+                    | ClientEvent::Turn(_)
+                    | ClientEvent::Diverged { .. }
+                    | ClientEvent::Upload { .. }
+                    | ClientEvent::IntentRejected { .. }
+            )
+        {
+            self.held_bytes = self.held_bytes.saturating_add(held_weight(&event));
+            if self.held_events.len() >= MAX_HELD_EVENTS || self.held_bytes > MAX_HELD_BYTES {
+                return Err(BridgeFault::Unexpected(
+                    "the room did not say its mods before its game's turns",
+                ));
+            }
+            self.held_events.push_back(event);
+            return Ok(None);
+        }
         match event {
+            ClientEvent::TurnStream(start) if !self.begun && !self.room_heard => {
+                // A game joined while it runs: its stream and the room's
+                // mods come on different streams; the game begins once both
+                // are here.
+                debug!("the room's mods first, then the game begins");
+                self.held_stream = Some(start);
+            }
             ClientEvent::TurnStream(start) => {
                 // A new stream, perhaps on a new connection: tell it where
                 // the game stands.
@@ -1294,10 +1492,7 @@ impl<L: HookLink> Bridge<L> {
                         checkpoint_interval: start.checkpoint_interval,
                         saves: path_text(&saves)?,
                         player: client.player(),
-                        mods: match &self.options.picker {
-                            Some(picker) => (picker.lists)(),
-                            None => self.options.mods.clone(),
-                        },
+                        mods: self.load_lists(),
                     });
                     if let Some(room) = &self.room {
                         self.outbox.push_back(ToHook::Room(room_info(room)));
@@ -1359,6 +1554,13 @@ impl<L: HookLink> Bridge<L> {
                 self.outbox.push_back(ToHook::Diverged { step, lanes });
             }
             ClientEvent::Upload { event, snapshot } => self.upload(event, snapshot, client),
+            ClientEvent::Preview { from, preview } => {
+                // Only to a game that plays the room's world, and only the
+                // latest of each member: one waiting is replaced.
+                if self.begun && self.world == World::Ready {
+                    self.outbox.preview(from, preview);
+                }
+            }
             ClientEvent::Chat { from, text } => {
                 // The game hears chat once its session began; the front end
                 // hears all of it.
@@ -1408,13 +1610,13 @@ impl<L: HookLink> Bridge<L> {
                     .as_ref()
                     .zip(self.options.picker.as_ref())
                     .and_then(|(diff, picker)| (picker.learn)(diff));
-                if let Some(manifest) = again {
+                if let Some(declaration) = again {
                     info!(
-                        mods = manifest.mods.len(),
+                        mods = declaration.manifest().mods.len(),
                         "declaring the room's shared mods this game has"
                     );
-                    self.declared = Some(manifest.clone());
-                    self.request(client, Request::DeclareContent(manifest));
+                    self.declared = Some(declaration.clone());
+                    self.request(client, declaration.request());
                 }
                 self.status(|status| {
                     if let Some(diff) = &diff {
@@ -1422,6 +1624,37 @@ impl<L: HookLink> Bridge<L> {
                     }
                     status.content_diff = diff;
                 });
+            }
+            ClientEvent::RoomMods(room) => {
+                // The room's mods as its owner declared them: the picker
+                // declares those this player has, in the room's order.
+                let again = self.options.picker.as_ref().and_then(|picker| {
+                    // An owner not known yet takes no one's room away.
+                    let owns = self.room_owner.is_none_or(|owner| owner == client.player());
+                    (picker.adopt)(room.as_deref(), owns)
+                });
+                if let Some(declaration) = again {
+                    info!(
+                        mods = declaration.manifest().mods.len(),
+                        "declaring the room's mods this game has"
+                    );
+                    self.declared = Some(declaration.clone());
+                    self.request(client, declaration.request());
+                }
+                self.told.clone_from(&room);
+                self.room_heard = true;
+                self.status(|status| status.room_mods = room.map(|room| *room));
+                if let Some(start) = self.held_stream.take() {
+                    if let Some(end) = self.on_event(ClientEvent::TurnStream(start), client)? {
+                        return Ok(Some(end));
+                    }
+                    self.held_bytes = 0;
+                    while let Some(event) = self.held_events.pop_front() {
+                        if let Some(end) = self.on_event(event, client)? {
+                            return Ok(Some(end));
+                        }
+                    }
+                }
             }
             ClientEvent::Kicked => return Ok(Some(BridgeEnd::Kicked)),
             ClientEvent::Closed(reason) => return Ok(Some(BridgeEnd::Closed(reason))),
@@ -1475,6 +1708,12 @@ impl<L: HookLink> Bridge<L> {
                         info!(file = %file.display(), "fetched the world to load");
                         self.received = Some(id);
                         self.tidy();
+                        // A world loaded with the room's list runs TPF3-MP's
+                        // mod whatever its save lists (`mods::plan`); one
+                        // loaded with its own mods must list it.
+                        if self.load_lists().is_none() {
+                            check_world(&file)?;
+                        }
                         self.order_load(Some(&file), next_step)?;
                     }
                     Err(error) => {
@@ -1565,13 +1804,13 @@ impl<L: HookLink> Bridge<L> {
         let done = self.done_tx.clone();
         let save = self.start_save_named();
         let declare = self.start_declare.take();
-        if let Some(manifest) = &declare {
-            self.declared = Some(manifest.clone());
+        if let Some(declaration) = &declare {
+            self.declared = Some(declaration.clone());
         }
         let attempt = self.start_attempt;
         tokio::spawn(async move {
             let declared = match declare {
-                Some(manifest) => requests.done(Request::DeclareContent(manifest)).await,
+                Some(declaration) => requests.done(declaration.request()).await,
                 None => Ok(()),
             };
             let told = match declared {
@@ -1658,6 +1897,7 @@ impl<L: HookLink> Bridge<L> {
     fn order_load(&mut self, file: Option<&Path>, next_step: u64) -> Result<(), BridgeFault> {
         let file = file.map(path_text).transpose()?;
         self.void_world();
+        self.load_generation += 1;
         self.outbox.push_back(ToHook::Load { file, next_step });
         self.world = World::Loading { next_step };
         self.status(|status| status.world = WorldStatus::Loading);
@@ -1680,13 +1920,24 @@ impl<L: HookLink> Bridge<L> {
             Control::Kick(player) => Request::Kick(player),
             Control::Chat(text) => Request::Chat(text),
             Control::Banner(banner) => Request::SetBanner(banner),
+            Control::Declare(declaration) => {
+                self.declared = Some(declaration.clone());
+                declaration.request()
+            }
             Control::StartWorld { start, declare } => {
                 self.change_start_world(start, declare, client);
                 return Ok(None);
             }
             Control::Leave => {
-                if let Err(error) = client.leave_room().await {
-                    debug!(%error, "leaving the room failed; ending the session anyway");
+                // Never held up by a server that does not answer: the
+                // player leaves either way, and a seat the server could not
+                // be told about is let go after the room's grace period.
+                match tokio::time::timeout(LEAVE_WAIT, client.leave_room()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        debug!(%error, "leaving the room failed; ending the session anyway");
+                    }
+                    Err(_) => debug!("the server did not answer the leave; ending the session"),
                 }
                 return Ok(Some(BridgeEnd::Left));
             }
@@ -1704,6 +1955,26 @@ impl<L: HookLink> Bridge<L> {
     }
 
     /// Sends a request on a task of its own; a refusal becomes a notice.
+    /// Sends `requests` one after the other, each once the one before was
+    /// answered; the first refused stops the rest.
+    fn requests_in_order(&self, client: &Client, requests: Vec<Request>) {
+        let sender = client.requests();
+        let status = self.options.status.clone();
+        tokio::spawn(async move {
+            for request in requests {
+                if let Err(error) = sender.done(request).await {
+                    if let Some(status) = status {
+                        status
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .notice(error.to_string());
+                    }
+                    return;
+                }
+            }
+        });
+    }
+
     fn request(&self, client: &Client, request: Request) {
         let requests = client.requests();
         let status = self.options.status.clone();
@@ -1756,6 +2027,24 @@ impl<L: HookLink> Bridge<L> {
         });
         self.progress = None;
         self.loaded = false;
+    }
+
+    /// Consumes the next sent load's answer. Only the latest ordered world
+    /// can become playable; an older one may finish while its replacement is
+    /// being fetched or loaded, even when both begin at the same step.
+    fn current_load_ack(&mut self, next_step: u64) -> Result<bool, BridgeFault> {
+        let (expected, generation) = self
+            .sent_loads
+            .pop_front()
+            .ok_or(BridgeFault::Unexpected("a world nobody ordered"))?;
+        if next_step != expected {
+            return Err(BridgeFault::LoadedElsewhere {
+                expected,
+                got: next_step,
+            });
+        }
+        Ok(generation == self.load_generation
+            && matches!(self.world, World::Loading { next_step: step } if step == next_step))
     }
 
     /// Uploads a save the room asked for.
@@ -1837,6 +2126,10 @@ impl<L: HookLink> Bridge<L> {
             let bytes = encode(message)?;
             if !self.link.send(&bytes)? {
                 break;
+            }
+            if let ToHook::Load { next_step, .. } = message {
+                self.sent_loads
+                    .push_back((*next_step, self.load_generation));
             }
             self.outbox.pop_front();
         }
@@ -1943,6 +2236,7 @@ impl Outbox {
             }
             ToHook::Diverged { lanes, .. } => lanes.len() * 2,
             ToHook::Chat { from, text } => from.as_str().len() + text.as_str().len(),
+            ToHook::Preview { preview, .. } => preview.as_ref().map_or(0, Payload::len),
             ToHook::Room(room) => room.members.len() * 64,
             ToHook::Lobby(view) => {
                 view.chat.len() * 320
@@ -1984,6 +2278,38 @@ impl Outbox {
     fn is_full(&self) -> bool {
         self.bytes >= OUTBOX_BYTES
     }
+
+    /// Queues `from`'s preview in place of one of theirs still waiting:
+    /// only the latest counts, so the queue holds one a member at most.
+    fn preview(&mut self, from: PlayerId, preview: Option<Payload>) {
+        if self
+            .messages
+            .iter()
+            .any(|queued| matches!(queued, ToHook::Preview { from: other, .. } if *other == from))
+        {
+            self.retain(
+                |queued| !matches!(queued, ToHook::Preview { from: other, .. } if *other == from),
+            );
+        }
+        self.push_back(ToHook::Preview { from, preview });
+    }
+}
+
+/// Refuses a world to load that does not run TPF3-MP's mod (fail closed: it
+/// would hold paused for good). A world whose mods do not read is loaded:
+/// the hook's own plan of its mods says more (`tpf3mp-hook`, `plan_mods`).
+fn check_world(file: &Path) -> Result<(), BridgeFault> {
+    match crate::save_check::runs_own_mod(file) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            warn!(file = %file.display(), "the room's world does not run TPF3-MP's mod; not loading it");
+            Err(BridgeFault::WorldWithoutOwnMod)
+        }
+        Err(why) => {
+            debug!(%why, "cannot tell whether the room's world runs TPF3-MP's mod");
+            Ok(())
+        }
+    }
 }
 
 fn path_text(path: &Path) -> Result<Text<MAX_PATH>, BridgeFault> {
@@ -1999,7 +2325,7 @@ pub struct Rejoin {
     pub password: Option<Text<64>>,
     /// This player's game build and mods, declared on every new
     /// connection: a running game can only be joined afresh with them.
-    pub content: Option<ContentManifest>,
+    pub content: Option<Declaration>,
     /// Stop trying after this long without a connection.
     pub give_up_after: Duration,
 }
@@ -2008,12 +2334,20 @@ pub struct Rejoin {
 /// (a network drop, or the server restarting) it reconnects and resumes
 /// the room where the game stands, so the game sees only a pause. Tells
 /// the hook when the session is over.
+///
+/// Rejoining gives up, and the session ends with the player in no room:
+/// at once when the server no longer has the room
+/// ([`BridgeFault::RoomGone`]); after [`Rejoin::give_up_after`] without a
+/// connection that held; after [`MAX_QUICK_LOSSES`] connections in a row
+/// lost again right after rejoining. A Leave while rejoining ends the
+/// session at once, as left.
 pub async fn play<L: HookLink>(
     bridge: &mut Bridge<L>,
     mut client: Client,
     mut events: Events,
     rejoin: &Rejoin,
 ) -> Result<BridgeEnd, BridgeFault> {
+    let mut losses = Losses::new(rejoin.give_up_after, Instant::now());
     loop {
         let session = client.welcome().session_id;
         bridge.status(|status| status.session = Some(session));
@@ -2047,16 +2381,42 @@ pub async fn play<L: HookLink>(
         }
         let options = rejoin.options.again_after(&client);
         drop(client);
-        match rejoin_room(bridge, rejoin, &options).await {
+        let outcome = match losses.lost(Instant::now()) {
+            Ok(deadline) => rejoin_room(bridge, rejoin, &options, deadline).await,
+            Err(why) => Err(GaveUp::Failed(why)),
+        };
+        match outcome {
             Ok((new_client, new_events)) => {
                 info!("rejoined the room");
+                bridge.on_new_connection();
                 bridge.status(|status| status.notice("rejoined the room"));
+                losses.connected(Instant::now());
                 client = new_client;
                 events = new_events;
             }
-            Err(error) => {
-                bridge.end(&error);
-                return Err(BridgeFault::Rejoin(error));
+            Err(GaveUp::Left) => {
+                info!("left the room while rejoining it");
+                bridge.end("left the room");
+                return Ok(BridgeEnd::Left);
+            }
+            Err(GaveUp::GameClosed) => {
+                let fault = BridgeFault::GameClosed;
+                bridge.end(&fault.to_string());
+                return Err(fault);
+            }
+            Err(GaveUp::RoomGone) => {
+                warn!("the room is gone; no longer rejoining it");
+                let fault = BridgeFault::RoomGone;
+                bridge.status(|status| status.notice(ROOM_GONE));
+                bridge.end(ROOM_GONE);
+                return Err(fault);
+            }
+            Err(GaveUp::Failed(error)) => {
+                warn!(%error, "no longer rejoining the room");
+                let fault = BridgeFault::Rejoin(error);
+                bridge.status(|status| status.notice(fault.to_string()));
+                bridge.end(&fault.to_string());
+                return Err(fault);
             }
         }
     }
@@ -2065,6 +2425,73 @@ pub async fn play<L: HookLink>(
 /// How long a request that failed for a lost connection waits for the
 /// connection to say it closed, before the failure counts as a fault.
 const CLOSE_NOTICE: Duration = Duration::from_secs(5);
+
+/// How long leaving waits for the server to let the player go.
+const LEAVE_WAIT: Duration = Duration::from_secs(3);
+
+/// A connection rejoined this long ago held: losing it starts afresh.
+const STABLE: Duration = Duration::from_secs(120);
+
+/// Connections in a row lost within [`STABLE`] of rejoining, after which
+/// rejoining stops: a room that keeps dropping the player is not one to
+/// keep them in, unable to leave (seen live: "lost the server; rejoining
+/// the room reason=timed out" over and over after a restart).
+pub const MAX_QUICK_LOSSES: u32 = 5;
+
+/// The lost connections of one session, which say when rejoining stops.
+#[derive(Debug)]
+struct Losses {
+    patience: Duration,
+    /// When the current connection was made.
+    connected: Instant,
+    /// The first loss since a connection last held: the patience runs from
+    /// there, across rejoins that did not hold.
+    first: Option<Instant>,
+    /// Connections in a row lost within [`STABLE`].
+    quick: u32,
+}
+
+impl Losses {
+    fn new(patience: Duration, connected: Instant) -> Self {
+        Self {
+            patience,
+            connected,
+            first: None,
+            quick: 0,
+        }
+    }
+
+    /// A connection is lost at `now`: when rejoining must have succeeded
+    /// by, or why it is not worth trying.
+    fn lost(&mut self, now: Instant) -> Result<Instant, String> {
+        if now.saturating_duration_since(self.connected) >= STABLE {
+            self.first = None;
+            self.quick = 0;
+        } else {
+            self.quick += 1;
+        }
+        if self.quick > MAX_QUICK_LOSSES {
+            return Err(format!(
+                "the connection dropped {} times in a row right after rejoining",
+                self.quick
+            ));
+        }
+        let first = *self.first.get_or_insert(now);
+        let deadline = first + self.patience;
+        if deadline <= now {
+            return Err(format!(
+                "no connection held for {} s",
+                self.patience.as_secs()
+            ));
+        }
+        Ok(deadline)
+    }
+
+    /// A rejoin succeeded at `now`.
+    fn connected(&mut self, now: Instant) {
+        self.connected = now;
+    }
+}
 
 /// Whether a lost connection is worth rejoining after: not when this side
 /// closed it, another connection replaced it, or the protocol broke.
@@ -2082,15 +2509,43 @@ fn worth_rejoining(reason: &quinn::ConnectionError) -> bool {
     }
 }
 
-/// Reconnects and rejoins, backing off between attempts and beating for
-/// the hook all the while. A room that can no longer resume the game where
-/// it stands is joined afresh, and sends a world to load.
+/// Why rejoining stopped.
+#[derive(Debug)]
+enum GaveUp {
+    /// The server has no such room any more.
+    RoomGone,
+    /// The player left the room meanwhile.
+    Left,
+    /// The game closed meanwhile.
+    GameClosed,
+    /// Out of patience, or the server needs a newer client.
+    Failed(String),
+}
+
+/// Reconnects and rejoins, backing off between attempts and keeping the
+/// hook waiting all the while, until `deadline`. A room that can no longer
+/// resume the game where it stands is joined afresh, and sends a world to
+/// load. The front end's requests are taken meanwhile: Leave (from the
+/// launcher's window or, through the hook, the game's) stops it at once.
 async fn rejoin_room<L: HookLink>(
     bridge: &mut Bridge<L>,
     rejoin: &Rejoin,
     options: &ConnectOptions,
-) -> Result<(Client, Events), String> {
-    let deadline = Instant::now() + rejoin.give_up_after;
+    deadline: Instant,
+) -> Result<(Client, Events), GaveUp> {
+    let mut controls = bridge.controls.take();
+    let outcome = rejoin_attempts(bridge, &mut controls, rejoin, options, deadline).await;
+    bridge.controls = controls;
+    outcome
+}
+
+async fn rejoin_attempts<L: HookLink>(
+    bridge: &mut Bridge<L>,
+    controls: &mut Option<mpsc::Receiver<Control>>,
+    rejoin: &Rejoin,
+    options: &ConnectOptions,
+    deadline: Instant,
+) -> Result<(Client, Events), GaveUp> {
     let mut backoff = Duration::from_millis(250);
     let mut resume = bridge.resume_point();
     let declared = bridge.declared.clone();
@@ -2105,7 +2560,7 @@ async fn rejoin_room<L: HookLink>(
             })?;
             if let Some(content) = declared.as_ref().or(rejoin.content.as_ref()) {
                 client
-                    .declare_content(content.clone())
+                    .declare(content.clone())
                     .await
                     .map_err(|error| Failed::Retry(error.to_string()))?;
             }
@@ -2116,23 +2571,35 @@ async fn rejoin_room<L: HookLink>(
                     resume,
                 })
                 .await
-                .map_err(|error| {
-                    if error == ClientError::Refused(RequestError::ResumeUnavailable) {
+                .map_err(|error| match error {
+                    ClientError::Refused(RequestError::ResumeUnavailable) => {
                         Failed::ResumeGone(error.to_string())
-                    } else {
-                        Failed::Retry(error.to_string())
                     }
+                    // The invite found no room: unknown rooms answer as
+                    // bad invites do (D13), and a seated player's own
+                    // invite and password are never bad. A room that closed
+                    // while being joined answers that it has no such member.
+                    ClientError::Refused(RequestError::BadInvite | RequestError::NotInRoom) => {
+                        Failed::Gone
+                    }
+                    other => Failed::Retry(other.to_string()),
                 })?;
             Ok::<_, Failed>((client, events))
         };
-        let outcome = keeping_alive(bridge, attempt).await;
+        let outcome =
+            match tokio::time::timeout_at(deadline.into(), away(bridge, controls, attempt)).await {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(gave_up)) => return Err(gave_up),
+                Err(_) => return Err(GaveUp::Failed("rejoin deadline expired".into())),
+            };
         match outcome {
             Ok(rejoined) => return Ok(rejoined),
+            Err(Failed::Gone) => return Err(GaveUp::RoomGone),
             // The server was updated past this client: no attempt can
             // succeed until the player updates too.
             Err(Failed::Outdated(error)) => {
                 bridge.status(|status| status.outdated = true);
-                return Err(error);
+                return Err(GaveUp::Failed(error));
             }
             // The room no longer has these turns: join without them, for a
             // world to load. Joining without them cannot be refused so.
@@ -2143,11 +2610,11 @@ async fn rejoin_room<L: HookLink>(
             Err(Failed::ResumeGone(error) | Failed::Retry(error))
                 if Instant::now() + backoff >= deadline =>
             {
-                return Err(error);
+                return Err(GaveUp::Failed(error));
             }
             Err(Failed::ResumeGone(error) | Failed::Retry(error)) => {
                 debug!(%error, "rejoining failed; trying again");
-                keeping_alive(bridge, tokio::time::sleep(backoff)).await;
+                away(bridge, controls, tokio::time::sleep(backoff)).await?;
                 backoff = (backoff * 2).min(Duration::from_secs(5));
             }
         }
@@ -2160,8 +2627,40 @@ enum Failed {
     Retry(String),
     /// The room no longer has the turns asked for.
     ResumeGone(String),
+    /// The server has no such room.
+    Gone,
     /// The server speaks a newer protocol.
     Outdated(String),
+}
+
+/// Runs `work` while the bridge has no connection ([`Bridge::away`]),
+/// taking the front end's requests: a Leave, or the game closing, stops it.
+async fn away<L: HookLink, T>(
+    bridge: &mut Bridge<L>,
+    controls: &mut Option<mpsc::Receiver<Control>>,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, GaveUp> {
+    let mut work = std::pin::pin!(work);
+    let mut beat = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        tokio::select! {
+            done = &mut work => return Ok(done),
+            Some(control) = next_control(controls) => match control {
+                Control::Leave => return Err(GaveUp::Left),
+                Control::GameClosed if bridge.hook_ready => return Err(GaveUp::GameClosed),
+                Control::GameClosed => {
+                    info!("the game closed before its hook attached; waiting for the next one");
+                }
+                other => {
+                    debug!(?other, "a request while rejoining the room; not sent");
+                    bridge.status(|status| {
+                        status.notice("not connected to the room: rejoining it, try again then");
+                    });
+                }
+            },
+            _ = beat.tick() => bridge.away(),
+        }
+    }
 }
 
 /// The next request of a front end, or never without one.
@@ -2169,21 +2668,6 @@ async fn next_control(controls: &mut Option<mpsc::Receiver<Control>>) -> Option<
     match controls {
         Some(controls) => controls.recv().await,
         None => std::future::pending().await,
-    }
-}
-
-/// Runs `work` while beating for the hook.
-async fn keeping_alive<L: HookLink, T>(
-    bridge: &mut Bridge<L>,
-    work: impl std::future::Future<Output = T>,
-) -> T {
-    let mut work = std::pin::pin!(work);
-    let mut beat = tokio::time::interval(Duration::from_millis(100));
-    loop {
-        tokio::select! {
-            done = &mut work => return done,
-            _ = beat.tick() => bridge.keep_alive(),
-        }
     }
 }
 
@@ -2236,6 +2720,201 @@ mod tests {
     use tpf3mp_proto::{FixedBytes, MAX_PAYLOAD, Payload, RoomId, Turn, TurnStart};
 
     use super::*;
+
+    /// A game without the picker (`--mods`) loads the room's world with the
+    /// room's mods and settings as its owner declared them, its own listed
+    /// personal mods after them: the content check does not cover the
+    /// settings, and the save's would differ from every other game's.
+    #[test]
+    fn without_the_picker_the_rooms_settings_still_load() {
+        let name = |id: &str| tpf3mp_bridge::ModName::new(id).unwrap();
+        let listed = ModLists {
+            shared: tpf3mp_proto::BoundedVec::new(vec![name("signals"), name("tpf3mp_1")]).unwrap(),
+            personal: tpf3mp_proto::BoundedVec::new(vec![name("minimap")]).unwrap(),
+            params: Vec::new(),
+        };
+        let room_mod = |id: &str| tpf3mp_proto::RoomMod {
+            id: Text::new(id).unwrap(),
+            version: Text::new("1").unwrap(),
+            info: tpf3mp_proto::ModInfo {
+                name: Text::lossy(id),
+                source: Text::lossy("mod.io"),
+                modio: None,
+            },
+        };
+        let settings = vec![tpf3mp_proto::ModParams {
+            id: Text::new(tpf3mp_proto::GAME_SETTINGS).unwrap(),
+            params: vec![tpf3mp_proto::ModParam {
+                key: Text::new("difficulty").unwrap(),
+                value: 2,
+            }],
+        }];
+        let told = tpf3mp_proto::RoomMods {
+            game: Text::lossy("40408"),
+            mods: vec![room_mod("signals"), room_mod("tpf3mp_1")],
+            params: settings.clone(),
+        };
+        let lists = told_lists(Some(&told), Some(&listed)).unwrap();
+        assert_eq!(lists.shared, listed.shared);
+        assert_eq!(lists.personal, listed.personal);
+        assert_eq!(lists.params, settings);
+        // A room that told none: the listed ones, as before.
+        assert_eq!(told_lists(None, Some(&listed)), Some(listed));
+    }
+
+    /// Held before the room said its mods, a turn of many events without
+    /// commands weighs as the follower weighs it: a hostile server cannot
+    /// make this game hold gigabytes of empty events under the bound.
+    #[test]
+    fn held_turns_weigh_every_event() {
+        let left = |seq| Event {
+            seq,
+            step: 1,
+            body: EventBody::PlayerLeft {
+                player: PlayerId(FixedBytes([7; 32])),
+                kicked: false,
+            },
+        };
+        let turn = Turn {
+            number: 1,
+            sealed_through: 0,
+            speed: Speed::NORMAL,
+            events: (0..10_000).map(left).collect(),
+        };
+        assert!(held_weight(&ClientEvent::Turn(turn)) >= 10_000 * 64);
+        assert!(held_weight(&ClientEvent::Kicked) > 0);
+    }
+
+    struct AcceptingLink;
+
+    impl HookLink for AcceptingLink {
+        fn send(&mut self, _: &[u8]) -> Result<bool, BridgeFault> {
+            Ok(true)
+        }
+
+        fn recv(&mut self, _: &mut Vec<u8>) -> Result<bool, BridgeFault> {
+            Ok(false)
+        }
+
+        fn heartbeat(&mut self) {}
+
+        fn peer_heartbeat(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn an_old_load_answer_cannot_complete_its_replacement_at_the_same_step() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+
+        assert!(!bridge.current_load_ack(1).unwrap());
+        assert_eq!(bridge.world, World::Loading { next_step: 1 });
+        assert!(bridge.current_load_ack(1).unwrap());
+    }
+
+    #[test]
+    fn a_replaced_load_answer_during_rejoin_is_ignored() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+        bridge.void_world();
+        bridge.world = World::Ready;
+
+        assert!(!bridge.current_load_ack(1).unwrap());
+        assert!(matches!(
+            bridge.current_load_ack(1),
+            Err(BridgeFault::Unexpected("a world nobody ordered"))
+        ));
+    }
+
+    #[test]
+    fn an_unsent_replaced_load_needs_no_answer() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 1).unwrap();
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+
+        assert!(bridge.current_load_ack(1).unwrap());
+        assert!(matches!(
+            bridge.current_load_ack(1),
+            Err(BridgeFault::Unexpected("a world nobody ordered"))
+        ));
+    }
+
+    #[test]
+    fn a_load_answer_for_the_wrong_step_is_still_a_protocol_error() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 5).unwrap();
+        bridge.flush().unwrap();
+
+        assert!(matches!(
+            bridge.current_load_ack(4),
+            Err(BridgeFault::LoadedElsewhere {
+                expected: 5,
+                got: 4
+            })
+        ));
+    }
+
+    #[test]
+    fn a_world_without_tpf3mps_mod_is_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let without = dir.path().join("w-1.sav");
+        crate::save_check::saves::write(&without, &["urbangames_preorder_pack"]);
+        let refused = check_world(&without).unwrap_err();
+        assert!(matches!(refused, BridgeFault::WorldWithoutOwnMod));
+        assert!(
+            refused
+                .to_string()
+                .starts_with("The room's world doesn't have the TPF3-MP mod enabled")
+        );
+        let with = dir.path().join("w-2.sav");
+        crate::save_check::saves::write(&with, &["urbangames_preorder_pack", "tpf3mp_1"]);
+        assert!(check_world(&with).is_ok());
+        // One whose mods do not read loads as before.
+        let junk = dir.path().join("w-3.sav");
+        std::fs::write(&junk, b"not a save").unwrap();
+        assert!(check_world(&junk).is_ok());
+    }
+
+    #[test]
+    fn rejoining_stops_after_repeated_quick_losses_or_its_patience() {
+        let patience = Duration::from_secs(300);
+        let start = Instant::now();
+        let mut losses = Losses::new(patience, start);
+        // Each rejoin lost again moments later, as in the live loop.
+        let mut now = start;
+        for _ in 0..MAX_QUICK_LOSSES {
+            now += Duration::from_secs(5);
+            let deadline = losses.lost(now).unwrap();
+            assert_eq!(deadline, start + Duration::from_secs(5) + patience);
+            losses.connected(now);
+        }
+        now += Duration::from_secs(5);
+        assert!(losses.lost(now).unwrap_err().contains("in a row"));
+
+        // A connection that held starts afresh, patience and count alike.
+        let mut losses = Losses::new(patience, start);
+        losses.lost(start + Duration::from_secs(1)).unwrap();
+        losses.connected(start + Duration::from_secs(2));
+        let later = start + Duration::from_secs(2) + STABLE;
+        assert_eq!(losses.lost(later).unwrap(), later + patience);
+
+        // Rejoins that never hold run out of patience across them.
+        let mut losses = Losses::new(patience, start);
+        losses.lost(start).unwrap();
+        losses.connected(start + Duration::from_secs(250));
+        assert!(
+            losses
+                .lost(start + Duration::from_secs(301))
+                .unwrap_err()
+                .contains("no connection held")
+        );
+    }
 
     #[test]
     fn fetch_percent_is_whole_and_bounded() {
@@ -2338,6 +3017,7 @@ mod tests {
             connected,
             banner: None,
             loading: None,
+            differs: None,
         };
         let room = RoomView {
             id: RoomId(FixedBytes([7; 16])),
@@ -2394,6 +3074,7 @@ mod tests {
             members: [owner, guest]
                 .map(|player| MemberView {
                     loading: None,
+                    differs: None,
 
                     player,
                     name: Text::new("Player").unwrap(),
@@ -2417,6 +3098,33 @@ mod tests {
         assert!(!generated_world_can_start(Some(&room), owner, 1, true));
         room.phase = RoomPhase::Running;
         assert!(!generated_world_can_start(Some(&room), owner, 1, false));
+    }
+
+    #[test]
+    fn only_each_members_latest_preview_waits_for_the_game() {
+        let mut out = Outbox::default();
+        let ann = PlayerId(tpf3mp_proto::FixedBytes([1; 32]));
+        let bob = PlayerId(tpf3mp_proto::FixedBytes([2; 32]));
+        let shown = |n: u8| Some(Payload::new(vec![n; 8]).unwrap());
+        out.preview(ann, shown(1));
+        out.push_back(ToHook::Release { through: 5 });
+        out.preview(bob, shown(2));
+        out.preview(ann, shown(3));
+        out.preview(ann, None);
+        assert_eq!(
+            out.messages,
+            [
+                ToHook::Release { through: 5 },
+                ToHook::Preview {
+                    from: bob,
+                    preview: shown(2)
+                },
+                ToHook::Preview {
+                    from: ann,
+                    preview: None
+                },
+            ]
+        );
     }
 
     #[test]

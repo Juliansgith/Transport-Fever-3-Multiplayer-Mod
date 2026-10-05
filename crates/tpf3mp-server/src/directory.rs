@@ -290,7 +290,8 @@ impl Directory {
 
     /// Page `page` of the public rooms, [`ROOMS_PER_PAGE`] a page: those in
     /// their lobby first, then the fuller, then by name. A private room is
-    /// never in it.
+    /// never in it, nor one nobody is connected to: its game waits out its
+    /// grace period for its own players, and closes unless they return.
     pub(crate) fn list(&self, page: u16) -> RoomPage {
         let mut listed: Vec<ListedRoom> = {
             let rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
@@ -303,6 +304,9 @@ impl Directory {
                         .summary
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
+                    if summary.connected == 0 {
+                        return None;
+                    }
                     let listing = summary.listing.clone()?;
                     Some(ListedRoom {
                         invite,

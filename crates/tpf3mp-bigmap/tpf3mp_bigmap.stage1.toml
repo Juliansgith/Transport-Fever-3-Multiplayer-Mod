@@ -15,6 +15,11 @@
 #
 # Labels give the square's real edge (256 m tiles); the ratio dropdown shapes
 # each row as it shapes the game's own, keeping about the square's area.
+#
+# Memory gate: a row is offered only if its expected generation peak fits the
+# machine's memory. That law (12.25 MB per km² plus 4 GB) is PROVISIONAL
+# pending the Stage 0 measurements, and lives in one place,
+# crates/tpf3mp-bigmap/src/memory_gate.rs, which says how to recalibrate it.
 
 [sizes]
 add_rows = true

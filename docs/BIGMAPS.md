@@ -377,6 +377,9 @@ Record each run here:
 
 Until this table is filled, `WorldModel::TF3_BUILD_40408` charges 12.25 MB
 per km² (that one log) and assumes TPF2's 4 GB for the game's own use.
+Both are PROVISIONAL and kept in one place,
+`crates/tpf3mp-bigmap/src/memory_gate.rs`, which lists the steps to
+recalibrate the memory gate from this table.
 
 ### Stage 1: sizes up to 176 tiles, no native patch
 
@@ -420,7 +423,8 @@ Its logic is plain Lua in the mod (`scripts/tpf3mp_bigmap/menu.lua`):
   short side first as the game's own shapes are; the preview and Start
   Game use it as they use the game's sizes.
 - A row is offered only if its expected generation peak (the ladder's
-  `peakMb`: 12.25 MB per km² plus 4 GB) fits the machine's physical
+  `peakMb`: 12.25 MB per km² plus 4 GB, PROVISIONAL, from
+  `memory_gate.rs`) fits the machine's physical
   memory, which the hook reports. A line under the dropdown says which
   rows are hidden and why. With the memory unknown, no row is offered.
 - If the mod's scripts do not load, the page offers the game's sizes only;

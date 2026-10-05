@@ -11,7 +11,7 @@ use tpf3mp_agent::{Action, Client, ClientEvent, ConnectOptions, Events, TurnFoll
 use tpf3mp_net::{Identity, ServerIdentity, ServerTrust, client_config};
 use tpf3mp_proto::{
     ContentDiff, ContentManifest, CreateRoom, Event, IntentRejection, Invite, JoinRoom, LaneDigest,
-    ModRef, PlayerId, RoomSettings, RoomView, Text, TurnStart,
+    ModRef, Payload, PlayerId, RoomSettings, RoomView, Text, TurnStart,
 };
 use tpf3mp_server::{Server, ServerConfig, ServerStats};
 
@@ -148,6 +148,30 @@ pub fn modded(mods: &[&str]) -> ContentManifest {
     )
 }
 
+/// A room's owner's declaration of `modded(mods)` and TPF3-MP's own, last,
+/// each mod named after its id and from the owner's local mods.
+pub fn room_of(mods: &[&str]) -> tpf3mp_proto::RoomDeclaration {
+    let mut lines = mods.to_vec();
+    lines.push("tpf3mp_1 1+0123456789abcdef");
+    let manifest = modded(&lines);
+    let info = manifest
+        .mods
+        .iter()
+        .map(|m| tpf3mp_proto::ModInfo {
+            name: Text::new(m.id.as_str()).unwrap(),
+            source: Text::new("StagingArea").unwrap(),
+            modio: None,
+        })
+        .collect();
+    tpf3mp_proto::RoomDeclaration {
+        manifest,
+        room: tpf3mp_proto::RoomConfig {
+            info,
+            params: Vec::new(),
+        },
+    }
+}
+
 pub fn room(name: &str, settings: RoomSettings) -> CreateRoom {
     CreateRoom {
         name: Text::new(name).unwrap(),
@@ -187,6 +211,15 @@ impl TestClient {
     pub async fn content_diff(&mut self) -> Option<ContentDiff> {
         self.wait_for(|event| match event {
             ClientEvent::ContentDiff(diff) => Some(diff),
+            _ => None,
+        })
+        .await
+    }
+
+    /// The next word from the room on its mods, discarding other events.
+    pub async fn room_mods(&mut self) -> Option<Box<tpf3mp_proto::RoomMods>> {
+        self.wait_for(|event| match event {
+            ClientEvent::RoomMods(room) => Some(room),
             _ => None,
         })
         .await
@@ -243,6 +276,8 @@ pub struct Player {
     pub kicked: bool,
     /// Chat heard, in order: who, and what.
     pub chat: Vec<(PlayerId, String)>,
+    /// Other members' build previews heard, in order.
+    pub previews: Vec<(PlayerId, Option<Payload>)>,
     /// Whether this player reports progress; a player that never does holds
     /// the room at the load gate.
     pub reports_progress: bool,
@@ -263,6 +298,7 @@ impl Player {
             closed: false,
             kicked: false,
             chat: Vec::new(),
+            previews: Vec::new(),
             reports_progress: true,
             lanes: None,
         }
@@ -322,7 +358,8 @@ impl Player {
             ClientEvent::Diverged { step, lanes } => self.diverged.push((step, lanes)),
             ClientEvent::Upload { .. } => {}
             ClientEvent::Chat { from, text } => self.chat.push((from, text.as_str().to_owned())),
-            ClientEvent::ContentDiff(_) | ClientEvent::Notice(_) => {}
+            ClientEvent::Preview { from, preview } => self.previews.push((from, preview)),
+            ClientEvent::ContentDiff(_) | ClientEvent::Notice(_) | ClientEvent::RoomMods(_) => {}
             ClientEvent::Kicked => self.kicked = true,
             ClientEvent::Closed(_) => self.closed = true,
         }

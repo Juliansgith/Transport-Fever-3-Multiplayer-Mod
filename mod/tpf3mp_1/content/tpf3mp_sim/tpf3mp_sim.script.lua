@@ -25,6 +25,11 @@
 --   hands it the lanes asked for entry by entry, for hook.log (docs/HOOKS.md,
 --   "Lane dumps").
 --
+-- With the hook's edge watch on (TPF3MP_HOOK_EDGE_WATCH), `update` also
+-- asks which entities to read (`edgewatch`), and `postUpdate` reads each
+-- after everything else it does and hands it over (`edgewatched`;
+-- docs/HOOKS.md, "The edge watch"). Read only.
+--
 -- The hook holds the world if nobody took the actions, or if a checkpoint's
 -- lanes did not come.
 --
@@ -46,10 +51,17 @@
 -- The module editor tells game scripts nothing on build 40408 (CAPTURE):
 -- the hook reads its build natively at the click, and `guiUpdate` takes it
 -- for that click (tpf3mp_native.built), ahead of any preview, and makes the
--- edit of it as of the construction tool's proposal. A click with neither
--- is stopped with "no proposal seen". Every event of the room's game the
--- script does not handle is logged by id and name, once each, a few dozen
--- at most.
+-- edit of it as of the construction tool's proposal. The terrain tools
+-- tell them nothing either: the hook reads a stroke's height grid at the
+-- click the same way, and `guiUpdate` hands the room Terraform actions of
+-- it (tpf3mp/capture.lua terraform), which every game applies through the
+-- hook (tpf3mp/apply.lua) once tpf3mp/acceptance.lua's `terraform` is on.
+-- A click with neither is stopped with "no proposal seen".
+--
+-- Each upgrade (a road or track modifier's build) and each terraform is
+-- said in the hook's log when handed to the room and when applied. Every
+-- event of the room's game the script does not handle is logged by id and
+-- name, once each, a few dozen at most.
 --
 -- `handleEvent` takes the event `command` of id "tpf3mp" (sent with
 -- api.cmd.makeScriptingSendEventCmd) and hands its parameter, an action
@@ -71,20 +83,30 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture, registry, companies, progression =
-		false, nil, nil, nil, nil, nil, nil, nil
+	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild, previews =
+		false, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	-- Whether this state is applying the room's actions (in postUpdate);
+	-- the scripts' follow-up builds in the GUI's state, and whether their
+	-- wrapper is on there (tpf3mp/modbuild.lua).
+	local applying, followUps, followUpsOn = false, nil, false
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
 	local told, toldRegistry, toldOwnership = false, false, false
+	-- The headquarters lines last logged in this state, by company id: a
+	-- line is logged again only when it changed (tpf3mp/companies.lua).
+	local toldHeadquarters = {}
 	-- Events subscribed to from this state.
 	local subscribed = false
 	-- Says what a prospection did (below).
 	local prospected
+	-- tpf3mp/subsidies.lua, loaded when first needed, per state (false when
+	-- it would not load), and the subsidies last said in the log.
+	local subsidiesModule, toldSubsidies = nil, nil
 
 	-- The events the script needs: its console event, and the build tools'
 	-- proposals. Each by name, since a save may carry an older mod's
 	-- subscriptions.
-	local EVENTS = { "command", "builder.proposalCreate", "builder.proposalPrepareForApply",
+	local EVENTS = { "command", "replay", "builder.proposalCreate", "builder.proposalPrepareForApply",
 		"startProspection", "endProspection" }
 
 	-- What a build tool shows in the room's game.
@@ -95,7 +117,8 @@ function data()
 	-- game scripts of the proposals of six tools only, each under the id
 	-- the game's GUI names it by (UI::CGameUI's constructor, read from the
 	-- binary): constructionBuilder, streetTerminalBuilder, streetBuilder,
-	-- trackBuilder, streetTrackModifier (the upgrade tool, not carried yet)
+	-- trackBuilder, streetTrackModifier (the road and track modifiers: tram
+	-- tracks, bus lanes, barriers, trees, a street or track type, catenary)
 	-- and bulldozer. The module editor (UI::ModuleBuilder) tells them
 	-- nothing there. moduleBuilder and moduleBulldozer are its names in the
 	-- construction menu's parameters (ConstructionActionParam); INFERRED
@@ -138,13 +161,108 @@ function data()
 		end
 		local removes = type(proposal.toRemove) == "table" and #proposal.toRemove > 0
 		local ok, action, whyNot = true, nil, "an edit that replaces no construction"
-		if removes then ok, action, whyNot = pcall(capture.construction, proposal) end
+		if removes then ok, action, whyNot = pcall(capture.moduleEdit, proposal) end
 		if not ok then action, whyNot = nil, tostring(action) end
 		if action and action.BuildConstruction.replaces == nil then
 			action, whyNot = nil, "an edit that replaces no construction"
 		end
 		if not action then return { why = "the module editor's edit: " .. tostring(whyNot), shape = shape } end
 		return { action = action, shape = shape }
+	end
+
+	-- In the GUI state this script's GUI half runs in, where the game's
+	-- company script checks a construction's permits for the player
+	-- (company.script.tl, builder.proposalCreate: an error and skipRender,
+	-- so the tool shows no preview and builds nothing): the player's company
+	-- answers getPlayer there, its rank the game's rank windows, and its own
+	-- constructions the permit counts (tpf3mp/follow.lua,
+	-- tpf3mp/progression.lua, tpf3mp/companies.lua), as in the GUI's other
+	-- states. Without them a founded company's headquarters showed no preview
+	-- and was never placed (2026-10-01): the game's company script asked the
+	-- save's player's rank and counted every company's headquarters. Once
+	-- this Lua state; each piece is a no-op where another of the GUI's
+	-- states sharing its tables put it on first. Only ever in a GUI state:
+	-- guiHandleEvent runs nowhere else.
+	local guiFollowed = false
+	local function followInGui(l)
+		if guiFollowed then return end
+		guiFollowed = true
+		local okFollow, follow = pcall(ug_require, MOD .. "::/scripts/tpf3mp/follow.lua")
+		local mine, several, readAt = nil, false, nil
+		local function read()
+			local ok, now = pcall(function() return os.clock() end)
+			if not ok or readAt == nil or now - readAt >= 2.0 then
+				readAt = ok and now or nil
+				local status = l:status()
+				local state = companies.scriptState(api)
+				mine = okFollow and follow.companyOf(state and state.companies, status and status.me_id) or nil
+				several = state ~= nil and type(state.companies) == "table"
+					and type(state.companies.list) == "table" and #companies.live(state.companies) > 1
+			end
+		end
+		local parts = {}
+		if okFollow and type(follow) == "table" then
+			local ok, why = follow.install(api, function() read() return mine end,
+				function(line) l:log(line .. " (the game scripts' GUI state)") end)
+			follow.install(api, follow.noteSource(l))
+			pcall(follow.watchLines, api, ug_require, l, "the game scripts' GUI state")
+			parts[#parts + 1] = ok and "getPlayer follows the player's company" or ("getPlayer stays the game's: " .. tostring(why))
+		else
+			parts[#parts + 1] = "getPlayer stays the game's: tpf3mp/follow.lua did not load"
+		end
+		local ranked, whyRanks = progression.follow(function() return companies.scriptState(api) end)
+		companies.followStations(api, ug_require, function()
+			if not l:room() then return end
+			local state, status = companies.scriptState(api), l:status()
+			return state and state.companies, status and status.me_id
+		end)
+		parts[#parts + 1] = ranked and "ranks are each company's" or ("ranks are the game's: " .. tostring(whyRanks))
+		local counted, whyPermits = companies.followPermits(api, ug_require, function() read() return several end)
+		parts[#parts + 1] = counted and "permits count each company's own constructions"
+			or ("permits count the whole world's: " .. tostring(whyPermits))
+		l:log("the game scripts' GUI state: " .. table.concat(parts, "; "))
+	end
+
+	-- The snapshot of a terrain tool's click, from its stroke as the hook read
+	-- it (tpf3mp_native.built): its Terraform actions, one a band of rows.
+	local function terraformEdit(built)
+		local actions, why = capture.terraform(built)
+		if not actions then return { why = "the terrain tool's stroke: " .. tostring(why), shape = "terrain tool" } end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "terraform handed to the room: " .. capture.terraformSummary(a.Terraform)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
+	-- The builds scripts send from this, the game scripts' GUI state: in the
+	-- room's game, each goes to the room as the follow-up of this player's
+	-- build, or is stopped (tpf3mp/modbuild.lua). Put on once, from the
+	-- first guiUpdate with a link; guiUpdate runs in no other state.
+	local function followUpsInGui(l)
+		if followUpsOn then return end
+		followUpsOn = true
+		followUps = modbuild.tracker()
+		local okGuard, guardModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/guard.lua")
+		local okCmd, cmd = pcall(function() return api.cmd end)
+		local ok, why = nil, "api.cmd cannot be read"
+		if okCmd then
+			ok, why = modbuild.install(cmd, {
+				inRoom = function() return l:room() end,
+				applying = function() return applying end,
+				follows = function() return followUps.follows(l:note(modbuild.NOTE)) end,
+				clicks = function() return l:clicks() end,
+				keep = function(count, seen) snapshots[count] = seen end,
+				capture = function(shaped, network)
+					return capture[network == "Track" and "track" or "street"](shaped)
+				end,
+				callers = (okGuard and type(guardModule) == "table") and guardModule.callers or nil,
+				log = function(line) l:log(line) end,
+			})
+		end
+		l:log(ok and "scripts' builds from the game scripts' GUI state go to the room as their player's follow-ups"
+			or ("scripts' builds from the game scripts' GUI state are not guarded: " .. tostring(why)))
 	end
 
 	-- The guard on what this player's personal mods' game scripts send, in
@@ -239,7 +357,9 @@ function data()
 			local okRegistry, registryModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/registry.lua")
 			local okCompanies, companiesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/companies.lua")
 			local okProgression, progressionModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/progression.lua")
+			local okModbuild, modbuildModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/modbuild.lua")
 			if okBridge and okApply and okLanes and okCapture and okRegistry and okCompanies and okProgression
+				and okModbuild and type(modbuildModule) == "table"
 				and type(companiesModule) == "table" and type(progressionModule) == "table" and type(bridge) == "table"
 				and type(applyModule) == "table" and type(lanesModule) == "table"
 				and type(captureModule) == "table" and type(registryModule) == "table" then
@@ -248,14 +368,23 @@ function data()
 				if link then
 					local linked = link
 					apply.log = function(line) linked:log(line) end
+					-- A terraform's grid goes to the hook (tpf3mp/apply.lua).
+					apply.terrain = function(grid) return linked:terrain(grid) end
 				end
 				lanes = lanesModule
 				capture = captureModule
+				-- The players' build previews (tpf3mp/previews.lua): optional,
+				-- so a mod without them still builds through the room.
+				local okPreviews, previewsModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/previews.lua")
+				previews = okPreviews and type(previewsModule) == "table" and previewsModule or nil
 				registry = registryModule
 				companies = companiesModule
 				progression = progressionModule
+				modbuild = modbuildModule
 				if link then
 					link:log("the game script is linked")
+					-- Native GUI tools need the simulation's unchanged save player.
+					pcall(function() link:note("tpf3mp.player", tostring(api.engine.util.getPlayer())) end)
 					guardPersonalMods(companiesModule, registryModule)
 				end
 			end
@@ -318,7 +447,8 @@ function data()
 		end
 	end
 
-	return {
+	local script
+	script = {
 		update = function(_params, state, _dt)
 			local l = linked()
 			if not l then return nil end
@@ -331,7 +461,7 @@ function data()
 				for _, event in ipairs(EVENTS) do state:subscribeToEvent(event) end
 			end
 			local actions, origins, seals = l:take()
-			local checkpoint = l:checkpoint()
+			local checkpoint, scanStep = l:checkpoint()
 			-- The registry begins at the room's first update, the same in
 			-- every game (tpf3mp/registry.lua), or at the first update since
 			-- the registry gained a kind.
@@ -340,6 +470,12 @@ function data()
 			-- A month begun since the companies' loans were last charged.
 			local month = companies.monthNow(api)
 			local monthly = l:room() and type(saved) == "table" and companies.due(saved.companies, month)
+			-- Founded companies keep their own offers: initialize old rosters
+			-- once and refresh each independent cooldown when it expires.
+			local loanInit = l:room() and type(saved) == "table"
+				and companies.loanOffersNeedInit(saved.companies, api)
+			local loanRefresh = l:room() and type(saved) == "table"
+				and companies.loanOffersDue(saved.companies, api)
 			-- A quarter of a month begun since the companies' scores were
 			-- last sampled, with more than one company (tpf3mp/progression.lua).
 			local quarter = progression.quarterNow(api)
@@ -348,24 +484,32 @@ function data()
 			-- open: its money is settled (tpf3mp/companies.lua, "subsidies").
 			local day = companies.dayNow(api)
 			local subsidies = l:room() and type(saved) == "table" and companies.subsidiesDue(saved.companies, day)
-			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies then
+			-- The entities the hook's edge watch reads in this update.
+			local watch = l:edgewatch()
+			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies
+				and not loanInit and not loanRefresh
+				and not watch and not scanStep then
 				return nil
 			end
-			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint,
+			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint, scanStep = scanStep,
 				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
-				subsidies = subsidies and day or nil }
+				subsidies = subsidies and day or nil, loanInit = loanInit, loanRefresh = loanRefresh, watch = watch }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
-			if work.actions or work.begin or work.monthly or work.sample then
+			if work.actions or work.begin or work.monthly or work.sample or work.loanInit or work.loanRefresh then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end
 				local reg, _, failed = registry.sync(saved.registry)
 				-- The room's companies: begun at its first update, as the
 				-- registry, the same in every game (tpf3mp/companies.lua).
 				local roster = companies.ensure(saved.companies, api)
+				if work.loanInit then
+					local ok, why = pcall(companies.ensureLoanOffers, roster, api)
+					if not ok then l:log("the companies' loan offers were not initialized: " .. tostring(why)) end
+				end
 				-- What each company owns, once in this game's state, with
 				-- more than one company: whether a world loaded from a save
 				-- kept its owners (read only, tpf3mp/companies.lua).
@@ -383,6 +527,10 @@ function data()
 				-- The room's builds go through; the player's own the hook
 				-- stops.
 				if work.actions then l:replaying(true) end
+				applying = work.actions ~= nil
+				-- Whose build applied last: this player's or another's, for
+				-- the GUI's scripts' follow-ups (tpf3mp/modbuild.lua).
+				local lastBuild
 				for i, action in ipairs(work.actions or {}) do
 					-- Booked to the sender's company.
 					local player = work.origins and work.origins[i]
@@ -426,6 +574,10 @@ function data()
 						l:log("action " .. i .. " of this step made no " .. kind .. " this game could name")
 					end
 					l:applied(i, ok, entity, why)
+					if ok and modbuild.BUILDS[name] then
+						local status = l:status()
+						lastBuild = (status and status.me_id ~= nil and player == status.me_id) and "mine" or "other"
+					end
 					if not ok then
 						l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
 					elseif name == "CompanyOp" then
@@ -439,14 +591,43 @@ function data()
 					end
 				end
 				if work.actions then l:replaying(false) end
+				applying = false
+				if lastBuild then
+					l:note(modbuild.NOTE, modbuild.noted(l:note(modbuild.NOTE), lastBuild == "mine"))
+				end
 				if work.monthly then
 					local ok, why = pcall(companies.chargeMonths, roster, work.monthly, apply.send, api)
 					if not ok then l:log("the companies' loans were not charged: " .. tostring(why)) end
+				end
+				if work.loanRefresh then
+					local ok, refreshed, why = pcall(companies.refreshLoanOffers, roster, api)
+					if not ok or (refreshed == false and why) then
+						l:log("the companies' cooled-down loan offers were not refreshed: " .. tostring(ok and why or refreshed))
+					end
 				end
 				if work.sample then
 					local ok, why = progression.sample(prog, roster, api, work.sample,
 						function(line) l:log(line) end, reg, registry)
 					if not ok then l:log("the companies' scores were not sampled: " .. tostring(why)) end
+					-- Each company's headquarters and the bonus its town
+					-- gets, read only, when it changed: the game's own town
+					-- script gives it (tpf3mp/companies.lua).
+					local okHq, lines, whyHq = pcall(companies.headquartersReport, roster, api)
+					if not okHq or lines == nil then
+						local said = "the headquarters were not read: " .. tostring(okHq and whyHq or lines)
+						if toldHeadquarters.failed ~= said then
+							toldHeadquarters.failed = said
+							l:log(said)
+						end
+					else
+						for _, line in ipairs(lines) do
+							local key = line:match("^(.-): headquarters ") or line
+							if toldHeadquarters[key] ~= line then
+								toldHeadquarters[key] = line
+								l:log("headquarters: " .. line)
+							end
+						end
+					end
 				end
 				saved.registry = reg
 				saved.companies = roster
@@ -467,14 +648,63 @@ function data()
 					state:set(saved)
 				end
 			end
+			local rollingRead
+			if work.scanStep then
+				local t0 = lanes.clock()
+				local saved = state:get()
+				if type(saved) ~= "table" then saved = {} end
+				local ok, scan, read, report = pcall(lanes.rolling, api, saved.worldCheck, work.scanStep, work.checkpoint)
+				if not ok then
+					l:log("the rolling world check failed: " .. tostring(scan))
+					l:scanned(false, tostring(scan))
+					return
+				end
+				saved.worldCheck = scan
+				state:set(saved)
+				rollingRead = read
+				local t1 = lanes.clock()
+				l:scanned(true, nil, t0 and t1 and (t1 - t0) * 1000 or nil)
+				if report then l:log(report) end
+			end
 			if work.checkpoint then
-				local read, failed = lanes.read(api)
+				local read, failed = rollingRead, {}
+				if not work.scanStep then
+					-- Stand-in engines without a running native step retain the
+					-- full reader; real room updates always supply scanStep.
+					read, failed = lanes.read(api)
+					l:log(lanes.costLine())
+				end
 				if #failed > 0 and not told then
 					told = true
 					l:log("lanes read as err: " .. table.concat(failed, "; "))
 				end
 				local ok, why = l:lanes(read)
 				if not ok then l:log("the lanes were not taken: " .. tostring(why)) end
+				-- The subsidy script's offers and subsidies, said in the log
+				-- whenever they changed since the last checkpoint this state
+				-- saw: each with its number, kind, times and terms
+				-- (tpf3mp/subsidies.lua), so two games' logs show where their
+				-- offers part. The economy lane hashes the same rows.
+				if subsidiesModule == nil then
+					local okS, module = pcall(ug_require, MOD .. "::/scripts/tpf3mp/subsidies.lua")
+					subsidiesModule = okS and type(module) == "table" and module or false
+				end
+				if subsidiesModule then
+					local offers = companies.subsidyState(api)
+					local okRows, rows = pcall(subsidiesModule.rows, offers)
+					local clock = okRows and rows and subsidiesModule.clock(offers) or nil
+					local said = clock and (clock .. "|" .. table.concat(rows, "|")) or nil
+					if said and said ~= toldSubsidies then
+						toldSubsidies = said
+						local okT, now = pcall(function()
+							return api.engine.getComponent(api.engine.util.getWorld(),
+								api.type.ComponentType.GAME_TIME).gameTime
+						end)
+						l:log("subsidies at game time " .. tostring(okT and now or "?") .. ": " .. clock .. "; "
+							.. #rows .. " subsidies")
+						for _, row in ipairs(rows) do l:log("subsidy: " .. row) end
+					end
+				end
 				local dump = l:dump()
 				if dump then
 					local saved = state and state.get and state:get()
@@ -482,13 +712,19 @@ function data()
 					-- Every entry is handed over: the hook keeps the first
 					-- few thousand and counts the rest.
 					for _, lane in ipairs(dump.lanes) do
-						for _, entry in ipairs(lanes.dump(api, lane, reg)) do l:dumped(lane, entry) end
+						for _, entry in ipairs(lanes.dump(api, lane, reg, dump.box)) do l:dumped(lane, entry) end
 					end
 				end
 			end
+			-- The edge watch: each entity as it reads after this update.
+			for _, e in ipairs(work.watch or {}) do l:edgewatched(e, lanes.watch(api, e)) end
 		end,
 
 		guiHandleEvent = function(_params, _state, _guiState, _src, id, name, param)
+			if name == "builder.proposalCreate" then
+				local l = linked()
+				if l and l:room() then followInGui(l) end
+			end
 			if name ~= "builder.proposalCreate" and name ~= "builder.proposalPrepareForApply" then
 				local l = linked()
 				if l and l:room() then note(l, id, name) end
@@ -506,7 +742,16 @@ function data()
 				if action == false then
 					-- Nothing proposed yet: nothing to refuse, nothing to hand on.
 					snapshots[clicks] = nil
+					if previews then previews.hidden(l) end
 					return nil
+				end
+				-- What the tool shows, for the room's other members to see.
+				if previews then
+					local unshown = previews.shown(l, api, id, kind, action or nil)
+					if unshown and refusals < 40 then
+						refusals = refusals + 1
+						l:log("this " .. id .. " preview is not shown to the others: " .. tostring(unshown))
+					end
 				end
 				local shape
 				do
@@ -522,7 +767,9 @@ function data()
 							.. (shape and (" [" .. shape .. "]") or ""))
 					end
 				end
-				snapshots[clicks] = { action = action, why = why, shape = shape }
+				-- An upgrade tool's build, for the log (tpf3mp/roads.lua).
+				local upgrade = action and kind == "modify" and capture.upgradeSummary(action) or nil
+				snapshots[clicks] = { action = action, why = why, shape = shape, upgrade = upgrade }
 				if action then return nil end
 				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
 			end
@@ -555,20 +802,44 @@ function data()
 		guiUpdate = function(_params, _state, _guiState)
 			local l = linked()
 			if not l then return end
+			followUpsInGui(l)
+			if followUps then followUps.seen(l:note(modbuild.NOTE)) end
+			-- The player's own preview; the others' the Multiplayer plugin shows.
+			if previews and l:room() then previews.tick(l, api) end
 			local clicks = l:clicks()
 			if clicks == nil then return end
 			if handled == nil then handled = clicks end
+			-- A click: the room orders the build itself, for every game.
+			if previews and handled < clicks then previews.hidden(l) end
 			while handled < clicks do
 				local seen = snapshots[handled]
 				-- The module editor's click: its build as the hook read it,
 				-- whatever preview another tool showed before.
 				local native, whyNot = l:built(handled)
-				if native ~= nil or whyNot ~= nil then seen = moduleEdit(native, whyNot) end
-				if seen and seen.action then
+				if type(native) == "table" and native.terrain ~= nil then
+					seen = terraformEdit(native)
+				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
+					-- The painter's, the asset brush's, or a stroke that did not read.
+					seen = { why = whyNot, shape = "terrain tool" }
+				elseif native ~= nil or whyNot ~= nil then
+					seen = moduleEdit(native, whyNot)
+				end
+				if seen and seen.actions then
+					for i, action in ipairs(seen.actions) do
+						local ok, why = l:command(action)
+						if ok then
+							l:log(seen.said[i])
+						else
+							l:log("the player's terraform was not handed to the room: " .. tostring(why))
+							break
+						end
+					end
+				elseif seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
 						l:log("handed the player's build to the room"
 							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
+						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
 					end
@@ -586,6 +857,35 @@ function data()
 		end,
 
 		handleEvent = function(_params, state, _src, id, name, param)
+			-- The game's lifecycle events also run before the first update.
+			-- Register on load, including saves with older subscriptions, so
+			-- a room that starts paused can receive its first build.
+			if id == "" and (name == "handleLegacy" or tostring(name):find("init", 1, true) == 1) then
+				if state and state.subscribeToEvent then
+					for _, event in ipairs(EVENTS) do state:subscribeToEvent(event) end
+					subscribed = true
+				end
+				return
+			end
+			if id == "tpf3mp" and (name == "replay" or name == "command") and type(param) == "string" then
+				local l = linked()
+				if not l or not l:room() or type(param) ~= "string" then return end
+				local actions, origins, seals = l:takeReplay(param)
+				if not actions then return end -- stale or duplicate wake
+				local ok, why = pcall(function()
+					local seed = l:seed()
+					if seed then math.randomseed(seed) end
+					-- Only action processing: no monthly charges, progression
+					-- sampling, simulation updates or checkpoint reports.
+					script.postUpdate(_params, state, 0, {
+						actions = actions, origins = origins, seals = seals,
+					})
+				end)
+				l:replaying(false)
+				applying = false
+				l:replayed(param, ok, why)
+				return
+			end
 			if id == "Company" and (name == "startProspection" or name == "endProspection") then
 				prospected(state, name, param)
 				return
@@ -601,4 +901,5 @@ function data()
 			end
 		end,
 	}
+	return script
 end

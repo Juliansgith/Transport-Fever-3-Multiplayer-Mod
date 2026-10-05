@@ -1025,7 +1025,7 @@ impl<B: Backend> LauncherApp<B> {
     }
 
     /// "Unofficial launcher", the version, protocol and commit, left; the
-    /// support code, right.
+    /// support code and the log session, right.
     fn footer(&mut self, ui: &mut Ui, geometry: &Geometry, state: &State) {
         let footer = geometry.footer;
         let painter = ui.painter();
@@ -1039,9 +1039,31 @@ impl<B: Backend> LauncherApp<B> {
             galley,
             theme::FOOTER,
         );
-        let Some(support) = &state.support_id else {
+        // Right to left: the support code, then the log session.
+        let codes: Vec<(&str, &str, &str, &str)> = [
+            state.support_id.as_deref().map(|code| {
+                (
+                    code,
+                    "Support code",
+                    "Copy the support code",
+                    "Quote this to the server's operator when something goes wrong",
+                )
+            }),
+            state.log_session.as_deref().map(|code| {
+                (
+                    code,
+                    "Log session",
+                    "Copy the log session",
+                    "Every line of this launcher's logs, the game's too, goes to the server under this code",
+                )
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if codes.is_empty() {
             return;
-        };
+        }
         let row = Rect::from_min_max(
             pos2(footer.min.x, footer.min.y),
             pos2(footer.max.x + 0.0, footer.min.y + 18.0),
@@ -1052,18 +1074,23 @@ impl<B: Backend> LauncherApp<B> {
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if theme::quiet_button(ui, true, None, "Copy", Quiet::new().small())
-                    .on_hover_text("Copy the support code")
-                    .clicked()
-                {
-                    ui.ctx().copy_text(support.clone());
-                    self.toast = Some(("Copied.".into(), Instant::now()));
+                for (index, (code, name, copy, hover)) in codes.into_iter().enumerate() {
+                    if index > 0 {
+                        ui.add_space(10.0);
+                    }
+                    if theme::quiet_button(ui, true, None, "Copy", Quiet::new().small())
+                        .on_hover_text(copy)
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(code.to_owned());
+                        self.toast = Some(("Copied.".into(), Instant::now()));
+                    }
+                    ui.label(
+                        theme::text(code, theme::mono(9.0), theme::TEXT).extra_letter_spacing(1.08),
+                    )
+                    .on_hover_text(hover);
+                    ui.label(theme::text(name, theme::body(9.0), theme::FOOTER));
                 }
-                ui.label(
-                    theme::text(support, theme::mono(9.0), theme::TEXT).extra_letter_spacing(1.08),
-                )
-                .on_hover_text("Quote this to the server's operator when something goes wrong");
-                ui.label(theme::text("Support code", theme::body(9.0), theme::FOOTER));
             },
         );
     }

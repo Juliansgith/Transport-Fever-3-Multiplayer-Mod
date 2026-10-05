@@ -39,7 +39,7 @@ The shape tells the tool apart (measured unless noted):
 | stop or signal bulldoze | the edge removed and re-added without the object |
 | construction bulldoze | `toRemove` populated, nothing added |
 | road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408) |
-| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file: the group rebuilt without the assets removed (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408) |
+| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file, its desc `autoRemovable`: the group rebuilt without the assets removed, thin instances then full ones (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408); nothing added when the last assets of a group go |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
 | asset brush | `toAdd` records of an asset-group type whose per-asset data is a vector of `{model path, matrix}` (decompiled); its commit clears `old2new` first |
@@ -309,6 +309,18 @@ road rebuilt through a station junction still travels. The construction
 generates its own internal track, then its refresh snaps the entrance.
 Ordinary road and track builds do not use this branch removal.
 
+The junction configurations the tool proposed go with the branches they
+name (2026-10-02: a street terminal placed into a road was refused in
+every game, "the junction no longer exists"). The tool configures the
+station's own entrance node and the new junction its entrance joins, and
+both name the entrance edge, which replay leaves out; so every game drops
+a configuration whose node is a removed branch's vertex, or whose turns or
+crosswalks name a removed branch's edge (`junctions.without`), and logs it
+as "left to the construction". The construction and its refresh give those
+junctions the game's own settings, the same in every game. Configurations
+at existing nodes that name only the rebuilt street still travel as the
+tool made them.
+
 `lua_mod.rs` reproduces the recorded depot topology: before the fix its
 first build contains four duplicate nodes and edges; afterwards it contains
 none, and the stand-in engine accepts the refresh. A longer station
@@ -342,9 +354,9 @@ construction by file and place, and every game replaces it within 2 m in
 one proposal mapped old to new, as the game's own upgrade does
 ([HOOKS.md](HOOKS.md), "The build tools"). The construction tool's
 proposals, the construction menu's parameters and the station window's
-cargo buttons are carried so; one replacing more than one construction,
-one the room cannot name, or one that changes streets around it is
-refused. The module editor itself tells game scripts nothing of its
+cargo buttons are carried so, with the streets an edit changes around the
+construction as its connection (below); one replacing more than one
+construction or one the room cannot name is refused. The module editor itself tells game scripts nothing of its
 proposals on build 40408 (read from the binary: `UI::CGameUI` forwards
 `builder.proposalCreate` for six other tools only), so the hook reads its
 proposal natively at its call of `CommandList::Add` and hands the GUI the
@@ -368,6 +380,44 @@ also applied in both games; all 54 shared network checkpoints through step
 2700 agreed. This proves those edits, not every module type or an edit that
 also rebuilds external connecting track. One host startup failed before
 testing and succeeded on rejoin; that loading failure remains unresolved.
+
+A road station placed by a road snapped onto it, but came loose as soon as
+it was edited (2026-10-03, adding a second entrance at its other end, and
+in both games, the editing player's too, since every game replays the
+edit): its street pieces no longer joined the road or made junctions with
+it. The replacement builds the new construction alone, and a scripted
+build makes the entrance again unsnapped, ending short of the road, as a
+fresh build does; the fresh build is refreshed afterwards, the edit was
+not. Every game now refreshes the new construction after an edit too,
+which snaps its entrances onto the streets beside them. `lua_mod.rs`
+covers the refresh, a refresh with nothing to snap (nothing sent) and a
+refused one (the edit stands, logged). Seen in the game the same day: a
+plain edit snapped again (`snapping 72194 +e-2:-1>57114 -e71473`).
+
+A new exit onto a road the station did not join was refused: the module
+editor's proposal splits that road through a new junction (three nodes and
+four edges added; the station's own entrance node and edge and the road's
+edge removed), and an edit carried no street change around its
+construction. The hook reads only how many nodes and edges the editor
+adds. Asked again in the game's console with the editor's parameters,
+`createProposalReplaceConstruction` proposed exactly the editor's street
+part. So the editing player's game asks it so, checks it against what the
+hook read, and the edit carries the streets around it as its connection,
+without the old construction's own removals; every game builds the
+connection in the replacing proposal, the station's own entrances peeled
+off as for a new station, then refreshes the station. The old entrance's
+junction, where the split road ends at it, keeps no settings (they would
+name the old entrance, which goes with the old station). Every edge a
+construction's connection removes or splits must be the acting company's
+or no company's, for new stations too, which did not check it. Covered by
+`lua_mod.rs` (the capture and its refusals, the replay, a road of another
+company, the old entrance's junction and another company's road at it, a
+refused refresh after the split). Seen in two launcher-started games on
+the local server the same day: a new exit onto another road was carried
+from the module editor and replayed alike in both games (`building
++n-3(-1042.6,-1959.4,11.0) +e-1/0:48073>-3 … +e-2/0:-3>71864 … -e71975`,
+then `snapping 72116 +e-3:-1>73619 +e-4:-2>71600 -e72101 -e73645`), both
+entrances joined to their roads, and edits after it too.
 
 ### Demolish
 
@@ -402,6 +452,15 @@ lossless from Lua. Rules:
   edge it matched runs the other way;
 - one stop per side per street edge. Two objects with the same side value on
   one edge is a fatal assert in lane creation. Guard by side, not by count;
+- the junctions at the edge's ends keep their lane configurations. A script
+  proposal must remove the configurations that name the edge it removes
+  ("Unknown exception" otherwise, below), and must add them back naming the
+  rebuilt edge: removed alone at a junction with traffic lights, the lights
+  stay without a configuration, the build asserts
+  (`GetComponentDataIndex`, component `BaseNodeConfig`) and leaves the
+  world half rebuilt, and the simulation dies a second later (TF3 build
+  40408, 2026-10-04: a two-sided stop between two traffic lights crashed a
+  room; reproduced from the console in a single game);
 - merging a new stop into a nearby group is not in the proposal: the apply
   pairs an opposite-side stop within 125 m, else joins any group within
   200 m. The same placement merges the same way everywhere for free;
@@ -431,6 +490,32 @@ replaces another, signals and waypoints stay refused.
   to the originator's. A stroke is held until the originator's own replay has
   applied, so the next part of the stroke is computed against the replayed
   heights.
+
+  **On Transport Fever 3** (build 40408, read from the binary, not yet seen
+  in the game) the same shape holds: the terrain tools (`UI::TerrainModifier`:
+  raise, lower, smooth, flatten, the heightmap brush), the painter and the
+  asset brush are `UI::ProposalAction`s that queue their `WorldBuildProposal`
+  from `ProposalAction::DoApply`, and tell game scripts nothing. The
+  proposal's `terrain.baseHeightMod` (at 0x2d8 of the `Proposal`) is a grid
+  `{ x0, y0, width, height; Vec2f cells }`, then the paint's material and
+  mask grids. The hook reads the height grid at the click (docs/HOOKS.md,
+  "Terraforming"); the GUI hands the room `Terraform` actions of it, the
+  cells' two values rounded to the millimetre, in bands of whole rows of
+  at most 4,096 cells; every game, the player's own included, arms the hook
+  with the grid and sends an empty `Proposal` as the player's build, which
+  the hook fills at its apply. So every game sets the same cells to the
+  same heights in the same update. What a stroke changes is carried, not
+  how the brush moved, so frame timing does not enter. TF3's tool is not
+  held between parts of a stroke as TPF2-MP's was: while the mouse is
+  down, the originator's tool computes against ground the room has not
+  changed yet. The lanes (`tpf3mp/lanes.lua`) do not read the terrain, so a
+  divergence in it alone is not caught at a checkpoint; INFERRED, TPF2's
+  lesson, that one shows soon after in the edges and constructions built
+  on it, which they do read.
+  It stays refused in a room until `tpf3mp/acceptance.lua`'s `terraform`
+  is turned on after a two-player game shows the same ground in every game
+  (COVERAGE.md); until then the GUI's sender and every game's replay
+  refuse it.
 - **Paint** is the material index and mask grids on the same path. The
   material texels are simulation data, not a graphics setting: a paint applied
   in the right place with the two games at different texture resolutions.
@@ -458,7 +543,9 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**22**). This integration combines the existing
+`ACTION_SCHEMA_VERSION` (**25**; combines station access, company perks
+and preservation, plus named stops and gated asset removal). This
+integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
 The Lua mod builds an action from a captured
@@ -494,20 +581,22 @@ appended.
 | `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
 | `Bulldoze` | edges of one network by their ends, with the town buildings the game removes along them, each by file and position; or a construction (a town building among them) by file and position; or a stop, signal or waypoint by its edge, position and model |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, the construction it replaces for a module edit, and its connection: the streets and tracks its tool built with it, as a polyline whose every link names its kind |
-| `BuyVehicle` | the depot by its construction's file and position and its index among the construction's depots (an airport's second hangar), the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
+| `BuyVehicle` | the depot by its construction's file and position and its index among the construction's depots (its `depots`, then its subconstructions that are depots: an airfield's or airport's hangar; an airport's second hangar), the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
 | `SellVehicle` | vehicles |
 | `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo, the waypoints after it), transport modes, settings. A waypoint is on a lane of a street's, track's or construction's transport network (the edge by its ends, node 0 first, which must run the same way in every game; the construction by file and place), the lane's index and the place along it; or, for ships and aircraft, a position in the open; with the line manager's tag |
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
 | `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
 | `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way |
-| `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
-| `CompanyOp` | create, join, rename or delete a company |
+| `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height; on TF3 the corner is the first cell's index in the terrain's own grid times the cell size (4 m), and a stroke larger than 4,096 cells goes as several, a band of whole rows each. Gated off (`acceptance.lua`, `terraform`) |
+| `CompanyOp` | create, join, rename or delete a company; its head's password, players and stations (`ShareStations` the default, `StationAccess` one other company over it) |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
-| `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart, its colour |
+| `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (never sold on arrival: build 40408 sells such a vehicle at the depot, then asks the removed vehicle where it is and fails its engine's assertion, `Engine.h:323`, in every game at once; `Action::validate` refuses it), reverse, depart, its colour |
 | `ReplaceVehicle` | a vehicle and its new consist, as `BuyVehicle` carries one, each part also saying which of the vehicle's own parts it keeps (by index, same model), or none for a part bought new; its groups and multiple units. One vehicle each: a group edit is one action per vehicle, as the game sends it |
 | `NotificationSeen` | a notification's popup played its first sound: every game's Notifications script marks it (its `initialSound` event), so no game plays it again |
 | `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |
 | `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
+| `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Gated off (`acceptance.lua`, `perks`) ([HOOKS.md](HOOKS.md), "Company perks") |
+| `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

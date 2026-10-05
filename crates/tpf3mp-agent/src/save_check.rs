@@ -10,7 +10,32 @@
 //! this before handing a world to the hook, is for release day
 //! (`docs/DAY_ONE.md`, section 7).
 
+use std::path::Path;
+
 use thiserror::Error;
+use tpf3mp_bridge::mods::OWN_MOD;
+use tpf3mp_modscan::save::SaveMod;
+
+/// What the owner is told when the save they pick for a room does not run
+/// TPF3-MP's mod: its game script orders the room's game, so a world
+/// without it loads and then holds paused for good (seen live).
+pub const SAVE_WITHOUT_OWN_MOD: &str = "This save doesn't have the TPF3-MP mod enabled: load it once, turn TPF3-MP on in its mods, save it, then pick it again";
+
+/// What a player is told when the room's world, as it arrives, does not run
+/// TPF3-MP's mod.
+pub const WORLD_WITHOUT_OWN_MOD: &str = "The room's world doesn't have the TPF3-MP mod enabled, so it cannot play here: its owner should load the save once, turn TPF3-MP on in its mods, save it, and start a new room from it";
+
+/// Whether a save lists TPF3-MP's own mod among its mods (`OWN_MOD`).
+pub fn lists_own_mod(mods: &[SaveMod]) -> bool {
+    mods.iter().any(|listed| listed.id == OWN_MOD)
+}
+
+/// Whether the save at `path` runs TPF3-MP's own mod: `Ok(false)` only when
+/// its mods read and the mod is not among them; why not when they do not
+/// read.
+pub fn runs_own_mod(path: &Path) -> Result<bool, String> {
+    tpf3mp_modscan::save::mods(path).map(|mods| lists_own_mod(&mods))
+}
 
 /// Largest script data admitted.
 pub const MAX_LUA_DATA: usize = 32 << 20;
@@ -302,11 +327,61 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Saves for tests: the start of a save as the game writes one, listing
+/// mods, as `tpf3mp_modscan::save` reads it.
+#[cfg(test)]
+pub(crate) mod saves {
+    use std::path::Path;
+
+    fn string(out: &mut Vec<u8>, text: &str) {
+        out.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+
+    /// Writes a save at `path` listing the mods `ids`.
+    pub(crate) fn write(path: &Path, ids: &[&str]) {
+        let mut out = b"tf**\x5c\x02\x00\x00".to_vec();
+        string(&mut out, "company");
+        out.extend_from_slice(&[4, 0, 0, 0, 1, 1, 0, 0, 0, 3, 0, 0, 0]);
+        out.extend_from_slice(&u32::try_from(ids.len()).unwrap().to_le_bytes());
+        for id in ids {
+            string(&mut out, id);
+            string(&mut out, "StagingArea");
+            string(&mut out, &format!("StagingArea,{id}"));
+            string(&mut out, id);
+            string(&mut out, "");
+            out.extend_from_slice(&0u32.to_le_bytes());
+        }
+        out.extend_from_slice(&[1, 0x80, 2, 0, 0, 0x68, 1, 0, 0]);
+        std::fs::write(path, zstd::encode_all(&out[..], 3).unwrap()).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::{collection::vec, prelude::*, sample::Index};
 
     use super::*;
+
+    #[test]
+    fn a_save_runs_tpf3mps_mod_only_when_it_lists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // The live case: a save with the game's DLC and not TPF3-MP.
+        let without = dir.path().join("without.sav");
+        saves::write(
+            &without,
+            &["urbangames_deluxe_upgrade_pack", "urbangames_preorder_pack"],
+        );
+        assert_eq!(runs_own_mod(&without), Ok(false));
+        let with = dir.path().join("with.sav");
+        saves::write(&with, &["urbangames_deluxe_upgrade_pack", "tpf3mp_1"]);
+        assert_eq!(runs_own_mod(&with), Ok(true));
+        // Unreadable is not "without": the caller decides.
+        let junk = dir.path().join("junk.sav");
+        std::fs::write(&junk, b"not a save").unwrap();
+        assert!(runs_own_mod(&junk).is_err());
+        assert!(runs_own_mod(&dir.path().join("missing.sav")).is_err());
+    }
 
     fn check(text: &str) -> Result<(), LuaDataError> {
         check_lua_data(text.as_bytes())

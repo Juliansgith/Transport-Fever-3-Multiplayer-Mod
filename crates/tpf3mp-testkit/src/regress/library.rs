@@ -8,11 +8,12 @@ use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
-        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeObjectKind, EdgeRef,
-        EditLine, LineChange, LineData, LineId, LineStop, Link, LoadMode, Network, Param,
-        ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart,
-        Resolve, RoadBuild, StationId, StopRules, Structure, Tangent, Terminal, Terraform,
-        TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleId, Vertex,
+        ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds, EdgeKind,
+        EdgeObjectKind, EdgeRef, EditLine, Lane, LineChange, LineData, LineId, LineStop, Link,
+        LoadMode, Network, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect,
+        ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
+        Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir,
+        VehicleId, Vertex,
     },
 };
 
@@ -26,11 +27,14 @@ pub const TRACK: &str = "track/standard.lua";
 pub const BRIDGE: &str = "bridge/stone.lua";
 pub const BUS_STATION: &str = "station/street/bus_station.con";
 pub const TRAIN_STATION: &str = "station/rail/train_station.con";
+pub const AIRFIELD: &str = "station/air/airfield.con";
+pub const AIRPORT: &str = "station/air/airport.con";
 pub const BUS_DEPOT: &str = "depot/bus_depot.con";
 pub const TRAIN_DEPOT: &str = "depot/train_depot.con";
 pub const BUS: &str = "vehicle/bus/standard_bus.mdl";
 pub const LOCOMOTIVE: &str = "vehicle/train/standard_loco.mdl";
 pub const WAGON: &str = "vehicle/waggon/standard_coach.mdl";
+pub const SMALL_AIRCRAFT: &str = "vehicle/plane/f13.mdl";
 pub const STREET_STOP: &str = "station/street/street_stop.mdl";
 
 /// A point on the ground, in metres.
@@ -159,7 +163,7 @@ fn reference(file: &str, pos: Pos) -> ConstructionRef {
     }
 }
 
-pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
+pub fn buy_indexed(depot: &str, pos: Pos, depot_index: u8, consist: &[&str]) -> Action {
     Action::BuyVehicle(BuyVehicle {
         depot: reference(depot, pos),
         consist: list(
@@ -175,8 +179,12 @@ pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
         ),
         groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
         multiple_units: list(vec![text("")]),
-        depot_index: 0,
+        depot_index,
     })
+}
+
+pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
+    buy_indexed(depot, pos, 0, consist)
 }
 
 /// A vehicle's consist replaced: each car a model and, for one the vehicle
@@ -314,6 +322,7 @@ pub fn place_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         two_sided: false,
         object: EdgeObjectKind::Stop,
         one_way: false,
+        name: None,
     })
 }
 
@@ -323,6 +332,58 @@ pub fn bulldoze_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         at: pos,
         model: text(STREET_STOP),
     })
+}
+
+/// A road or track modifier's upgrade of the straight edge `a`-`b` of
+/// `network`: rebuilt in place in `template`, with one lane carrying
+/// `modes` (a bit per transport mode: a tram track, catenary), a noise
+/// barrier, locked and owned, the old edge removed.
+pub fn upgrade(network: Network, a: Pos, b: Pos, template: &str, modes: u32) -> Action {
+    let mut polyline = polyline(vec![node(a, network), node(b, network)], &Structure::Ground);
+    let mut links = polyline.links.to_vec();
+    links[0].kind = Some(EdgeKind {
+        network,
+        template: text(template),
+        style: None,
+    });
+    links[0].decorations = list(vec![Decoration {
+        name: text("::/infrastructure/edge_addons/barrier_b.edge"),
+        flag: false,
+    }]);
+    links[0].locked = true;
+    links[0].owned = true;
+    links[0].lanes = list(vec![Lane {
+        speed: 22_222,
+        width: 3_000,
+        height: 0,
+        offset: 0,
+        forward: true,
+        modes,
+    }]);
+    polyline = Polyline::new(
+        polyline.vertices.clone(),
+        list(links),
+        list(vec![EdgeRef {
+            network,
+            ends: EdgeEnds { a, b },
+        }]),
+    )
+    .expect("two vertices");
+    match network {
+        Network::Street => Action::BuildRoad(RoadBuild {
+            street: text(STREET),
+            style: None,
+            bus_lane: false,
+            tram: Tram::None,
+            polyline,
+        }),
+        Network::Track => Action::BuildTrack(TrackBuild {
+            track: text(TRACK),
+            style: None,
+            catenary: false,
+            polyline,
+        }),
+    }
 }
 
 /// Raises a `columns` by `rows` grid of `cell`-metre cells to `height` mm.
@@ -592,6 +653,84 @@ fn two_companies_scenario() -> Scenario {
         .scenario(
             "two-companies",
             "two players build lines side by side; neither can touch what the other owns",
+            true,
+            2,
+        )
+}
+
+fn airport_support_scenario() -> Scenario {
+    Script::default()
+        .act(0, construction(AIRFIELD, at(0, 0), "West Airfield"))
+        .act(0, construction(AIRPORT, at(5000, 0), "East Airport"))
+        .expect_all([Check::Constructions(2), Check::Stations(2), Check::Depots(2)])
+        // Each default construction has its hangar as depot 0. The airfield
+        // has no depot 1, and another company cannot buy or remove either.
+        .act(0, buy_indexed(AIRFIELD, at(0, 0), 1, &[SMALL_AIRCRAFT]))
+        .expect(Check::Ignored(1))
+        .act(1, buy_indexed(AIRFIELD, at(0, 0), 0, &[SMALL_AIRCRAFT]))
+        .act(1, bulldoze_construction(AIRPORT, at(5000, 0)))
+        .expect(Check::Ignored(3))
+        .act(0, buy_indexed(AIRFIELD, at(0, 0), 0, &[SMALL_AIRCRAFT]))
+        .act(0, buy_indexed(AIRPORT, at(5000, 0), 0, &[SMALL_AIRCRAFT]))
+        .expect_all([
+            Check::Vehicles(2),
+            Check::Idle(2),
+            Check::Ignored(3),
+            Check::MoneyBelow {
+                actor: 0,
+                money: START_MONEY,
+            },
+        ])
+        .act(0, line("Air shuttle", &[0, 1]))
+        .act(0, assign(&[0, 1], Some(0), Some(0)))
+        .expect_all([
+            Check::Line {
+                line: LineId(0),
+                stops: 2,
+                vehicles: 2,
+            },
+            Check::Idle(0),
+        ])
+        .act(0, edit(0, LineChange::Rename(text("Island air"))))
+        .expect(Check::LineName {
+            line: LineId(0),
+            name: "Island air".into(),
+        })
+        // A route edit naming a station that does not exist is refused and
+        // leaves both stops intact.
+        .act(0, edit(0, LineChange::Update(line_data(&[1, 9]))))
+        .expect(Check::Line {
+            line: LineId(0),
+            stops: 2,
+            vehicles: 2,
+        })
+        .expect(Check::Ignored(4))
+        // An airport still used by a line cannot be removed; neither can a
+        // company change another company's line.
+        .act(0, bulldoze_construction(AIRPORT, at(5000, 0)))
+        .act(1, edit(0, LineChange::Rename(text("Stolen"))))
+        .expect_all([
+            Check::Ignored(6),
+            Check::LineName {
+                line: LineId(0),
+                name: "Island air".into(),
+            },
+        ])
+        .act(0, edit(0, LineChange::Delete))
+        .expect_all([Check::Lines(0), Check::Idle(2)])
+        .act(0, sell(&[0, 1]))
+        .expect(Check::Vehicles(0))
+        .act(0, bulldoze_construction(AIRFIELD, at(0, 0)))
+        .act(0, bulldoze_construction(AIRPORT, at(5000, 0)))
+        .expect_all([
+            Check::Constructions(0),
+            Check::Stations(0),
+            Check::Depots(0),
+            Check::Ignored(6),
+        ])
+        .scenario(
+            "airport-support",
+            "build a default airfield and airport, buy aircraft through their hangars, edit and assign an air line, refuse invalid ownership and removal, then clean up",
             true,
             2,
         )
@@ -931,6 +1070,58 @@ fn crowd_scenario() -> Scenario {
         )
 }
 
+/// The upgrade tools and terraforming: a street with a stop upgraded in
+/// place (a tram track, a noise barrier, locked and owned), the stop kept;
+/// a track electrified in another template; a road that would move the
+/// stop refused; a stroke cut into two bands of rows (the mod's
+/// `capture.terraform`).
+fn upgrades_scenario() -> Scenario {
+    const TRAM_STREET: &str = "street/standard/town_medium_tram.lua";
+    const CATENARY_TRACK: &str = "track/high_speed.lua";
+    // PERSON and TRAM_TRACK; TRAIN and ELECTRIC_TRAIN.
+    const TRAM_LANE: u32 = 1 | 1 << 14;
+    const ELECTRIC: u32 = 1 << 7 | 1 << 8;
+    let (a, b, stop) = (at(0, 0), at(1000, 0), at(500, 0));
+    let (t1, t2) = (at(0, 400), at(1000, 400));
+    Script::default()
+        .act(0, road(vec![new(a), new(b)]))
+        .act(0, place_stop(a, b, stop))
+        .expect_all([Check::StreetEdges(1), Check::EdgeObjects(1)])
+        .act(0, upgrade(Network::Street, a, b, TRAM_STREET, TRAM_LANE))
+        .expect_all([Check::StreetEdges(1), Check::EdgeObjects(1), Check::Ignored(0)])
+        .act(1, track(vec![new(t1), new(t2)], &Structure::Ground))
+        .act(1, upgrade(Network::Track, t1, t2, CATENARY_TRACK, ELECTRIC))
+        .expect_all([Check::TrackEdges(1), Check::Ignored(0)])
+        // A road from the stop's street elsewhere, its edge removed and not
+        // rebuilt: the stop would stand on nothing.
+        .act(
+            0,
+            Action::BuildRoad(RoadBuild {
+                street: text(STREET),
+                style: None,
+                bus_lane: false,
+                tram: Tram::None,
+                polyline: Polyline::new(
+                    list(vec![node(a, Network::Street), new(at(0, 300))]),
+                    polyline(vec![new(a), new(at(0, 300))], &Structure::Ground).links,
+                    list(vec![street_edge(a, b)]),
+                )
+                .expect("two vertices"),
+            }),
+        )
+        .expect_all([Check::Ignored(1), Check::StreetEdges(1), Check::EdgeObjects(1)])
+        .act(1, terraform(2000, 2000, 4, 16, 10, 3_500))
+        .act(1, terraform(2000, 2040, 4, 16, 3, 3_500))
+        .expect(Check::TerrainCells(16 * 13))
+        .scenario(
+            "upgrades",
+            "upgrade a street with a stop and electrify a track in place, refuse moving the stop, terraform in bands",
+            true,
+            2,
+        )
+        .exact()
+}
+
 /// Junction settings through the room, with ownership refusal and reset.
 fn junctions_scenario() -> Scenario {
     use tpf3mp_proto::action::{
@@ -1009,11 +1200,13 @@ pub fn scenarios() -> Vec<Arc<Scenario>> {
         rail_line_scenario(),
         junctions_scenario(),
         two_companies_scenario(),
+        airport_support_scenario(),
         refusals_scenario(),
         prospecting_scenario(),
         line_editing_scenario(),
         demolition_scenario(),
         companies_scenario(),
+        upgrades_scenario(),
         crowd_scenario(),
         town_scenario(12),
     ];

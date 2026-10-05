@@ -9,8 +9,10 @@ every common sample is reported as matching for that run length.
 
     python tools/probe/compare_runs.py runA.log runB.log [-o report.md]
 
-Lanes: v=vehicle count, p=vehicle positions (1 m), e=edge geometry (0.1 m),
-c=construction list, t=town building counts, m=money per player, n=people count.
+Lanes: v=vehicle count, p=vehicle state and position (1 m) or stable depot
+location while parked (including aircraft flight state when active), e=edge
+geometry (0.1 m), c=construction list, t=town building counts, m=money per
+player, n=people count.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from pathlib import Path
 
 LANES = [
     ("v", "vehicle count"),
-    ("p", "vehicle positions (1 m)"),
+    ("p", "vehicle state/position (1 m), or depot location while parked"),
     ("e", "edge geometry (0.1 m)"),
     ("c", "construction list"),
     ("t", "town building counts"),
@@ -37,7 +39,9 @@ def parse_log(path: Path) -> dict[int, dict]:
     """step -> {lane: digest, 'time': str}. Non-sample/comment lines are skipped."""
     samples: dict[int, dict] = {}
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if raw.startswith("#") or "step=" not in raw:
+        # Hook logs prefix probe comments with a timestamp and mod label.
+        # A skipped-step comment is not a sample with seven missing lanes.
+        if raw.startswith("#") or "# skipped step=" in raw or "step=" not in raw:
             continue
         m = _LINE.search(raw)
         if not m:

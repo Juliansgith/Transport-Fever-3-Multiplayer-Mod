@@ -94,13 +94,34 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
     outcomes
 }
 
+thread_local! {
+    /// Set on this thread while it runs the game's own step
+    /// ([`set_in_step`]).
+    static IN_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From the step detour, around its call of the game's `GameSim::Step`:
+/// this thread is inside the simulation's step. The second engine's copy
+/// (`GameState::Replicate` -> `Replicator::Apply`) runs from the game's
+/// frame, outside the step, as often as the frames come, so the fixes count
+/// what they see inside the step apart: those counts are what two games'
+/// logs must agree on.
+pub fn set_in_step(inside: bool) {
+    IN_STEP.with(|flag| flag.set(inside));
+}
+
+/// Whether this thread is inside the game's step.
+pub fn in_step() -> bool {
+    IN_STEP.with(|flag| flag.get())
+}
+
 /// Opt-in, read-only route-cache trace for reproducing terminal divergence.
 mod route_trace {
     use super::*;
     use std::collections::BTreeMap;
 
-    const SITE: &str = "ecs::LineSystem::GetData/return";
-    const EXPECTED: [u8; 9] = [0x48, 0x83, 0xc0, 0x18, 0x48, 0x83, 0xc4, 0x28, 0xc3];
+    use crate::build_data::native::order::route_trace::EXPECTED;
+    use crate::build_data::native::order::route_trace::SITE;
     static LINE: AtomicU64 = AtomicU64::new(u64::MAX);
     static BROKEN: AtomicBool = AtomicBool::new(false);
     static SEEN: Mutex<BTreeMap<i32, String>> = Mutex::new(BTreeMap::new());
@@ -328,29 +349,15 @@ pub mod land_vehicle {
     /// Set to `0` (or `off`), the site stays out: the engine shuffles the
     /// vehicles in its own order.
     pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_LAND_VEHICLE_ORDER";
-    /// The site: `mov r13, [rbp-0x20]; mov rsi, [rbp-0x18]; cmp r13, rsi`.
-    pub const SITE: &str = "ecs::LandVehicleMoveSystem::Update2/shuffle";
-    /// The engine's own walk from an entry to its node record, which the
-    /// hook copies: `this` at `[rbp-0x80]`, the node-list holder at
-    /// `this+8`, the records at `[holder]`, 20 bytes each, the entry's
-    /// node index at its first dword.
-    pub const RECORDS: &str = "ecs::LandVehicleMoveSystem::Update2/records";
-    /// The bytes at the site; the first [`STEAL`] are run from the stub.
-    pub const EXPECTED: [u8; 11] = [
-        0x4C, 0x8B, 0x6D, 0xE0, // mov r13, [rbp-0x20]
-        0x48, 0x8B, 0x75, 0xE8, // mov rsi, [rbp-0x18]
-        0x4C, 0x3B, 0xEE, // cmp r13, rsi
-    ];
-    pub const STEAL: usize = 8;
-    /// Frame slots, as the stolen bytes encode them.
-    const VEC_BEGIN: i64 = -0x20;
-    const VEC_END: i64 = -0x18;
-    /// Where `this` is, as the records walk encodes it (`mov r8, [rbp-0x80]`).
-    const THIS: i64 = -0x80;
-    /// One entry: `{int32 nodeIndex, float priority}`.
-    pub const ENTRY_LEN: u64 = 8;
-    /// One node record: the entity id, then four component indices.
-    pub const RECORD_LEN: u64 = 20;
+    pub use crate::build_data::native::order::land_vehicle::ENTRY_LEN;
+    pub use crate::build_data::native::order::land_vehicle::EXPECTED;
+    pub use crate::build_data::native::order::land_vehicle::RECORD_LEN;
+    pub use crate::build_data::native::order::land_vehicle::RECORDS;
+    pub use crate::build_data::native::order::land_vehicle::SITE;
+    pub use crate::build_data::native::order::land_vehicle::STEAL;
+    use crate::build_data::native::order::land_vehicle::THIS;
+    use crate::build_data::native::order::land_vehicle::VEC_BEGIN;
+    use crate::build_data::native::order::land_vehicle::VEC_END;
     /// A sanity bound on the vehicle count.
     pub const MAX_ENTRIES: u64 = 1 << 20;
 
@@ -600,16 +607,10 @@ pub mod terminal {
     /// Set to `0` (or `off`), the site stays out: the boarding loop reads
     /// the vehicles in the engine's order.
     pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER";
-    /// The site: `mov [rsp+0x248], rax` right after the getter's call, with
-    /// `rax` the `std::vector<Entity>*`.
-    pub const SITE: &str = "ecs::SimEntityAtTerminalSystem::Update/vehicles at stop";
-    /// The getter the call before the site must reach.
-    pub const GETTER: &str = "ecs::TransportVehicleSystem::GetVehiclesAtLineStop";
-    pub const EXPECTED: [u8; 12] = [
-        0x48, 0x89, 0x84, 0x24, 0x48, 0x02, 0x00, 0x00, // mov [rsp+0x248], rax
-        0x41, 0x8B, 0x7F, 0x50, // mov edi, [r15+0x50]
-    ];
-    pub const STEAL: usize = 8;
+    pub use crate::build_data::native::order::terminal::EXPECTED;
+    pub use crate::build_data::native::order::terminal::GETTER;
+    pub use crate::build_data::native::order::terminal::SITE;
+    pub use crate::build_data::native::order::terminal::STEAL;
     pub const MAX_IDS: u64 = 1 << 20;
 
     static BROKEN: AtomicBool = AtomicBool::new(false);
@@ -793,29 +794,15 @@ pub mod platform {
     pub const FIX: &str = "platform-order";
     /// Set to `0` (or `off`), both sites stay out.
     pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_PLATFORM_ORDER";
-    /// `mov rcx,[r13+0x10]; movsxd rax,[rsi+rdi+4]; imul rbx,rax,0x1e8`,
-    /// right after `mov rax,[r13+8]; mov rdi,[rax]`.
-    pub const VISIT_SITE: &str = "ecs::TransportVehicleSystem::Update2/visit";
-    pub const VISIT_EXPECTED: [u8; 16] = [
-        0x49, 0x8B, 0x4D, 0x10, // mov rcx, [r13+0x10]
-        0x48, 0x63, 0x44, 0x3E, 0x04, // movsxd rax, [rsi+rdi+4]
-        0x48, 0x69, 0xD8, 0xE8, 0x01, 0x00, 0x00, // imul rbx, rax, 0x1e8
-    ];
-    pub const VISIT_STEAL: usize = 9;
-    /// `mov rcx,r14; sub rcx,r13; mov rax,rdi; imul rcx`: the candidates
-    /// are `[r13, r14)`, the sort's call follows.
-    pub const CANDIDATES_SITE: &str = "FindNextFreeTerminal/candidate sort";
-    pub const CANDIDATES_EXPECTED: [u8; 12] = [
-        0x49, 0x8B, 0xCE, // mov rcx, r14
-        0x49, 0x2B, 0xCD, // sub rcx, r13
-        0x48, 0x8B, 0xC7, // mov rax, rdi
-        0x48, 0xF7, 0xE9, // imul rcx
-    ];
-    pub const CANDIDATES_STEAL: usize = 6;
-    /// Update2's `int` argument, the node count, spilled at `[rbp+0x5b0]`.
-    const COUNT: i64 = 0x5b0;
-    pub const RECORD_LEN: u64 = 8;
-    pub const CANDIDATE_LEN: u64 = 12;
+    pub use crate::build_data::native::order::platform::CANDIDATE_LEN;
+    pub use crate::build_data::native::order::platform::CANDIDATES_EXPECTED;
+    pub use crate::build_data::native::order::platform::CANDIDATES_SITE;
+    pub use crate::build_data::native::order::platform::CANDIDATES_STEAL;
+    use crate::build_data::native::order::platform::COUNT;
+    pub use crate::build_data::native::order::platform::RECORD_LEN;
+    pub use crate::build_data::native::order::platform::VISIT_EXPECTED;
+    pub use crate::build_data::native::order::platform::VISIT_SITE;
+    pub use crate::build_data::native::order::platform::VISIT_STEAL;
     pub const MAX_RECORDS: u64 = 1 << 20;
     pub const MAX_CANDIDATES: u64 = 1 << 12;
 
@@ -1172,16 +1159,12 @@ pub mod road {
     /// Set to `0` (or `off`), the entries keep the engine's order (the
     /// measurement still installs the detours when it is on).
     pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_ROAD_ENTRY_ORDER";
-    pub const ADD: &str = measure::EDGE_USE_ADD;
-    pub const ADD_RANGE: &str = measure::EDGE_USE_ADD_RANGE;
-    /// One entry: the entity id first.
-    pub const ENTRY_LEN: u64 = 20;
-    /// One edge's data: its length (a float), then the entries vector.
-    pub const EDGE_DATA_LEN: u64 = 32;
-    /// One edge entity's slot: its edges vector first.
-    pub const SLOT_LEN: u64 = 72;
-    /// An `EdgeId`: entity, index, direction.
-    pub const EDGE_ID_LEN: u64 = 12;
+    pub use crate::build_data::native::order::road::ADD;
+    pub use crate::build_data::native::order::road::ADD_RANGE;
+    pub use crate::build_data::native::order::road::EDGE_DATA_LEN;
+    pub use crate::build_data::native::order::road::EDGE_ID_LEN;
+    pub use crate::build_data::native::order::road::ENTRY_LEN;
+    pub use crate::build_data::native::order::road::SLOT_LEN;
     pub const MAX_ENTRIES: u64 = 1 << 16;
     pub const MAX_PATH: u64 = 1 << 20;
 
@@ -1283,8 +1266,7 @@ pub mod road {
         outcomes
     }
 
-    /// Where `Add`'s manager keeps its data (`EdgeUseManagerData*`).
-    pub const MANAGER_DATA: u64 = 0x18;
+    pub use crate::build_data::native::order::road::MANAGER_DATA;
 
     /// One entry, as the engine lays it out.
     pub type Entry = [u8; ENTRY_LEN as usize];
@@ -1468,12 +1450,69 @@ pub mod road {
         REFUSALS.take_window()
     }
 
-    fn sorted(probe: &mut Probe, data: u64, edge_ids: impl Iterator<Item = u64>) {
+    /// An edge id's meaningful bytes: entity, index, direction.
+    fn edge_key(probe: &mut Probe, edge_id: u64) -> Option<crate::roadtrace::EdgeKey> {
+        Some((
+            probe.read(edge_id)?,
+            probe.read(edge_id.checked_add(4)?)?,
+            probe.read(edge_id.checked_add(8)?)?,
+        ))
+    }
+
+    /// The entries of the edge `edge_id` names, as the road entry trace
+    /// lists them: entity, component, back, front.
+    fn listed(probe: &mut Probe, data: u64, edge_id: u64) -> Option<Vec<crate::roadtrace::Listed>> {
+        let vector = entries_of(probe, data, edge_id).ok()?;
+        let begin: u64 = probe.read(vector)?;
+        let end: u64 = probe.read(vector.checked_add(8)?)?;
+        if end < begin
+            || !(end - begin).is_multiple_of(ENTRY_LEN)
+            || end - begin > MAX_ENTRIES * ENTRY_LEN
+        {
+            return None;
+        }
+        (0..(end - begin) / ENTRY_LEN)
+            .map(|i| {
+                let at = begin + i * ENTRY_LEN;
+                Some((
+                    probe.read::<i32>(at)?,
+                    probe.read::<i32>(at + 4)?,
+                    probe.read::<f32>(at + 8)?,
+                    probe.read::<f32>(at + 12)?,
+                ))
+            })
+            .collect()
+    }
+
+    /// What was appended, for the road entry trace (`crate::roadtrace`):
+    /// everything but its edges, which [`sorted`] reads.
+    struct Appended {
+        kind: crate::roadtrace::Kind,
+        entity: i32,
+        component: i32,
+        current: Option<i32>,
+        range: Option<(i32, i32)>,
+        bounds: u64,
+    }
+
+    fn sorted(
+        probe: &mut Probe,
+        data: u64,
+        appended: Appended,
+        edge_ids: impl Iterator<Item = u64>,
+    ) {
         guarded(FIX, &BROKEN, || {
             let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+            let tracing = in_step() && crate::roadtrace::enabled();
+            let mut traced_edges = Vec::new();
+            let mut reordered_now = 0;
             for edge_id in edge_ids {
+                if tracing {
+                    traced_edges.push(edge_id);
+                }
                 match sort_edge(probe, data, edge_id) {
                     Ok(Sorted::Reordered) => {
+                        reordered_now += 1;
                         let reorders = REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
                         if reorders <= 3 {
                             log::line(&format!(
@@ -1484,6 +1523,31 @@ pub mod road {
                     Ok(Sorted::Unchanged) => {}
                     Err(why) => REFUSALS.note(FIX, why),
                 }
+            }
+            if tracing {
+                // The road entry trace (logging only): the simulation's own
+                // appends, which two agreeing games make alike.
+                let step = crate::seeds::current_step();
+                let append = crate::roadtrace::Append {
+                    kind: appended.kind,
+                    entity: appended.entity,
+                    component: appended.component,
+                    current: appended.current,
+                    range: appended.range,
+                    bounds: appended.bounds,
+                    edges: traced_edges
+                        .iter()
+                        .filter_map(|&id| edge_key(probe, id))
+                        .collect(),
+                };
+                let entries: Option<Vec<_>> =
+                    crate::roadtrace::wants_entries(appended.entity, step).then(|| {
+                        traced_edges
+                            .iter()
+                            .filter_map(|&id| Some((edge_key(probe, id)?, listed(probe, data, id))))
+                            .collect()
+                    });
+                crate::roadtrace::note(step, &append, reordered_now, entries.as_deref());
             }
             if n == 1 || n.is_multiple_of(1 << 16) {
                 log::line(&format!(
@@ -1530,7 +1594,19 @@ pub mod road {
                 .checked_add(MANAGER_DATA)
                 .and_then(|at| probe.read::<u64>(at))
             {
-                Some(data) => sorted(&mut probe, data, std::iter::once(edge_id as u64)),
+                Some(data) => sorted(
+                    &mut probe,
+                    data,
+                    Appended {
+                        kind: crate::roadtrace::Kind::Person,
+                        entity: entity as u32 as i32,
+                        component: component as u32 as i32,
+                        current: None,
+                        range: None,
+                        bounds: bounds as u64,
+                    },
+                    std::iter::once(edge_id as u64),
+                ),
                 None => REFUSALS.note(FIX, "the manager's data is unreadable"),
             }
         }
@@ -1593,7 +1669,19 @@ pub mod road {
                     from as u32 as i32,
                     to as u32 as i32,
                 ) {
-                    Ok(edges) => sorted(&mut probe, data, edges),
+                    Ok(edges) => sorted(
+                        &mut probe,
+                        data,
+                        Appended {
+                            kind: crate::roadtrace::Kind::Vehicle,
+                            entity: entity as u32 as i32,
+                            component: component as u32 as i32,
+                            current: Some(current as u32 as i32),
+                            range: Some((from as u32 as i32, to as u32 as i32)),
+                            bounds: bounds as u64,
+                        },
+                        edges,
+                    ),
                     Err(why) => REFUSALS.note(FIX, why),
                 }
             }
@@ -1642,14 +1730,13 @@ pub mod road {
 pub mod measure {
     use super::*;
 
-    pub const RESERVE: &str = "transport::EdgeReservationManager::Reserve";
-    pub const RESERVE_SIMPLE: &str = "transport::EdgeReservationManager::Reserve_simple";
-    pub const EDGE_USE_ADD: &str = "transport::EdgeUseManager::Add";
-    pub const EDGE_USE_ADD_RANGE: &str = "transport::EdgeUseManager::AddRange";
-    pub const ENGINE_UPDATE: &str = "ecs::Engine::Update";
+    pub use crate::build_data::native::order::measure::EDGE_USE_ADD;
+    pub use crate::build_data::native::order::measure::EDGE_USE_ADD_RANGE;
+    pub use crate::build_data::native::order::measure::ENGINE_UPDATE;
+    pub use crate::build_data::native::order::measure::RESERVE;
+    pub use crate::build_data::native::order::measure::RESERVE_SIMPLE;
     pub const DEFAULT_INTERVAL: u64 = 100;
-    /// One `EdgeId` on a path: entity, index, direction.
-    const EDGE_LEN: u64 = 12;
+    use crate::build_data::native::order::measure::EDGE_LEN;
     /// A sanity bound on one reservation's edge count.
     const MAX_EDGES: u64 = 1 << 16;
 

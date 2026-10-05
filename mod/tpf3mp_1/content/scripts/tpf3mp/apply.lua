@@ -76,8 +76,13 @@ local function params(list)
 	return out
 end
 
+-- Whether a handler runs dry (apply.proposalOf): it makes the proposal its
+-- action would build and stops there, sending nothing and saying nothing.
+local dry = false
+
 -- A line for the hook's log; the game script sets apply.log once linked.
 local function log(line)
+	if dry then return end
 	if apply.log then pcall(apply.log, line) end
 end
 
@@ -101,6 +106,7 @@ local callbacks = true
 -- its command data and result entities (nil, where it answers nothing
 -- here). A command the game refuses raises, and apply.run reports it.
 local function send(command)
+	if dry then error({ dry = "a command that is not a build" }, 0) end
 	if callbacks then
 		local heard, went, data, entities = false, nil, nil, nil
 		local sent, err = pcall(api.cmd.sendCommand, command, function(d, success, e)
@@ -164,6 +170,9 @@ end
 -- enough money) fails here with its reasons, the same in every game, and is
 -- never sent; sent without a callback, a refused build would fail unseen.
 local function buildProposal(proposal, context)
+	-- Dry: the proposal is what was asked for; the game's verdict and the
+	-- build are not.
+	if dry then error({ dry = true, proposal = proposal, context = context }, 0) end
 	local proposals = api.engine.util.proposal
 	if proposals and proposals.makeProposalData then
 		local data = proposals.makeProposalData(proposal, context)
@@ -190,30 +199,224 @@ local constructionAt
 -- Removes a stop from its edge ("stops", below).
 local removeEdgeObject
 
+-- Names station groups the room built, the same in every game (2026-10-02:
+-- room-built stops and stations stood unnamed). The game's own tools name
+-- them natively; the room carries that name from the originator's proposal.
+-- A script build with an empty name leaves its entities with no NAME (docs/BUILDING.md,
+-- "What a script proposal must carry"). `groups` lists { group =, stations
+-- = { ... } }, each a group this build's own stations alone make up; one
+-- with a name of its own already keeps it. `name` is the name to give, or
+-- nil for the town's: the town the game counts the group's first station
+-- in (stationSystem.getTown), and a number after it where another station
+-- group of that town has that name ("Didcot", "Didcot 2", ...), so two
+-- games, which hold the same world, give the same. `fallback` where the
+-- station has no town. Each group and its stations get the name
+-- (makeEntitySetNameCmd); hook.log says which.
+local PROVISIONAL_STOP_NAME = "Stop"
+-- Whether a stop is built with the name the originator's tool gave it
+-- (PlaceStop.name, the game's own: street_util::MakeEdgeObjectName). The
+-- kill switch: false, and every stop is named by the town as above.
+apply.NATIVE_STOP_NAMES = true
+local function nameStationGroups(groups, name, fallback)
+	local named = {}
+	for _, g in ipairs(groups) do
+		local current
+		pcall(function() current = api.engine.util.getEntityName(g.group) end)
+		if type(current) ~= "string" or current == "" or current == PROVISIONAL_STOP_NAME then
+			local chosen = name
+			if chosen == nil then
+				local town = -1
+				pcall(function() town = api.engine.system.stationSystem.getTown(g.stations[1]) end)
+				local townName
+				if type(town) == "number" and town >= 0 then
+					pcall(function() townName = api.engine.util.getEntityName(town) end)
+				end
+				if type(townName) == "string" and townName ~= "" then
+					-- The names the town's other station groups have.
+					local taken = {}
+					pcall(function()
+						for _, s in ipairs(api.engine.system.stationSystem.getStations(town) or {}) do
+							local other = api.engine.system.stationGroupSystem.getStationGroup(s)
+							if type(other) == "number" and other >= 0 and other ~= g.group then
+								local n = api.engine.util.getEntityName(other)
+								if type(n) == "string" then taken[n] = true end
+							end
+						end
+					end)
+					chosen = townName
+					local k = 2
+					while taken[chosen] do
+						chosen = townName .. " " .. k
+						k = k + 1
+					end
+				else
+					chosen = fallback
+				end
+			end
+			if type(chosen) == "string" and chosen ~= "" then
+				local ok, why = pcall(function()
+					send(api.cmd.makeEntitySetNameCmd(g.group, chosen))
+					for _, s in ipairs(g.stations) do send(api.cmd.makeEntitySetNameCmd(s, chosen)) end
+				end)
+				named[#named + 1] = "station group " .. g.group .. " \"" .. chosen .. "\""
+					.. (ok and "" or (": refused, " .. tostring(why)))
+			end
+		end
+	end
+	if #named > 0 then log("named " .. table.concat(named, ", ")) end
+end
+
+-- The station groups construction `con`'s stations alone make up, as
+-- nameStationGroups takes them.
+local function constructionGroups(con, mustResolve)
+	local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+	local mine, byGroup, out = {}, {}, {}
+	for _, s in ipairs(seq(c and c.stations or {})) do mine[s] = true end
+	for _, s in ipairs(seq(c and c.stations or {})) do
+		local group = -1
+		local found, result = pcall(api.engine.system.stationGroupSystem.getStationGroup, s)
+		if found then
+			group = result
+		elseif mustResolve then
+			error("cannot find station group for station " .. tostring(s) .. ": " .. tostring(result), 0)
+		end
+		if type(group) == "number" and group >= 0 and not byGroup[group] then
+			local g = api.engine.getComponent(group, api.type.ComponentType.STATION_GROUP)
+			if mustResolve and g == nil then error("no station group component on " .. tostring(group), 0) end
+			local alone = g ~= nil
+			for _, other in ipairs(seq(g and g.stations or {})) do
+				if not mine[other] then alone = false end
+			end
+			if alone then
+				byGroup[group] = { group = group, stations = {} }
+				out[#out + 1] = byGroup[group]
+			end
+		end
+		if byGroup[group] then table.insert(byGroup[group].stations, s) end
+	end
+	return out
+end
+
+-- The game's refresh of construction `con`, and whether it changes its
+-- streets. A scripted build does not snap; the game's refresh of a
+-- construction does, as its tool does: the entrance then ends at the street
+-- node beside it (refreshConstruction, build 40408: the same edge the tool
+-- proposed). Logged as what it snaps. The game's verdict takes simple
+-- proposals only ("SimpleProposal expected, got Proposal", build 40408): a
+-- refresh the game refuses fails in the command's own answer instead (run).
+local function refreshOf(con)
+	local refresh = api.engine.util.proposal.refreshConstruction(con)
+	local street, shape = refresh.proposal, {}
+	for i = 1, #street.addedSegments do
+		local s = street.addedSegments[i]
+		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
+	end
+	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
+	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
+	return refresh, #shape > 0
+end
+
+-- A construction the room built is the acting company's, the same in every
+-- game, as the game's own missions hand one over
+-- (mission_framework_util_entity.tl, setPlayerForConstruction): the
+-- construction, its depots, its stations and the station groups they alone
+-- make up, and its own (frozen) edges with what stands on them, each
+-- given with makeEntitySetPlayerCmd where anyone else owns it, or no one
+-- (2026-10-02: a company's depots did not count as its own). The build
+-- names the company (`playerEntity`, `Context.player`); this makes sure of
+-- what the engine made from it. hook.log names each one handed over.
+local function settleConstruction(con, file)
+	local C = api.type.ComponentType
+	local me = company()
+	local seen, fixed = {}, {}
+	local function ownerOf(entity)
+		local ok, owned = pcall(api.engine.getComponent, entity, C.PLAYER_OWNED)
+		if not ok then error("cannot read " .. tostring(entity) .. " owner: " .. tostring(owned), 0) end
+		if owned == nil then return nil end
+		local read, owner = pcall(function() return owned.player end)
+		if not read then error("cannot read " .. tostring(entity) .. " owner: " .. tostring(owner), 0) end
+		if owner == nil or (type(owner) == "number" and owner < 0) then return nil end
+		if type(owner) ~= "number" then error("invalid owner on " .. tostring(entity), 0) end
+		return owner
+	end
+	local function give(entity, what)
+		if type(entity) ~= "number" or entity < 0 then
+			error("the game gave no " .. what .. " entity for " .. tostring(file), 0)
+		end
+		if seen[entity] then return end
+		seen[entity] = true
+		local owner = ownerOf(entity)
+		if owner == me then return end
+		send(api.cmd.makeEntitySetPlayerCmd(entity, me))
+		fixed[#fixed + 1] = what .. " " .. entity .. " (was " .. tostring(owner) .. ")"
+	end
+	if type(con) ~= "number" or con < 0 then error("the game made no " .. tostring(file) .. " construction", 0) end
+	local c = api.engine.getComponent(con, C.CONSTRUCTION)
+	if c == nil then error("no construction component on " .. tostring(con), 0) end
+	give(con, "construction")
+	for _, depot in ipairs(seq(c.depots or {})) do give(depot, "depot") end
+	for _, station in ipairs(seq(c.stations or {})) do give(station, "station") end
+	for _, g in ipairs(constructionGroups(con, true)) do give(g.group, "station group") end
+	for _, edge in ipairs(seq(c.frozenEdges or {})) do
+		give(edge, "edge")
+		local e = api.engine.getComponent(edge, C.BASE_EDGE)
+		if e == nil then error("no edge component on " .. tostring(edge), 0) end
+		for _, o in ipairs(seq(e.objects or {})) do give(o[1], "edge object") end
+	end
+	if #fixed > 0 then
+		log("the new " .. tostring(file) .. " made the acting company's (" .. tostring(me) .. "): "
+			.. table.concat(fixed, ", "))
+	end
+end
+
 -- An edit of a construction (its modules or parameters, an upgrade): the
 -- construction the action names removed and the new one built in one
 -- proposal, the old mapped to the new (old2new), as the game's own upgrade
 -- makes one (mission_framework_util_entity.tl, upgradeConstruction), so
 -- what stood on the old one (its stations, their station groups and the
--- lines that stop there) passes to the new. The game's verdict first, and
--- built as the player's own build, paid by the player (buildProposal). The
--- new one stands where the old one stood, so the next edit, a depot or a
--- line finds it by the same file and place.
+-- lines that stop there) passes to the new. The streets the edit changes
+-- around it (a road split for a new exit, 2026-10-03) go in the same
+-- proposal, as a new construction's connection does; the old one's own
+-- streets go with it, and the connection may not name them. The game's
+-- verdict first, and built as the player's own build, paid by the player
+-- (buildProposal). The new one stands where the old one stood, so the next
+-- edit, a depot or a line finds it by the same file and place.
 local function replaceConstruction(build, proposal, entity)
-	if build.connection ~= nil then error("an edit that builds streets around the construction", 0) end
-	local old = constructionAt(build.replaces)
+	local old, oldComponent = constructionAt(build.replaces)
 	mine(old, "construction")
 	proposal.constructionsToAdd = { entity }
 	proposal.constructionsToRemove = { old }
 	proposal.old2new = { [old] = 0 }
 	log("replacing " .. tostring(old) .. " " .. tostring(build.replaces.file) .. " with " .. tostring(build.file))
+	if build.connection ~= nil then
+		local gone = {}
+		local frozen = oldComponent and oldComponent.frozenEdges or {}
+		for i = 1, #frozen do gone[frozen[i]] = true end
+		networkInto(proposal, nil, nil, nil, build.connection, true, gone)
+	end
 	local context = api.type.Context.new()
 	context.player = company()
 	context.gatherBuildings = true
 	context.gatherFields = true
 	buildProposal(proposal, context)
 	-- What it made, where the action says: this game could name it.
-	return true, constructionAt({ file = build.file, at = build.transform.origin })
+	local new = constructionAt({ file = build.file, at = build.transform.origin })
+	-- The acting company's, whatever the engine made of it, as a new one.
+	settleConstruction(new, build.file)
+	-- The new one makes its entrances again itself, unsnapped, as a build
+	-- does: a road station edited by the street came loose from it, its
+	-- entrance no longer joined to the junction (2026-10-03, in both games).
+	-- So every game refreshes it as a build's, which snaps its entrances,
+	-- a new one included, onto the streets beside them as the game's own
+	-- edit does. Where nothing is to snap, nothing is sent. The edit stands
+	-- in every game either way: a refresh the game refuses leaves it as it
+	-- was before, the same everywhere, and is logged.
+	local snapped, why = pcall(function()
+		local refresh, changes = refreshOf(new)
+		if changes then run(api.cmd.makeWorldBuildProposalCmd(refresh, nil, true, false)) end
+	end)
+	if not snapped then log("the edited construction stays unsnapped: " .. tostring(why)) end
+	return true, new
 end
 
 function HANDLERS.BuildConstruction(build)
@@ -247,6 +450,18 @@ function HANDLERS.BuildConstruction(build)
 	context.gatherBuildings = true
 	context.gatherFields = true
 	local built = buildProposal(proposal, context)
+	-- A station's group by the name the tool gave the construction, where
+	-- the game left it unnamed (nameStationGroups).
+	pcall(function()
+		local con = constructionAt({ file = build.file, at = build.transform.origin })
+		local groups = constructionGroups(con)
+		if #groups > 0 then nameStationGroups(groups, build.name) end
+	end)
+	-- The acting company's, whatever the engine made of it.
+	do
+		local con = constructionAt({ file = build.file, at = build.transform.origin })
+		settleConstruction(con, build.file)
+	end
 	if require_companies().isHeadquarters(api, build.file) then
 		-- Whether the engine took it as the company's headquarters (its
 		-- PLAYER component's `headquarters`), for hook.log: the game's
@@ -264,18 +479,7 @@ function HANDLERS.BuildConstruction(build)
 	-- the same edge the tool proposed). So every game refreshes it at once,
 	-- for free, as part of this action.
 	local con = constructionAt({ file = build.file, at = build.transform.origin })
-	local refresh = api.engine.util.proposal.refreshConstruction(con)
-	local street, shape = refresh.proposal, {}
-	for i = 1, #street.addedSegments do
-		local s = street.addedSegments[i]
-		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
-	end
-	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
-	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
-	-- The game's verdict takes simple proposals only ("SimpleProposal
-	-- expected, got Proposal", build 40408): a refresh the game refuses
-	-- fails in the command's own answer instead (run).
-	return run(api.cmd.makeWorldBuildProposalCmd(refresh, nil, true, false))
+	return run(api.cmd.makeWorldBuildProposalCmd(refreshOf(con), nil, true, false))
 end
 
 -- ---------------------------------------------------------------- roads
@@ -418,45 +622,84 @@ end
 -- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
 -- street proposal. `network`, `templateName` and `style` are the build's
 -- own kind, for the links that name none; nil for a construction's
--- streets, whose every link names its kind. With `dangling` true, peel
--- back complete branches ending at new vertices: the construction makes
--- its own entrance and internal track. Removing only the outermost links
+-- streets, whose every link names its kind. With `dangling` true (a
+-- construction's streets), peel back complete branches ending at new
+-- vertices: the construction makes its own entrance and internal track;
+-- and every edge it removes or splits must be the acting company's or no
+-- company's (D21), as a bulldozed one. `gone` names the edges an edit's old
+-- construction takes with it (its frozen edges): the polyline may not
+-- remove or split them, and no junction's settings may name them. Removing only the outermost links
 -- leaves duplicate track inside a branched depot (Steam 40408). Existing
 -- nodes and splits anchor the external network and are never peeled off.
-function networkInto(proposal, network, templateName, style, polyline, dangling)
+function apply.ownStreets(polyline)
 	local links, skipped = polyline.links, {}
-	if dangling then
-		local degree, incident = {}, {}
-		for i = 0, #polyline.vertices - 1 do degree[i], incident[i] = 0, {} end
-		for k, link in ipairs(links) do
-			for _, i in ipairs({ link.from, link.to }) do
-				degree[i] = degree[i] + 1
-				incident[i][#incident[i] + 1] = k
+	local degree, incident = {}, {}
+	for i = 0, #polyline.vertices - 1 do degree[i], incident[i] = 0, {} end
+	for k, link in ipairs(links) do
+		for _, i in ipairs({ link.from, link.to }) do
+			degree[i] = degree[i] + 1
+			incident[i][#incident[i] + 1] = k
+		end
+	end
+	local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
+	local queue, removed = {}, {}
+	for i = 0, #polyline.vertices - 1 do if loose(i) then queue[#queue + 1] = i end end
+	local head = 1
+	while head <= #queue do
+		local i = queue[head]
+		head = head + 1
+		for _, k in ipairs(incident[i]) do
+			if not removed[k] then
+				removed[k] = true
+				local link = links[k]
+				local other = link.from == i and link.to or link.from
+				degree[i], degree[other] = degree[i] - 1, degree[other] - 1
+				if loose(other) then queue[#queue + 1] = other end
 			end
 		end
-		local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
-		local queue, removed = {}, {}
-		for i = 0, #polyline.vertices - 1 do if loose(i) then queue[#queue + 1] = i end end
-		local head = 1
-		while head <= #queue do
-			local i = queue[head]
-			head = head + 1
-			for _, k in ipairs(incident[i]) do
-				if not removed[k] then
-					removed[k] = true
-					local link = links[k]
-					local other = link.from == i and link.to or link.from
-					degree[i], degree[other] = degree[i] - 1, degree[other] - 1
-					if loose(other) then queue[#queue + 1] = other end
+	end
+	links = {}
+	for k, link in ipairs(polyline.links) do if not removed[k] then links[#links + 1] = link end end
+	for i, v in ipairs(polyline.vertices) do skipped[i] = v.resolve == "New" and degree[i - 1] == 0 end
+	return links, skipped
+end
+
+function networkInto(proposal, network, templateName, style, polyline, dangling, gone)
+	local links, skipped = polyline.links, {}
+	local settings = polyline.junctions
+	if dangling then
+		links, skipped = apply.ownStreets(polyline)
+		-- The tool's settings at the construction's own street's nodes, or
+		-- naming its own edges (the entrance at the junction it joins), go
+		-- with that street: they name what this build does not make
+		-- (2026-10-02: a street station refused in every game, "the
+		-- junction no longer exists"). The construction and its refresh
+		-- give those junctions the game's own, alike in every game.
+		local keep, ownEdges, ownNodes = {}, {}, {}
+		for _, link in ipairs(links) do keep[link] = true end
+		local function place(i)
+			local p = arr(polyline.vertices[i + 1].pos)
+			return { x = p[1], y = p[2], z = p[3] }
+		end
+		for _, link in ipairs(polyline.links) do
+			if not keep[link] then
+				local net = link.kind and link.kind.network
+				ownEdges[#ownEdges + 1] = { network = net, ends = { a = place(link.from), b = place(link.to) } }
+				for _, i in ipairs({ link.from, link.to }) do
+					if skipped[i + 1] then ownNodes[#ownNodes + 1] = { network = net, at = place(i) } end
 				end
 			end
 		end
-		links = {}
-		for k, link in ipairs(polyline.links) do if not removed[k] then links[#links + 1] = link end end
-		for i, v in ipairs(polyline.vertices) do skipped[i] = v.resolve == "New" and degree[i - 1] == 0 end
+		local left
+		settings, left = junctions.without(settings, ownNodes, ownEdges)
+		if #left > 0 then
+			local ok, text = pcall(junctions.summary, { EditJunctions = { changes = left } })
+			log("left to the construction: " .. (ok and text or (#left .. " junction(s)")))
+		end
 	end
+	-- The junctions' settings go with it (junctions.into, below).
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
-		removed_nodes = polyline.removed_nodes, junctions = polyline.junctions }
+		removed_nodes = polyline.removed_nodes, junctions = settings }
 	local nodesOf = {}
 	local function nodes(n)
 		if nodesOf[n] == nil then nodesOf[n] = readNodes(n) end
@@ -539,6 +782,8 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 			local s = r.Split
 			local e = edgeBetween(nodes(s.network), s.network, arr(s.ends.a), arr(s.ends.b))
 			if e == nil then error("no " .. s.network .. " edge to split at vertex " .. i) end
+			if gone and gone[e.id] then error("vertex " .. i .. " splits the old construction's own edge", 0) end
+			if dangling then mine(e.id, "road or track") end
 			if #(e.comp.objects or {}) > 0 then
 				error("vertex " .. i .. " splits an edge with a stop or signal on it")
 			end
@@ -585,6 +830,15 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		s.comp.roadTemplate = kind.template
 		s.comp.roadStyle = kind.style or t.streetStyle
 		s.comp.roadType = kind.network == "Track" and enum("RoadType").TRACK or enum("RoadType").STREET
+		-- A track's distance between its centre and its neighbours', its
+		-- template's (StreetTemplate.trackDistance): without it the game lays
+		-- no shared ballast bed or catenary with the tracks beside it, and
+		-- the ground shows between them (2026-10-02, tracks laid side by
+		-- side in a room). Every game reads the same template.
+		if kind.network == "Track" then
+			local ok, d = pcall(function() return t.trackDistance end)
+			if ok and type(d) == "number" and d > 0 then s.comp.distance = d end
+		end
 		-- What the tool left on it: its decorations (by name, as every game
 		-- numbers them), the towns' lock, and the acting company's ownership.
 		local decorations = {}
@@ -625,6 +879,8 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	for k, r in ipairs(polyline.removals or {}) do
 		local e = edgeBetween(nodes(r.network), r.network, arr(r.ends.a), arr(r.ends.b))
 		if e == nil then error("no " .. r.network .. " edge to remove (" .. k .. ")") end
+		if gone and gone[e.id] then error("removal " .. k .. " is the old construction's own edge", 0) end
+		if dangling then mine(e.id, "road or track") end
 		local objects = e.comp.objects or {}
 		if #objects > 0 then
 			local into
@@ -671,7 +927,15 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	proposal.streetProposal.edgesToRemove = edgesToRemove
 	if #nodesToRemove > 0 then proposal.streetProposal.nodesToRemove = nodesToRemove end
 	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
-	junctions.into(proposal, polyline.junctions, ends, mine)
+	-- A preview (dry) leaves the junctions' lane and light settings out:
+	-- they draw nothing, and a snapped build's may name a node only its
+	-- originator's tool has.
+	if not dry then
+		local left = junctions.into(proposal, polyline.junctions, ends, mine, gone)
+		if left and #left > 0 then
+			log("left to the construction: the settings of " .. #left .. " junction(s) at its old edges")
+		end
+	end
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.
@@ -723,6 +987,142 @@ end
 -- demolition beyond what was asked). Raises otherwise; returns the
 -- entities it removes, for the log. A removal whose list does not read
 -- passes only when it names none (as before schema 15).
+-- The asset groups near (x, y) that hold an asset of `model` there: the
+-- game's octree first, every asset group where it gives none.
+local function assetGroupsAt(model, x, y, z)
+	local engine = module("engine")
+	local GROUP = api.type.ComponentType.ASSET_GROUP
+	local candidates = {}
+	local ok, near = pcall(function()
+		return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), 1, GROUP)
+	end)
+	if ok and type(near) == "table" then candidates = near end
+	-- TF3 (build 40408) refuses to list asset groups ("Cannot loop over this
+	-- component type"): then the octree's answer, none, stands.
+	if #candidates == 0 then
+		local okAll, all = pcall(api.engine.getEntitiesWithComponent, GROUP)
+		if okAll and type(all) == "table" then candidates = all end
+	end
+	local out = {}
+	for i = 1, #candidates do
+		local g = candidates[i]
+		local okA, assets = pcall(engine.assetsOf, g)
+		if okA then
+			for _, a in ipairs(assets) do
+				if engine.assetAt(a, model, x, y, z) then
+					out[#out + 1] = { entity = g, assets = assets }
+					break
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- Trees and other assets the asset bulldozer took out of their group
+-- (action::Bulldoze::Assets): the one group here that holds exactly
+-- `count` assets, the first and every one removed among them, removed and,
+-- unless every asset of it went, built again from this game's own copy
+-- without them, as the tool builds it (tpf3mp/engine.lua, captureAssets;
+-- construction_builder_util::CreateProposalAddAsset, build 40408): one
+-- construction entity at the world's origin whose desc is autoRemovable and
+-- whose one subconstruction lists the assets kept, the thin ones then the
+-- full ones, each its model's file and its world matrix. TF3's
+-- Proposal.ConstructionEntity has no writable fileName (it reads the
+-- desc's, empty as new() makes it), and its construction is a
+-- Proposal.ConstructionResult, whose subconstructions are set. Any other
+-- group here, or a removed asset this game cannot tell from another,
+-- refuses it, so no game removes other trees than the player's. Paid by the
+-- player's company, as the player's own build. The log says the group and
+-- its assets before and after, in every game.
+local function removeAssets(a, context)
+	local engine = module("engine")
+	local f = a.first
+	local found = {}
+	for _, g in ipairs(assetGroupsAt(f.model, f.at.x, f.at.y, f.at.z)) do
+		if #g.assets == a.count then
+			local used, all = {}, true
+			for _, r in ipairs(a.removed) do
+				if not engine.takeAsset(g.assets, used, r.model, r.at.x, r.at.y, r.at.z) then all = false break end
+			end
+			if all then found[#found + 1] = { entity = g.entity, assets = g.assets, used = used } end
+		end
+	end
+	if #found ~= 1 then
+		error(#found == 0 and ("no asset group of " .. a.count .. " assets with those trees here")
+			or ("more than one asset group of " .. a.count .. " assets with those trees here"), 0)
+	end
+	local group = found[1]
+	for _, r in ipairs(a.removed) do
+		if engine.assetsAt(group.assets, r.model, r.at.x, r.at.y, r.at.z) > 1 then
+			error(string.format("two assets of %s at %.3f, %.3f, %.3f here: which one went is not clear",
+				tostring(r.model), r.at.x, r.at.y, r.at.z), 0)
+		end
+	end
+	local P = api.type.Proposal
+	local column = api.type.Vec4f.new
+	local function mat4(m)
+		return api.type.Mat4f.new(column(m[1], m[2], m[3], m[4]), column(m[5], m[6], m[7], m[8]),
+			column(m[9], m[10], m[11], m[12]), column(m[13], m[14], m[15], m[16]))
+	end
+	-- The assets kept, in the group's order (thin, then full), as the tool
+	-- lists them.
+	local models = {}
+	for i, asset in ipairs(group.assets) do
+		if not group.used[i] then
+			local tm = P.TransformedModel.new()
+			tm.id = asset.model
+			tm.transf = mat4(engine.assetMatrix(asset, a.mirrored))
+			models[#models + 1] = tm
+		end
+	end
+	local proposal = P.new()
+	proposal.toRemove = { group.entity }
+	if #models > 0 then
+		local sub = P.Subconstruction.new()
+		sub.models = models
+		local ce = P.ConstructionEntity.new()
+		local desc = ce.desc
+		if desc == nil then error("this game makes no construction desc for an asset group", 0) end
+		desc.autoRemovable = true
+		ce.desc = desc
+		local con = ce.construction
+		if con == nil then error("this game makes no construction for an asset group", 0) end
+		con.subconstructions = { sub }
+		ce.construction = con
+		ce.transf = mat4({ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 })
+		ce.playerEntity = a.owned and company() or -1
+		proposal.toAdd = { ce }
+	end
+	log(string.format("trees: asset group %d of %d assets, %d removed (%s at %.2f,%.2f), rebuilt with %d",
+		group.entity, #group.assets, #a.removed, tostring(a.removed[1].model), a.removed[1].at.x,
+		a.removed[1].at.y, #models))
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	-- What stands now: the group that holds the first asset kept, and how
+	-- many it holds; with none kept, whether a group still holds the first
+	-- one removed (the same in every game, or the replay differed).
+	local function holding(model, x, y, z, what)
+		local now = assetGroupsAt(model, x, y, z)
+		local counts = {}
+		for _, g in ipairs(now) do counts[#counts + 1] = tostring(#g.assets) end
+		return #now == 0 and ("no group holds the " .. what)
+			or (#now .. " group(s) hold the " .. what .. ", of " .. table.concat(counts, ",") .. " assets")
+	end
+	local after
+	for i, asset in ipairs(group.assets) do
+		if not group.used[i] then
+			after = holding(asset.model, asset.x, asset.y, asset.z, "first tree kept")
+			break
+		end
+	end
+	if after == nil then
+		local r = a.removed[1]
+		after = holding(r.model, r.at.x, r.at.y, r.at.z, "first tree removed")
+	end
+	log("trees: after the rebuild " .. after)
+	return true
+end
+
 local function townBuildingsRemoved(proposal, named)
 	local ok, removed = pcall(function()
 		local l, out = proposal.toRemove, {}
@@ -797,6 +1197,8 @@ function HANDLERS.Bulldoze(b)
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
 		return removeEdgeObject(b.EdgeObject, context)
+	elseif b.Assets then
+		return removeAssets(b.Assets, context)
 	else
 		return false, "a bulldoze of no kind"
 	end
@@ -809,6 +1211,64 @@ function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
 end
 
+-- An upgrade tool's build, said in the log once every game built it
+-- (tpf3mp/roads.lua upgradeSummary): the same line in every game.
+for _, name in ipairs({ "BuildRoad", "BuildTrack" }) do
+	local build = HANDLERS[name]
+	HANDLERS[name] = function(body)
+		local ok, why = build(body)
+		if ok == true then
+			local summarised, text = pcall(module("roads").upgradeSummary, { [name] = body })
+			if summarised and text then log("upgrade applied: " .. text) end
+		end
+		return ok, why
+	end
+end
+
+
+-- ------------------------------------------------------------ terraform
+--
+-- A terrain tool's stroke, as its height grid (tpf3mp/capture.lua,
+-- capture.terraform). A script cannot fill a proposal's height grid (Lua's
+-- GridVec2f has no setter, build 40408), so the hook does: the grid goes to
+-- the hook (apply.terrain, which the game script sets to the link's
+-- tpf3mp_native.terrain), then an empty proposal, the carrier, is sent as
+-- the player's build, paid by the player as the tool's is; the hook fills
+-- the carrier's height grid at its apply (crates/tpf3mp-hook/src/terrain.rs).
+-- Then the hook is disarmed, and the action fails unless the carrier was
+-- filled. No verdict first: the game's verdict reads the proposal as sent,
+-- empty.
+function HANDLERS.Terraform(t)
+	if type(apply.terrain) ~= "function" then error("this hook cannot apply a terraform", 0) end
+	local ok, resolution = pcall(function() return api.engine.terrain.getBaseResolution() end)
+	local cell = ok and resolution and (resolution.x or resolution[1])
+	if type(cell) ~= "number" or math.abs(cell - t.cell) > 1e-6 then
+		error("a grid of " .. tostring(t.cell) .. " m cells; this map's are " .. tostring(cell), 0)
+	end
+	local x0, y0 = t.origin.x / t.cell, t.origin.y / t.cell
+	if x0 ~= math.floor(x0) or y0 ~= math.floor(y0) then error("a grid that starts between cells", 0) end
+	local width = t.columns
+	local height = #t.cells / width
+	local values, low, high = {}, nil, nil
+	for i, c in ipairs(t.cells) do
+		values[2 * i - 1], values[2 * i] = c.target, c.before
+		low, high = math.min(low or c.target, c.target), math.max(high or c.target, c.target)
+	end
+	local armed, why = apply.terrain({ x0 = x0, y0 = y0, width = width, height = height, cells = values })
+	if armed ~= true then error("the hook would not take the grid: " .. tostring(why), 0) end
+	local context = api.type.Context.new()
+	context.player = company()
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true))
+	end)
+	local filled = apply.terrain(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook filled no build with the grid", 0) end
+	log(string.format("terraform applied: %d by %d cells from cell (%d, %d), heights %.2f to %.2f m",
+		width, height, x0, y0, low or 0, high or 0))
+	return true
+end
+
 -- ---------------------------------------------------------------- stops
 --
 -- A stop is placed, or removed, as the stop tool and the bulldozer propose
@@ -818,8 +1278,9 @@ end
 -- under its own entity, re-parented with its station group and lines. A new
 -- stop is `edgeObjectsToAdd[1]`, named in the edge's objects as -1 (TPF2's
 -- tool and scripts did so; INFERRED on TF3); a removed one goes into
--- `edgeObjectsToRemove`. The lane configurations at the edge's ends name it,
--- and go with it, as for any edge a replay removes (networkInto).
+-- `edgeObjectsToRemove`. The lane configurations at the edge's ends name it:
+-- they are replaced by the same settings naming the rebuilt edge, as for any
+-- edge a replay removes (networkInto).
 
 -- The existing edge a stop action names, as edgeBetween finds it.
 local function stopEdge(ref)
@@ -836,16 +1297,140 @@ local function rebuildWith(e, network, objects)
 	s.comp = api.engine.getComponent(e.id, api.type.ComponentType.BASE_EDGE)
 	s.type = network == "Track" and 1 or 0
 	s.comp.objects = objects
-	proposal.streetProposal.edgesToAdd = { s }
-	proposal.streetProposal.edgesToRemove = { e.id }
-	local configs = {}
-	for _, node in ipairs({ e.comp.node0, e.comp.node1 }) do
-		if api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG) ~= nil then
-			configs[#configs + 1] = node
+	-- The edge keeps its owner: its PlayerOwned is a component of its own,
+	-- which the edge's BASE_EDGE does not carry, and without it the rebuilt
+	-- edge would be no one's (a company's road everyone's).
+	local owner = require_companies().ownerOf(api, e.id)
+	if owner ~= nil then
+		local ok = pcall(function() s.playerOwned.player = owner end)
+		if not ok then
+			local owned = api.type.PlayerOwned.new()
+			owned.player = owner
+			s.playerOwned = owned
 		end
 	end
-	if #configs > 0 then proposal.streetProposal.nodeConfigsToRemove = configs end
+	proposal.streetProposal.edgesToAdd = { s }
+	proposal.streetProposal.edgesToRemove = { e.id }
+	-- The lane configurations at its ends name the edge, so they go and come
+	-- back naming the rebuilt one, their turns, crosswalks and lights as they
+	-- were (junctions.renamed); one that cannot fails the stop in every game.
+	-- Removed alone, a junction with traffic lights kept its lights with no
+	-- configuration: a fatal assert in every game (build 40408, 2026-10-04: a
+	-- stop on a town road between two traffic lights crashed a room,
+	-- ecs::Engine::GetComponentDataIndex, BaseNodeConfig).
+	junctions.renamed(proposal, { e.comp.node0, e.comp.node1 }, e.id, -1, s.comp)
 	return proposal
+end
+
+-- A stop the room placed is the acting company's, the same in every game
+-- (2026-10-02: a company's stops came out another company's, and its
+-- player could not open them). The stop's edge object is named for it
+-- (`playerEntity`), but what the game's windows and its line manager ask
+-- is the owner of the stop's station group (gui/entity_window/
+-- station_group.tl). A street stop's edge object is its station itself
+-- (mission/name_util.tl: an entity with EDGE_OBJECT and STATION), and its
+-- group is the station group system's (getStationGroup of the object); a
+-- stop built as a construction has its stations in the construction. So,
+-- once built, each new object on the edge, its station group, and any
+-- construction with its stations and their groups are given to the acting
+-- company where they are anyone else's, as the game's own missions hand a
+-- stop over (transfer_ownership_util.tl, makeEntitySetPlayerCmd). A
+-- station group that holds a station of another stop is left as it is: it
+-- is not this stop's to give. hook.log says, for each new object, whether
+-- it is a station and which group holds it (2026-10-02, retest: the hand-
+-- over found the objects alone, and no icon showed). `kept` are the
+-- edge's objects as the proposal listed them, the new ones negative.
+local function settleStop(ref, kept, model, name)
+	local ok, e = pcall(stopEdge, ref)
+	if not ok then
+		log("the new " .. tostring(model) .. ": its edge cannot be found again to settle its owner")
+		return
+	end
+	local had = {}
+	for _, o in ipairs(kept) do
+		if o[1] >= 0 then had[o[1]] = true end
+	end
+	local me = company()
+	local companies = require_companies()
+	local C = api.type.ComponentType
+	local seen, fixed, found = {}, {}, {}
+	local function give(entity, what)
+		if type(entity) ~= "number" or entity < 0 or seen[entity] then return end
+		seen[entity] = true
+		local owner = companies.ownerOf(api, entity)
+		if owner == me then return end
+		-- The stop stands either way: a refusal is logged, not the action's.
+		local sent, why = pcall(function() send(api.cmd.makeEntitySetPlayerCmd(entity, me)) end)
+		fixed[#fixed + 1] = what .. " " .. entity .. " (was " .. tostring(owner) .. ")"
+			.. (sent and "" or (": refused, " .. tostring(why)))
+	end
+	local function groupOf(station)
+		local group = -1
+		pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(station) end)
+		if type(group) ~= "number" or group < 0 then return nil end
+		return group
+	end
+	-- The new objects, and every station of this stop: what its groups may
+	-- hold and still be its own.
+	local objects, stations, mine, conOf = {}, {}, {}, {}
+	for _, o in ipairs(e.comp.objects or {}) do
+		if not had[o[1]] then
+			objects[#objects + 1] = o[1]
+			mine[o[1]] = true
+		end
+	end
+	for _, object in ipairs(objects) do
+		local isStation = false
+		pcall(function() isStation = api.engine.getComponent(object, C.STATION) ~= nil end)
+		local con = -1
+		pcall(function() con = api.engine.util.construction.getConstructionEntity(object) end)
+		if type(con) ~= "number" then con = -1 end
+		local group = groupOf(object)
+		found[#found + 1] = tostring(object) .. (isStation and " a station" or " no station")
+			.. (group and (" in group " .. group .. " (owner " .. tostring(companies.ownerOf(api, group)) .. ")")
+				or " in no group")
+			.. (con >= 0 and (", construction " .. con) or "")
+		if isStation or group then stations[#stations + 1] = object end
+		if con >= 0 then
+			local c = api.engine.getComponent(con, C.CONSTRUCTION)
+			for _, s in ipairs(c and c.stations or {}) do
+				stations[#stations + 1] = s
+				mine[s] = true
+			end
+			conOf[object] = con
+		end
+	end
+	for _, object in ipairs(objects) do
+		give(object, "stop")
+		if conOf[object] then give(conOf[object], "construction") end
+	end
+	local own, byGroup = {}, {}
+	for _, s in ipairs(stations) do
+		give(s, "station")
+		local group = groupOf(s)
+		local g = group and api.engine.getComponent(group, C.STATION_GROUP)
+		local alone = g ~= nil and g ~= false
+		for _, other in ipairs(g and g.stations or {}) do
+			if not mine[other] then alone = false end
+		end
+		if alone then
+			give(group, "station group")
+			if not byGroup[group] then
+				byGroup[group] = { group = group, stations = {} }
+				own[#own + 1] = byGroup[group]
+			end
+			table.insert(byGroup[group].stations, s)
+		end
+	end
+	log("the new " .. tostring(model) .. ": " .. table.concat(found, "; "))
+	if #fixed > 0 then
+		log("the new " .. tostring(model) .. " made the acting company's (" .. tostring(me) .. "): "
+			.. table.concat(fixed, ", "))
+	end
+	-- Named after its town, as nameStationGroups names a stop's group.
+	-- By the tool's name where the stop carries one (only where the game
+	-- left its group unnamed), else after its town.
+	nameStationGroups(own, name, PROVISIONAL_STOP_NAME)
 end
 
 -- How near its edge's centreline a stop's place is: the originator's own
@@ -857,6 +1442,8 @@ local NEW_EDGE_OBJECT = -400000000
 
 function HANDLERS.PlaceStop(stop)
 	local network = stop.edge.network
+	-- The tool's own name for it, as every game received it.
+	local native = apply.NATIVE_STOP_NAMES and type(stop.name) == "string" and stop.name ~= "" and stop.name or nil
 	local e = stopEdge(stop.edge)
 	local u, off = geom.parameterAt(e.a, e.ta, e.b, e.tb, stop.at.x, stop.at.y)
 	if off > STOP_TOLERANCE then error("the stop's place is not on its edge", 0) end
@@ -899,7 +1486,10 @@ function HANDLERS.PlaceStop(stop)
 		eo.oneWay = stop.one_way == true
 		eo.model = stop.model
 		eo.playerEntity = company()
-		eo.name = ""
+		-- A name, so the engine gives the stop its NAME and its owner
+		-- (docs/BUILDING.md: an empty name leaves both off); its group is
+		-- named after its town once built (settleStop).
+		eo.name = native or PROVISIONAL_STOP_NAME
 		added[k] = eo
 	end
 	local proposal = rebuildWith(e, network, objects)
@@ -909,7 +1499,9 @@ function HANDLERS.PlaceStop(stop)
 	-- Paid by the player, as the tool builds.
 	local context = api.type.Context.new()
 	context.player = company()
-	return buildProposal(proposal, context)
+	local built = buildProposal(proposal, context)
+	settleStop(stop.edge, objects, stop.model, native)
+	return built
 end
 
 -- A stop the bulldozer removes: the object of that construction on the
@@ -948,6 +1540,7 @@ end
 -- A depot is named by its construction's file and position.
 
 local registry = module("registry")
+local captureModule = module("capture")
 local companiesModule = module("companies")
 require_companies = function() return companiesModule end
 local progressionModule = module("progression")
@@ -1073,12 +1666,30 @@ local function vehicleConfig(vehicles, groups, units)
 	return config
 end
 
-function HANDLERS.BuyVehicle(buy)
+-- The depot a purchase names: its construction's depot by its index there,
+-- among the construction's depots as the capture listed them
+-- (capture.depotsOf: its `depots`, then its subconstructions that are
+-- depots, such as an airfield's or airport's hangar). One the construction
+-- does not have is refused, the same in every game, saying how many it has;
+-- never another depot of it.
+local function purchaseDepot(buy)
 	local _, construction = constructionAt(buy.depot)
-	-- The construction's depot the store bought at, by its index there.
+	local depots = captureModule.depotsOf(api, construction)
 	local index = (buy.depot_index or 0) + 1
-	local depot = construction.depots and construction.depots[index]
-	if depot == nil then error("the construction there has no depot " .. index, 0) end
+	local depot = depots[index]
+	if depot ~= nil then return depot end
+	local file = tostring(buy.depot.file)
+	if #depots == 0 then
+		error(string.format("the %s there has no depot: an airfield or airport has one only with a hangar "
+			.. "module, and a harbour never has one (ships are bought at a ship depot)", file), 0)
+	end
+	error(string.format("the %s there has %d depot(s), and no depot %d", file, #depots, index), 0)
+end
+
+function HANDLERS.BuyVehicle(buy)
+	local depot = purchaseDepot(buy)
+	local allowed, why = companiesModule.mayBuyAtDepot(acting and acting.roster, company(), depot, api)
+	if not allowed then error(why, 0) end
 	local time = now()
 	local vehicles = {}
 	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end
@@ -1202,7 +1813,11 @@ function HANDLERS.VehicleOp(op, ctx)
 	if type(change) == "table" and change.Stop ~= nil then
 		return run(api.cmd.makeVehicleSetStoppedByUserCmd(vehicle, change.Stop == true))
 	elseif type(change) == "table" and change.ToDepot then
-		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, change.ToDepot.sell == true))
+		-- Sold on arrival, the game crashes at the depot (capture.vehicleToDepot).
+		if change.ToDepot.sell == true then
+			return false, "selling a vehicle when it reaches the depot (the game crashes there)"
+		end
+		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, false))
 	elseif change == "Reverse" then
 		return run(api.cmd.makeVehicleReverseCmd(vehicle))
 	elseif change == "Depart" then
@@ -1376,7 +1991,7 @@ function HANDLERS.Loan(op, ctx)
 	local mine = roster and companiesModule.byEntity(roster, company())
 	if roster and not mine then return false, "the acting company is not in the room's roster" end
 	if mine and mine.id ~= 0 then
-		if op.Take then return companiesModule.borrow(roster, mine.id, op.Take.offer, send, api) end
+		if op.Take then return companiesModule.borrow(roster, mine.id, op.Take.offer, op.Take.next, send, api) end
 		if op.Repay then return companiesModule.repay(roster, mine.id, op.Repay.loan, send, api) end
 		return false, "a loan is taken or paid back"
 	end
@@ -1397,7 +2012,10 @@ end
 -- game at the same update. Every game checks the offer against its own
 -- script's state first, alike: the first company in the room's order to
 -- accept an offer takes it, and every later one is refused, naming who took
--- it. The money goes to the acting player's company.
+-- it. The money goes to the acting player's company. The accept carries
+-- that company's player entity (`tpf3mpCompany`), which the subsidy's kind
+-- keeps as its taker: from then on only the taker's transport counts
+-- towards it (tpf3mp/subsidies.lua).
 function HANDLERS.Subsidy(op, ctx)
 	local roster = ctx and ctx.roster
 	if not roster then return false, "no roster to book the subsidy to" end
@@ -1406,7 +2024,9 @@ function HANDLERS.Subsidy(op, ctx)
 	local state = companiesModule.subsidyState(api)
 	local function event(name, ref)
 		return function()
-			send(api.cmd.makeScriptingSendEventCmd("", "Subvention", name, { uid = ref.uid }))
+			local param = { uid = ref.uid }
+			if name == "onAccept" then param.tpf3mpCompany = mine.entity end
+			send(api.cmd.makeScriptingSendEventCmd("", "Subvention", name, param))
 		end
 	end
 	if op.Accept then
@@ -1455,6 +2075,74 @@ function HANDLERS.Prospect(p, ctx)
 		permitKey = p.permit,
 		cargoType = p.cargo,
 	}))
+end
+
+-- A company perk (action::PerkOp) goes through the company script's own
+-- event, with the parameters the construction menu's perk tool sends it
+-- (gui/construction/tools/industry_greenify_tool.script.tl,
+-- marketing_campaign_tool.script.tl): here it runs at once, in every game
+-- at the same update, for the acting company, which spends the permit. The
+-- company script hands it on to the emissions or towns script, in this game
+-- alone, as in every other.
+
+function HANDLERS.Perk(op, ctx)
+	if op.Greenify then
+		local g = op.Greenify
+		local con = entityOf(ctx, "industries", g.industry)
+		local part = captureModule.industryPart(con)
+		if part == nil then error("industry-" .. tostring(g.industry) .. " is no one industry here", 0) end
+		log("greenifying industry-" .. tostring(g.industry) .. " (" .. tostring(part) .. ")")
+		return run(api.cmd.makeScriptingSendEventCmd("", "Companies", "MakeGreen", {
+			companyEntity = company(),
+			constructionEntity = part,
+			permitKey = g.permit,
+		}))
+	elseif op.Marketing then
+		local m = op.Marketing
+		local town = entityOf(ctx, "towns", m.town)
+		local cost = tonumber(m.cost)
+		if cost == nil or cost < 0 then error("a campaign of no price", 0) end
+		-- The tool will not start one the company cannot pay for; neither
+		-- does any game.
+		local read, balance = pcall(function() return api.engine.util.finance.getPlayersBalance(company()) end)
+		if not read or type(balance) ~= "number" or balance ~= balance or math.abs(balance) == math.huge then
+			error("cannot read the company balance for the campaign", 0)
+		end
+		if balance < cost then
+			error("not enough money for the campaign", 0)
+		end
+		log("marketing in town-" .. tostring(m.town) .. " (" .. tostring(town) .. ") for " .. tostring(cost))
+		send(api.cmd.makeScriptingSendEventCmd("", "Companies", "startMarketingCampaign", {
+			townEntity = town,
+			companyEntity = company(),
+			marketingParams = { durationMs = m.duration_ms, lineCostFactor = m.line_cost_factor },
+			permitKey = m.permit,
+		}))
+		-- What the tool books once the campaign started (its command's
+		-- callback): the price, to the company, as another expense.
+		local entry = api.type.JournalEntry.new()
+		entry.amount = -cost
+		entry.time = -1
+		entry.category.type = api.type.JournalEntry.Type.OTHER
+		return run(api.cmd.makeJournalBookAssetCmd(company(), entry, api.type.Vec3f.new(0, 0, 0)))
+	end
+	return false, "a perk of no kind"
+end
+
+-- A town building's Historic Preservation (action::Preservation), as its
+-- window sets it (gui/entity_window/town_building/town_building.tl): the
+-- town building at that place in the construction's list. Town buildings
+-- are the town's: any company may, as in single player.
+function HANDLERS.Preserve(p)
+	local con, c = constructionAt(p.building)
+	local list = c and c.townBuildings
+	local building = list and list[p.index + 1]
+	if type(building) ~= "number" then
+		error("no town building " .. tostring(p.index) .. " in the " .. tostring(p.building.file), 0)
+	end
+	log((p.preserved and "preserving " or "no longer preserving ") .. tostring(building) .. " of "
+		.. tostring(con) .. " " .. tostring(p.building.file))
+	return run(api.cmd.makeTownBuildingSetBlockedDevelopmentCmd(building, p.preserved == true))
 end
 
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,
@@ -1527,6 +2215,34 @@ function apply.run(action, ctx)
 	if not ok then return false, tostring(applied) end
 	if applied == true then return true, nil, detail end
 	return false, detail
+end
+
+-- The actions whose proposal apply.proposalOf makes: the builds a player's
+-- tool previews (tpf3mp/previews.lua).
+apply.PREVIEWS = { BuildConstruction = true, BuildRoad = true, BuildTrack = true, PlaceStop = true }
+
+-- The proposal `action` would build in this game, and the context it would
+-- be built with, as apply.run would make them for `ctx`, without sending
+-- anything, building anything or writing the log: for showing another
+-- player's build preview (docs/HOOKS.md, "Build previews"). Or nil and why:
+-- an action that is not a build, or one this game cannot make (a street
+-- type it lacks, an edge it does not have).
+function apply.proposalOf(action, ctx)
+	if type(action) ~= "table" then return nil, "an action is a table" end
+	local kind, body = next(action)
+	if kind == nil or next(action, kind) ~= nil then return nil, "an action is a table of one entry" end
+	if not apply.PREVIEWS[kind] then return nil, "no preview of " .. tostring(kind) end
+	local allowed, why = acceptance.check(action)
+	if not allowed then return nil, why end
+	dry, acting = true, ctx
+	local ok, stopped = pcall(HANDLERS[kind], body, ctx)
+	dry, acting = false, nil
+	if not ok and type(stopped) == "table" and stopped.proposal ~= nil then
+		return stopped.proposal, stopped.context
+	end
+	if ok then return nil, "the build made no proposal" end
+	if type(stopped) == "table" then return nil, tostring(stopped.dry) end
+	return nil, tostring(stopped)
 end
 
 -- The actions this version applies, for tests and the log.

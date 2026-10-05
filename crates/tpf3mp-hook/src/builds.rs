@@ -29,7 +29,11 @@
 //! has no preview to pair its click with. The add's detour is entered
 //! through a thunk that notes where `Add` returns to; a click whose call
 //! returns into the module editor's `MousePressed` has its proposal read
-//! natively and kept for that click ([`crate::modules`]).
+//! natively and kept for that click ([`crate::modules`]). A click whose call
+//! returns into `ProposalAction::DoApply`, the terrain tools', the painter's
+//! and the asset brush's, has its terraform read there ([`crate::terrain`]).
+//! While the room's actions are applied, a build is filled with the
+//! terraform the game script armed, if it armed one.
 //!
 //! Only Windows x64 installs the detours ([`install`]); elsewhere they are
 //! built for the tests alone.
@@ -40,14 +44,10 @@
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-/// Where a `Command` keeps its payload.
-const COMMAND_PAYLOAD: usize = 0;
-/// Where a payload keeps its variant index (build 40408).
-const PAYLOAD_INDEX: usize = 0x9b8;
-/// The variant index of a `WorldBuildProposal` (the dispatcher's case 53).
-const WORLD_BUILD_PROPOSAL: i8 = 52;
-/// Where a `WorldBuildProposal` payload keeps `playerInitiated`.
-const PLAYER_INITIATED: usize = 0x3d2;
+use crate::build_data::native::builds::COMMAND_PAYLOAD;
+use crate::build_data::native::builds::PAYLOAD_INDEX;
+use crate::build_data::native::builds::PLAYER_INITIATED;
+use crate::build_data::native::builds::WORLD_BUILD_PROPOSAL;
 
 /// The game's own add and apply, reached through their detours'
 /// trampolines.
@@ -160,17 +160,23 @@ unsafe extern "C" fn add_detour(
 ) -> usize {
     let original = ADD_ORIGINAL.load(Ordering::Acquire);
     let return_address = take_return_address();
+    // The stop tool waiting on this click, freed once it is queued
+    // ([`crate::stoptool`]).
+    let mut stop_tool = None;
     if command != 0 && crate::lua::in_room() {
         // SAFETY: the game passes the command it adds, whose first field is
         // its payload.
         let payload = unsafe { (command as *const usize).add(COMMAND_PAYLOAD).read() };
         // SAFETY: a command's payload, the size the dispatcher reads.
         if unsafe { player_build(payload as *const u8) } {
+            stop_tool = crate::stoptool::before_add(return_address, callback);
             let click = CLICKS.fetch_add(1, Ordering::AcqRel);
             if crate::modules::is_module_editor(return_address) {
                 // Read before the game takes it: the command is the
                 // caller's until Add returns.
                 crate::modules::record(&crate::modules::Process, click, payload);
+            } else if crate::terrain::is_terrain_tool(return_address) {
+                crate::terrain::record(&crate::modules::Process, click, payload);
             } else {
                 crate::junctions::record(&crate::modules::Process, click, payload);
             }
@@ -179,7 +185,11 @@ unsafe extern "C" fn add_detour(
     // SAFETY: the trampoline of the add, called with the arguments the game
     // passed.
     let original: AddFn = unsafe { std::mem::transmute::<usize, AddFn>(original) };
-    unsafe { original(list, connection, command, callback, progress) }
+    let added = unsafe { original(list, connection, command, callback, progress) };
+    if let Some(tool) = stop_tool {
+        crate::stoptool::after_add(tool);
+    }
+    added
 }
 
 /// The build apply's signature: the dispatcher's context and the payload;
@@ -188,6 +198,9 @@ type ApplyFn = unsafe extern "C" fn(usize, usize, usize, usize) -> u64;
 
 /// The apply's detour: in the room's game, the player's own builds answer
 /// false; the room's, and everyone else's (towns, the game's scripts), apply.
+/// A build of the room's is first filled with the terraform the game script
+/// armed for it, if any ([`crate::terrain::inject`]); one that cannot be
+/// answers false.
 unsafe extern "C" fn apply_detour(context: usize, payload: usize, r8: usize, r9: usize) -> u64 {
     let original = APPLY_ORIGINAL.load(Ordering::Acquire);
     if crate::lua::in_room() && !REPLAYING.load(Ordering::Acquire) {
@@ -196,6 +209,12 @@ unsafe extern "C" fn apply_detour(context: usize, payload: usize, r8: usize, r9:
             STOPPED.fetch_add(1, Ordering::AcqRel);
             return 0;
         }
+    }
+    if REPLAYING.load(Ordering::Acquire)
+        && let Err(why) = crate::terrain::inject(&mut crate::terrain::GameHeap, payload)
+    {
+        crate::log::line(&format!("terraform: the room's carrier was refused: {why}"));
+        return 0;
     }
     // SAFETY: the trampoline of the apply, called as the dispatcher called it.
     let original: ApplyFn = unsafe { std::mem::transmute::<usize, ApplyFn>(original) };
@@ -213,10 +232,18 @@ pub unsafe fn install(
     add: usize,
     apply: usize,
     module_call: Option<usize>,
+    terrain_call: Option<usize>,
+    stop_call: Option<usize>,
     detour: unsafe fn(*mut u8, *const u8) -> Result<usize, String>,
 ) -> Result<(), String> {
     if let Some(call) = module_call {
         crate::modules::set_call(call);
+    }
+    if let Some(call) = terrain_call {
+        crate::terrain::set_call(call);
+    }
+    if let Some(call) = stop_call {
+        crate::stoptool::set_call(call);
     }
     // SAFETY: the caller's; the entry thunk has the add's ABI and jumps to
     // add_detour, which has it too.

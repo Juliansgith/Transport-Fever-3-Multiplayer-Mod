@@ -50,6 +50,11 @@ offline. An initial install needs an internet connection and a signed
 published release. A failed download can be retried; a failed mod install
 shows its error and keeps Play unavailable until setup succeeds.
 
+The Windows installer accepts detected paths beginning with `\\?\` as well
+as ordinary drive and UNC paths. If an older release reports that argument
+`drive` is null, remove the leading `\\?\` from the mods-folder field (so a
+local Steam path begins with `C:\`, for example) and retry installation.
+
 **Settings → Repair installation** restores a managed installation from
 the latest signed package and reinstalls its mod. In a portable package it
 reinstalls the bundled mod. **Uninstall** removes the mod, and for managed
@@ -136,8 +141,8 @@ game's own **Multiplayer** button (next section).
 - **Your game**, the bar along the bottom, says where Steam has Transport
   Fever 3 and whether the TPF3-MP mod is installed (see "Installing").
   **Settings** has the server, updates and diagnostics (see "Changing the
-  server" below); the **support code** at the bottom is what to quote to
-  the server's operator.
+  server" below); the **support code** and the **log session** at the
+  bottom are what to quote to the server's operator.
 - If the game closes or crashes once it has connected, the launcher
   notices within a second: the Session log says "the game session failed:
   Transport Fever 3 closed", and you are back on the server, out of the
@@ -145,7 +150,7 @@ game's own **Multiplayer** button (next section).
 
 **Which launcher is this?** The bottom left of the window says its
 version, the protocol it speaks to servers and the commit it was built
-from, as `v1.1.0 · protocol 15 · <commit>`; **Settings**, **About this
+from, as `v1.2.0 · protocol 16 · <commit>`; **Settings**, **About this
 launcher** lists them too. The first line of its log names the file that
 runs. On Windows, the file's **Properties**, **Details** show the same
 version and commit.
@@ -242,51 +247,71 @@ window too.
      Click one to join it; one with a password asks for it first.
      **Previous**, **Next** and **Refresh** page through the list, which
      also refreshes itself every ten seconds. **Join with code**, at
-     the top, opens a small popup for a friend's room: the **invite code**
-     they sent you, such as `K7QM2X` (upper or lower case), the room's
-     password if it has one, and **Join** or **Cancel**. A private room is
-     joined by invite, either here or through **Join a friend** on the main menu.
-   - **Host a room**: a **room name** (your name's room if you leave it
-     empty); **Start from this save**, one of your saves, newest first, or
-     **Create a new world...** (offered first); **Players**, 2 to 16; **How you
-     play**, two pictures: **Co-op**, everyone for the room's one company,
-     or **Competitive**, each player founding a company of their own in
-     the game; **Who can find
-     it**: **Private**, invite only (the default), or **Public**, in the
-     room list, with your save's climate and year; the **Rules**, when the
-     server offers more than one (`native` is the game's own rules and
+     the bottom right, opens a page for a friend's room: the **invite
+     code** they sent you, such as `K7QM2X` (upper or lower case), the
+     room's password if it has one, and the server and name you join
+     with; **Join** or **Cancel**. A private room is joined by invite,
+     either here or through **Join a friend** on the main menu.
+   - **Host a room**: the **world** the room starts from, a big card:
+     click it to pick a save on the game's own **Load Game** page, which
+     then reads "The room's save and mods" and has **Use for the room**
+     instead of Load Game. Pick a save, check or change its mods on its
+     **Mods** tab and its settings on **Gameplay Settings**, as you would
+     to load it, and press **Use for the room**: the room starts from that
+     save, with exactly those mods and settings in every player's game.
+     The first tile, **New world**, starts the room from a world you
+     create: the game opens its normal setup screens for climate, map and
+     settings once the room is made. TPF3-MP is always among the room's
+     mods, so a save from single player without it works too: every game
+     adds it when it loads the room's world. (A launcher started with
+     `--mods` loads saves with their own mods; there a save without
+     TPF3-MP is refused with "This save doesn't have the TPF3-MP mod
+     enabled: load it once, turn TPF3-MP on in its mods, save it, then
+     pick it again", since the room's game cannot run in a world without
+     it.) **How you play**, two pictures: **Co-op**, everyone for
+     the room's one company, or **Competitive**, each player founding a
+     company of their own in the game. Then the **room name** (your
+     name's room if you leave it empty), **Players**, 2 to 16, **Who can
+     find it**: **Private**, invite only (the default), or **Public**, in
+     the room list, with your save's climate and year; the **Rules**, when
+     the server offers more than one (`native` is the game's own rules and
      economy, as in single player; a description says what the others
      are); and an optional **password**. Then **Create room**. You own the
-     room: you start its game and can remove players. When creating a new
-     world, the game opens its normal setup screens for climate, map and
-     settings. Completing those screens generates the room's world. Once
-     it has loaded and everyone is ready, multiplayer starts automatically.
-   - **Your mods**, at the bottom of both pages and of the room's: the
-     mods you have installed. Turn on or off those only you play with
-     (only you see them); those every player needs are marked so and stay
-     as the room has them. In a room, it also lists the room's own mods,
-     from its start save, and whether you have each. You can change your
-     choice until the room's game starts.
-5. **The room.** On the left, the room's name (a lock if it has a
-   password), its **invite code** to send your friends (**Copy** beside it
-   puts it on the clipboard), and its players
-   as picture cards of their banners (and their portrait beside it, if
-   they picked a character), each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
-   and **Other mods** when their game differs from the owner's. On the
-   right, above the room's chat (type and press Enter or **Send**), the
-   save the room starts from:
-   - everyone sees it under **Starts from**: its name, and its climate
-     and year when the room knows them, "on its way to the room" until the
-     room has it, or "The world the owner's game has" without one;
-   - the owner picks it there under **Start from this save**, from the
-     same list as the Host page, until the game starts. A new pick goes up
-     to the room ("Sending mptest to the room: 42%", with a bar) and the
-     room's shared mods follow it; **Start the game** waits until the room
-     has it. Everyone is then asked to get ready again, since they agreed
-     to the save before: each guest is told the owner changed it, and
-     presses **Ready**. Picking the save first, when the room had none,
-     asks nobody again. A public room's card in the room list shows the
-     new save's climate and year.
+     room: you start its game and can remove players. With a new world,
+     once it has loaded and everyone is ready, multiplayer starts
+     automatically.
+   - **Your mods**, at the bottom of both pages: the mods only you play
+     with (only you see them), to turn on or off with the game's own
+     **Activate** button. Mods every player needs are the room's, picked
+     by its owner with the save.
+5. **The room.** Three tabs:
+   - **Room**: the world the room starts from, as a big card (its
+     picture, name, climate and year; the owner clicks it to pick another
+     save and its mods on the Load Game page, until the game starts);
+     the players as picture cards of their banners (and their portrait
+     beside it, if they picked a character), each marked **Owner**,
+     **You**, **Ready** or **Not ready**, **Away**, and how many of the
+     room's mods they lack; the room's **invite code** to send your
+     friends (**Copy** beside it puts it on the clipboard), its players,
+     play style, password, server and mods; and the room's chat (type and
+     press Enter or **Send**). A new save goes up to the room ("Sending
+     mptest to the room: 42%", with a bar), and **Start the game** waits
+     until the room has it. Everyone is then asked to get ready again,
+     since they agreed to the save and its mods before. Picking the save
+     first, when the room had none, asks nobody again.
+   - **The room's mods**: every mod the room's world runs, as tiles like
+     the game's mod selector's, each marked **Installed**, **Missing** or
+     **Another version**, and where it comes from. A missing mod from
+     Mod Hub has **Install**: it opens the mod's Mod Hub page in the game,
+     where you see what it is and **Subscribe**; Mod Hub downloads it with
+     your own account, and the tile follows it until it is installed.
+     **Install all missing** asks once for all of them, showing what each
+     is on Mod Hub, before subscribing. A mod not on Mod Hub says to ask
+     the owner where to get it. Not signed in to Mod Hub, the tab offers
+     the game's Mod Hub page to sign in. **Start the game** stays off,
+     naming who, while anyone's mods differ from the room's.
+   - **Only for you**: your own mods, as **Your mods** above. You can
+     change them until the room's game starts.
 6. **Get ready.** At the main menu you are marked ready by yourself: a
    guest at once, the owner once the room has the save picked in step 4
    or 5. **Ready** and **Not ready** set it by hand. When the owner
@@ -311,8 +336,10 @@ What the window says:
   until the launcher answers, then what happened. Anything refused, such
   as a wrong invite, a full room or a name that is too long, shows in red
   there, and the button can be pressed again.
-- "Your game differs from the room's" names the mods to add, remove or
-  update.
+- In a room, **The room's mods** tab shows which of the room's mods you
+  lack or have in another version, and installs those from Mod Hub;
+  outside one (a join refused because your game differs), "Your game
+  differs from the room's" names the mods to add, remove or update.
 - "This game has no link to the TPF3-MP launcher": the game was not
   started from the launcher. Close it and start it from there.
 - **Remove** (the bin, for the owner) and **Leave room** ask first.
@@ -358,13 +385,26 @@ protected folder such as Program Files.
   it. Guests' speed buttons highlight the room's accepted speed,
   including pause. Their buttons and speed shortcuts are disabled;
   their tooltip and the Multiplayer window say **Host controls speed**.
+  You can build while the room is paused. Everyone receives the ordered
+  build and its normal construction costs without advancing game time or
+  moving vehicles. Editing and demolition follow the same room ordering.
   Outside a multiplayer game the normal controls return.
 - **Joining later.** You can join a game that is already running: the
   room sends you its world, and your game loads it and catches up.
 - **Losing the connection.** If your connection or the server drops, the
   launcher rejoins the room by itself, and your game only pauses. If you
   were away too long to catch up, the room sends you its world again.
-- **Leaving.** **Leave room** gives up your seat. The owner can also remove
+  The server keeps your seat for 10 minutes (its operator may set longer).
+  The launcher stops trying when the server says the room is gone, after
+  5 minutes without getting back in, or when the connection drops again
+  right after each of 5 rejoins in a row. Both windows then say **The
+  room is gone (closed or the server restarted)**, or that it could not
+  rejoin, and you are back on the server in no room: create or join
+  another. **Leave room** works while it is rejoining too, in the
+  launcher and in the game's Multiplayer window: it stops at once.
+- **Leaving.** **Leave room** gives up your seat. It always works: if the
+  server cannot be told, you leave anyway, and the server lets the seat
+  go after its 10 minutes. The owner can also remove
   a player whose game froze; a removed player cannot come back to that
   room. If the room's game had not begun yet, your game keeps running and
   follows you into the next room you create or join: no need to restart
@@ -374,9 +414,22 @@ protected folder such as Program Files.
   and your game reloads it. A notice says so.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
-- **Loans.** Take and pay back loans in the company window as usual: every
-  player's game books them together.
-- **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
+- **Room saves in your save folder.** To load the room's world, your game
+  copies it into Transport Fever 3's save folder
+  (`<Steam>/userdata/<account>/3493540/local/save`) as
+  `tpf3mp_room_<number>.sav`, and the room's saves pass through there as
+  `tpf3mp_<number>_<number>.sav`. They are not offered as saves to start
+  a room from. Each is a whole world, so TPF3-MP removes those of games
+  that have ended, when your game starts and each time it loads a room's
+  world; the copy of a game still running stays. Your own saves are never
+  touched.
+- **Loans.** Take and pay back loans in the finance window as usual: every
+  player's game books them together. Each company has its own offers and
+  loans, up to four loans at once. An offer you take goes on a four-to-eight
+  month cooldown before that slot gets a new offer; the interest and
+  repayments are your company's alone.
+- **Subsidies, entity renaming, vehicle recolouring, line waypoints, bridge/tunnel
+  window type changes, Industry Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
@@ -384,8 +437,7 @@ protected folder such as Program Files.
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.
   When it ends, months later, every game finds the same industry at the
-  same place, or nothing, and says so in the same notification. Greening
-  an industry and marketing campaigns are not in multiplayer yet.
+  same place, or nothing, and says so in the same notification.
 - **Company ranks.** Take a new rank in the company window as usual: every
   player's game takes it together, a moment after your click. With one
   company in the room the rank grows as in single player. With more (a
@@ -401,8 +453,32 @@ protected folder such as Program Files.
   goes where your cursor is on the road. The road tools tab works too:
   tram tracks, bus lanes, noise barriers, trees along the road and the
   lock against the town's changes, and a road built through a stretch
-  with stops keeps them. Remove them, and roads and tracks, with the
-  bulldozer.
+  with stops keeps them. So do the track menu's tools: electrification,
+  a track's type and its decorations (seen with the road tools; the track
+  tools are not yet tried in a real game). Remove them, and roads and
+  tracks, with the bulldozer.
+- **Airfields and airports.** Build the game's stock airfield or airport
+  from **Air** with a hangar if you want to buy aircraft there. Place roads
+  near the passenger building as in the base game. Use **Configure** on
+  your own airport to add or remove its terminal, hangar and other modules;
+  the editor's bulldozer removes individual modules, while the main
+  bulldozer removes the whole airport. Buy aircraft in its hangar's depot
+  window, then add the airport's airplane terminal to a line and assign
+  the aircraft. An airport without a hangar cannot sell aircraft. The
+  game's line manager may offer a helicopter terminal at a large airport;
+  choose an airplane terminal for an airplane line. Another company's
+  airport follows its station-access policy for your lines, but only its
+  owner can change its modules or remove it.
+- **Terraforming** (not in multiplayer yet: it is switched off until a
+  two-player game has shown it works; a stroke changes nothing, and the
+  hook's log says why). Once on: raise, lower, smooth and flatten the ground,
+  and the heightmap brush, as usual: every player's game reshapes the same
+  cells to the same heights, a moment after each stroke, and your company
+  pays. Your own game changes the ground only when the room's copy of a
+  stroke arrives, so while you hold the mouse down the brush works on the
+  ground as it was before your last strokes came back. A stroke of more
+  than 65,536 cells (a square about 1 km across) is refused. Painting the
+  ground and the asset brush (trees, rocks) are not in multiplayer yet.
 - **Town buildings.** Bulldoze a town's building as usual: every player's
   game removes the same building, a moment after your click; your company
   pays the demolition, and the town's opinion of it changes as in single
@@ -425,18 +501,28 @@ protected folder such as Program Files.
   depots, stations and roads) is theirs: you cannot change or remove it.
   The game's own windows show your company: its money in the corner, and
   your things as yours. A new company starts with no money: borrow on the
-  terms the game offers in the Multiplayer window, which also shows its
-  loans and pays them back (the game's finance window keeps the room's
-  first company's loans). With more than one company, vehicles and their
+  terms shown in the Multiplayer window, which also shows its loans and pays
+  them back. The finance window shows that company's own offers and loans.
+  With more than one company, vehicles and their
   markers on the map wear their company's colour, and a new colour
   repaints them. The colour button offers the companies' colours first,
   then the game's own.
 - **Headquarters.** Each company builds one headquarters of its own, from
   the construction menu as usual, once its rank allows: another
   company's headquarters does not use up yours. A second one for the
-  same company is refused. The game bar's transported figures and the
-  finance window's company value still show the room's first company's.
-- **Your company's head, passwords and stations** (proposed, D22). The
+  same company is refused. Each headquarters gives its own town the
+  game's growth bonus, as in a single-player game. With more than one
+  company, the town labels on the map crown every company's headquarters
+  town as its capital, and every player sees them all: yours in the
+  game's blue, another company's in that company's colour, each with a
+  line under it naming whose it is ("Capital of Rival", or "Capital of
+  Rival and Pals" when two companies have theirs by the same town). The
+  line is hidden when you zoom far out; the crown and colour stay. With
+  one company it is the game's own capital, as in single player. The
+  game bar's transported figures and the finance window's company value still show
+  the room's first company's.
+- **Your company's head, passwords and stations** (D22: station access
+  approved; the other policies remain proposed). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
   each company's head. The head can give the company a password: then
@@ -444,13 +530,20 @@ protected folder such as Program Files.
   The password goes to the server, which keeps it from every game and
   every log; nobody, the head included, can read it back, so share it
   the way you share a room's. The head can also remove or change the
-  password, send a player back to the room's first company, and close
-  the company's stations to other companies' lines. Stations start open:
-  your lines may stop at another company's station, and the line manager
-  offers it, until its head closes them. You still cannot change or
-  remove another company's station, and your vehicles use your own
+  password, send a player back to the room's first company, and choose
+  who may stop at the company's stations: **Deny by default** or **Allow
+  by default** for every company (those founded later included), and
+  **Allow** or **Deny** for each other company on its own, which wins over
+  the default (**Default** puts it back). Stations start open: your lines
+  may stop at another company's station, and the line manager offers it,
+  unless its head denies your company. Access is checked when creating or
+  changing a route; existing services keep running after access is denied.
+  You still cannot change or remove another company's station, and your vehicles use your own
   depots. The room's first company is everyone's: it has no head and no
   password. The game's company window renames your company too.
+- **Terrain.** Raise, lower, smooth, flatten and the heightmap brush share
+  their height changes through the room. Terrain paint and asset brushes
+  are still refused until their own multiplayer support is validated.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.
@@ -500,11 +593,15 @@ server.
 
 The bottom of the window shows your **support code**, six letters and
 digits like an invite's (**Copy** copies it). It names your connection in
-the server's log: quote it to the server's operator with your report. It
-lets nobody into your room, so it is safe to post. There is nothing to
-send: while you are connected, the launcher sends its log to the server
-by itself (see "Diagnostics"), so the operator finds what happened to you
-from your support code alone. The launcher also keeps its log on your machine
+the server's log: quote it to the server's operator with your report.
+Next to it, while diagnostics are on, is your **log session**, a code of
+the same kind that names this whole run of the launcher, across every
+time it connected; the game's Multiplayer window shows it too, on its
+first page and under **Server...**, with its own **Copy**. Quote both.
+Neither lets anybody into your room, so they are safe to post. There is
+nothing to send: while you are connected, the launcher sends its logs to
+the server by itself (see "Diagnostics"), so the operator finds what
+happened to you from those codes alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
 
 **"This launcher is too old for the server"?** The server speaks a newer
@@ -527,25 +624,37 @@ launcher as before.
 
 ### Diagnostics
 
-While you are connected, the launcher sends the lines of its log to the
+While you are connected, the launcher sends the lines of its logs to the
 server you play on, so its operator can see what went wrong for you from
-your support code, without asking you for files. Before a line leaves your
-machine, paths are cut to their last part (so your user name and your
-Steam account are not in them), and IP addresses, invites, keys and
-passwords, e-mail addresses and Steam IDs are taken out; the server does
-the same again. Your game's own log and crash dumps are not sent. The
-server keeps the lines for a limited time, 30 days unless its operator
-chose otherwise.
+your support code or log session, without asking you for files (D10 and
+its amendment). The lines are:
+
+- the launcher's own log;
+- the in-game hook's log (`hook.log`) and the game's own log
+  (`stdout.txt`), from where they stood when you started the launcher;
+- the text of the game's error reports (the `.txt` and `.json` files in
+  its `crash_dump` folder) written since.
+
+Never the game's crash dumps (`.dmp`), your saves, your identity key or
+any file whose name looks like a key, certificate or token. Each source
+sends only so much a minute, so a log that runs away sends its newest
+lines and skips older ones. Before a line leaves your machine, paths are
+cut to their last part (so your user name and your Steam account are not
+in them), and IP addresses, invites, keys and passwords, account IDs,
+e-mail addresses and Steam IDs are taken out; the server does the same
+again. The server keeps the lines for a limited time, 30 days unless its
+operator chose otherwise.
 
 Set **Send diagnostics** to **Off**, in **Settings** (or untick it at the
-bottom of the browser page), to stop: the
-launcher then sends nothing more, forgets the lines it had not sent yet,
-and remembers your choice.
+bottom of the browser page), to stop: the launcher then sends nothing
+more from any of these logs, forgets the lines it had not sent yet,
+never sends what the logs gain while it is off, and remembers your
+choice. The log session is not shown while it is off.
 
 ### The game's own logs
 
-The game's own log and crash dumps are not sent. When the operator needs
-them, `tpf3mp-agent collect-logs`, run from the TPF3-MP folder, puts them
+The game's crash dumps are never sent, and the logs' older parts (from
+before you started the launcher) neither. When the operator needs them, `tpf3mp-agent collect-logs`, run from the TPF3-MP folder, puts them
 into one zip with TPF3-MP's logs: `tpf3mp-logs-<time>.zip` in your
 Downloads folder (in `TPF3-MP` when there is no Downloads folder).
 `--out <folder>` puts it elsewhere, `--since 2h` takes a shorter window,
@@ -586,6 +695,13 @@ before sharing it publicly if you want to be sure.
 - **"connected via tunnel"** next to the connection: your network blocks
   UDP, and the game plays through the tunnel. It works, but lost packets
   cost a little more delay.
+- **Under Proton or Wine** (Linux, Steam Deck) the Windows launcher plays
+  over UDP as well: Wine refuses some socket options QUIC uses, so the
+  launcher's log says it uses a plain UDP socket, which works the same.
+  Should UDP not open at all, it takes the tunnel by itself, unless you
+  started it with `--no-tunnel`. With `--game-exe`, the launcher shows that
+  program's folder as the game's, never the native Linux game Steam may
+  list beside it.
 - **A version mismatch**: your package and the server are different
   versions. The message says which side is older.
 - **"Your game differs from the room's"**: the window lists what to change:
@@ -593,7 +709,8 @@ before sharing it publicly if you want to be sure.
   the mods you have in another version. Everyone needs the owner's build
   and shared mods in the same order; personal mods are not compared. In the room, a **differ** pill next to a
   player shows whose game differs from the owner's; each player sees their
-  own list.
+  own list. In the game's Multiplayer page the room's mods tab shows the
+  same, mod by mod, and installs what you lack from Mod Hub.
 - **"too many players are connected from this network"**: the server
   limits connections per network. Close another game, or ask the operator.
 - **"that invite is for another server"**: an invite never takes you to

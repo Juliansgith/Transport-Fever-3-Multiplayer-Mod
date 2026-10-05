@@ -5,36 +5,44 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 12,                 -- bridge.VERSION; anything else is refused
+--     version = 14,                 -- bridge.VERSION; anything else is refused
 --     command = function(action, password), -- the player acted: an action
 --                                   -- table, for the room to order, and a
 --                                   -- company's password for joining or
 --                                   -- locking it, which the room seals
 --                                   -- -> true, ticket | false, why
---     take    = function(),         -- in a game script's update: the actions
---                                   -- the room ordered for this update, or nil,
---                                   -- who sent each (64 hex digits), and each
---                                   -- one's seal, { scope =, tag = } or false
+--     take    = function(),         -- marks a simulation update begun;
+--                                   -- nil actions in runtime update batches
+--     takeReplay = function(token), -- ordered actions, origins and seals,
+--                                   -- once, in the engine's handleEvent
+--     replayed = function(token, ok, why), -- done after action reports and
+--                                   -- script-state persistence
 --     log     = function(line),     -- a line for hook.log
 --     poll    = function(),         -- in the GUI, every frame: what the hook
---                                   -- asks, { save = name } or { load = name }
+--                                   -- asks, { replay = token }, { save = name }
+--                                   -- or { load = name }
 --                                   -- (the game's own save folder), or nil
 --     saved   = function(name, ok, why), -- the GUI's answer to a save
 --     world   = function(),         -- a world's GUI started
 --     room    = function(),         -- whether the room's game runs -> boolean
---     checkpoint = function(),      -- in a game script's postUpdate: whether
---                                   -- to read the world's lanes now
+--     checkpoint = function(),      -- report due, absolute simulation step
+--     scanned = function(ok, why, ms), -- rolling read completed; failure holds
 --     lanes   = function(t),        -- those lanes, { [lane] = text }
 --                                   -- -> true | false, why
 --     clicks  = function(),         -- in the GUI: the player's builds queued
 --                                   -- in the room's game so far, or nil where
 --                                   -- the hook cannot take them to the room
 --     built   = function(n),        -- optional; in the GUI: the build the
---                                   -- module editor queued at click n, as
---                                   -- game scripts see a proposal | nil, why
---                                   -- | nil (not the module editor's)
+--                                   -- module editor or a terrain tool queued
+--                                   -- at click n, as the hook read it | nil,
+--                                   -- why | nil (neither's)
 --     replaying = function(on),     -- the game script applies the room's
 --                                   -- actions (true) or is done (false)
+--     terrain = function(t),        -- optional; while the room's actions run:
+--                                   -- arms the next build sent with the
+--                                   -- terraform grid t -> true | nil, why;
+--                                   -- terrain() disarms -> whether a build
+--                                   -- was filled | nil (none armed)
 --     applied = function(i, ok, entity, why), -- in a game script's postUpdate:
 --                                   -- what became of the batch's action i
 --     results = function(),         -- in the GUI: what became of the player's
@@ -70,6 +78,26 @@
 --                                   -- Lua states notes for the others ("" to
 --                                   -- forget); note(key) reads it -> string
 --                                   -- | nil
+--     edgewatch = function(),       -- optional; in a game script's update:
+--                                   -- the entities the edge watch reads in
+--                                   -- this update, { e, ... } | nil
+--     edgewatched = function(e, text), -- optional; in its postUpdate: what
+--                                   -- it read of e (tpf3mp/lanes.lua watch)
+--     preview = function(action),   -- optional; in the GUI: what the
+--                                   -- player's build tool shows now, the
+--                                   -- action it would build, or nil once it
+--                                   -- shows nothing, for the room's other
+--                                   -- members -> true | false, why
+--     previews = function(),        -- optional; in the GUI: what the other
+--                                   -- members' tools show that changed since
+--                                   -- the last call, { { from =, action = } },
+--                                   -- no action for one that shows nothing
+--     draw    = function(from),     -- optional; in the GUI: the next
+--                                   -- makeProposalData draws member from's
+--                                   -- preview -> true | false, why
+--     drawn   = function(),         -- optional; what it came to -> true |
+--                                   -- false, why | nil (nothing evaluated)
+--     undraw  = function(from),     -- optional; member from's preview goes
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -96,6 +124,8 @@ local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptan
 
 local bridge = {}
 
+-- 13: token-only ordered replay wakes, takeReplay and replayed, so actions
+--     run between simulation updates while paused as well as while running.
 -- 12: company passwords: `command` takes a password beside the action,
 -- which the room seals, and `take` hands each action's seal third;
 -- 11: `note`, a short string one of the game's Lua states notes for the
@@ -112,7 +142,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 12
+bridge.VERSION = 14
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -128,7 +158,7 @@ function bridge.attach(native)
 	end
 	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room",
 			"checkpoint", "lanes", "clicks", "replaying", "applied", "results", "status", "chat",
-			"say" }) do
+			"say", "takeReplay", "replayed", "scanned" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -169,6 +199,18 @@ end
 -- (from 1), and the entity it made, if any.
 function Link:applied(index, ok, entity, why)
 	pcall(self.native.applied, index, ok == true, entity, why and tostring(why) or nil)
+end
+
+-- A wake carries only a token. Ordered actions come from the hook, once,
+-- in the engine's handleEvent, even when no simulation update runs.
+function Link:takeReplay(token)
+	local ok, actions, origins, seals = pcall(self.native.takeReplay, token)
+	if not ok or type(actions) ~= "table" then return nil end
+	return actions, origins, seals
+end
+
+function Link:replayed(token, ok, why)
+	pcall(self.native.replayed, token, ok == true, why and tostring(why) or nil)
 end
 
 -- In the GUI: what became of the player's own actions since the last call,
@@ -268,11 +310,15 @@ function Link:seed()
 	return nil
 end
 
--- Whether this update is the last of a batch that ends at a checkpoint:
--- the world's lanes are read now, after it.
+-- Whether this update reports a checkpoint, and the absolute simulation step
+-- whose rolling sample must be read. No step is returned outside room updates.
 function Link:checkpoint()
-	local ok, due = pcall(self.native.checkpoint)
-	return ok and due == true
+	local ok, due, step = pcall(self.native.checkpoint)
+	return ok and due == true, ok and step or nil
+end
+
+function Link:scanned(ok, why, ms)
+	return self.native.scanned(ok, why, ms)
 end
 
 -- Hands the lanes read at a checkpoint to the hook. Returns true, or nil
@@ -325,6 +371,76 @@ function Link:dumped(lane, entry)
 	return ok and taken == true
 end
 
+-- In a game script's update: the entities the edge watch reads in this
+-- update (docs/HOOKS.md, "The edge watch"), a list; or nil, and nil from a
+-- hook without the watch (`edgewatch` is optional).
+function Link:edgewatch()
+	if type(self.native.edgewatch) ~= "function" then return nil end
+	local ok, list = pcall(self.native.edgewatch)
+	if ok and type(list) == "table" and #list > 0 then return list end
+	return nil
+end
+
+-- In the GUI: the player's build tool shows `action` now (an action table,
+-- as command takes one), or nothing (nil), for the room's other members to
+-- see (docs/HOOKS.md, "Build previews"). Never applied anywhere. Returns
+-- true, or nil and why; nil from a hook without `preview` (it is optional:
+-- the other members then see nothing).
+function Link:preview(action)
+	if type(self.native.preview) ~= "function" then return nil, "this hook shows no previews" end
+	if action ~= nil and type(action) ~= "table" then return nil, "a preview is an action table" end
+	local ok, shown, why = pcall(self.native.preview, action)
+	if not ok then return nil, "the hook refused: " .. tostring(shown) end
+	if shown ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
+end
+
+-- In the GUI: what the other members' build tools show that changed since
+-- the last call, { { from =, action = } }, `from` a player id (64 hex
+-- digits), no `action` for one that shows nothing now; {} from a hook
+-- without `previews`.
+function Link:previews()
+	if type(self.native.previews) ~= "function" then return {} end
+	local ok, changes = pcall(self.native.previews)
+	if not ok or type(changes) ~= "table" then return {} end
+	return changes
+end
+
+-- In the GUI: draws member `from`'s preview, the proposal `proposal` with
+-- `context`, in the hook's renderer for them (docs/HOOKS.md, "Build
+-- previews"): the hook draws what the game evaluates for it with `evaluate`
+-- (api.engine.util.proposal.makeProposalData). True and what `evaluate`
+-- answered (the ProposalData), or nil and why; nil from a hook that cannot
+-- draw (`draw` is optional).
+function Link:drawPreview(from, proposal, context, evaluate)
+	local native = self.native
+	if type(native.draw) ~= "function" or type(native.drawn) ~= "function" then
+		return nil, "this hook draws no previews"
+	end
+	local ok, armed, why = pcall(native.draw, tostring(from))
+	if not ok then return nil, tostring(armed) end
+	if armed ~= true then return nil, tostring(why or "the hook did not arm") end
+	local evaluated, err = pcall(evaluate, proposal, context)
+	local okDrawn, drawn, whyNot = pcall(native.drawn)
+	if not evaluated then return nil, "the game did not evaluate it: " .. tostring(err) end
+	if not okDrawn then return nil, tostring(drawn) end
+	if drawn == nil then return nil, "the game made nothing to draw" end
+	if drawn ~= true then return nil, tostring(whyNot or "not drawn") end
+	return true, err
+end
+
+-- In the GUI: member `from`'s preview goes.
+function Link:undrawPreview(from)
+	if type(self.native.undraw) ~= "function" then return end
+	pcall(self.native.undraw, tostring(from))
+end
+
+-- Hands the hook what the edge watch read of `entity`.
+function Link:edgewatched(entity, text)
+	if type(self.native.edgewatched) ~= "function" then return end
+	pcall(self.native.edgewatched, entity, tostring(text))
+end
+
 -- Names in a text, one a line.
 local function lines(text)
 	local out = {}
@@ -351,6 +467,21 @@ function Link:mods(names)
 	return lines(plan), lines(dropped), lines(added)
 end
 
+-- The settings of the room's mods its owner picked, by mod, by setting, the
+-- game's own under ""; nil from a hook without `modparams` or with none (the
+-- save's then stay).
+function Link:modParams()
+	if type(self.native.modparams) ~= "function" then return nil end
+	local ok, text = pcall(self.native.modparams)
+	if not ok or type(text) ~= "string" or text == "" then return nil end
+	local room = {}
+	for mod, key, value in string.gmatch(text, "([^\t\n]*)\t([^\t\n]+)\t(%-?%d+)") do
+		room[mod] = room[mod] or {}
+		room[mod][key] = math.floor(tonumber(value))
+	end
+	return room
+end
+
 -- This player's personal mods, by name, as a set; an empty set from a hook
 -- without `personal` or without the room's lists.
 function Link:personal()
@@ -374,6 +505,17 @@ end
 -- The game script begins (true) or ends applying the room's actions.
 function Link:replaying(on)
 	pcall(self.native.replaying, on == true)
+end
+
+-- While the room's actions run: arms the next build sent with the terraform
+-- grid `grid` (true, or nil and why), or with nil disarms, answering whether
+-- a build was filled (nil when none was armed). A hook without `terrain` (it
+-- is optional) applies no terraform.
+function Link:terrain(grid)
+	if type(self.native.terrain) ~= "function" then return nil, "this hook cannot apply a terraform" end
+	local ok, result, why = pcall(self.native.terrain, grid)
+	if not ok then return nil, "the hook refused: " .. tostring(result) end
+	return result, why
 end
 
 -- Whether the room's game runs. A hook that cannot say is taken to say yes:

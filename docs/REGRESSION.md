@@ -146,7 +146,10 @@ BUILDING.md's tolerances, constructions (stations and depots by file
 name), stops on edges, vehicles, lines, terrain and companies with
 money. Vehicles on lines carry passengers between stations, with fares
 and upkeep, driven by a seeded generator. An action is applied whole or
-not at all. Its lanes are the network, constructions, lines, vehicles and
+not at all. An edge with a stop on it is removed only where the same build
+rebuilds it between the same ends (an upgrade tool's build), and the stop
+stays; the `upgrades` scenario plays that, an electrified track and a
+terraform in bands. Its lanes are the network, constructions, lines, vehicles and
 the economy.
 
 It is not Transport Fever 3. It tests the stack, the scripts and the

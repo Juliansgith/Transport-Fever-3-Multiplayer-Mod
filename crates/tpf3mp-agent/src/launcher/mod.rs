@@ -53,11 +53,16 @@ use crate::{
         self, Bridge, BridgeEnd, BridgeOptions, Control, LobbyLink, Rejoin, SharedStatus, Status,
     },
     connect,
+    picker::Declaration,
 };
 
 /// How long the launcher keeps trying to rejoin a room after losing the
-/// server.
+/// server: as long as a server holds a game nobody is connected to
+/// (`--abandon-after-mins`, 5 by default).
 const REJOIN_PATIENCE: Duration = Duration::from_secs(300);
+/// How long disconnecting waits for the room session to leave before it
+/// stops it.
+const DISCONNECT_WAIT: Duration = Duration::from_secs(5);
 /// Actions queued from the page before it waits.
 const ACTION_QUEUE: usize = 32;
 /// How often the launcher looks whether the game it started still runs.
@@ -72,9 +77,10 @@ const SAVES_TICK: Duration = Duration::from_secs(5);
 /// another launcher's heartbeat, before taking it.
 const LINK_HELD_WAIT: Duration = Duration::from_millis(350);
 /// How long the hook of a game this launcher did not start may fall silent
-/// before the game counts as closed: a game that followed the link from a
-/// launcher that closed ([`instance`]), whose process this one cannot
-/// watch. Long enough for a save to load at the menu.
+/// before the game counts as closed, once its process is gone too: a game
+/// that followed the link from a launcher that closed ([`instance`]), which
+/// this one did not start and cannot wait on. Long enough for a save to
+/// load at the menu.
 const ADOPTED_GAME_QUIET: Duration = Duration::from_secs(60);
 
 /// What a launcher needs.
@@ -129,6 +135,10 @@ pub struct LauncherConfig {
     /// Where lines of the player's log wait to go to the server, when the
     /// launcher sends them; `LauncherHandle` switches it.
     pub diagnostics: Option<crate::diagnostics::Recorder>,
+    /// Where the hook's and the game's logs are, whose lines go with
+    /// `diagnostics` (approved D10 amendment); `None` sends none of them.
+    /// A `TPF3MP_DATA_DIR` in `game_env` moves the hook's log there.
+    pub game_logs: Option<crate::game_logs::Places>,
     /// The hook library the game is started with: in the package, next to
     /// the launcher. `None` when the package has none.
     pub hook: Option<PathBuf>,
@@ -288,6 +298,10 @@ impl Shared {
                 player: Some(config.identity.player()),
                 installed: config.installed.clone(),
                 diagnostics: config.diagnostics.as_ref().map(|recorder| recorder.is_on()),
+                log_session: config
+                    .diagnostics
+                    .as_ref()
+                    .map(|recorder| recorder.run().to_string()),
                 start_save: config.start_save.as_deref().and_then(save_name),
                 ..View::default()
             }),
@@ -322,39 +336,62 @@ impl Shared {
             .map(|mods| mods.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
-    /// What the picker declares now; the build alone without a picker.
-    fn content_of_picker(&self) -> ContentManifest {
-        self.picker().map_or_else(
-            || ContentManifest::new(Text::lossy(""), Vec::new()),
-            |mods| mods.manifest(),
-        )
-    }
-
-    /// What this player declares to the room now.
-    fn content(&self, config: &LauncherConfig) -> ContentManifest {
-        self.picker()
-            .map_or_else(|| config.content.clone(), |mods| mods.manifest())
+    /// What this player declares to the room now: as the room's owner with
+    /// the picker, their content and the room's mods. A room's list that
+    /// does not hold together never stays the picker's ([`own_start`],
+    /// `choose_room`), so the content alone is only a fallback.
+    fn content(&self, config: &LauncherConfig) -> Declaration {
+        match self.picker() {
+            Some(mods) => mods
+                .declaration()
+                .unwrap_or_else(|_| Declaration::Content(mods.manifest())),
+            None => Declaration::Content(config.content.clone()),
+        }
     }
 
     /// Puts the picker's mods in the view.
     fn show_mods(&self) {
-        let rows = self.picker().map(|mods| api::mod_rows(&mods));
-        if let Some((mods, room_mods)) = rows {
+        let rows = self.picker().map(|mods| {
+            let params = mods
+                .room_params()
+                .iter()
+                .flat_map(|of| {
+                    of.params.iter().map(|param| api::ParamRow {
+                        id: of.id.as_str().to_owned(),
+                        key: param.key.as_str().to_owned(),
+                        value: param.value,
+                    })
+                })
+                .collect();
+            (api::mod_rows(&mods), params)
+        });
+        if let Some(((mods, room_mods), room_params)) = rows {
             let mut view = self.view();
             view.mods = mods;
             view.room_mods = room_mods;
+            view.room_params = room_params;
         }
     }
 
     /// The picker as a room session asks it.
-    fn picker_link(&self) -> Option<bridge::PickerLink> {
+    fn picker_link(self: &Arc<Self>) -> Option<bridge::PickerLink> {
         let lists = Arc::clone(self.picker.as_ref()?);
         let learning = Arc::clone(&lists);
+        let shared = Arc::clone(self);
         Some(bridge::PickerLink {
             lists: Arc::new(move || lists.lock().unwrap_or_else(PoisonError::into_inner).lists()),
             learn: Arc::new(move |diff| {
                 let mut mods = learning.lock().unwrap_or_else(PoisonError::into_inner);
-                mods.learn(diff).then(|| mods.manifest())
+                mods.learn(diff)
+                    .then(|| Declaration::Content(mods.manifest()))
+            }),
+            adopt: Arc::new(move |room, owns| {
+                let again = shared.picker().and_then(|mut mods| {
+                    mods.adopt(room, owns)
+                        .then(|| Declaration::Content(mods.manifest()))
+                });
+                shared.show_mods();
+                again
             }),
         })
     }
@@ -372,6 +409,9 @@ struct Session {
     controls: mpsc::Sender<Control>,
     task: JoinHandle<SessionEnded>,
     options: ConnectOptions,
+    /// Its game closed after its hook attached: the session is ending, and
+    /// gives the link back once it has.
+    game_closed: bool,
 }
 
 /// How a room session ended, and the game's link it gives back, with the
@@ -391,23 +431,87 @@ type Idle = Option<IdleLink<tpf3mp_ipc::Link>>;
 
 /// Opens the link the game's hook attaches to (D11: the launcher names it in
 /// the game's environment), as a new generation.
-fn open_link(config: &LauncherConfig) -> Result<IdleLink<tpf3mp_ipc::Link>, String> {
+fn open_link(name: &str) -> Result<IdleLink<tpf3mp_ipc::Link>, String> {
     // Another launcher running with the same link would lose its game to
     // this one, and each game would show the other launcher's lobby.
-    if let Some(pid) = tpf3mp_ipc::Link::held_by_another_agent(&config.link, LINK_HELD_WAIT) {
+    if let Some(pid) = tpf3mp_ipc::Link::held_by_another_agent(name, LINK_HELD_WAIT) {
         let message = format!(
-            "another TPF3-MP launcher (process {pid}) uses the game link {}: start this launcher with its own --game-link, or close the other",
-            config.link
+            "another TPF3-MP launcher (process {pid}) uses the game link {name}: start this launcher with its own --game-link, or close the other"
         );
         warn!(%message);
         return Err(message);
     }
-    tpf3mp_ipc::Link::create(
-        &tpf3mp_ipc::Config::new(&config.link),
-        tpf3mp_ipc::Role::Agent,
-    )
-    .map(IdleLink::new)
-    .map_err(|error| format!("cannot open the link to the game: {error}"))
+    tpf3mp_ipc::Link::create(&tpf3mp_ipc::Config::new(name), tpf3mp_ipc::Role::Agent)
+        .map(IdleLink::new)
+        .map_err(|error| format!("cannot open the link to the game: {error}"))
+}
+
+/// Whether a game is on the link: the one this launcher started, while it
+/// runs, or else any game whose hook attached to it and whose process is
+/// still there (one it took over, even if it fell silent).
+fn game_on_link(game: &mut Option<tpf3mp_launch::Started>, link: &tpf3mp_ipc::Link) -> bool {
+    match game {
+        Some(started) => started.is_running(),
+        None => hook_process_runs(link),
+    }
+}
+
+/// Whether the process of the hook that last attached to the link may still
+/// run. A process id used again by another program keeps the link as it
+/// was: the next game may then find it taken, never a game cut off.
+fn hook_process_runs(link: &tpf3mp_ipc::Link) -> bool {
+    let pid = link.peer_pid();
+    pid != 0 && tpf3mp_launch::process_runs(pid)
+}
+
+/// Opens the link anew, empty, unless a game is on it ([`game_on_link`]).
+/// A game that closed never read what was sent last on its link (a room's
+/// end, the lobby's updates); the next game's hook, finding that before
+/// the launcher's hello, would refuse the link, and the game would say it
+/// has no link to the launcher until the launcher restarted. Renewed only
+/// when the link is about to serve again, not when a game closes: the
+/// launcher does not always see that (a game it took over).
+fn renew_unused_link(
+    name: &str,
+    game: &mut Option<tpf3mp_launch::Started>,
+    idle: &mut Idle,
+) -> Result<(), String> {
+    if idle
+        .as_ref()
+        .is_some_and(|link| game_on_link(game, link.link()))
+    {
+        return Ok(());
+    }
+    // The old mapping goes first: on Unix its owner removes the name when
+    // dropped, and would take the new one with it.
+    *idle = None;
+    *idle = Some(open_link(name)?);
+    Ok(())
+}
+
+/// Ends a task when dropped.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The hook's and the game's logs at `places`, the hook's in the folder a
+/// playtest gives its game (`TPF3MP_DATA_DIR`) when it gives one.
+fn game_log_sources(
+    config: &LauncherConfig,
+    places: crate::game_logs::Places,
+) -> crate::game_logs::Sources {
+    let hook_log = config
+        .game_env
+        .iter()
+        .find(|(name, value)| name == tpf3mp_ipc::DATA_DIR_ENV && !value.is_empty())
+        .map_or(places.hook_log, |(_, dir)| {
+            PathBuf::from(dir).join("hook.log")
+        });
+    crate::game_logs::Sources::new(hook_log, places.crash_dirs)
 }
 
 /// Carries out the page's actions, one at a time, and keeps the view.
@@ -417,6 +521,16 @@ async fn control(
     mut actions: Actions,
     mut lobby: LobbyEnds,
 ) {
+    // The hook's and the game's logs from where they stand as the run
+    // begins, for as long as it runs.
+    let _game_logs = config
+        .diagnostics
+        .clone()
+        .zip(config.game_logs.clone())
+        .map(|(recorder, places)| {
+            crate::game_logs::start(recorder, game_log_sources(&config, places))
+        })
+        .map(AbortOnDrop);
     let mut connected: Option<Connected> = None;
     let mut session: Option<Session> = None;
     // The game last started from here, while it may still be running.
@@ -424,7 +538,7 @@ async fn control(
     // The game's link, for as long as the launcher runs: the game can start
     // before a room is chosen, and its menu's window talks to the launcher
     // over it (D17).
-    let mut idle: Idle = open_link(&config)
+    let mut idle: Idle = open_link(&config.link)
         .inspect_err(|error| {
             warn!(%error, "the game's link opens with the first room instead");
             // Said in the window too: two launchers on one link cross.
@@ -489,13 +603,14 @@ async fn control(
                     None => Vec::new(),
                 };
                 // A game this launcher did not start: one that followed the
-                // link from a launcher that closed for this one. Only its
-                // hook falling silent says it closed.
+                // link from a launcher that closed for this one. Its hook
+                // falling silent and its process gone say it closed.
                 if session.is_none()
                     && game.is_none()
                     && idle.as_ref().is_some_and(|link| {
                         link.build().is_some()
                             && link.hook_quiet(std::time::Instant::now()) > ADOPTED_GAME_QUIET
+                            && !hook_process_runs(link.link())
                     })
                 {
                     info!("the game another launcher started stopped answering; it counts as closed");
@@ -516,18 +631,23 @@ async fn control(
             ended = session_end(&mut session) => {
                 let finished = session.take();
                 let (ended, link) = match ended {
-                    Ok((ended, link, build)) => (
-                        ended,
-                        Some(IdleLink::given_back(link, build, game.is_some())),
-                    ),
-                    Err(error) => (Err(bridge::BridgeFault::Rejoin(error)), None),
+                    Ok((ended, link, build)) => {
+                        let game_runs = game_on_link(&mut game, &link);
+                        (ended, Some(IdleLink::given_back(link, build, game_runs)))
+                    }
+                    // Ended by Leave when the session would not take it.
+                    Err(error) if error.is_cancelled() => (Ok(BridgeEnd::Left), None),
+                    Err(error) => (Err(bridge::BridgeFault::Rejoin(error.to_string())), None),
                 };
                 // The game keeps its link for the next room; a session that
                 // failed outright left none, so a new one is opened.
-                idle = link.or_else(|| open_link(&config).ok());
-                let message = match ended {
-                    Ok(end) => format!("the game session ended: {}", describe(&end)),
-                    Err(fault) => format!("the game session failed: {fault}"),
+                idle = link.or_else(|| open_link(&config.link).ok());
+                // Losing the room for good is said as it is, in both windows.
+                let room_lost = room_lost(&ended);
+                let message = match (&ended, &room_lost) {
+                    (_, Some(lost)) => lost.clone(),
+                    (Ok(end), None) => format!("the game session ended: {}", describe(end)),
+                    (Err(fault), None) => format!("the game session failed: {fault}"),
                 };
                 info!(%message);
                 {
@@ -535,6 +655,9 @@ async fn control(
                     let mut status = shared.status();
                     status.notice(message);
                     status.game = None;
+                    // Nor is it the room's any longer whose mods it lacked.
+                    status.content_diff = None;
+                    status.room_mods = None;
                 }
                 {
                     let mut view = shared.view();
@@ -550,6 +673,14 @@ async fn control(
                     connected =
                         reconnect(&shared, finished.options, shared.content(&config)).await;
                 }
+                if let Some(lost) = room_lost {
+                    let mut view = shared.view();
+                    view.error = Some(match view.error.take() {
+                        // Not back on the server either: say both.
+                        Some(error) if connected.is_none() => format!("{lost}. {error}"),
+                        _ => lost,
+                    });
+                }
             }
             () = game_exit(&mut game) => {
                 // Its session cannot go on without it: end it now rather
@@ -557,8 +688,9 @@ async fn control(
                 // player can start the game again at once.
                 game = None;
                 info!("Transport Fever 3 closed");
-                match &session {
+                match &mut session {
                     Some(session) => {
+                        session.game_closed = shared.status().game.is_some();
                         let _ = session.controls.send(Control::GameClosed).await;
                     }
                     // Outside a room the launcher's own link held its hook.
@@ -628,6 +760,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::SetServer { .. } => "set_server",
         Action::SetBanner { .. } => "set_banner",
         Action::ChooseStart { .. } => "choose_start",
+        Action::ChooseRoomMods { .. } => "choose_room_mods",
+        Action::RescanMods => "rescan_mods",
     }
 }
 
@@ -657,6 +791,7 @@ async fn act(
             connect_to(shared, config, connected, &server, name).await?;
             match passed {
                 Some(passed) => {
+                    renew_unused_link(&config.link, game, idle)?;
                     join(
                         shared,
                         config,
@@ -673,9 +808,20 @@ async fn act(
         }
         Action::Disconnect => {
             if let Some(session) = session.take() {
-                let _ = session.controls.send(Control::Leave).await;
-                if let Ok((_, link, build)) = session.task.await {
-                    *idle = Some(IdleLink::resumed(link, build));
+                let _ = session.controls.try_send(Control::Leave);
+                let mut task = session.task;
+                match tokio::time::timeout(DISCONNECT_WAIT, &mut task).await {
+                    Ok(Ok((_, link, build))) => {
+                        let game_runs = game_on_link(game, &link);
+                        *idle = Some(IdleLink::given_back(link, build, game_runs));
+                    }
+                    // Stuck: stopped, and its link with it; a new one opens.
+                    Err(_) => {
+                        task.abort();
+                        let _ = task.await;
+                        *idle = open_link(&config.link).ok();
+                    }
+                    Ok(Err(_)) => *idle = open_link(&config.link).ok(),
                 }
             }
             if let Some(connected) = connected.take() {
@@ -710,13 +856,16 @@ async fn act(
                 config.start_save.as_ref(),
                 crate::steam::find_save,
             )?;
+            if !room_list_runs_own_mod(shared.picker().as_deref(), start_world.as_deref()) {
+                check_start_save(start_world.as_deref())?;
+            }
             // The room's shared mods are the start save's, less this
             // player's personal ones: declared before the room exists, so
             // the room compares every guest's with them (docs/MODS.md).
-            if let Some(manifest) = own_start(shared, start_world.as_deref()) {
+            if let Some(declaration) = own_start(shared, start_world.as_deref()) {
                 current
                     .client
-                    .declare_content(manifest)
+                    .declare(declaration)
                     .await
                     .map_err(|error| error.to_string())?;
             }
@@ -766,6 +915,7 @@ async fn act(
                 // Offered first next time.
                 shared.view().start_save = Some(picked.trim().to_owned());
             }
+            renew_unused_link(&config.link, game, idle)?;
             begin_session(
                 shared,
                 config,
@@ -781,6 +931,17 @@ async fn act(
         Action::ChooseStart { save, map, year } => {
             choose_start(shared, config, session, &save, &map, year).await
         }
+        Action::ChooseRoomMods {
+            save,
+            map,
+            year,
+            mods,
+            params,
+        } => {
+            let start = (!save.trim().is_empty()).then_some((save.as_str(), map.as_str(), year));
+            choose_room_mods(shared, config, session, start, &mods, &params).await
+        }
+        Action::RescanMods => rescan_mods(shared, config, connected, session).await,
         Action::Join { invite, password } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
             // An invite to another server is refused, connected or not.
@@ -800,6 +961,7 @@ async fn act(
                 let name = current.options.name.clone();
                 connect_to(shared, config, connected, &server, name).await?;
             }
+            renew_unused_link(&config.link, game, idle)?;
             join(
                 shared,
                 config,
@@ -824,8 +986,8 @@ async fn act(
             }
             forward(session, Control::Chat(text)).await
         }
-        Action::Leave => forward(session, Control::Leave).await,
-        Action::LaunchGame => launch_game(shared, config, session, game, idle),
+        Action::Leave => leave(session),
+        Action::LaunchGame => launch_game(shared, config, session, game, idle).await,
         Action::ChooseMod { id, chosen } => {
             let chosen_now = {
                 let mut mods = shared
@@ -925,7 +1087,7 @@ fn other_hook_message(version: u32) -> String {
 /// the only way the hook runs (D11). A game started from Steam is the plain
 /// game. It may start before a room is chosen: its main menu's Multiplayer
 /// window connects, creates and joins through this launcher (D17).
-fn launch_game(
+async fn launch_game(
     shared: &Arc<Shared>,
     config: &LauncherConfig,
     session: &Option<Session>,
@@ -944,8 +1106,24 @@ fn launch_game(
             "Transport Fever 3 is already running from here; it joins once it has loaded".into(),
         );
     }
-    // A game started by a launcher this one took over from, linked here.
-    if game.is_none() && idle.as_ref().is_some_and(|link| link.build().is_some()) {
+    // The room still lets go of the game that closed; its link comes back
+    // once it has, and is renewed for the next.
+    // A game that exited before the launcher handled it counts as closing.
+    if session.as_ref().is_some_and(|session| session.game_closed)
+        || session.is_some() && game.as_mut().is_some_and(|started| !started.is_running())
+    {
+        return Err(
+            "the room is still letting go of the game that closed: start it again in a moment"
+                .into(),
+        );
+    }
+    // A game started by a launcher this one took over from, linked here,
+    // silent or not.
+    if game.is_none()
+        && idle
+            .as_ref()
+            .is_some_and(|link| link.build().is_some() || hook_process_runs(link.link()))
+    {
         return Err(
             "Transport Fever 3 is already running with TPF3-MP, linked to this launcher: use its \
             Multiplayer window"
@@ -977,11 +1155,11 @@ fn launch_game(
         .clone()
         .ok_or("this TPF3-MP has no hook library for the game")?;
     // The link the game's hook attaches to: the room session's, or the
-    // launcher's own.
-    if session.is_none() && idle.is_none() {
-        *idle = Some(open_link(config)?);
+    // launcher's own, empty.
+    if session.is_none() {
+        renew_unused_link(&config.link, game, idle)?;
     }
-    let started = tpf3mp_launch::start(&tpf3mp_launch::Launch {
+    let launch = tpf3mp_launch::Launch {
         exe,
         args: Vec::new(),
         hook,
@@ -995,12 +1173,49 @@ fn launch_game(
         .into_iter()
         .chain(config.game_env.iter().cloned())
         .collect(),
-    })
+        ready_wait: tpf3mp_launch::HOOK_READY_WAIT,
+    };
+    let view = lobby::view(&api::snapshot(&shared.view(), &shared.status()));
+    let started = wait_for_launch(
+        tokio::task::spawn_blocking(move || tpf3mp_launch::start(&launch)),
+        idle,
+        &view,
+    )
+    .await?
     .map_err(|error| error.to_string())?;
     info!(pid = started.pid, "started the game with the hook");
     *game = Some(started);
     shared.status().notice(GAME_STARTED);
     Ok(())
+}
+
+/// Bootstrap waits for the agent's Hello before signalling readiness. Keep
+/// answering that handshake while the blocking Windows launch waits for it.
+/// Once greeted, leave menu actions queued for the normal launcher loop.
+async fn wait_for_launch<T: Send + 'static>(
+    mut launch: JoinHandle<T>,
+    idle: &mut Idle,
+    view: &LobbyView,
+) -> Result<T, String> {
+    let mut tick = tokio::time::interval(LOBBY_TICK);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut launch => return result.map_err(|error| error.to_string()),
+            _ = tick.tick() => {
+                if let Some(link) = idle {
+                    link.link().heartbeat();
+                    if link.build().is_none() {
+                        // Only read through Hello: a fast-starting game's first
+                        // UI actions must remain for the normal event loop.
+                        if let Err(error) = link.greet(view) {
+                            warn!(%error, "greeting the game's hook during startup failed");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The save a room this player creates starts from: the one `picked` names,
@@ -1025,6 +1240,44 @@ fn start_world(
     find(picked).map(Some)
 }
 
+/// Whether the room's list made of the save `file` would run TPF3-MP's mod
+/// whatever the save lists: with the picker, a save whose mods read and fit
+/// a room's list ([`crate::picker::Mods::own_start`]) is loaded by every
+/// game with the room's list, which always runs it. Otherwise each game
+/// loads the save's own mods, and [`check_start_save`] decides.
+fn room_list_runs_own_mod(picker: Option<&crate::picker::Mods>, file: Option<&Path>) -> bool {
+    let Some(Ok(listed)) = file.map(tpf3mp_modscan::save::mods) else {
+        return false;
+    };
+    let Some(picker) = picker else {
+        return false;
+    };
+    let mut trial = picker.clone();
+    trial.own_start(&listed).is_ok()
+}
+
+/// Refuses a save to start a room from that does not run TPF3-MP's mod:
+/// every game would load the room's world without the mod's game script,
+/// and hold it paused for good. A save whose mods do not read is not
+/// refused here: the room's mods then follow no save (`own_start` says so),
+/// and the world is checked again as it arrives (`Bridge`).
+fn check_start_save(file: Option<&Path>) -> Result<(), String> {
+    let Some(file) = file else {
+        return Ok(());
+    };
+    match crate::save_check::runs_own_mod(file) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            warn!(save = %file.display(), "the save picked to start a room from does not run TPF3-MP's mod");
+            Err(crate::save_check::SAVE_WITHOUT_OWN_MOD.to_owned())
+        }
+        Err(why) => {
+            warn!(%why, "cannot tell whether the start save runs TPF3-MP's mod");
+            Ok(())
+        }
+    }
+}
+
 /// A save's name, as the game's save list shows it: its file name without
 /// `.sav`.
 fn save_name(file: &Path) -> Option<String> {
@@ -1047,6 +1300,178 @@ fn start_save_named(file: &Path, map: &str, year: u16) -> StartSave {
 /// or none (an empty `picked`): checked as a new room's is, the room's
 /// shared mods follow it, and the room session hands it over in place of
 /// the one before, asking everyone to get ready again.
+/// The room's owner, in its lobby, picked the room's mods in the game's mod
+/// selector (docs/MODS.md, "The room's mods"): the picker takes them, with
+/// the settings of the room's mods, and the room session declares them,
+/// asking everyone to get ready again. Refused, changing nothing, for a mod
+/// not installed here or a list that does not hold together.
+///
+/// With `start` (a save, with the map and year the owner's game read of it)
+/// the room starts from that save too: both go to the room as one change.
+async fn choose_room_mods(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    session: &Option<Session>,
+    start: Option<(&str, &str, u16)>,
+    mods: &[api::SelectedMod],
+    params: &[api::ModSetting],
+) -> Result<(), String> {
+    if session.is_none() {
+        return Err("join a room first".into());
+    }
+    {
+        let status = shared.status();
+        let room = status.room.as_ref().ok_or("join a room first")?;
+        if room.owner != config.identity.player() {
+            return Err("only the room's owner chooses the room's mods".into());
+        }
+        if room.phase != RoomPhase::Lobby {
+            return Err("the room's game has begun: it plays the mods it has".into());
+        }
+    }
+    let selection: Vec<crate::picker::Selected> = mods
+        .iter()
+        .map(|m| crate::picker::Selected {
+            id: m.id.clone(),
+            info: tpf3mp_proto::ModInfo {
+                name: Text::lossy(if m.name.is_empty() { &m.id } else { &m.name }),
+                source: Text::lossy(&m.source),
+                modio: m.modio.filter(|_| m.source == tpf3mp_proto::MODIO_SOURCE),
+            },
+        })
+        .collect();
+    let settings = mod_settings(params)?;
+    // The save, found before anything changes: one that cannot be had
+    // leaves the room as it was.
+    let start = match start {
+        Some((picked, map, year)) => {
+            let listed = shared.view().saves.clone();
+            // A save without TPF3-MP is no hindrance here: the room's
+            // list always runs it, and every game loads the room's list.
+            let file = start_world(Some(picked), &listed, None, crate::steam::find_save)?
+                .ok_or("that save is not there")?;
+            Some((picked.trim().to_owned(), file, map.to_owned(), year))
+        }
+        None => None,
+    };
+    let (declaration, chosen) = {
+        let mut picker = shared
+            .picker()
+            .ok_or("this launcher takes its mods from --mods")?;
+        picker.choose_room(&selection, settings)?;
+        (picker.declaration()?, picker.chosen())
+    };
+    shared.show_mods();
+    remember_mods(config, chosen);
+    info!(
+        mods = declaration.manifest().mods.len(),
+        save = start.is_some(),
+        "the owner picks the room's mods"
+    );
+    match start {
+        Some((picked, file, map, year)) => {
+            // Offered first next time.
+            shared.view().start_save = Some(picked);
+            let save = start_save_named(&file, &map, year);
+            forward(
+                session,
+                Control::StartWorld {
+                    start: Some((file, save)),
+                    declare: Some(declaration),
+                },
+            )
+            .await
+        }
+        None => forward(session, Control::Declare(declaration)).await,
+    }
+}
+
+/// The selector's settings, by mod. Refused when one does not fit what a
+/// room carries.
+fn mod_settings(params: &[api::ModSetting]) -> Result<Vec<tpf3mp_proto::ModParams>, String> {
+    let mut out: Vec<tpf3mp_proto::ModParams> = Vec::new();
+    for setting in params {
+        let id = Text::new(setting.id.as_str()).map_err(|_| format!("no mod {}", setting.id))?;
+        let key = Text::new(setting.key.as_str())
+            .map_err(|_| format!("the setting {} of {} is too long", setting.key, setting.id))?;
+        let param = tpf3mp_proto::ModParam {
+            key,
+            value: setting.value,
+        };
+        match out.iter_mut().find(|of| of.id == id) {
+            Some(of) => of.params.push(param),
+            None => out.push(tpf3mp_proto::ModParams {
+                id,
+                params: vec![param],
+            }),
+        }
+    }
+    Ok(out)
+}
+
+/// Remembers the personal mods chosen, for next time.
+fn remember_mods(config: &LauncherConfig, chosen: Vec<String>) {
+    if let Some(file) = &config.remember {
+        let mut remembered = Remembered::load(file);
+        remembered.mods = Some(chosen);
+        if let Err(error) = remembered.save(file) {
+            warn!(%error, "cannot remember the mods chosen for next time");
+        }
+    }
+}
+
+/// Finds the installed mods again, as after installing one from Mod Hub:
+/// what this player declares follows, at once, to the room or the server.
+async fn rescan_mods(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    connected: &mut Option<Connected>,
+    session: &Option<Session>,
+) -> Result<(), String> {
+    if shared.picker.is_none() {
+        return Err("this launcher takes its mods from --mods".into());
+    }
+    let game = config.installed.as_ref().map(|game| game.dir.clone());
+    let found = tokio::task::spawn_blocking(move || {
+        crate::picker::discover(game.as_deref(), &crate::steam::steam_roots())
+    })
+    .await
+    .map_err(|error| format!("finding the mods failed: {error}"))?;
+    let changed = shared.picker().is_some_and(|mut mods| mods.rescan(found));
+    shared.show_mods();
+    if !changed {
+        info!("the installed mods are as they were");
+        return Ok(());
+    }
+    let declaration = shared.content(config);
+    info!(
+        mods = declaration.manifest().mods.len(),
+        "the installed mods changed: declaring anew"
+    );
+    if session.is_some() {
+        return forward(session, Control::Declare(declaration)).await;
+    }
+    if let Some(current) = connected.as_ref() {
+        current
+            .client
+            .declare(declaration)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether `picked` names the save `room` already starts from: then only
+/// what the room shows of it changes, never the room's mods.
+fn names_start_again(room: &tpf3mp_proto::RoomView, picked: &str) -> bool {
+    let picked = picked.trim();
+    !picked.is_empty()
+        && room
+            .start
+            .as_ref()
+            .is_some_and(|start| start.save.name.as_str() == picked)
+}
+
 async fn choose_start(
     shared: &Arc<Shared>,
     config: &LauncherConfig,
@@ -1058,7 +1483,10 @@ async fn choose_start(
     if session.is_none() {
         return Err("join a room first".into());
     }
-    {
+    // The save the room already starts from, named again: only what the
+    // room shows of it changes (the map and year the owner's game read once
+    // the room was made). The room's mods stay as the owner picked them.
+    let described = {
         let status = shared.status();
         let room = status.room.as_ref().ok_or("join a room first")?;
         if room.owner != config.identity.player() {
@@ -1067,10 +1495,18 @@ async fn choose_start(
         if room.phase != RoomPhase::Lobby {
             return Err("the room's game has begun: it plays the world it has".into());
         }
-    }
+        names_start_again(room, picked)
+    };
     let listed = shared.view().saves.clone();
     let file = start_world(Some(picked), &listed, None, crate::steam::find_save)?;
-    let declare = own_start(shared, file.as_deref());
+    let declare = if described {
+        None
+    } else {
+        if !room_list_runs_own_mod(shared.picker().as_deref(), file.as_deref()) {
+            check_start_save(file.as_deref())?;
+        }
+        own_start(shared, file.as_deref())
+    };
     let picked = picked.trim();
     if !picked.is_empty() {
         // Offered first next time.
@@ -1111,7 +1547,7 @@ fn begin_session(
     // takes it over and gives it back when it ends.
     let (link, build) = match idle.take() {
         Some(link) => link.into_parts(),
-        None => open_link(config)?.into_parts(),
+        None => open_link(&config.link)?.into_parts(),
     };
     let (controls, controls_rx) = mpsc::channel(ACTION_QUEUE);
     // A fresh status for the new session, with the room already known.
@@ -1173,6 +1609,7 @@ fn begin_session(
         controls,
         task,
         options,
+        game_closed: false,
     });
     Ok(())
 }
@@ -1193,10 +1630,10 @@ async fn forward(session: &Option<Session>, control: Control) -> Result<(), Stri
 async fn reconnect(
     shared: &Arc<Shared>,
     options: ConnectOptions,
-    content: ContentManifest,
+    content: Declaration,
 ) -> Option<Connected> {
     let connected = match connect(options.clone()).await {
-        Ok((client, events)) => match client.declare_content(content).await {
+        Ok((client, events)) => match client.declare(content).await {
             Ok(()) => Ok((client, events)),
             Err(error) => Err(error.to_string()),
         },
@@ -1242,7 +1679,7 @@ async fn connect_to(
     let result = match connect(options.clone()).await {
         // What the game runs goes with every connection, so rooms can
         // compare it and say how it differs.
-        Ok((client, events)) => match client.declare_content(shared.content(config)).await {
+        Ok((client, events)) => match client.declare(shared.content(config)).await {
             Ok(()) => Ok((client, events)),
             Err(error) => Err(error.to_string()),
         },
@@ -1287,33 +1724,43 @@ async fn connect_to(
 /// Returns what to declare, or `None` without the picker. A save whose mods
 /// cannot be read leaves the room's unknown: its worlds load with the save's
 /// own mods, as without the picker, and the player is told.
-fn own_start(shared: &Shared, save: Option<&Path>) -> Option<ContentManifest> {
+fn own_start(shared: &Shared, save: Option<&Path>) -> Option<Declaration> {
     let read = save.map(tpf3mp_modscan::save::mods);
     let mut mods = shared.picker()?;
+    let mut problem = None;
     match read {
         Some(Ok(listed)) => {
             info!(
                 mods = listed.len(),
-                "the room's shared mods come from its start save"
+                "the room's mods come from its start save"
             );
-            mods.own_start(&listed);
+            // A list that cannot be the room's (too many mods) is still
+            // compared whole; every game loads the save's own mods.
+            if let Err(why) = mods.own_start(&listed) {
+                warn!(%why, "the start save's mods cannot be the room's list");
+                problem = Some(format!(
+                    "the start save's mods cannot be the room's list ({why}): every game loads the save's own mods, still compared"
+                ));
+            }
         }
         Some(Err(why)) => {
             warn!(%why, "the start save's mods do not read");
             mods.forget_room();
-            drop(mods);
-            shared.status().notice(format!(
+            problem = Some(format!(
                 "the start save's mods could not be read ({why}): everyone loads its own list of mods"
             ));
-            shared.show_mods();
-            return Some(shared.content_of_picker());
         }
         None => mods.forget_room(),
     }
-    let manifest = mods.manifest();
+    let declaration = mods
+        .declaration()
+        .unwrap_or_else(|_| Declaration::Content(mods.manifest()));
     drop(mods);
+    if let Some(problem) = problem {
+        shared.status().notice(problem);
+    }
     shared.show_mods();
-    Some(manifest)
+    Some(declaration)
 }
 
 /// The player's server setting (D12, as amended): play on `typed`, or on
@@ -1468,6 +1915,8 @@ async fn join(
             .await
             .map_err(|error| error.to_string())?;
     }
+    // The room's mods, as the room tells them, come as the room is joined:
+    // in the lobby on joining, at a running game before its refusal.
     let mut joined = current
         .client
         .join_room(JoinRoom {
@@ -1476,18 +1925,29 @@ async fn join(
             resume: None,
         })
         .await;
-    // A running game compares at once: learn the room's mods from its
-    // refusal, and try once more with those this game has.
+    // A running game compares at once: take the room's mods, which come
+    // before its refusal, else learn them from the refusal, and try once
+    // more with those this game has.
     if matches!(
         joined,
         Err(ClientError::Refused(RequestError::ContentMismatch))
     ) && shared.picker.is_some()
     {
-        let diff = content_diff(&mut current.events).await;
-        let again = diff.as_ref().and_then(|diff| {
-            let mut mods = shared.picker()?;
-            mods.learn(diff).then(|| mods.manifest())
+        let (room, diff) = refusal(&mut current.events).await;
+        let again = shared.picker().and_then(|mut mods| {
+            let changed = match &room {
+                // Refused a join: not this room's owner.
+                Some(room) => mods.adopt(Some(room), false),
+                None => diff.as_ref().is_some_and(|diff| mods.learn(diff)),
+            };
+            changed.then(|| mods.manifest())
         });
+        if let Some(room) = room {
+            shared.status().room_mods = Some(room);
+        }
+        if diff.is_some() {
+            shared.status().content_diff = diff;
+        }
         shared.show_mods();
         if let Some(manifest) = again {
             current
@@ -1538,6 +1998,26 @@ async fn join(
 
 /// How the game differs from a room that refused it, if the room says so
 /// within a second.
+/// What a refused join to a running game told: the game's mods, then how
+/// this game differs; each `None` when not told within a second.
+async fn refusal(events: &mut Events) -> (Option<tpf3mp_proto::RoomMods>, Option<ContentDiff>) {
+    let mut room = None;
+    let diff = tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                ClientEvent::RoomMods(told) => room = told.map(|told| *told),
+                ClientEvent::ContentDiff(diff) => return diff,
+                _ => {}
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten();
+    (room, diff)
+}
+
 async fn content_diff(events: &mut Events) -> Option<ContentDiff> {
     tokio::time::timeout(Duration::from_secs(1), async {
         while let Some(event) = events.recv().await {
@@ -1689,10 +2169,43 @@ fn password_text(password: Option<String>) -> Result<Option<Text<64>>, String> {
 
 /// The end of the current session, or never without one: how it ended and
 /// the link it gives back, or why its task failed.
-async fn session_end(session: &mut Option<Session>) -> Result<SessionEnded, String> {
+async fn session_end(
+    session: &mut Option<Session>,
+) -> Result<SessionEnded, tokio::task::JoinError> {
     match session {
-        Some(session) => (&mut session.task).await.map_err(|error| error.to_string()),
+        Some(session) => (&mut session.task).await,
         None => std::future::pending().await,
+    }
+}
+
+/// What the player is told, in both windows, when a session ended because
+/// its room was lost for good: gone from the server, not rejoined in time,
+/// or with a world this game cannot play. `None` for any other end.
+fn room_lost(ended: &Result<BridgeEnd, bridge::BridgeFault>) -> Option<String> {
+    match ended {
+        Err(
+            fault @ (bridge::BridgeFault::RoomGone
+            | bridge::BridgeFault::Rejoin(_)
+            | bridge::BridgeFault::WorldWithoutOwnMod),
+        ) => Some(fault.to_string()),
+        _ => None,
+    }
+}
+
+/// Leaves the room, always: the session is asked to, and when it cannot
+/// take the request (its queue full, or it is stuck), it is stopped here.
+/// Either way it ends, and the launcher is back on the server in no room;
+/// a seat the server was not told about is let go after the room's grace.
+fn leave(session: &Option<Session>) -> Result<(), String> {
+    let session = session.as_ref().ok_or("join a room first")?;
+    leave_or_stop(&session.controls, &session.task);
+    Ok(())
+}
+
+fn leave_or_stop<T>(controls: &mpsc::Sender<Control>, task: &JoinHandle<T>) {
+    if let Err(error) = controls.try_send(Control::Leave) {
+        warn!(%error, "the room session cannot take the leave; stopping it");
+        task.abort();
     }
 }
 
@@ -1741,6 +2254,133 @@ mod tests {
 
     fn invite() -> Invite {
         Invite("K7QM2X".parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn leave_asks_the_session_and_stops_one_that_cannot_take_it() {
+        // A session that takes requests is asked.
+        let (controls, mut asked) = mpsc::channel(1);
+        let task = tokio::spawn(std::future::pending::<()>());
+        leave_or_stop(&controls, &task);
+        assert_eq!(asked.recv().await, Some(Control::Leave));
+        assert!(!task.is_finished(), "left by the session itself");
+        task.abort();
+
+        // One whose requests back up (stuck, or rejoining in an older
+        // build) is stopped: leaving never waits on it.
+        let (controls, _backed_up) = mpsc::channel(1);
+        controls
+            .try_send(Control::Chat(Text::new("hi").unwrap()))
+            .unwrap();
+        let task = tokio::spawn(std::future::pending::<()>());
+        leave_or_stop(&controls, &task);
+        let stopped = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("stopped at once");
+        assert!(stopped.unwrap_err().is_cancelled());
+    }
+
+    #[test]
+    fn a_room_lost_for_good_is_said_as_it_is_and_nothing_else_is() {
+        assert_eq!(
+            room_lost(&Err(bridge::BridgeFault::RoomGone)).as_deref(),
+            Some("The room is gone (closed or the server restarted)")
+        );
+        let gave_up = room_lost(&Err(bridge::BridgeFault::Rejoin("timed out".into()))).unwrap();
+        assert!(gave_up.contains("could not rejoin") && gave_up.contains("may be gone"));
+        assert_eq!(room_lost(&Ok(BridgeEnd::Left)), None);
+        assert_eq!(room_lost(&Err(bridge::BridgeFault::GameClosed)), None);
+        assert_eq!(
+            room_lost(&Err(bridge::BridgeFault::WorldWithoutOwnMod)).as_deref(),
+            Some(crate::save_check::WORLD_WITHOUT_OWN_MOD)
+        );
+    }
+
+    /// Seen live: a host started a room from a save without TPF3-MP's mod,
+    /// and both games loaded its world and held it paused, without a word.
+    #[test]
+    fn a_start_save_without_tpf3mps_mod_is_refused_saying_how_to_fix_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let without = dir.path().join("without.sav");
+        crate::save_check::saves::write(
+            &without,
+            &["urbangames_deluxe_upgrade_pack", "urbangames_preorder_pack"],
+        );
+        assert_eq!(
+            check_start_save(Some(&without)),
+            Err(
+                "This save doesn't have the TPF3-MP mod enabled: load it once, turn TPF3-MP on \
+                 in its mods, save it, then pick it again"
+                    .to_owned()
+            )
+        );
+        let with = dir.path().join("with.sav");
+        crate::save_check::saves::write(&with, &["tpf3mp_1", "urbangames_preorder_pack"]);
+        assert_eq!(check_start_save(Some(&with)), Ok(()));
+        // No save (a generated world), or one whose mods do not read: not
+        // refused here.
+        assert_eq!(check_start_save(None), Ok(()));
+        let junk = dir.path().join("junk.sav");
+        std::fs::write(&junk, b"not a save").unwrap();
+        assert_eq!(check_start_save(Some(&junk)), Ok(()));
+    }
+
+    /// The window tells the room the map and year of the save it already
+    /// starts from once the owner's game read them: the room's mods, which
+    /// the owner picked with it, stay as they are.
+    #[test]
+    fn the_save_the_room_starts_from_named_again_only_describes_it() {
+        let start = |name: &str| tpf3mp_proto::StartView {
+            save: StartSave {
+                name: Text::new(name).unwrap(),
+                map: Text::lossy(""),
+                year: 0,
+            },
+            arrived: true,
+        };
+        let mut room = tpf3mp_proto::RoomView {
+            id: tpf3mp_proto::RoomId(tpf3mp_proto::FixedBytes([7; 16])),
+            name: Text::new("Sunday line").unwrap(),
+            rules: Text::new("native").unwrap(),
+            owner: tpf3mp_proto::PlayerId(tpf3mp_proto::FixedBytes([1; 32])),
+            max_players: 4,
+            has_password: false,
+            phase: RoomPhase::Lobby,
+            settings: tpf3mp_proto::RoomSettings::DEFAULT,
+            members: Vec::new(),
+            competitive: false,
+            start: Some(start("mptest")),
+        };
+        assert!(names_start_again(&room, "mptest"));
+        assert!(names_start_again(&room, " mptest "));
+        assert!(!names_start_again(&room, "other"));
+        assert!(!names_start_again(&room, ""));
+        room.start = None;
+        assert!(!names_start_again(&room, "mptest"));
+    }
+
+    /// A save without TPF3-MP's mod starts a room all the same when the
+    /// room's list made of it runs the mod: every game loads the room's
+    /// list, which always does. Without the picker, each game would load
+    /// the save's own mods, and it is refused.
+    #[test]
+    fn a_save_without_tpf3mps_mod_starts_a_room_whose_list_runs_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let without = dir.path().join("without.sav");
+        crate::save_check::saves::write(&without, &["urbangames_preorder_pack"]);
+        let own = crate::picker::Installed {
+            id: "tpf3mp_1".into(),
+            name: "TPF3-MP".into(),
+            version: "1+0123456789abcdef".into(),
+            hub: None,
+            class: tpf3mp_modscan::Class::Shared,
+            reason: String::new(),
+            path: dir.path().join("tpf3mp_1"),
+        };
+        let picker = crate::picker::Mods::new(Text::lossy("40408"), vec![own], [], false);
+        assert!(room_list_runs_own_mod(Some(&picker), Some(&without)));
+        assert!(!room_list_runs_own_mod(None, Some(&without)));
+        assert!(!room_list_runs_own_mod(Some(&picker), None));
     }
 
     #[test]
@@ -1976,5 +2616,69 @@ mod tests {
             Ok("play.example.net:29470".into())
         );
         assert!(connect(None, code).is_err(), "an invite needs its server");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspended_startup_can_finish_its_hook_handshake() {
+        let name = format!("test.launcher.bootstrap.{}", std::process::id());
+        let mut idle = Some(open_link(&name).unwrap());
+        // Stand in for Windows launch: it cannot finish until the hook's
+        // blocking attach receives Hello. No game or relay is started.
+        let launch = tokio::task::spawn_blocking(move || {
+            tpf3mp_bridge::Session::attach(&name, "40408", Duration::from_secs(2))
+        });
+        let attached = wait_for_launch(launch, &mut idle, &LobbyView::default())
+            .await
+            .unwrap();
+        assert!(attached.is_ok(), "{:?}", attached.err());
+        assert_eq!(idle.as_ref().unwrap().build(), Some("40408"));
+    }
+
+    /// A game started again after the first one closed: the hook of the
+    /// next attaches although the first never read the room's end.
+    #[test]
+    fn a_game_started_again_attaches_past_what_the_closed_one_left() {
+        use crate::bridge::HookLink;
+
+        let name = format!("test.launcher.restart.{}", std::process::id());
+        let (mut link, _) = open_link(&name).unwrap().into_parts();
+        HookLink::heartbeat(&mut link);
+        // The room ended while the closed game's hook no longer read it.
+        let end = tpf3mp_bridge::ToHook::End {
+            reason: Text::new("the room ended").unwrap(),
+        };
+        assert!(HookLink::send(&mut link, &tpf3mp_bridge::encode(&end).unwrap()).unwrap());
+        let mut idle = Some(IdleLink::new(link));
+        renew_unused_link(&name, &mut None, &mut idle).unwrap();
+        let mut idle = idle.expect("a new link");
+
+        let hook = std::thread::spawn({
+            let name = name.clone();
+            move || tpf3mp_bridge::Session::attach(&name, "40408", Duration::from_secs(10))
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !hook.is_finished() && std::time::Instant::now() < deadline {
+            idle.pump(&LobbyView::default()).unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let attached = hook.join().unwrap();
+        assert!(attached.is_ok(), "{:?}", attached.err());
+        assert_eq!(idle.build(), Some("40408"), "the launcher greeted it");
+    }
+
+    /// A game this launcher took over keeps its link while its process
+    /// runs, silent or not.
+    #[test]
+    fn a_link_with_a_game_on_it_is_kept() {
+        let name = format!("test.launcher.kept.{}", std::process::id());
+        let (link, _) = open_link(&name).unwrap().into_parts();
+        let generation = link.session();
+        // Its hook, in a process that runs: this one.
+        let _hook = tpf3mp_ipc::Link::open(&name, tpf3mp_ipc::Role::Hook).unwrap();
+        let mut idle = Some(IdleLink::resumed(link, Some("40408".into())));
+        renew_unused_link(&name, &mut None, &mut idle).unwrap();
+        let (link, build) = idle.unwrap().into_parts();
+        assert_eq!(link.session(), generation, "the same link");
+        assert_eq!(build.as_deref(), Some("40408"));
     }
 }

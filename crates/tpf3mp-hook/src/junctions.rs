@@ -12,9 +12,9 @@ use tpf3mp_proto::lua::LuaValue;
 
 use crate::modules::{self, Memory, i32_at, ids, layout, read, vector};
 
-pub const CONFIG_LAYOUT: &str = "BaseNodeConfig/field offsets";
-pub const PROPOSAL_LAYOUT: &str = "StreetProposal/node configuration offsets";
-pub const CROSSWALK_LAYOUT: &str = "BaseNodeConfig/crosswalk set layout";
+pub use crate::build_data::native::junctions::CONFIG_LAYOUT;
+pub use crate::build_data::native::junctions::CROSSWALK_LAYOUT;
+pub use crate::build_data::native::junctions::PROPOSAL_LAYOUT;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn enable(on: bool) {
@@ -120,6 +120,20 @@ fn config(memory: &dyn Memory, address: usize) -> Result<LuaValue, String> {
     if entity < 0 {
         return Err("a junction-only edit names a new node".into());
     }
+    Ok(object([
+        ("entity", integer(entity)),
+        ("comp", snapshot(memory, address)?),
+    ]))
+}
+
+/// The standalone BaseNodeConfig in an owned Lua userdata has no entity suffix.
+pub(crate) fn snapshot(memory: &dyn Memory, address: usize) -> Result<LuaValue, String> {
+    let raw = read(
+        memory,
+        address,
+        crate::build_data::native::network::NODE_CONFIG_SIZE,
+        "junction snapshot",
+    )?;
     let (begin, count) = vector(&raw, 0, 0x14, 256, "turn connections")?;
     let mut connections = Vec::new();
     for i in 0..count {
@@ -151,24 +165,18 @@ fn config(memory: &dyn Memory, address: usize) -> Result<LuaValue, String> {
         ]));
     }
     Ok(object([
-        ("entity", integer(entity)),
+        ("laneConnections", array(connections)),
+        ("crosswalks", crosswalks(memory, &raw)?),
+        ("doubleSlipSwitch", boolean(&raw, 0x48)?),
+        ("trafficLightPreference", integer(i32_at(&raw, 0x4c))),
         (
-            "comp",
+            "trafficLightConfig",
             object([
-                ("laneConnections", array(connections)),
-                ("crosswalks", crosswalks(memory, &raw)?),
-                ("doubleSlipSwitch", boolean(&raw, 0x48)?),
-                ("trafficLightPreference", integer(i32_at(&raw, 0x4c))),
-                (
-                    "trafficLightConfig",
-                    object([
-                        ("states", array(phases)),
-                        ("trafficLightType", integer(i32_at(&raw, 0x68))),
-                    ]),
-                ),
-                ("userModifiedTrafficLightStates", boolean(&raw, 0x70)?),
+                ("states", array(phases)),
+                ("trafficLightType", integer(i32_at(&raw, 0x68))),
             ]),
         ),
+        ("userModifiedTrafficLightStates", boolean(&raw, 0x70)?),
     ]))
 }
 
