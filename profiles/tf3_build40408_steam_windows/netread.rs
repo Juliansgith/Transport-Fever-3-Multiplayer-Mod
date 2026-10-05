@@ -91,3 +91,15 @@ pub const PHASE_LOCKED: usize = 0x00;
 pub const PHASE_DURATION: usize = 0x18;
 pub const PHASE_MINIMUM: usize = 0x1c;
 pub const PHASE_SKIP: usize = 0x20;
+
+/// `ecs::ComponentManager::CompVec<struct ecs::component::Construction>::vftable`;
+/// `Construction` (0x288, `imul rax, 0x288` in `sub_2807d0`; its fields as
+/// the Lua binding registers them, `sub_18829c0`): its file a `ResName` at
+/// +0, its `transf` 16 float32 at +0x58, column-major, the translation's x
+/// and y elements 12 and 13 (`UI::ModuleBuilder::SetConstruction`,
+/// `sub_544f10`, 0x5450ba-0x54515f).
+pub const CONSTRUCTION_POOL_VTABLE: usize = 0x3680510;
+pub const CONSTRUCTION_SIZE: usize = 0x288;
+pub const CONSTRUCTION_FILE: usize = 0x00;
+pub const CONSTRUCTION_X: usize = 0x88;
+pub const CONSTRUCTION_Y: usize = 0x8c;

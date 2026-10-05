@@ -795,6 +795,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"checkpoint", native_checkpoint),
                 (b"hash", native_hash),
                 (b"network", native_network),
+                (b"networkSummary", native_network_summary),
+                (b"constructions", native_constructions),
                 (b"seed", native_seed),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
@@ -2060,7 +2062,7 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
         push_str(api, l, b"mode");
         push_str(api, l, mode.name().as_bytes());
         (api.rawset)(l, table);
-        match read {
+        match &read {
             Ok(network) => {
                 push_str(api, l, b"timing");
                 push_str(api, l, network.timing.as_bytes());
@@ -2068,7 +2070,7 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
                 push_str(api, l, b"rows");
                 push_strings(api, l, network.edges.iter().map(String::as_bytes));
                 (api.rawset)(l, table);
-                match network.junctions {
+                match &network.junctions {
                     Ok(junctions) => {
                         push_str(api, l, b"junctions");
                         (api.createtable)(l, 0, 4);
@@ -2101,7 +2103,129 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
             }
         }
     }
+    if let Ok(network) = read {
+        crate::netread::keep(network);
+    }
     1
+}
+
+/// `networkSummary(preferences, lights)`: in the same `postUpdate`, after
+/// `network()`: the network lane's text from what it read
+/// ([`crate::netread::summary`]), the junctions' names from the two tables
+/// (`{ [value] = name }`, `{ [type] = name }`, as the game's Lua names
+/// them): `count:hash`, or `nil` and why.
+unsafe extern "C-unwind" fn native_network_summary(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut nodes = 0;
+        // SAFETY: Lua calls this with its own state; its arguments are on it.
+        let (preferences, lights) = unsafe {
+            if (api.gettop)(l) < 2 {
+                return Err("no names given".to_owned());
+            }
+            (
+                read(api, l, 1, 0, &mut nodes)?,
+                read(api, l, 2, 0, &mut nodes)?,
+            )
+        };
+        crate::netread::summary_of_last(&names(&preferences)?, &names(&lights)?)
+    }))
+    .unwrap_or_else(|_| Err("the native summary panicked".to_owned()));
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        match result {
+            Ok(text) => {
+                push_str(api, l, text.as_bytes());
+                1
+            }
+            Err(why) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// `constructions()`: in a game script's `postUpdate` at a checkpoint, the
+/// constructions lane read natively ([`crate::netread`]): `nil` when
+/// [`crate::netread::ENV`] leaves it off, else `{ mode = "compare" | "on",
+/// text = "count:hash", ms = n }` (compared, with its `rows` too), or `{
+/// mode =, why = }` when it did not read.
+unsafe extern "C-unwind" fn native_constructions(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let mode = crate::netread::mode();
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots; each push
+    // below is covered by the checkstack before it.
+    unsafe {
+        if mode == crate::netread::Mode::Off || (api.checkstack)(l, 8) == 0 {
+            (api.pushnil)(l);
+            return 1;
+        }
+    }
+    let started = std::time::Instant::now();
+    let read = std::panic::catch_unwind(|| {
+        crate::netread::constructions_now().map(|rows| {
+            let kept = (mode == crate::netread::Mode::Compare).then(|| rows.clone());
+            (crate::netread::rows_summary(rows), kept)
+        })
+    })
+    .unwrap_or_else(|_| Err("the native read panicked".to_owned()));
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    // SAFETY: as above.
+    unsafe {
+        (api.createtable)(l, 0, 4);
+        let table = (api.gettop)(l);
+        push_str(api, l, b"mode");
+        push_str(api, l, mode.name().as_bytes());
+        (api.rawset)(l, table);
+        push_str(api, l, b"ms");
+        (api.pushnumber)(l, ms);
+        (api.rawset)(l, table);
+        match read {
+            Ok((text, rows)) => {
+                push_str(api, l, b"text");
+                push_str(api, l, text.as_bytes());
+                (api.rawset)(l, table);
+                if let Some(rows) = rows {
+                    push_str(api, l, b"rows");
+                    push_strings(api, l, rows.iter().map(String::as_bytes));
+                    (api.rawset)(l, table);
+                }
+            }
+            Err(why) => {
+                push_str(api, l, b"why");
+                push_str(api, l, why.as_bytes());
+                (api.rawset)(l, table);
+            }
+        }
+    }
+    1
+}
+
+/// A table of names by whole number, `{ [n] = name }`.
+fn names(value: &LuaValue) -> Result<std::collections::HashMap<i32, String>, String> {
+    let LuaValue::Table(pairs) = value else {
+        return Err("the names are not a table".into());
+    };
+    let mut out = std::collections::HashMap::new();
+    for (key, name) in pairs {
+        let key = match key {
+            LuaValue::Number(n) if n.fract() == 0.0 && n.abs() < 2_147_483_648.0 => *n as i32,
+            LuaValue::Integer(n) => i32::try_from(*n).map_err(|_| "a name's number")?,
+            _ => return Err("a name's key is no whole number".into()),
+        };
+        let LuaValue::String(bytes) = name else {
+            return Err("a name is no string".into());
+        };
+        let name = String::from_utf8(bytes.clone()).map_err(|_| "a name is not UTF-8")?;
+        out.insert(key, name);
+    }
+    Ok(out)
 }
 
 /// Pushes a list of strings, `{ s1, s2, ... }`.

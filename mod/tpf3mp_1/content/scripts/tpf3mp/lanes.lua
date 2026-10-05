@@ -243,6 +243,19 @@ local function nativeEdges()
 	return nil
 end
 
+-- The network lane's text from the hook's read, the junctions' names given
+-- (tpf3mp_native.networkSummary): the text, or nil and why.
+local function nativeSummary(preferences, lights)
+	local ok, native = pcall(function() return tpf3mp_native end)
+	if not ok or type(native) ~= "table" or type(native.networkSummary) ~= "function" then
+		return nil, "the hook makes no summary"
+	end
+	local done, text, why = pcall(native.networkSummary, preferences, lights)
+	if not done then return nil, tostring(text) end
+	if type(text) ~= "string" then return nil, tostring(why) end
+	return text
+end
+
 -- How the mod's edge rows and the hook's compare: { agree =, lua =,
 -- native =, onlyLua = { row, ... }, onlyNative = { row, ... } }, at most
 -- three rows each way.
@@ -284,6 +297,19 @@ readers[lanes.NETWORK] = function(api, emit)
 				rows = type(native.rows) == "table" and #native.rows or nil,
 				time = (n0 and n1) and (n1 - n0) or nil }
 		end
+	end
+	-- On, the whole lane's text from the hook, when its junctions read too:
+	-- no row comes into this Lua at all.
+	if native and native.mode == "on" and type(native.rows) == "table" and type(native.junctions) == "table" then
+		local named, preferences, lights = pcall(junctions.names, api, native.junctions)
+		local text, why
+		if named then text, why = nativeSummary(preferences, lights) else why = tostring(preferences) end
+		if text then
+			net.edges = #native.rows
+			net.native.summary = "made"
+			return text
+		end
+		net.native.summaryWhy = why
 	end
 	if native and native.mode == "on" and type(native.rows) == "table" then
 		for i, row in ipairs(native.rows) do rows[i] = row end
@@ -347,10 +373,43 @@ readers[lanes.NETWORK] = function(api, emit)
 		rows[#rows+1] = "junction:" .. row
 		if emit then emit(nil, nil, "junction:" .. row, "", false) end
 	end
-	return summary(rows)
+	local text = summary(rows)
+	-- Compared, the hook's text of the whole lane too: the rows' order
+	-- (this Lua's sort) and their joining.
+	if native and native.mode == "compare" and type(native.junctions) == "table" then
+		local named, preferences, lights = pcall(junctions.names, api, native.junctions)
+		local theirs, why
+		if named then theirs, why = nativeSummary(preferences, lights) else why = tostring(preferences) end
+		if theirs then
+			net.native.summary = theirs == text and "agrees" or ("DIFFERS: native " .. theirs .. ", the mod's " .. text)
+		else
+			net.native.summaryWhy = why
+		end
+	end
+	return text
+end
+
+-- The hook's own read of a lane other than the network (tpf3mp_native[name]):
+-- nil where the state has no hook or the hook leaves it off, else { mode =
+-- "compare" | "on", text = "count:hash", ms =, rows = (compared) }, or
+-- { mode =, why = }.
+local function nativeLane(name)
+	local ok, native = pcall(function() return tpf3mp_native end)
+	if not ok or type(native) ~= "table" or type(native[name]) ~= "function" then return nil end
+	local done, result = pcall(native[name])
+	if done and type(result) == "table" and (result.mode == "compare" or result.mode == "on") then
+		return result
+	end
+	return nil
 end
 
 readers[lanes.CONSTRUCTIONS] = function(api, emit)
+	-- A dump needs each construction's entity and values: always the mod's.
+	local native = not emit and nativeLane("constructions") or nil
+	if native then
+		lanes.cost.constructions = { mode = native.mode, why = native.why, time = native.ms }
+		if native.mode == "on" and type(native.text) == "string" then return native.text end
+	end
 	local rows = {}
 	for _, e in ipairs(entities(api, "CONSTRUCTION")) do
 		local c = component(api, e, "CONSTRUCTION")
@@ -366,7 +425,14 @@ readers[lanes.CONSTRUCTIONS] = function(api, emit)
 			end
 		end
 	end
-	return summary(rows)
+	local text = summary(rows)
+	if native and native.mode == "compare" and type(native.text) == "string" then
+		local cmp = type(native.rows) == "table" and compareRows(rows, native.rows) or { lua = #rows, native = 0,
+			onlyLua = {}, onlyNative = {} }
+		cmp.agree = native.text == text
+		lanes.cost.constructions.compare = cmp
+	end
+	return text
 end
 
 readers[lanes.LINES] = function(api, emit, ids)
@@ -703,6 +769,25 @@ function lanes.costLine()
 		if native.compare then line = line .. said(native.compare) end
 		if native.junctions then line = line .. "; native junctions" .. said(native.junctions) end
 		if native.junctionsWhy then line = line .. "; native junctions did not read: " .. native.junctionsWhy end
+		if native.summary then line = line .. "; native summary " .. native.summary end
+		if native.summaryWhy then line = line .. "; native summary not made: " .. tostring(native.summaryWhy) end
+	end
+	local cons = c.constructions
+	if cons then
+		line = line .. string.format("; native constructions (%s) %s ms", tostring(cons.mode),
+			cons.time and string.format("%.1f", cons.time) or "?")
+		if cons.why then line = line .. ": did not read: " .. tostring(cons.why) end
+		local cmp = cons.compare
+		if cmp and cmp.agree then
+			line = line .. ", agree with the mod's " .. cmp.lua
+		elseif cmp then
+			local function cut(r) return #r > 300 and (r:sub(1, 300) .. "...") or r end
+			local own, theirs = {}, {}
+			for i, r in ipairs(cmp.onlyLua) do own[i] = cut(r) end
+			for i, r in ipairs(cmp.onlyNative) do theirs[i] = cut(r) end
+			line = line .. string.format(", DIFFER from the mod's %d (native %d): the mod's only: [%s]; native only: [%s]",
+				cmp.lua, cmp.native, table.concat(own, " | "), table.concat(theirs, " | "))
+		end
 	end
 	return line
 end

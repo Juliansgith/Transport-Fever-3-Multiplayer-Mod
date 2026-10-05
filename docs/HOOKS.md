@@ -840,10 +840,17 @@ for the table (`bridge.find`). Its contract is in
   every byte ("What the lanes cost" below); `nil` without a string.
 - `tpf3mp_native.network()`: in a game script's `postUpdate`, the network
   lane read by the hook ("The network lane read natively" below): `nil`
-  when `TPF3MP_HOOK_NATIVE_NETWORK` leaves it off, else `{ mode = "compare"
+  when `TPF3MP_HOOK_NATIVE_LANES` leaves it off, else `{ mode = "compare"
   | "on", rows = { ... }, junctions = { heads, preferences, lights, tails }
   }`, with `why` for `rows` and `junctionsWhy` for `junctions` when they
   did not read. Optional: the mod reads its own without it.
+- `tpf3mp_native.constructions()`: in a game script's `postUpdate`, the
+  constructions lane read by the hook: `nil` when off, else `{ mode, text =
+  "count:hash", ms }` (compared, with its `rows`), or `{ mode, why }`.
+- `tpf3mp_native.networkSummary(preferences, lights)`: right after
+  `network()`, the network lane's text (`count:hash`) from what it read,
+  the junctions' names given as `{ [value] = name }` and `{ [type] = name
+  }` (`junctions.names`); `nil` and why when it cannot be made.
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
@@ -3466,7 +3473,7 @@ mod: actions since the last checkpoint: 3 in 2 updates, applied in 4.0 ms (longe
 
 #### The network lane read natively
 
-`TPF3MP_HOOK_NATIVE_NETWORK` in the game's environment lets the hook read
+`TPF3MP_HOOK_NATIVE_LANES` in the game's environment lets the hook read
 the network lane's rows from the engine's memory
 (`crates/tpf3mp-hook/src/netread.rs`; the build's offsets in its native
 bundle, `profiles/<build>/netread.rs`; the layouts in
@@ -3476,7 +3483,7 @@ bundle, `profiles/<build>/netread.rs`; the layouts in
 |---|---|
 | unset, `off` | reads its own, as before |
 | `compare` | reads both, hashes its own, and logs whether they agree |
-| `on` | hashes the hook's rows; reads its own where they did not read |
+| `on` | takes the hook's text of the lane; reads its own where it did not read |
 
 The hook makes the same text the mod's Lua makes: each edge's row as
 `lanes.edgeRow` makes it, numbers printed as the game's Lua 5.2 prints
@@ -3509,6 +3516,18 @@ list disagree, a flag that is not 0 or 1, a number that is not finite, a
 turn naming an edge that is not there. The edges and the junctions fail
 apart; the mod then reads its own and the cost line says why. Nothing is
 written, and nothing of the game's is called.
+
+The same setting reads the constructions lane natively: each
+construction's file (its `ResName`, +0) and the translation of its
+`transf` (16 float32 at +0x58, x and y at +0x88 and +0x8c), `file@x,y` to
+0.1 m, sorted, joined and hashed in the hook; compared, the mod checks the
+text and names the rows that differ.
+
+On, the hook also sorts the lane's rows, joins and hashes them as
+`summary` does (`tpf3mp_native.networkSummary`), so no row comes into the
+mod's Lua at all; compared, the cost line says whether that text agrees
+with the mod's (`native summary agrees`), which checks the rows' order too:
+the mod sorts with Lua's `table.sort`.
 
 The cost line ends with what the hook did:
 

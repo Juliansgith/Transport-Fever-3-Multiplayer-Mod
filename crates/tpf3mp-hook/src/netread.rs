@@ -37,7 +37,7 @@ use crate::build_data::native::netread as layout;
 use crate::modules::{Memory, i32_at, res_name, u64_at};
 
 /// `off` (unset), `compare` or `on`.
-pub const ENV: &str = "TPF3MP_HOOK_NATIVE_NETWORK";
+pub const ENV: &str = "TPF3MP_HOOK_NATIVE_LANES";
 
 /// Most component pools, entities, lane configs an edge and components an
 /// entity read; past any of them the read fails.
@@ -170,6 +170,12 @@ impl Memory for Process {
 /// game's memory: `Err(why)` outside the step, without the image, or when
 /// the edges do not read.
 pub fn read_now() -> Result<Network, String> {
+    let (memory, engine, image) = engine_now()?;
+    network(&memory, engine, image)
+}
+
+/// The memory, the engine and the image of the game's step running now.
+fn engine_now() -> Result<(Process, usize, usize), String> {
     let game_time = crate::install::game_time_now();
     if game_time == 0 {
         return Err("no game step is running".into());
@@ -187,7 +193,7 @@ pub fn read_now() -> Result<Network, String> {
     )?;
     let engine = usize::try_from(u64_at(&head, layout::GAME_TIME_ENGINE))
         .map_err(|_| "the engine's address".to_string())?;
-    network(&memory, engine, image)
+    Ok((memory, engine, image))
 }
 
 #[cfg(windows)]
@@ -602,6 +608,119 @@ pub fn network(memory: &dyn Memory, engine: usize, image: usize) -> Result<Netwo
     })
 }
 
+/// The constructions lane's rows, as lanes.lua makes them: each
+/// construction's file and its place to 0.1 m, `file@x,y`, unsorted.
+pub fn construction_rows(
+    memory: &dyn Memory,
+    engine: usize,
+    image: usize,
+) -> Result<Vec<String>, String> {
+    let store = Store::new(memory, engine, image)?;
+    let kind = store.kind(
+        layout::CONSTRUCTION_POOL_VTABLE,
+        layout::CONSTRUCTION_SIZE,
+        "Construction",
+    )?;
+    let mut memo = Memo::default();
+    let mut rows = Vec::new();
+    for entity in store.with(&kind)? {
+        let Some(index) = store.index(entity, &kind)? else {
+            continue;
+        };
+        let at = kind.pool.element(memory, index)?;
+        // Its file and its place, not the whole component.
+        let bytes = read(memory, at, layout::CONSTRUCTION_Y + 4, "a Construction")?;
+        let file = memo.name(
+            memory,
+            &bytes,
+            layout::CONSTRUCTION_FILE,
+            at + layout::CONSTRUCTION_FILE,
+            "a construction's file",
+        )?;
+        let x = q01_text(f32_at(&bytes, layout::CONSTRUCTION_X))?;
+        let y = q01_text(f32_at(&bytes, layout::CONSTRUCTION_Y))?;
+        rows.push(format!("{file}@{x},{y}"));
+    }
+    Ok(rows)
+}
+
+/// lanes.lua's `summary` of `rows`: their count and the hash of their
+/// sorted text joined by `\x1e`.
+pub fn rows_summary(mut rows: Vec<String>) -> String {
+    rows.sort_unstable();
+    let text = rows.join("\x1e");
+    format!("{}:{}", rows.len(), crate::lanehash::hash(text.as_bytes()))
+}
+
+/// The constructions lane of the world the game's step is running now:
+/// its rows, read natively.
+pub fn constructions_now() -> Result<Vec<String>, String> {
+    let (memory, engine, image) = engine_now()?;
+    construction_rows(&memory, engine, image)
+}
+
+thread_local! {
+    /// The last network read on this thread, for its summary
+    /// ([`summary_of_last`]): the mod reads it and asks for its summary in
+    /// the same `postUpdate`.
+    static LAST: std::cell::RefCell<Option<Network>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Keeps `network` for [`summary_of_last`].
+pub fn keep(network: Network) {
+    LAST.with(|last| *last.borrow_mut() = Some(network));
+}
+
+/// [`summary`] of the network [`keep`] kept last on this thread, once.
+pub fn summary_of_last(
+    preferences: &HashMap<i32, String>,
+    lights: &HashMap<i32, String>,
+) -> Result<String, String> {
+    let network = LAST
+        .with(|last| last.borrow_mut().take())
+        .ok_or("no network was read on this thread")?;
+    summary(&network, preferences, lights)
+}
+
+/// The network lane's text as lanes.lua's `summary` makes it from its rows
+/// (the edges' rows and each junction's row after `junction:`): their
+/// count and the hash of their sorted text joined by `\x1e`. The junction
+/// rows take their preference's and light's names from `preferences` and
+/// `lights`, as `junctions.rowsFromParts` does.
+pub fn summary(
+    network: &Network,
+    preferences: &HashMap<i32, String>,
+    lights: &HashMap<i32, String>,
+) -> Result<String, String> {
+    let junctions = network.junctions.as_ref().map_err(Clone::clone)?;
+    let mut rows: Vec<String> = Vec::with_capacity(network.edges.len() + junctions.len());
+    rows.extend(network.edges.iter().cloned());
+    for j in junctions {
+        let preference = preferences
+            .get(&j.preference)
+            .ok_or("unknown traffic light preference")?;
+        let light = if j.light == -1 {
+            "default"
+        } else {
+            lights
+                .get(&j.light)
+                .map(String::as_str)
+                .ok_or("unknown traffic light resource")?
+        };
+        rows.push(format!(
+            "junction:{}|{preference}|{light}|{}",
+            j.head, j.tail
+        ));
+    }
+    rows.sort_unstable();
+    let text = rows.join("\x1e");
+    Ok(format!(
+        "{}:{}",
+        rows.len(),
+        crate::lanehash::hash(text.as_bytes())
+    ))
+}
+
 /// C's `%.0f`, as `string.format` makes it. Only finite numbers.
 pub fn fixed0(v: f64) -> Result<String, String> {
     if !v.is_finite() {
@@ -856,6 +975,7 @@ fn edge_row(
         edge,
         layout::EDGE_ROAD_TEMPLATE,
         at + layout::EDGE_ROAD_TEMPLATE,
+        "the edge's road template",
     )?;
     let (lanes_at, lanes) = vector(
         edge,
@@ -923,13 +1043,14 @@ impl Memo {
         bytes: &[u8],
         offset: usize,
         at: usize,
+        what: &str,
     ) -> Result<String, String> {
         let mut key = [0u8; 0x40];
         key.copy_from_slice(&bytes[offset..offset + 0x40]);
         if let Some(text) = self.names.get(&key) {
             return Ok(text.clone());
         }
-        let text = res_name(memory, at, "the edge's road template")?;
+        let text = res_name(memory, at, what)?;
         self.names.insert(key, text.clone());
         Ok(text)
     }
@@ -1954,6 +2075,131 @@ api = {
         let (rows, made) = lua_junctions(&parts);
         assert_eq!(rows.len(), 3);
         assert_eq!(made, rows);
+    }
+
+    #[test]
+    fn the_lanes_text_is_the_mods_summary() {
+        let mut fake = Fake::new();
+        let engine = junction_engine(&mut fake);
+        let network = network(&fake, engine, IMAGE).unwrap();
+        let (junction_rows, _) = lua_junctions(network.junctions.as_ref().unwrap());
+        // lanes.lua's summary over the same rows, in a real Lua.
+        let lua = mlua::Lua::new();
+        let scripts = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../mod/tpf3mp_1/content/scripts/"
+        );
+        lua.load(format!(
+            "package.path = {:?} .. '?.lua;' .. package.path",
+            scripts
+        ))
+        .exec()
+        .unwrap();
+        let rows = lua.create_table().unwrap();
+        for row in &network.edges {
+            rows.raw_push(row.as_str()).unwrap();
+        }
+        for row in &junction_rows {
+            rows.raw_push(format!("junction:{row}")).unwrap();
+        }
+        let theirs: String = lua
+            .load(
+                r#"local rows = ... local lanes = require("tpf3mp.lanes") table.sort(rows) return #rows .. ":" .. lanes.hash(table.concat(rows, "\30"))"#,
+            )
+            .call(rows)
+            .unwrap();
+        let preferences =
+            HashMap::from([(0, "Auto".to_string()), (1, "Yes".into()), (2, "No".into())]);
+        let lights = HashMap::from([(3, "lights/type3.lua".to_string())]);
+        assert_eq!(summary(&network, &preferences, &lights).unwrap(), theirs);
+        // Kept, it is summed up once.
+        keep(network);
+        assert_eq!(summary_of_last(&preferences, &lights).unwrap(), theirs);
+        assert!(summary_of_last(&preferences, &lights).is_err());
+        // A light no name is given for.
+        let mut fake = Fake::new();
+        let engine = junction_engine(&mut fake);
+        let network = super::network(&fake, engine, IMAGE).unwrap();
+        assert!(
+            summary(&network, &preferences, &HashMap::new())
+                .unwrap_err()
+                .contains("light")
+        );
+    }
+
+    #[test]
+    fn the_constructions_lane_is_the_mods() {
+        let constructions: Vec<(usize, (&str, &str), [f32; 2])> = vec![
+            (
+                3,
+                ("", "station/rail/modular_station.con"),
+                [1234.56, -98.04],
+            ),
+            (5, ("mymod_1", "building/x.con"), [0.04, -0.05]),
+            (
+                6,
+                ("", "station/rail/modular_station.con"),
+                [-20000.15, 7.0],
+            ),
+            (9, ("", "industry/farm.con"), [100.0, 100.0]),
+        ];
+        let mut fake = Fake::new();
+        let mut elements = Vec::new();
+        for (entity, (first, second), [x, y]) in &constructions {
+            let mut b = vec![0u8; layout::CONSTRUCTION_SIZE];
+            let a = string(&mut fake, first);
+            let c = string(&mut fake, second);
+            b[0..0x20].copy_from_slice(&a);
+            b[0x20..0x40].copy_from_slice(&c);
+            put_f32(&mut b, layout::CONSTRUCTION_X, *x);
+            put_f32(&mut b, layout::CONSTRUCTION_Y, *y);
+            elements.push((*entity, b));
+        }
+        let specs = [Spec {
+            vtable: layout::CONSTRUCTION_POOL_VTABLE,
+            id: 66,
+            size: layout::CONSTRUCTION_SIZE,
+            elements,
+        }];
+        let engine = build(&mut fake, &specs, 12);
+        let ours = rows_summary(construction_rows(&fake, engine, IMAGE).unwrap());
+        // lanes.lua's own read of the lane, over a fake api.
+        let lua = mlua::Lua::new();
+        let scripts = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../mod/tpf3mp_1/content/scripts/"
+        );
+        lua.load(format!(
+            "package.path = {:?} .. '?.lua;' .. package.path",
+            scripts
+        ))
+        .exec()
+        .unwrap();
+        let mut world = String::from(
+            "local cons = {}
+",
+        );
+        for (entity, (first, second), [x, y]) in &constructions {
+            world += &format!(
+                "cons[{entity}] = {{ fileName = {:?}, transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, {}, {}, 0, 1 }} }}
+",
+                format!("{first}::/{second}"),
+                f64::from(*x),
+                f64::from(*y)
+            );
+        }
+        world += r#"
+local api = { type = { ComponentType = { CONSTRUCTION = "con" } }, engine = {
+  getEntitiesWithComponent = function(kind) local out = {} for e in pairs(cons) do out[#out + 1] = e end return out end,
+  getComponent = function(e, kind) return cons[e] end,
+} }
+local lanes = require("tpf3mp.lanes")
+local out = lanes.read(api)
+return out[lanes.CONSTRUCTIONS]
+"#;
+        let theirs: String = lua.load(&world).eval().unwrap();
+        assert_eq!(ours, theirs);
+        assert!(ours.starts_with("4:"));
     }
 
     #[test]
