@@ -479,42 +479,69 @@ end
 
 -- Canonical, portable rows for checkpoints. Phase indices are expressed as
 -- the turns/crosswalks they lock, so local entity/vector ordering is irrelevant.
-function junctions.rows(api)
-	local w, rows, seen, memo = remembered(api), {}, {}, {}
-	-- Each edge's key, made once: remembered() gives an edge the same table
-	-- every time, and every junction at its ends names it again.
-	local keys = {}
+-- One node's row, or nil where it has no configuration; `w`, `memo` and `key`
+-- are shared by one read.
+local function junctionRow(api, w, memo, key, node)
+	local c = component(node,"BASE_NODE_CONFIG",api)
+	if not c then return nil end
+	local v, lanes = captureConfig(c,w,api,memo), {}
+	for _, t in ipairs(v.connections) do lanes[#lanes+1] = key(t.incoming)..":"..t.lane_in..">"..key(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end
+	for _, e in ipairs(v.crosswalks) do lanes[#lanes+1] = "walk:"..key(e) end
+	local sorted = list(lanes) table.sort(sorted)
+	local phases = {}
+	for _, phase in ipairs(v.phases) do
+		local locked = {}
+		for _, i in ipairs(phase.locked) do
+			if not lanes[i+1] then error("traffic phase references no lane",0) end
+			locked[#locked+1] = lanes[i+1]
+		end
+		table.sort(locked)
+		phases[#phases+1] = string.format("%.3f/%.3f/%s:%s",phase.duration,phase.minimum,tostring(phase.skip),table.concat(locked,","))
+	end
+	return nodeKey(w.node(node)).."|"..table.concat(sorted,";").."|"..v.preference.."|"..(v.light or "default").."|"..tostring(v.double_slip).."|"..tostring(v.custom_phases).."|"..table.concat(phases,";")
+end
+
+-- What one read of the junctions shares: the remembered world, the names
+-- looked up, and each edge's key, made once (remembered() gives an edge the
+-- same table every time, and every junction at its ends names it again).
+local function reading(api)
+	local w, memo, keys = remembered(api), {}, {}
 	local function key(e)
 		local k = keys[e]
 		if k == nil then k = edgeKey(e) keys[e] = k end
 		return k
 	end
+	return w, memo, key
+end
+
+function junctions.rows(api)
+	local w, memo, key = reading(api)
+	local rows, seen = {}, {}
 	for _, kind in ipairs({"Street", "Track"}) do
 		for node in pairs(api.engine.system.streetSystem["getNode2"..kind.."EdgeMap"]()) do
 			if not seen[node] then
 				seen[node] = true
-				local c = component(node,"BASE_NODE_CONFIG",api)
-				if c then
-					local v, lanes = captureConfig(c,w,api,memo), {}
-					for _, t in ipairs(v.connections) do lanes[#lanes+1] = key(t.incoming)..":"..t.lane_in..">"..key(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end
-					for _, e in ipairs(v.crosswalks) do lanes[#lanes+1] = "walk:"..key(e) end
-					local sorted = list(lanes) table.sort(sorted)
-					local phases = {}
-					for _, phase in ipairs(v.phases) do
-						local locked = {}
-						for _, i in ipairs(phase.locked) do
-							if not lanes[i+1] then error("traffic phase references no lane",0) end
-							locked[#locked+1] = lanes[i+1]
-						end
-						table.sort(locked)
-						phases[#phases+1] = string.format("%.3f/%.3f/%s:%s",phase.duration,phase.minimum,tostring(phase.skip),table.concat(locked,","))
-					end
-					rows[#rows+1] = nodeKey(w.node(node)).."|"..table.concat(sorted,";").."|"..v.preference.."|"..(v.light or "default").."|"..tostring(v.double_slip).."|"..tostring(v.custom_phases).."|"..table.concat(phases,";")
-				end
+				local row = junctionRow(api, w, memo, key, node)
+				if row then rows[#rows+1] = row end
 			end
 		end
 	end
 	table.sort(rows)
+	return rows
+end
+
+-- The rows of the junctions at `nodes` (node entities) only, as rows makes
+-- them: those the hook's read leaves to this Lua (crates/tpf3mp-hook/src/
+-- netread.rs, read_junctions). A node without a configuration is an error:
+-- the hook read one there in this same update.
+function junctions.rowsOf(api, nodes)
+	local w, memo, key = reading(api)
+	local rows = {}
+	for i, node in ipairs(nodes) do
+		local row = junctionRow(api, w, memo, key, node)
+		if not row then error("a junction left to this Lua has no configuration", 0) end
+		rows[i] = row
+	end
 	return rows
 end
 

@@ -14,7 +14,7 @@ lanes cost").
 
 `crates/tpf3mp-hook/src/netread.rs` reads the network lane with these
 layouts. In a room of two games on `MP_crash_1004`, with
-`TPF3MP_HOOK_NATIVE_NETWORK=compare`, its rows agreed with the mod's Lua
+`TPF3MP_HOOK_NATIVE_LANES=compare`, its rows agreed with the mod's Lua
 at every checkpoint read: 2212 edges, then 2213 after a town grew a street,
 and 2126-2127 junctions. Two corrections:
 

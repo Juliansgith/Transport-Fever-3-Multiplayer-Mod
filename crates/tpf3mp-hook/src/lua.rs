@@ -2042,6 +2042,22 @@ fn lanes_due() -> bool {
     batch.lanes_wanted && batch.begun == batch.updates && batch.lanes.is_none()
 }
 
+/// Whether the engine may be read natively now: a checkpoint's lanes are
+/// due ([`lanes_due`]) and this is the thread running the game's step,
+/// inside it (`crate::install::on_step_thread`), where the mod's game
+/// script's `postUpdate` reads them. Any other thread (the GUI's, where
+/// other mods and the console run, or the game's pool) may run while the
+/// step changes the engine.
+fn native_read_allowed() -> Result<(), String> {
+    if !lanes_due() {
+        return Err("no checkpoint is due in this update".to_owned());
+    }
+    if !crate::install::on_step_thread() {
+        return Err("only the game's step's own thread reads natively".to_owned());
+    }
+    Ok(())
+}
+
 /// `network()`: in a game script's `postUpdate` at a checkpoint, the
 /// network lane read natively ([`crate::netread`]): `nil` when
 /// [`crate::netread::ENV`] leaves it off; compared, `{ mode = "compare",
@@ -2065,12 +2081,10 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
     }
     // Only where the mod reads its lanes: any other state (another mod's,
     // the GUI's) would read the engine while the step changes it.
-    let read = if lanes_due() {
+    let read = native_read_allowed().and_then(|()| {
         std::panic::catch_unwind(crate::netread::read_now)
             .unwrap_or_else(|_| Err("the native read panicked".to_owned()))
-    } else {
-        Err("no checkpoint is due in this update".to_owned())
-    };
+    });
     // SAFETY: as above.
     unsafe {
         (api.createtable)(l, 0, 3);
@@ -2085,6 +2099,9 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
                 (api.rawset)(l, table);
                 push_str(api, l, b"count");
                 (api.pushnumber)(l, network.edges.len() as f64);
+                (api.rawset)(l, table);
+                push_str(api, l, b"deferred");
+                push_numbers(api, l, network.deferred.iter().map(|n| *n as f64));
                 (api.rawset)(l, table);
                 match &network.junctions {
                     // On, the mod takes the lane's text from the hook: it
@@ -2159,16 +2176,26 @@ unsafe extern "C-unwind" fn native_network_summary(l: State) -> c_int {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let mut nodes = 0;
         // SAFETY: Lua calls this with its own state; its arguments are on it.
-        let (preferences, lights) = unsafe {
+        let (preferences, lights, deferred) = unsafe {
             if (api.gettop)(l) < 2 {
                 return Err("no names given".to_owned());
             }
+            let deferred = if (api.gettop)(l) >= 3 {
+                read(api, l, 3, 0, &mut nodes)?
+            } else {
+                LuaValue::Table(Vec::new())
+            };
             (
                 read(api, l, 1, 0, &mut nodes)?,
                 read(api, l, 2, 0, &mut nodes)?,
+                deferred,
             )
         };
-        crate::netread::summary_of_last(&names(&preferences)?, &names(&lights)?)
+        crate::netread::summary_of_last(
+            &names(&preferences)?,
+            &names(&lights)?,
+            &rows_of(&deferred)?,
+        )
     }))
     .unwrap_or_else(|_| Err("the native summary panicked".to_owned()));
     // SAFETY: a C function's stack has LUA_MINSTACK free slots.
@@ -2206,10 +2233,9 @@ unsafe extern "C-unwind" fn native_constructions(l: State) -> c_int {
         }
     }
     let started = std::time::Instant::now();
+    let allowed = native_read_allowed();
     let read = std::panic::catch_unwind(|| {
-        if !lanes_due() {
-            return Err("no checkpoint is due in this update".to_owned());
-        }
+        allowed?;
         crate::netread::constructions_now().map(|rows| {
             let kept = (mode == crate::netread::Mode::Compare).then(|| rows.clone());
             (crate::netread::rows_summary(rows), kept)
@@ -2246,6 +2272,28 @@ unsafe extern "C-unwind" fn native_constructions(l: State) -> c_int {
         }
     }
     1
+}
+
+/// A list of strings, `{ s1, s2, ... }`, in its order.
+fn rows_of(value: &LuaValue) -> Result<Vec<String>, String> {
+    let LuaValue::Table(pairs) = value else {
+        return Err("the rows are not a table".into());
+    };
+    let mut rows: Vec<(i64, String)> = Vec::with_capacity(pairs.len());
+    for (key, row) in pairs {
+        let key = match key {
+            LuaValue::Number(n) if n.fract() == 0.0 && *n >= 1.0 => *n as i64,
+            LuaValue::Integer(n) if *n >= 1 => *n,
+            _ => return Err("the rows are not a list".into()),
+        };
+        let LuaValue::String(bytes) = row else {
+            return Err("a row is no string".into());
+        };
+        let row = String::from_utf8(bytes.clone()).map_err(|_| "a row is not UTF-8")?;
+        rows.push((key, row));
+    }
+    rows.sort_by_key(|(key, _)| *key);
+    Ok(rows.into_iter().map(|(_, row)| row).collect())
 }
 
 /// A table of names by whole number, `{ [n] = name }`.
@@ -3447,6 +3495,30 @@ my_timetables";
         begin_batch(&[], 1, true, None).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
         assert_eq!(end_batch(), Ok(None));
+    }
+
+    /// Only a due checkpoint lets anything read the engine natively, and
+    /// only on the game's step's own thread (none runs in these tests).
+    #[test]
+    fn nothing_reads_natively_off_the_steps_thread() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let script = Lua::new();
+        script.register();
+        assert!(native_read_allowed().unwrap_err().contains("no checkpoint"));
+        begin_batch(&[], 1, true, None).unwrap();
+        script.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(
+            script.run("return tpf3mp_native.checkpoint()"),
+            Ok("true".into())
+        );
+        let refused = native_read_allowed().unwrap_err();
+        assert!(refused.contains("step's own thread"), "{refused}");
+        script
+            .run("return tpf3mp_native.lanes({ [0] = 'net' })")
+            .unwrap();
+        assert!(native_read_allowed().unwrap_err().contains("no checkpoint"));
+        end_batch().unwrap();
     }
 
     /// What `dump()` hands the mod, as text.

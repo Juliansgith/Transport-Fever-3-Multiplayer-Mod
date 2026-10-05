@@ -841,19 +841,23 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.network()`: in a game script's `postUpdate` at a
   checkpoint, the network lane read by the hook ("The network lane read
   natively" below): `nil` when `TPF3MP_HOOK_NATIVE_LANES` leaves it off;
-  compared, `{ mode = "compare", count, rows, junctions = { heads,
-  preferences, lights, tails } }`; on, `{ mode = "on", count, junctions = {
-  lights } }`, the read kept for `networkSummary`. `why` stands for all but
-  the mode when the edges did not read, `junctionsWhy` for the junctions.
-  Outside a checkpoint's last update it reads nothing and says so.
+  compared, `{ mode = "compare", count, deferred, rows, junctions = {
+  heads, preferences, lights, tails } }`; on, `{ mode = "on", count,
+  deferred, junctions = { lights } }`, the read kept for `networkSummary`.
+  `deferred` lists the junctions' nodes left to the mod. `why` stands for
+  all but the mode when the edges did not read, `junctionsWhy` for the
+  junctions. Outside a checkpoint's last update, or off the game's step's
+  own thread, it reads nothing and says so.
   Optional: the mod reads its own without it.
 - `tpf3mp_native.constructions()`: in a game script's `postUpdate`, the
   constructions lane read by the hook: `nil` when off, else `{ mode, text =
   "count:hash", ms }` (compared, with its `rows`), or `{ mode, why }`.
-- `tpf3mp_native.networkSummary(preferences, lights)`: right after
-  `network()`, the network lane's text (`count:hash`) from what it read,
-  the junctions' names given as `{ [value] = name }` and `{ [type] = name
-  }` (`junctions.names`); `nil` and why when it cannot be made.
+- `tpf3mp_native.networkSummary(preferences, lights, deferred)`: right
+  after `network()`, the network lane's text (`count:hash`) from what it
+  read, the junctions' names given as `{ [value] = name }` and `{ [type] =
+  name }` (`junctions.names`), and the rows the mod made for the junctions
+  `network()` left to it (`deferred`, its nodes; `junctions.rowsOf`); `nil`
+  and why when it cannot be made.
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
@@ -3520,8 +3524,22 @@ turn naming an edge that is not there. The edges and the junctions fail
 apart; the mod then reads its own and the cost line says why. Nothing is
 written, and nothing of the game's is called. It reads only in the last
 update of a checkpoint's batch, before the lanes are handed over (the
-check `lanes()` makes): another Lua state calling it at another time would
-read the engine while the step changes it.
+check `lanes()` makes), and only on the thread running the game's step,
+inside it: there nothing changes the engine beside the step's own work.
+On build 40408 the game script's `postUpdate` runs there (thread 3 in the
+hook's numbering, every time); its `update` runs on the game's pool of
+threads, one or another, and so do no reads. A call from anywhere else,
+the GUI's state, another mod's or the console, reads nothing and says so.
+
+A junction whose phases name its crosswalks in an order that matters is
+left to the mod: one with two crosswalks or more, one of whose phases
+locks some of them but not all. A phase names its lanes by index, the
+crosswalks' part in the order the game's Lua lists the crosswalk set, and
+the Lua lists a copy of the component, whose hash set a copy may lay out
+in another order than the engine's own (phmap's copy inserts anew). The
+hook hands those junctions' nodes over (`deferred`), the mod makes their
+rows itself (`junctions.rowsOf`) and gives them to the summary; the cost
+line counts them (`n junctions left to Lua`; none on `MP_crash_1004`).
 
 The same setting reads the constructions lane natively: each
 construction's file (its `ResName`, +0) and the translation of its

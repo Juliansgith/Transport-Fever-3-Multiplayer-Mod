@@ -244,13 +244,14 @@ local function nativeEdges()
 end
 
 -- The network lane's text from the hook's read, the junctions' names given
+-- and the rows of the junctions it left to this Lua
 -- (tpf3mp_native.networkSummary): the text, or nil and why.
-local function nativeSummary(preferences, lights)
+local function nativeSummary(preferences, lights, deferred)
 	local ok, native = pcall(function() return tpf3mp_native end)
 	if not ok or type(native) ~= "table" or type(native.networkSummary) ~= "function" then
 		return nil, "the hook makes no summary"
 	end
-	local done, text, why = pcall(native.networkSummary, preferences, lights)
+	local done, text, why = pcall(native.networkSummary, preferences, lights, deferred or {})
 	if not done then return nil, tostring(text) end
 	if type(text) ~= "string" then return nil, tostring(why) end
 	return text
@@ -302,8 +303,15 @@ readers[lanes.NETWORK] = function(api, emit)
 	-- the lane itself.
 	if native and native.mode == "on" and type(native.junctions) == "table" then
 		local named, preferences, lights = pcall(junctions.names, api, native.junctions)
+		local made, deferred = pcall(junctions.rowsOf, api, type(native.deferred) == "table" and native.deferred or {})
 		local text, why
-		if named then text, why = nativeSummary(preferences, lights) else why = tostring(preferences) end
+		if not named then
+			why = tostring(preferences)
+		elseif not made then
+			why = tostring(deferred)
+		else
+			text, why = nativeSummary(preferences, lights, deferred)
+		end
 		if text then
 			net.edges = native.count or 0
 			net.native.summary = "made"
@@ -348,12 +356,17 @@ readers[lanes.NETWORK] = function(api, emit)
 	local j1 = clock()
 	if j0 and j1 then net.junctions = j1 - j0 end
 	local parts = compared and native.junctions
+	local deferred
 	if type(parts) == "table" then
 		local ok, made = pcall(junctions.rowsFromParts, api, parts)
-		if ok then
+		local okD, left = pcall(junctions.rowsOf, api, type(native.deferred) == "table" and native.deferred or {})
+		if ok and okD then
+			deferred = left
+			for _, row in ipairs(left) do made[#made + 1] = row end
 			net.native.junctions = compareRows(junctionRows, made)
 		else
-			net.native.junctionsWhy = tostring(made)
+			net.native.junctionsWhy = tostring(ok and left or made)
+			parts = nil
 		end
 	end
 	for _, row in ipairs(junctionRows) do
@@ -366,7 +379,7 @@ readers[lanes.NETWORK] = function(api, emit)
 	if type(parts) == "table" then
 		local named, preferences, lights = pcall(junctions.names, api, parts)
 		local theirs, why
-		if named then theirs, why = nativeSummary(preferences, lights) else why = tostring(preferences) end
+		if named then theirs, why = nativeSummary(preferences, lights, deferred) else why = tostring(preferences) end
 		if theirs then
 			net.native.summary = theirs == text and "agrees" or ("DIFFERS: native " .. theirs .. ", the mod's " .. text)
 		else

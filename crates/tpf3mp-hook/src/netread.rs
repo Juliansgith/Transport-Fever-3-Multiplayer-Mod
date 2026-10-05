@@ -533,6 +533,9 @@ struct EdgeEnds {
 pub struct Network {
     pub edges: Vec<String>,
     pub junctions: Result<Vec<Junction>, String>,
+    /// The junctions whose rows only the game's Lua can make (see
+    /// [`read_junctions`]), by node entity, for the mod to make them.
+    pub deferred: Vec<usize>,
     /// What the read took, for the log: the entities, and the time of its
     /// parts.
     pub timing: String,
@@ -614,19 +617,24 @@ pub fn network(memory: &dyn Memory, engine: usize, image: usize) -> Result<Netwo
     let t1 = std::time::Instant::now();
     let (rows, ends) = read_edges(&store, &edges)?;
     let t2 = std::time::Instant::now();
-    let junctions = read_junctions(&store, &ends);
+    let (junctions, deferred) = match read_junctions(&store, &ends) {
+        Ok((parts, deferred)) => (Ok(parts), deferred),
+        Err(why) => (Err(why), Vec::new()),
+    };
     let t3 = std::time::Instant::now();
     let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0;
     Ok(Network {
         edges: rows,
         junctions,
         timing: format!(
-            "{} entities; pools {:.1} ms, edges {:.1} ms, junctions {:.1} ms",
+            "{} entities; pools {:.1} ms, edges {:.1} ms, junctions {:.1} ms, {} junctions left to Lua",
             store.entities,
             ms(t0, t1),
             ms(t1, t2),
-            ms(t2, t3)
+            ms(t2, t3),
+            deferred.len()
         ),
+        deferred,
     })
 }
 
@@ -697,25 +705,38 @@ pub fn keep(network: Network) {
 pub fn summary_of_last(
     preferences: &HashMap<i32, String>,
     lights: &HashMap<i32, String>,
+    deferred: &[String],
 ) -> Result<String, String> {
     let network = LAST
         .with(|last| last.borrow_mut().take())
         .ok_or("no network was read on this thread")?;
-    summary(&network, preferences, lights)
+    summary(&network, preferences, lights, deferred)
 }
 
 /// The network lane's text as lanes.lua's `summary` makes it from its rows
 /// (the edges' rows and each junction's row after `junction:`): their
 /// count and the hash of their sorted text joined by `\x1e`. The junction
 /// rows take their preference's and light's names from `preferences` and
-/// `lights`, as `junctions.rowsFromParts` does.
+/// `lights`, as `junctions.rowsFromParts` does; `deferred` are the rows
+/// the game's Lua made for the junctions the read left to it
+/// ([`Network::deferred`]), one each.
 pub fn summary(
     network: &Network,
     preferences: &HashMap<i32, String>,
     lights: &HashMap<i32, String>,
+    deferred: &[String],
 ) -> Result<String, String> {
     let junctions = network.junctions.as_ref().map_err(Clone::clone)?;
-    let mut rows: Vec<String> = Vec::with_capacity(network.edges.len() + junctions.len());
+    if deferred.len() != network.deferred.len() {
+        return Err(format!(
+            "{} junction rows for the {} junctions left to the mod",
+            deferred.len(),
+            network.deferred.len()
+        ));
+    }
+    let mut rows: Vec<String> =
+        Vec::with_capacity(network.edges.len() + junctions.len() + deferred.len());
+    rows.extend(deferred.iter().map(|row| format!("junction:{row}")));
     rows.extend(network.edges.iter().cloned());
     for j in junctions {
         let preference = preferences
@@ -834,7 +855,14 @@ impl Junctions<'_, '_> {
 
 /// Every junction's row parts, as junctions.lua's `rows` makes them: the
 /// nodes of the edges in `ends` that have a `BaseNodeConfig`, in id order.
-fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
+///
+/// A junction with two crosswalks or more, one of whose phases locks some
+/// of its crosswalks but not all, is left to the game's Lua (its node in
+/// the second list): a phase names its lanes by index, the crosswalks'
+/// part of them in the order the game's Lua lists the crosswalk set, and
+/// the Lua lists a copy of the component, whose hash set a copy can lay
+/// out anew, in another order than the engine's own set here.
+fn read_junctions(store: &Store, ends: &Ends) -> Result<(Vec<Junction>, Vec<usize>), String> {
     let nodes = store.kind(
         layout::BASE_NODE_POOL_VTABLE,
         layout::BASE_NODE_SIZE,
@@ -861,6 +889,7 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
         keys: HashMap::new(),
     };
     let mut out = Vec::new();
+    let mut deferred = Vec::new();
     for node in store.with(&configs)? {
         let Some(&street) = street_node.get(&node) else {
             // In neither network's node map: junctions.lua never reads it.
@@ -927,6 +956,8 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
             "a junction's phases",
         )?;
         let mut phase_rows = Vec::with_capacity(phases);
+        let walks = turns..lanes.len();
+        let mut ambiguous = false;
         for i in 0..phases {
             let phase = &phase_bytes[i * layout::PHASE_SIZE..(i + 1) * layout::PHASE_SIZE];
             let (locked_at, count) = vector(
@@ -938,12 +969,19 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
             )?;
             let locked_bytes = read(store.memory, locked_at, count * 4, "a phase's locked lanes")?;
             let mut locked = Vec::with_capacity(count);
+            let mut locked_walks = std::collections::BTreeSet::new();
             for k in 0..count {
-                let lane = usize::try_from(i32_at(&locked_bytes, k * 4))
+                let index = usize::try_from(i32_at(&locked_bytes, k * 4))
                     .ok()
-                    .and_then(|l| lanes.get(l))
+                    .filter(|l| *l < lanes.len())
                     .ok_or("traffic phase references no lane")?;
-                locked.push(lane.as_str());
+                if walks.contains(&index) {
+                    locked_walks.insert(index);
+                }
+                locked.push(lanes[index].as_str());
+            }
+            if walks.len() >= 2 && !locked_walks.is_empty() && locked_walks.len() < walks.len() {
+                ambiguous = true;
             }
             locked.sort_unstable();
             phase_rows.push(format!(
@@ -953,6 +991,10 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
                 flag(phase, layout::PHASE_SKIP, "a phase's skip flag")?,
                 locked.join(","),
             ));
+        }
+        if ambiguous {
+            deferred.push(node);
+            continue;
         }
         let head = format!(
             "{}:{}|{}",
@@ -981,7 +1023,7 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
             tail,
         });
     }
-    Ok(out)
+    Ok((out, deferred))
 }
 
 /// One edge's row from its `BaseEdge` (`edge`, read at `at`).
@@ -1795,12 +1837,26 @@ mod tests {
             Config {
                 node: 12,
                 turns: vec![],
-                crosswalks: vec![],
+                // Both locked together: their order makes no difference.
+                crosswalks: vec![3, 2],
                 preference: 0,
                 light: 3,
                 double_slip: true,
                 custom: false,
-                phases: vec![],
+                phases: vec![
+                    Phase {
+                        locked: vec![1, 0],
+                        duration: 12.0,
+                        minimum: 0.0,
+                        skip: false,
+                    },
+                    Phase {
+                        locked: vec![],
+                        duration: 20.0,
+                        minimum: 4.0,
+                        skip: true,
+                    },
+                ],
             },
             Config {
                 node: 13,
@@ -1957,7 +2013,12 @@ mod tests {
 
     /// junctions.lua's own `rows` over a fake `api` holding the same world,
     /// and its `rowsFromParts` over the hook's parts.
-    fn lua_junctions(parts: &[Junction]) -> (Vec<String>, Vec<String>) {
+    /// junctions.lua's own `rows`, then `rowsFromParts` over the hook's
+    /// parts with `rowsOf` the nodes it deferred, then the deferred rows.
+    fn lua_junctions(
+        parts: &[Junction],
+        deferred: &[usize],
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
         let (nodes, edges, configs) = junction_world();
         let lua = mlua::Lua::new();
         let scripts = concat!(
@@ -2118,12 +2179,19 @@ api = {
                 ),
             )
             .unwrap();
-        let made: Vec<String> = junctions
+        let mut made: Vec<String> = junctions
             .get::<mlua::Function>("rowsFromParts")
             .unwrap()
-            .call((api, table))
+            .call((api.clone(), table))
             .unwrap();
-        (rows, made)
+        let left: Vec<String> = junctions
+            .get::<mlua::Function>("rowsOf")
+            .unwrap()
+            .call((api, deferred.to_vec()))
+            .unwrap();
+        made.extend(left.iter().cloned());
+        made.sort();
+        (rows, made, left)
     }
 
     #[test]
@@ -2132,9 +2200,13 @@ api = {
         let engine = junction_engine(&mut fake);
         let network = network(&fake, engine, IMAGE).unwrap();
         let parts = network.junctions.unwrap();
-        assert_eq!(parts.len(), 3, "the node at no edge is left out");
-        let (rows, made) = lua_junctions(&parts);
+        // Node 11 has two crosswalks and a phase locking one of them: its
+        // row is left to the game's Lua. Node 12 locks both together.
+        assert_eq!(network.deferred, vec![11]);
+        assert_eq!(parts.len(), 2, "the node at no edge is left out");
+        let (rows, made, left) = lua_junctions(&parts, &network.deferred);
         assert_eq!(rows.len(), 3);
+        assert_eq!(left.len(), 1);
         assert_eq!(made, rows);
     }
 
@@ -2143,7 +2215,8 @@ api = {
         let mut fake = Fake::new();
         let engine = junction_engine(&mut fake);
         let network = network(&fake, engine, IMAGE).unwrap();
-        let (junction_rows, _) = lua_junctions(network.junctions.as_ref().unwrap());
+        let (junction_rows, _, left) =
+            lua_junctions(network.junctions.as_ref().unwrap(), &network.deferred);
         // lanes.lua's summary over the same rows, in a real Lua.
         let lua = mlua::Lua::new();
         let scripts = concat!(
@@ -2172,17 +2245,28 @@ api = {
         let preferences =
             HashMap::from([(0, "Auto".to_string()), (1, "Yes".into()), (2, "No".into())]);
         let lights = HashMap::from([(3, "lights/type3.lua".to_string())]);
-        assert_eq!(summary(&network, &preferences, &lights).unwrap(), theirs);
+        assert_eq!(
+            summary(&network, &preferences, &lights, &left).unwrap(),
+            theirs
+        );
+        assert!(
+            summary(&network, &preferences, &lights, &[])
+                .unwrap_err()
+                .contains("left to the mod")
+        );
         // Kept, it is summed up once.
         keep(network);
-        assert_eq!(summary_of_last(&preferences, &lights).unwrap(), theirs);
-        assert!(summary_of_last(&preferences, &lights).is_err());
+        assert_eq!(
+            summary_of_last(&preferences, &lights, &left).unwrap(),
+            theirs
+        );
+        assert!(summary_of_last(&preferences, &lights, &left).is_err());
         // A light no name is given for.
         let mut fake = Fake::new();
         let engine = junction_engine(&mut fake);
         let network = super::network(&fake, engine, IMAGE).unwrap();
         assert!(
-            summary(&network, &preferences, &HashMap::new())
+            summary(&network, &preferences, &HashMap::new(), &left)
                 .unwrap_err()
                 .contains("light")
         );
