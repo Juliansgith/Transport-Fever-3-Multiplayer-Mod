@@ -283,7 +283,6 @@ local function compareRows(own, theirs)
 end
 
 readers[lanes.NETWORK] = function(api, emit)
-	local rows, seen = {}, {}
 	local net = { map = 0, get = 0, lanes = 0, junctions = 0, edges = 0, laneConfigs = 0 }
 	lanes.cost.net = net
 	-- A dump needs each edge's entity and values: always the mod's own.
@@ -293,82 +292,70 @@ readers[lanes.NETWORK] = function(api, emit)
 		native = nativeEdges()
 		local n1 = clock()
 		if native then
-			net.native = { mode = native.mode, why = native.why, timing = native.timing,
-				rows = type(native.rows) == "table" and #native.rows or nil,
+			net.native = { mode = native.mode, why = native.why, timing = native.timing, rows = native.count,
+				junctionsWhy = native.junctionsWhy and tostring(native.junctionsWhy) or nil,
 				time = (n0 and n1) and (n1 - n0) or nil }
 		end
 	end
-	-- On, the whole lane's text from the hook, when its junctions read too:
-	-- no row comes into this Lua at all.
-	if native and native.mode == "on" and type(native.rows) == "table" and type(native.junctions) == "table" then
+	-- On: the whole lane's text from the hook, its junctions named by this
+	-- Lua; no row comes into this Lua. Anything amiss, and this Lua reads
+	-- the lane itself.
+	if native and native.mode == "on" and type(native.junctions) == "table" then
 		local named, preferences, lights = pcall(junctions.names, api, native.junctions)
 		local text, why
 		if named then text, why = nativeSummary(preferences, lights) else why = tostring(preferences) end
 		if text then
-			net.edges = #native.rows
+			net.edges = native.count or 0
 			net.native.summary = "made"
 			return text
 		end
 		net.native.summaryWhy = why
 	end
-	if native and native.mode == "on" and type(native.rows) == "table" then
-		for i, row in ipairs(native.rows) do rows[i] = row end
-		net.edges = #rows
-	else
-		local t0 = clock()
-		local map = api.engine.system.streetSystem.getNode2SegmentMap()
-		local t1 = clock()
-		if t0 and t1 then net.map = t1 - t0 end
-		for _, segments in pairs(map) do
-			for _, e in pairs(segments) do
-				if not seen[e] then
-					seen[e] = true
-					local g0 = clock()
-					local edge = component(api, e, "BASE_EDGE")
-					local g1 = clock()
-					if g0 and g1 then net.get = net.get + (g1 - g0) end
-					net.edges = net.edges + 1
-					if edge then
-						local l0 = clock()
-						local row = lanes.edgeRow(edge, net)
-						local l1 = clock()
-						if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
-						rows[#rows + 1] = row
-						if emit then
-							emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
-								.. " template=" .. tostring(edge.roadTemplate), { edge.position0, edge.position1 })
-						end
+	local rows, seen = {}, {}
+	local t0 = clock()
+	local map = api.engine.system.streetSystem.getNode2SegmentMap()
+	local t1 = clock()
+	if t0 and t1 then net.map = t1 - t0 end
+	for _, segments in pairs(map) do
+		for _, e in pairs(segments) do
+			if not seen[e] then
+				seen[e] = true
+				local g0 = clock()
+				local edge = component(api, e, "BASE_EDGE")
+				local g1 = clock()
+				if g0 and g1 then net.get = net.get + (g1 - g0) end
+				net.edges = net.edges + 1
+				if edge then
+					local l0 = clock()
+					local row = lanes.edgeRow(edge, net)
+					local l1 = clock()
+					if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
+					rows[#rows + 1] = row
+					if emit then
+						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
+							.. " template=" .. tostring(edge.roadTemplate), { edge.position0, edge.position1 })
 					end
 				end
 			end
 		end
-		if native and native.mode == "compare" and type(native.rows) == "table" then
-			net.native.compare = compareRows(rows, native.rows)
-		end
 	end
-	-- The junctions: the hook's when it is on and they read, made into rows
-	-- with the names only this Lua gives; else the mod's own.
+	local compared = native and native.mode == "compare"
+	if compared and type(native.rows) == "table" then
+		net.native.compare = compareRows(rows, native.rows)
+	end
 	local j0 = clock()
-	local junctionRows
-	local parts = native and native.junctions
-	if native and native.junctionsWhy then net.native.junctionsWhy = tostring(native.junctionsWhy) end
-	if native and native.mode == "on" and type(parts) == "table" then
-		local ok, made = pcall(junctions.rowsFromParts, api, parts)
-		if ok then junctionRows = made else net.native.junctionsWhy = tostring(made) end
-	end
-	if not junctionRows then
-		junctionRows = junctions.rows(api)
-		if native and native.mode == "compare" and type(parts) == "table" then
-			local ok, made = pcall(junctions.rowsFromParts, api, parts)
-			if ok then
-				net.native.junctions = compareRows(junctionRows, made)
-			else
-				net.native.junctionsWhy = tostring(made)
-			end
-		end
-	end
+	local junctionRows = junctions.rows(api)
 	local j1 = clock()
 	if j0 and j1 then net.junctions = j1 - j0 end
+	local parts = compared and native.junctions
+	if type(parts) == "table" then
+		local ok, made = pcall(junctions.rowsFromParts, api, parts)
+		if ok then
+			net.native.junctions = compareRows(junctionRows, made)
+		else
+			net.native.junctionsWhy = tostring(made)
+		end
+	end
 	for _, row in ipairs(junctionRows) do
 		rows[#rows+1] = "junction:" .. row
 		if emit then emit(nil, nil, "junction:" .. row, "", false) end
@@ -376,8 +363,8 @@ readers[lanes.NETWORK] = function(api, emit)
 	local text = summary(rows)
 	-- Compared, the hook's text of the whole lane too: the rows' order
 	-- (this Lua's sort) and their joining.
-	if native and native.mode == "compare" and type(native.junctions) == "table" then
-		local named, preferences, lights = pcall(junctions.names, api, native.junctions)
+	if type(parts) == "table" then
+		local named, preferences, lights = pcall(junctions.names, api, parts)
 		local theirs, why
 		if named then theirs, why = nativeSummary(preferences, lights) else why = tostring(preferences) end
 		if theirs then

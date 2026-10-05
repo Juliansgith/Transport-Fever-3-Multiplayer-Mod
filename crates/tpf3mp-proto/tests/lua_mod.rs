@@ -1724,6 +1724,91 @@ fn lanes_sum_up_the_world_part_by_part() {
     assert!(failed[0].starts_with("5: "), "{failed:?}");
 }
 
+/// The cost line of the last lanes.read.
+fn cost_line(lua: &Lua) -> String {
+    lua.load("return ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua').costLine()")
+        .eval()
+        .unwrap()
+}
+
+/// The hook's native read of the lanes (crates/tpf3mp-hook/src/netread.rs):
+/// compared, the mod's own text counts and the log says whether they
+/// agree; on, the hook's text counts; a read that failed leaves the mod's.
+#[test]
+fn the_hooks_own_read_of_a_lane_is_compared_or_taken() {
+    let (lua, _) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    let plain = read_lanes(&lua);
+    // The edge rows the mod makes, as the hook would hand them.
+    lua.load(
+        "local L = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')          ROWS, seen = {}, {}          for _, segs in pairs(api.engine.system.streetSystem.getNode2SegmentMap()) do            for _, e in pairs(segs) do if not seen[e] then seen[e] = true              ROWS[#ROWS + 1] = L.edgeRow(api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)) end end end          PARTS = { heads = {}, preferences = {}, lights = {}, tails = {} }          api.type.enum = api.type.enum or { TrafficLightPreference = { AUTO = 0, YES = 1, NO = 2 } }",
+    )
+    .exec()
+    .unwrap();
+    // Compared and agreeing: the mod's text, and the log says so.
+    lua.load(
+        "tpf3mp_native.network = function() return { mode = 'compare', rows = ROWS, junctions = PARTS } end          tpf3mp_native.networkSummary = function() return '9:native' end          tpf3mp_native.constructions = function() return { mode = 'compare', text = 'no', rows = {}, ms = 1 } end",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(read_lanes(&lua), plain);
+    let line = cost_line(&lua);
+    assert!(line.contains("native edges (compare)"), "{line}");
+    assert!(line.contains("agree with the mod's 2"), "{line}");
+    assert!(line.contains("native summary DIFFERS"), "{line}");
+    assert!(
+        line.contains("native constructions (compare) 1.0 ms, DIFFER"),
+        "{line}"
+    );
+    // Compared and differing: still the mod's text; the rows each has.
+    lua.load("ROWS[1] = 'odd' ").exec().unwrap();
+    assert_eq!(read_lanes(&lua), plain);
+    let line = cost_line(&lua);
+    assert!(
+        line.contains("DIFFER from the mod's 2 (native 2)"),
+        "{line}"
+    );
+    assert!(line.contains("native only: [odd]"), "{line}");
+    // On: the hook's text of each lane counts.
+    lua.load(
+        "tpf3mp_native.network = function() return { mode = 'on', rows = ROWS, junctions = PARTS } end          tpf3mp_native.networkSummary = function() return '9:native' end          tpf3mp_native.constructions = function() return { mode = 'on', text = '4:cons', ms = 1 } end",
+    )
+    .exec()
+    .unwrap();
+    let on = read_lanes(&lua);
+    assert_eq!(on[0].1, "9:native");
+    assert_eq!(on[1].1, "4:cons");
+    assert_eq!(on[2..], plain[2..]);
+    assert!(cost_line(&lua).contains("native summary made"));
+    // On but not read: the mod's own, and why.
+    lua.load(
+        "tpf3mp_native.network = function() return { mode = 'on', why = 'no pool of BaseEdge' } end          tpf3mp_native.constructions = function() return { mode = 'on', why = 'no pool', ms = 0 } end",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(read_lanes(&lua), plain);
+    let line = cost_line(&lua);
+    assert!(line.contains("did not read: no pool of BaseEdge"), "{line}");
+    assert!(
+        line.contains("native constructions (on) 0.0 ms: did not read: no pool"),
+        "{line}"
+    );
+    // On, the summary refused: the mod sums up the hook's rows itself.
+    lua.load(
+        "tpf3mp_native.network = function() return { mode = 'on', rows = ROWS, junctions = PARTS } end          tpf3mp_native.networkSummary = function() return nil, 'no network was read' end          ROWS[1] = nil",
+    )
+    .exec()
+    .unwrap();
+    lua.load(
+        "local L = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')          ROWS = {} seen = {}          for _, segs in pairs(api.engine.system.streetSystem.getNode2SegmentMap()) do            for _, e in pairs(segs) do if not seen[e] then seen[e] = true              ROWS[#ROWS + 1] = L.edgeRow(api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)) end end end",
+    )
+    .exec()
+    .unwrap();
+    let fell_back = read_lanes(&lua);
+    assert_eq!(fell_back[0], plain[0]);
+    assert!(cost_line(&lua).contains("native summary not made: no network was read"));
+}
+
 #[test]
 fn the_game_script_hands_the_lanes_over_at_a_checkpoint_only() {
     let (lua, _script) = engine();

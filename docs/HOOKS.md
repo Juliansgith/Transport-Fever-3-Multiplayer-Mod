@@ -838,12 +838,15 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.hash(s)`: the lanes' text hash of `s`, exactly what the
   mod's Lua `hashStr` returns (`crate::lanehash`), without a Lua loop over
   every byte ("What the lanes cost" below); `nil` without a string.
-- `tpf3mp_native.network()`: in a game script's `postUpdate`, the network
-  lane read by the hook ("The network lane read natively" below): `nil`
-  when `TPF3MP_HOOK_NATIVE_LANES` leaves it off, else `{ mode = "compare"
-  | "on", rows = { ... }, junctions = { heads, preferences, lights, tails }
-  }`, with `why` for `rows` and `junctionsWhy` for `junctions` when they
-  did not read. Optional: the mod reads its own without it.
+- `tpf3mp_native.network()`: in a game script's `postUpdate` at a
+  checkpoint, the network lane read by the hook ("The network lane read
+  natively" below): `nil` when `TPF3MP_HOOK_NATIVE_LANES` leaves it off;
+  compared, `{ mode = "compare", count, rows, junctions = { heads,
+  preferences, lights, tails } }`; on, `{ mode = "on", count, junctions = {
+  lights } }`, the read kept for `networkSummary`. `why` stands for all but
+  the mode when the edges did not read, `junctionsWhy` for the junctions.
+  Outside a checkpoint's last update it reads nothing and says so.
+  Optional: the mod reads its own without it.
 - `tpf3mp_native.constructions()`: in a game script's `postUpdate`, the
   constructions lane read by the hook: `nil` when off, else `{ mode, text =
   "count:hash", ms }` (compared, with its `rows`), or `{ mode, why }`.
@@ -3515,7 +3518,10 @@ a pointer out of order, a count past its bound, an entity whose bits and
 list disagree, a flag that is not 0 or 1, a number that is not finite, a
 turn naming an edge that is not there. The edges and the junctions fail
 apart; the mod then reads its own and the cost line says why. Nothing is
-written, and nothing of the game's is called.
+written, and nothing of the game's is called. It reads only in the last
+update of a checkpoint's batch, before the lanes are handed over (the
+check `lanes()` makes): another Lua state calling it at another time would
+read the engine while the step changes it.
 
 The same setting reads the constructions lane natively: each
 construction's file (its `ResName`, +0) and the translation of its
@@ -3537,6 +3543,16 @@ The cost line ends with what the hook did:
 
 `DIFFER` in its place names the first rows each side has that the other
 has not.
+
+Measured on build 40408, two games on `MP_crash_1004` (2212-2214 edges,
+2126-2127 junction rows, 1857-1863 constructions, about 140 000 entities):
+compared, the hook's rows and texts agreed with the mod's at every
+checkpoint of eight rooms, towns growing streets and buildings meanwhile.
+On, the lanes read in 33-41 ms instead of 200-310, and the checkpoint's
+step took 46-64 ms (the median of 62 checkpoints a game) instead of
+240-340, the other steps 12-16 ms. Of it the hook's network read took
+19-20 ms (edges 9, junctions 9), its summary of the lane about 6, the
+constructions 4-5.
 
 `TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
 `step-trace:` line for every call of the game's step

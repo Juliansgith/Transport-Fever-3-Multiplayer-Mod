@@ -27,6 +27,27 @@ and 2126-2127 junctions. Two corrections:
   (`sub_2806a0`) bounds nothing; the page table's length bounds a paged
   index.
 
+Later the same night, also checked in the game:
+
+- `Construction` (`CompVec<Construction>` vtable 0x3680510; 0x288 bytes,
+  `imul rax, 0x288` at 0x28081b in `sub_2807d0`): its Lua binding
+  (`sub_18829c0`, the call of `sub_1863020` at 0x1882ccd, name/offset
+  pairs) puts `fileName` at +0 (a `ResName`), `params` +0x40, `transf` +0x58
+  (16 float32, column-major: `UI::ModuleBuilder::SetConstruction`,
+  `sub_544f10`, reads elements 12 and 13 at +0x88/+0x8c as the translation's
+  x and y), `timeBuilt` +0x98, `frozenNodes` +0xa0, `frozenEdges` +0xb8,
+  `depots` +0xd0, `stations` +0xe8, `industries` +0x100, `townBuildings`
+  +0x118, `subconstructions` +0x130, `persistentMetadata` +0x148, `slots`
+  +0x160, `slotConfig` +0x178, `dependentSlots` +0x1b8, `tag2modelInstance`
+  +0x1f8, `entityAndIndex2labelTexts` +0x228, `tag2segments` +0x258. The
+  constructions lane read from `fileName` and `transf` agreed with the mod's
+  at every checkpoint (1857-1863 constructions).
+- A `ResName` reaches the game's Lua as `first::/second`: the edges' road
+  templates and the constructions' files read that way agreed with the
+  Lua's `tostring`.
+- The game's Lua sorts strings byte by byte: the hook's sorted, joined and
+  hashed network lane agreed with the mod's `summary` at every checkpoint.
+
 ## Corrections to docs/HOOKS.md (~5037-5050)
 
 - `GetComponentDataIndex` is `sub_a4b90`, not `0xd0920` (inside a phmap

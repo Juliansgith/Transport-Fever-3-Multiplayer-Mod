@@ -2034,12 +2034,22 @@ unsafe extern "C-unwind" fn native_hash(l: State) -> c_int {
     1
 }
 
+/// Whether the update running is the last of a batch that ends at a
+/// checkpoint and its lanes are not handed over yet: the only time the
+/// mod's game script reads them, in its `postUpdate`.
+fn lanes_due() -> bool {
+    let batch = &shared().batch;
+    batch.lanes_wanted && batch.begun == batch.updates && batch.lanes.is_none()
+}
+
 /// `network()`: in a game script's `postUpdate` at a checkpoint, the
 /// network lane read natively ([`crate::netread`]): `nil` when
-/// [`crate::netread::ENV`] leaves it off, else `{ mode = "compare" | "on",
-/// rows = { row, ... }, junctions = { heads =, preferences =, lights =,
-/// tails = } }`, with `why` in place of `rows` when the edges did not read
-/// and `junctionsWhy` in place of `junctions` when the junctions did not.
+/// [`crate::netread::ENV`] leaves it off; compared, `{ mode = "compare",
+/// count =, rows = { row, ... }, junctions = { heads =, preferences =,
+/// lights =, tails = } }`; on, `{ mode = "on", count =, junctions = { lights
+/// = { type, ... } } }`, the read kept for `networkSummary`. `why` stands
+/// in for all but the mode when the edges did not read, `junctionsWhy` for
+/// `junctions` (and the rows) when the junctions did not.
 unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
@@ -2053,8 +2063,14 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
             return 1;
         }
     }
-    let read = std::panic::catch_unwind(crate::netread::read_now)
-        .unwrap_or_else(|_| Err("the native read panicked".to_owned()));
+    // Only where the mod reads its lanes: any other state (another mod's,
+    // the GUI's) would read the engine while the step changes it.
+    let read = if lanes_due() {
+        std::panic::catch_unwind(crate::netread::read_now)
+            .unwrap_or_else(|_| Err("the native read panicked".to_owned()))
+    } else {
+        Err("no checkpoint is due in this update".to_owned())
+    };
     // SAFETY: as above.
     unsafe {
         (api.createtable)(l, 0, 3);
@@ -2067,11 +2083,28 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
                 push_str(api, l, b"timing");
                 push_str(api, l, network.timing.as_bytes());
                 (api.rawset)(l, table);
-                push_str(api, l, b"rows");
-                push_strings(api, l, network.edges.iter().map(String::as_bytes));
+                push_str(api, l, b"count");
+                (api.pushnumber)(l, network.edges.len() as f64);
                 (api.rawset)(l, table);
                 match &network.junctions {
+                    // On, the mod takes the lane's text from the hook: it
+                    // needs only the light types to name them.
+                    Ok(junctions) if mode == crate::netread::Mode::On => {
+                        let mut lights: Vec<i32> = junctions.iter().map(|j| j.light).collect();
+                        lights.sort_unstable();
+                        lights.dedup();
+                        push_str(api, l, b"junctions");
+                        (api.createtable)(l, 0, 1);
+                        let parts = (api.gettop)(l);
+                        push_str(api, l, b"lights");
+                        push_numbers(api, l, lights.into_iter().map(f64::from));
+                        (api.rawset)(l, parts);
+                        (api.rawset)(l, table);
+                    }
                     Ok(junctions) => {
+                        push_str(api, l, b"rows");
+                        push_strings(api, l, network.edges.iter().map(String::as_bytes));
+                        (api.rawset)(l, table);
                         push_str(api, l, b"junctions");
                         (api.createtable)(l, 0, 4);
                         let parts = (api.gettop)(l);
@@ -2090,6 +2123,11 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
                         (api.rawset)(l, table);
                     }
                     Err(why) => {
+                        if mode == crate::netread::Mode::Compare {
+                            push_str(api, l, b"rows");
+                            push_strings(api, l, network.edges.iter().map(String::as_bytes));
+                            (api.rawset)(l, table);
+                        }
                         push_str(api, l, b"junctionsWhy");
                         push_str(api, l, why.as_bytes());
                         (api.rawset)(l, table);
@@ -2169,6 +2207,9 @@ unsafe extern "C-unwind" fn native_constructions(l: State) -> c_int {
     }
     let started = std::time::Instant::now();
     let read = std::panic::catch_unwind(|| {
+        if !lanes_due() {
+            return Err("no checkpoint is due in this update".to_owned());
+        }
         crate::netread::constructions_now().map(|rows| {
             let kept = (mode == crate::netread::Mode::Compare).then(|| rows.clone());
             (crate::netread::rows_summary(rows), kept)
@@ -2340,11 +2381,7 @@ unsafe extern "C-unwind" fn native_lanes(l: State) -> c_int {
     };
     let _timer = crate::perf::time(crate::perf::Piece::Lanes);
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let due = {
-            let batch = &shared().batch;
-            batch.lanes_wanted && batch.begun == batch.updates && batch.lanes.is_none()
-        };
-        if !due {
+        if !lanes_due() {
             return Err("no checkpoint is due in this update".to_owned());
         }
         let mut nodes = 0;
