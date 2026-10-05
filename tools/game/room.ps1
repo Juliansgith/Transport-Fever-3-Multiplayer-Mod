@@ -82,6 +82,12 @@ if (-not ((Test-Path $out) -and (Select-String -Path $out -Pattern "game started
   exit 1
 }
 $pids = @(Select-String -Path $out -Pattern "\(game pid (\d+)\)" | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+# The room-start message can precede the last launcher's PID message.
+$pidDeadline = (Get-Date).AddSeconds(180)
+while ($pids.Count -lt $Players -and -not $proc.HasExited -and (Get-Date) -lt $pidDeadline) {
+  Start-Sleep -Milliseconds 250
+  $pids = @(Select-String -Path $out -Pattern "\(game pid (\d+)\)" | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+}
 if ($pids.Count -ne $Players) { throw 'Rig did not report every game PID' }
 
 $load = 'local ns=app.SaveGameNamespace.getSavegame() for _,i in ipairs(app.findAllSavegames(ns)) do ' +

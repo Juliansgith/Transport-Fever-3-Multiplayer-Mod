@@ -356,8 +356,9 @@ This release still supports only the existing Windows Steam build 40408;
 moving data does not approve the Preview or add another supported platform.
 
 A static signature candidate for Steam Preview 40418 is in
-`profiles/tf3_build40418_steam_windows/hooks.toml`. All 145 targets match its
-private archive, but its directory deliberately has no `native.rs` and is not
+`profiles/tf3_build40418_steam_windows/hooks.toml`. Its original 145 targets matched
+the private archive. The additional optional `lua_touserdata` signature awaits
+an archive recheck; its directory deliberately has no `native.rs` and is not
 selected. The Release bundle and release archive remain active. The changed
 splice bytes, script review and remaining ABI work are recorded in
 [the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
@@ -3417,6 +3418,28 @@ type"), hence the street and line systems.
 
 #### What the lanes cost
 
+Build 40408 also has optional bulk readers, `tpf3mp_native.laneRows` and
+`junctionConfig`. The mod first copies a borrowed component with
+`api.type.BaseEdge.new(component)` or `BaseNodeConfig.new(component)`.
+Rust verifies the owned userdata's exact class and inline payload before
+reading its bounded vectors. Lane settings become the existing sorted lane
+text; junction settings become a plain Lua table for the existing canonical
+row builder. Unsupported userdata uses the Lua reader. Older profiles without
+`lua_touserdata` do not advertise these functions, avoiding needless copies.
+The layouts and live ownership check are recorded in
+`investigation/TF3_CHECKPOINT_SNAPSHOTS_2026-10-05.md`.
+
+Junction checks also reuse the complete street/track adjacency maps that
+enumerate their nodes. Each map is fetched once per checkpoint, instead of
+asking the engine for each node's street and track segments again. Capture and
+replay retain their live queries. Nothing is cached across checkpoints.
+
+These changes still run synchronously at the agreed simulation step. They
+retain the full network, crosswalk, lane and traffic-light checks and the
+existing checkpoint frequency; they do not introduce a rolling/background
+scan. A future background reader needs an immutable snapshot or complete
+change tracking so that worlds are compared at the same step.
+
 The read runs inside the game's step, on its main thread, so the whole
 game stands still while it runs, and the step after it catches up with
 several updates at once: players see a stutter, and vehicles jump, at every
@@ -3487,6 +3510,37 @@ reported during the measured interval. These are paired reader timings
 (`os.clock` on Windows), not an FPS benchmark or a normal checkpoint-step
 duration: benchmark steps run both readers. The games were quit normally
 and the staging copy restored without instrumentation afterwards.
+
+Measured native follow-up (same save, 2026-10-05): baseline `6af232e`
+versus the owned-snapshot readers and complete adjacency-map reuse. In each
+game, the first four pairs were warm-up; the next ten alternate execution
+order using a hook note shared across Lua states. Twenty retained pairs:
+
+| Reader cost | Same-run baseline median | Native follow-up median |
+|---|---:|---:|
+| Full checkpoint read | 809.5 ms | 653.5 ms |
+| Network lane | 718.5 ms | 543 ms |
+| Junction portion | 330.5 ms | 316.5 ms |
+
+Median paired saving is 155.5 ms (19.96%). All 28 pairs, including warm-up,
+had identical digests, zero failed lanes and zero native fallbacks. Each read
+used the native paths for roughly 5,850 edges and 5,050 configured nodes.
+After the paired phase, each game ran six checkpoints with only the candidate:
+12 reads had a 645.5 ms median; their whole checkpoint steps had a 713.5 ms
+median. Step traces are buffered: match the 20 checkpoint-marked frames to
+the 20 reads in order per game, not to adjacent log lines. The hitch remains
+significant. No room divergence was reported during this run.
+
+The PC ran two games at once; compare paired timings within this run, not its
+absolute numbers against the earlier 620 ms run. Builds and automated checks
+were finished before the retained observations. This measures checkpoint
+latency, not average FPS. Raw observations are in
+`investigation/checkpoint_native_ab_2026-10-05.csv`,
+`checkpoint_native_only_2026-10-05.csv` and
+`checkpoint_native_steps_2026-10-05.csv` in the same directory.
+Both games were quit normally and the staged mod restored. Earlier diagnostic
+runs (a sandbox-global failure and rejected borrowed userdata) are excluded;
+they established no valid speedup.
 
 The Windows rig's successful injection tests use a test-only DLL that
 signals the normal hook-ready event. A system DLL is still used to test

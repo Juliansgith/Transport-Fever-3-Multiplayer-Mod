@@ -688,6 +688,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let session = tpf3mp_bridge::Session::attach(link_name, &profile.name, Duration::from_secs(30))
         .map_err(|error| format!("the agent's link: {error}"))?;
     lua::install_api(api);
+    crate::network::install(base);
     let mut driver = crate::step::StepDriver::new(
         session,
         Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
@@ -919,6 +920,11 @@ unsafe fn lua_api(at: &dyn Fn(&str) -> Result<usize, String>) -> Result<lua::Lua
         toboolean: function!("lua_toboolean"),
         tonumberx: function!("lua_tonumberx"),
         tolstring: function!("lua_tolstring"),
+        // Optional on older external profiles; Lua keeps its existing reader.
+        touserdata: at("lua_touserdata").ok().map(|address| {
+            // SAFETY: signature/prologue resolution identifies this Lua API.
+            unsafe { std::mem::transmute::<usize, _>(address) }
+        }),
         next: function!("lua_next"),
         pushnil: function!("lua_pushnil"),
         pushnumber: function!("lua_pushnumber"),

@@ -83,8 +83,11 @@ proposal (laneConnections vector +0, 0x14 each; crosswalk phmap set
 +0x50, 0x28 each; trafficLightType +0x68; userModifiedTrafficLightStates
 +0x70).
 
-Lua's getComponent copies the component into its userdata
-(luabridge UserdataValue<BaseEdge> vtable 0x374f800); it is a snapshot.
+Correction after live inspection (2026-10-05): `getComponent` returns a
+borrowed `UserdataPtr` (vtable `0x36ee848`). `api.type.BaseEdge.new(component)`
+creates the owned `UserdataValue<BaseEdge>` snapshot (vtable `0x374f800`).
+The BaseNodeConfig copy constructor similarly creates an owned snapshot.
+See [the checkpoint snapshot investigation](TF3_CHECKPOINT_SNAPSHOTS_2026-10-05.md).
 
 ## Signatures (`tpfre q sig`)
 

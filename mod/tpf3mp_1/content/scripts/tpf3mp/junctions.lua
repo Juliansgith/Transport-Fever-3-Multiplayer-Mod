@@ -63,7 +63,12 @@ local function world(street, source, snapshot)
 	local function segments(id, kind)
 		local cache = snapshot and snapshot[kind]
 		if cache and cache[id] then return cache[id] end
-		local edges = list(api.engine.system.streetSystem["getNode" .. kind .. "Segments"](id))
+		local edges
+		if snapshot and snapshot.maps then
+			edges = list(snapshot.maps[kind][id])
+		else
+			edges = list(api.engine.system.streetSystem["getNode" .. kind .. "Segments"](id))
+		end
 		if cache then cache[id] = edges end
 		return edges
 	end
@@ -120,10 +125,10 @@ end
 -- the engine once: for reading every junction at a checkpoint, where the
 -- world cannot change between the reads and every node's connections name
 -- the same few edges again and again.
-local function remembered(source, baseEdges)
+local function remembered(source, baseEdges, maps)
 	-- Lifetime is one rows() call. The network lane can lend the components
 	-- it just read on this same simulation step; never retain across steps.
-	local w = world(nil, source, { edges = baseEdges or {}, Street = {}, Track = {} })
+	local w = world(nil, source, { edges = baseEdges or {}, Street = {}, Track = {}, maps = maps })
 	local position, edge, node = w.position, w.edge, w.node
 	local positions, edges, nodes = {}, {}, {}
 	function w.position(id)
@@ -497,7 +502,11 @@ end
 -- Canonical, portable rows for checkpoints. Phase indices are expressed as
 -- the turns/crosswalks they lock, so local entity/vector ordering is irrelevant.
 function junctions.rows(api, baseEdges)
-	local w, rows, seen, memo = remembered(api, baseEdges), {}, {}, {}
+	-- These complete maps already contain the adjacency needed below. Fetching
+	-- each node's segments again crosses the engine boundary thousands of times.
+	local maps = { Street = api.engine.system.streetSystem.getNode2StreetEdgeMap(),
+		Track = api.engine.system.streetSystem.getNode2TrackEdgeMap() }
+	local w, rows, seen, memo = remembered(api, baseEdges, maps), {}, {}, {}
 	-- Each edge's key, made once: remembered() gives an edge the same table
 	-- every time, and every junction at its ends names it again.
 	local keys = {}
@@ -507,11 +516,16 @@ function junctions.rows(api, baseEdges)
 		return k
 	end
 	for _, kind in ipairs({"Street", "Track"}) do
-		for node in pairs(api.engine.system.streetSystem["getNode2"..kind.."EdgeMap"]()) do
+		for node in pairs(maps[kind]) do
 			if not seen[node] then
 				seen[node] = true
 				local c = component(node,"BASE_NODE_CONFIG",api)
 				if c then
+					local native = tpf3mp_native
+					local copy = api.type.BaseNodeConfig and api.type.BaseNodeConfig.new
+					if native and type(native.junctionConfig) == "function" and type(copy) == "function" then
+						c = native.junctionConfig(copy(c)) or c
+					end
 					local v, lanes = captureConfig(c,w,api,memo), {}
 					for _, t in ipairs(v.connections) do lanes[#lanes+1] = key(t.incoming)..":"..t.lane_in..">"..key(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end
 					for _, e in ipairs(v.crosswalks) do lanes[#lanes+1] = "walk:"..key(e) end

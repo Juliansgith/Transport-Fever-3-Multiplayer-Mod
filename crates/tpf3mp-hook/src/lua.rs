@@ -215,6 +215,7 @@ pub struct LuaApi {
     pub toboolean: unsafe extern "C-unwind" fn(State, c_int) -> c_int,
     pub tonumberx: unsafe extern "C-unwind" fn(State, c_int, *mut c_int) -> f64,
     pub tolstring: unsafe extern "C-unwind" fn(State, c_int, *mut usize) -> *const c_char,
+    pub touserdata: Option<unsafe extern "C-unwind" fn(State, c_int) -> *mut c_void>,
     pub next: unsafe extern "C-unwind" fn(State, c_int) -> c_int,
     pub pushnil: unsafe extern "C-unwind" fn(State),
     pub pushnumber: unsafe extern "C-unwind" fn(State, f64),
@@ -794,6 +795,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"room", native_room),
                 (b"checkpoint", native_checkpoint),
                 (b"hash", native_hash),
+                (b"laneRows", native_lane_rows),
+                (b"junctionConfig", native_junction_config),
                 (b"seed", native_seed),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
@@ -822,6 +825,9 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"drawn", native_drawn),
                 (b"undraw", native_undraw),
             ] {
+                if api.touserdata.is_none() && matches!(name, b"laneRows" | b"junctionConfig") {
+                    continue;
+                }
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
                 (api.rawset)(l, table);
@@ -2031,6 +2037,60 @@ unsafe extern "C-unwind" fn native_hash(l: State) -> c_int {
     1
 }
 
+/// Only full userdata is eligible. Tables, light userdata and foreign classes
+/// use the Lua fallback; network additionally checks the exact owned vtable.
+unsafe fn component_userdata(api: &LuaApi, l: State) -> Option<usize> {
+    // SAFETY: called by Lua with its argument stack; conversion does not pop it.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != 7 {
+            return None;
+        }
+        let address = (api.touserdata?)(l, 1) as usize;
+        (address != 0).then_some(address)
+    }
+}
+
+unsafe extern "C-unwind" fn native_lane_rows(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua's callback stack holds its arguments and has room for results.
+    unsafe {
+        let result = component_userdata(api, l).and_then(|address| {
+            if (api.type_of)(l, 2) != TBOOLEAN {
+                return None;
+            }
+            crate::network::lanes(address, (api.toboolean)(l, 2) != 0).ok()
+        });
+        if let Some((rows, count)) = result {
+            push_str(api, l, rows.as_bytes());
+            (api.pushnumber)(l, count as f64);
+            return 2;
+        }
+        (api.pushnil)(l);
+    }
+    1
+}
+
+unsafe extern "C-unwind" fn native_junction_config(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua owns and retains the snapshot while decoding and pushing.
+    unsafe {
+        let top = (api.gettop)(l);
+        if let Some(config) =
+            component_userdata(api, l).and_then(|address| crate::network::junction(address).ok())
+            && push(api, l, &config, 0).is_ok()
+        {
+            return 1;
+        }
+        (api.settop)(l, top);
+        (api.pushnil)(l);
+    }
+    1
+}
+
 /// `checkpoint()`: whether the update running is the last of a batch that
 /// ends at a checkpoint step, and its lanes are not read yet.
 unsafe extern "C-unwind" fn native_checkpoint(l: State) -> c_int {
@@ -2732,6 +2792,7 @@ pub(crate) mod tests {
             toboolean,
             tonumberx,
             tolstring,
+            touserdata: Some(test_touserdata),
             next,
             pushnil,
             pushnumber,
@@ -2745,6 +2806,32 @@ pub(crate) mod tests {
             globals: Globals::Pseudo(ffi::LUA_GLOBALSINDEX),
         });
         api().unwrap()
+    }
+
+    unsafe extern "C-unwind" fn test_touserdata(l: State, index: c_int) -> *mut c_void {
+        unsafe { ffi::lua_touserdata(l.cast(), index) }
+    }
+
+    #[test]
+    fn native_snapshots_fall_back_for_non_component_arguments() {
+        let _serial = SERIAL.lock().unwrap();
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(
+            lua.run(
+                r#"
+            local n = tpf3mp_native
+            for _, value in ipairs({false, 42, 'text', {}, newproxy(true)}) do
+                assert(n.laneRows(value, false) == nil)
+                assert(n.junctionConfig(value) == nil)
+            end
+            assert(n.laneRows() == nil and n.junctionConfig() == nil)
+            return 'fallback'
+        "#
+            )
+            .unwrap(),
+            "fallback"
+        );
     }
 
     /// A Lua state with its libraries, closed when dropped.

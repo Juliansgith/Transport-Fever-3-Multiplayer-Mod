@@ -228,23 +228,32 @@ readers[lanes.NETWORK] = function(api, emit)
 					local reversed = a > b
 					if reversed then a, b = b, a end
 					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
-					local laneRows = {}
 					local l0 = clock()
-					-- Each read of a component's field asks the engine again:
-					-- the lane configs and each one's modes are read once.
-					local configs = edge.laneConfigs
-					net.laneConfigs = net.laneConfigs + #configs
-					for i = 1, #configs do
-						local l, modes = configs[i], {}
-						local transportModes = l.transportModes
-						for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
-						laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
-							l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+					local native = tpf3mp_native
+					local laneText, count
+					local copy = api.type.BaseEdge and api.type.BaseEdge.new
+					if native and type(native.laneRows) == "function" and type(copy) == "function" then
+						-- getComponent returns a borrowed reference. Copy once;
+						-- Rust reads the owned snapshot, including nested vectors.
+						laneText, count = native.laneRows(copy(edge), reversed)
 					end
-					table.sort(laneRows)
+					if laneText == nil then
+						local laneRows, configs = {}, edge.laneConfigs
+						count = #configs
+						for i = 1, count do
+							local l, modes = configs[i], {}
+							local transportModes = l.transportModes
+							for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
+							laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
+								l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+						end
+						table.sort(laneRows)
+						laneText = table.concat(laneRows,";")
+					end
+					net.laneConfigs = net.laneConfigs + count
 					local l1 = clock()
 					if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
-					row = row .. "|lanes:" .. table.concat(laneRows,";")
+					row = row .. "|lanes:" .. laneText
 					rows[#rows + 1] = row
 					if emit then
 						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)

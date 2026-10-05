@@ -1475,7 +1475,7 @@ fn checkpoint_reads_each_edge_and_node_adjacency_once_and_refreshes_next_time() 
     let game = junction_game(0);
     game.load(
         r#"
-        COUNTS = { edges = {}, adjacency = {}, configs = {} }
+        COUNTS = { edges = {}, adjacency = {}, configs = {}, maps = {} }
         local CT, get = api.type.ComponentType, api.engine.getComponent
         api.engine.getComponent = function(id, kind)
             local value = get(id, kind)
@@ -1494,6 +1494,12 @@ fn checkpoint_reads_each_edge_and_node_adjacency_once_and_refreshes_next_time() 
         end
         local system = api.engine.system.streetSystem
         for _, kind in ipairs({'Street', 'Track'}) do
+            local mapName = 'getNode2' .. kind .. 'EdgeMap'
+            local map = system[mapName]
+            system[mapName] = function()
+                COUNTS.maps[kind] = (COUNTS.maps[kind] or 0) + 1
+                return map()
+            end
             local name = 'getNode' .. kind .. 'Segments'
             local original = system[name]
             system[name] = function(id)
@@ -1518,7 +1524,8 @@ fn checkpoint_reads_each_edge_and_node_adjacency_once_and_refreshes_next_time() 
                 end
             end
             assert(COUNTS.edges[101] == ROUND and COUNTS.edges[104] == ROUND)
-            assert(COUNTS.adjacency.Street1 == ROUND and COUNTS.adjacency.Track1 == ROUND)
+            assert(next(COUNTS.adjacency) == nil, 'adjacency must come from the complete maps')
+            assert(COUNTS.maps.Street == ROUND and COUNTS.maps.Track == ROUND)
             assert(COUNTS.configs[101] == ROUND)
         "#,
         )
@@ -1547,6 +1554,45 @@ fn missing_diagnostic_clock_does_not_break_checkpoints() {
     let before = read_lanes(&game);
     game.load("os = nil").exec().unwrap();
     assert_eq!(before, read_lanes(&game));
+}
+
+#[test]
+fn native_checkpoint_snapshots_and_fallback_preserve_hashes_and_refresh() {
+    let game = junction_game(0);
+    let before = read_lanes(&game);
+    game.load(r#"
+        rawget = nil -- the game script sandbox omits this standard global
+        api.type.BaseEdge = { new = function(edge) return edge end }
+        api.type.BaseNodeConfig = { new = function(node) return node end }
+        local function rows(edge, reversed)
+            local out = {}
+            for _, l in ipairs(edge.laneConfigs) do
+                local modes = {}
+                for m = 0,15 do modes[m+1] = l.transportModes[m] == true and '1' or '0' end
+                out[#out+1] = string.format('%.3f/%.3f/%.3f/%.3f/%s/%s',l.speed,l.width,l.height,
+                    l.offset * (reversed and -1 or 1),tostring(l.forward ~= reversed),table.concat(modes))
+            end
+            table.sort(out)
+            return table.concat(out,';'), #edge.laneConfigs
+        end
+        SNAPSHOTS = { lanes = 0, junctions = 0 }
+        tpf3mp_native.laneRows = function(edge,reversed)
+            SNAPSHOTS.lanes = SNAPSHOTS.lanes+1
+            return rows(edge,reversed)
+        end
+        tpf3mp_native.junctionConfig = function(c)
+            SNAPSHOTS.junctions = SNAPSHOTS.junctions+1
+            return c
+        end
+    "#).exec().unwrap();
+    assert_eq!(before, read_lanes(&game));
+    game.load("assert(SNAPSHOTS.lanes > 0 and SNAPSHOTS.junctions > 0); CONFIGS[1].trafficLightPreference = 2")
+        .exec().unwrap();
+    let changed = read_lanes(&game);
+    assert_ne!(before[0], changed[0]);
+    game.load("tpf3mp_native.laneRows = function() return nil end; tpf3mp_native.junctionConfig = function() return nil end")
+        .exec().unwrap();
+    assert_eq!(changed, read_lanes(&game));
 }
 
 #[test]

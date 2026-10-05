@@ -357,6 +357,15 @@ offset = 0
 prologue = "40 53 48 83 EC 30 49 8B D8"
 required = true
 
+# lua_touserdata (0x2fbef50): index2addr, tag 2/7, full userdata +0x28.
+# Address only; optional checkpoint acceleration, never detoured.
+[[target]]
+name = "lua_touserdata"
+signature = "48 83 EC 28 E8 ?? ?? ?? ?? 8B 48 08 83 E1 0F 83 F9 02 74 18 83 F9 07"
+offset = 0
+prologue = "48 83 EC 28"
+required = false
+
 # lua_type (0x2fbef90): LUA_TNONE for luaO_nilobject, else the tag's low nibble.
 [[target]]
 name = "lua_type"
