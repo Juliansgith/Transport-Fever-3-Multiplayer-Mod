@@ -17,9 +17,11 @@
 # each row as it shapes the game's own, keeping about the square's area.
 #
 # Memory gate: a row is offered only if its expected generation peak fits the
-# machine's memory. That law (12.25 MB per km² plus 4 GB) is PROVISIONAL
-# pending the Stage 0 measurements, and lives in one place,
-# crates/tpf3mp-bigmap/src/memory_gate.rs, which says how to recalibrate it.
+# machine's memory. That law (10.25 MB per km² plus 5,800 MB) is MEASURED by
+# Stage 0 (2026-10-05, build 40408, Windows, temperate, one run each of
+# Gigantomaniac 1:1 and 1:5), extrapolated past stock sizes, and lives in one
+# place, crates/tpf3mp-bigmap/src/memory_gate.rs, which says what is not yet
+# measured and how to recalibrate it.
 
 [sizes]
 add_rows = true

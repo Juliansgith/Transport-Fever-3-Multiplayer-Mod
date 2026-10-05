@@ -26,7 +26,8 @@ pub fn lua(world: &WorldModel, config: &Config) -> String {
          -- and the shape each ratio gives them, in tiles (x, y); false where the\n\
          -- settings cannot build that shape. peakMb: generation's expected peak\n\
          -- memory for the row's largest shape, in MB, the game's own included;\n\
-         -- PROVISIONAL until Stage 0 measures it (the law is in\n\
+         -- measured by Stage 0 at stock Gigantomaniac, one temperate run per\n\
+         -- shape, and extrapolated to these sizes (the law is in\n\
          -- crates/tpf3mp-bigmap/src/memory_gate.rs).\n\
          return {\n",
     );

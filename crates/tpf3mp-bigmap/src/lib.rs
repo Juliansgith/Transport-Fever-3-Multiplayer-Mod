@@ -17,11 +17,12 @@
 //!
 //! - [`world`]: the engine facts a size depends on, each with its evidence:
 //!   TPF2 build 35924's from Big Maps' measurements, TF3 build 40408's from
-//!   its executable, its scripts and one log
-//!   (investigation/TF3_BIGMAPS_PORT_2026-10-01.md).
-//! - [`memory_gate`]: the PROVISIONAL constants of the New Game page's
-//!   memory gate (MB per km² and the game's own use), the one place to
-//!   recalibrate them once Stage 0 has measured them.
+//!   its executable and scripts
+//!   (investigation/TF3_BIGMAPS_PORT_2026-10-01.md) and its memory law
+//!   from Stage 0's runs.
+//! - [`memory_gate`]: the constants of the New Game page's memory gate (MB
+//!   per km² and the game's own use), measured by Stage 0 on one climate,
+//!   and the one place to recalibrate them.
 //! - [`stock`]: TF3's own sizes and the walls stock TF3 stays inside.
 //! - [`ladder`]: the added map sizes and the shapes the ratio dropdown gives
 //!   each one.

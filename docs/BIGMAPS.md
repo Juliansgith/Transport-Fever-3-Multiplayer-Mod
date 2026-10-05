@@ -337,9 +337,10 @@ walls nearly byte for byte (the octree root's two tiers, the street
 raster's 32-bit multiply, the placement score's int32 squares), but its
 size limit is in Lua, `getNumTiles` in the New Game page, and its stock
 sizes already reach Gigantomaniac, 112 by 112 tiles or 50 by 250 at 1:5.
-The first wall a bigger map meets is memory: one log shows the terrain
-toolkit at 49 maps and 10,074 MB for a 56 by 224 map, about 12 MB per km²,
-three to five times TPF2's.
+The first wall a bigger map meets is memory: Stage 0 measured the terrain
+toolkit at 41 maps and 8,428 MB for temperate Gigantomaniac 1:1, 10.25 MB
+per km², and an earlier subarctic log at 49 maps and 10,074 MB, 12.25 MB
+per km²: three to five times TPF2's.
 
 Whether the project ships big maps is the owner's to decide (PLAN.md, "Big
 maps"). Stages 0 and 1 are built so far; neither changes a stock-sized
@@ -374,12 +375,53 @@ Record each run here:
 | climate | size | maps | toolkit MB | MB/km² | pipeline | peak private | after entry | after load | save | evidence |
 |---|---|---|---|---|---|---|---|---|---|---|
 | subarctic | 56 x 224 (derived from the law) | 49 | 10,074 | 12.25 | 19.4 s | | | | | one log, 2026-09-30 |
+| temperate | 112 x 112 (1:1), 822.084 km² | 41 | 8,428 | 10.25 | 11.5 s | 14,210 MB | ~13.4 GB | | 3,276 ms | Stage 0, 2026-10-05, one run |
+| temperate | 50 x 250 (1:5), 819.2 km² | 38 | 7,785 | 9.50 | 10.7 s | not clean | ~13.1 GB | | 6,078 ms | Stage 0, 2026-10-05, one run |
 
-Until this table is filled, `WorldModel::TF3_BUILD_40408` charges 12.25 MB
-per km² (that one log) and assumes TPF2's 4 GB for the game's own use.
-Both are PROVISIONAL and kept in one place,
+**The 2026-10-05 runs.** Stock TF3 build 40408 on Windows 11, on a PC
+with 94 GB of memory (the game logs `ramMB=95858`), no Big Maps code: the
+game's own New Game page at Gigantomaniac, temperate for both shapes, 1:5
+first, then 1:1. The sources are the game log (`stdout.txt`) and a logger
+that read the game's private bytes and working set every 5 seconds and
+copied the log's generation, terrain and save lines with the time. Raw
+numbers:
+
+| | 1:1 | 1:5 |
+|---|---|---|
+| area (the log's `area=`) | 822.084 km² | 819.2 km² |
+| terrain toolkit, first pass | 11 maps, 2,253 MB (pipeline 1.9 s) | 11 maps, 2,261 MB (pipeline 2.4 s) |
+| terrain toolkit, full | 41 maps, 8,428 MB (pipeline 11.5 s) | 38 maps, 7,785 MB (pipeline 10.7 s) |
+| MB per km² | 10.25 | 9.50 |
+| peak private bytes during generation | 14,210 MB at 19:24:40, the sample after the first pass and before the full one's line | not clean: the previous world, about 16 GB, was still resident as generation began; the highest sample was 13,371 MB |
+| private bytes in the game, before the save | 12.3 to 13.5 GB, settling at ~13.4 GB | 13.1 to 13.3 GB, ~13.1 GB |
+| private bytes after the save | 14.7 GB a minute on | 13.1 to 13.2 GB until the next run |
+| `Init game took` | 157.3 s | 134.4 s |
+| the game's `estimatedMb` | 18,916 | 18,654 |
+| assets | 1,251,140 in 105,948 groups | 1,338,328 in 110,276 groups |
+| save time | 3,276 ms | 6,078 ms |
+| the log's `Savegame info: size` | 164,177,856 | 159,391,925 |
+
+What they say:
+
+- The peak private bytes, 14,210 MB, exceed the toolkit's 8,428 MB by
+  5,782 MB, so the toolkit's maps add to everything else the game holds
+  at that point: the memory law `area x MB/km² + game` holds, with the
+  game's own share 5.8 GB, not TPF2's 4 GB.
+- The gate charges the worse MB per km², 10.25, and 5,800 MB for the game
+  (5,782 rounded up). Gigantomaniac 1:1 then expects 14,226 MB, against
+  14,210 measured.
+- The game's `estimatedMb`, about 18.7 to 18.9 GB, is well above what
+  either run used.
+- Not measured yet: other climates (the subarctic line above is 12.25 MB
+  per km², more than the gate charges), Linux and Proton, sizes bigger
+  than stock (the added rows are extrapolated from Gigantomaniac), the
+  private bytes after loading the save, and the save's size on disk (the
+  log's `Savegame info: size` is recorded above, but not checked against
+  the file). One climate, one run per shape, on Windows.
+
+`WorldModel::TF3_BUILD_40408` charges these, MEASURED, from one place,
 `crates/tpf3mp-bigmap/src/memory_gate.rs`, which lists the steps to
-recalibrate the memory gate from this table.
+recalibrate the memory gate from this table as more runs come in.
 
 ### Stage 1: sizes up to 176 tiles, no native patch
 
@@ -388,10 +430,30 @@ the game's own:
 
 | row | square | km² | each ratio, 1:1 to 1:5, in tiles | expected peak |
 |---|---|---|---|---|
-| Big 32.8 km | 128 x 128 | 1,074 | 128², 90 x 180, 74 x 222, 64 x 250, 58 x 250 | 17 GB |
-| Big 36.9 km | 144 x 144 | 1,359 | 144², 102 x 204, 84 x 250, 72 x 250, 64 x 250 | 21 GB |
-| Big 41.0 km | 160 x 160 | 1,678 | 160², 114 x 228, 92 x 250, 80 x 250, 72 x 250 | 25 GB |
-| Big 45.1 km | 176 x 176 | 2,030 | 176², 124 x 248, 102 x 250, 88 x 250, 78 x 250 | 29 GB |
+| Big 32.8 km | 128 x 128 | 1,074 | 128², 90 x 180, 74 x 222, 64 x 250, 58 x 250 | 16,836 MB |
+| Big 36.9 km | 144 x 144 | 1,359 | 144², 102 x 204, 84 x 250, 72 x 250, 64 x 250 | 19,907 MB |
+| Big 41.0 km | 160 x 160 | 1,678 | 160², 114 x 228, 92 x 250, 80 x 250, 72 x 250 | 23,260 MB |
+| Big 45.1 km | 176 x 176 | 2,030 | 176², 124 x 248, 102 x 250, 88 x 250, 78 x 250 | 26,608 MB |
+
+The expected peak is the ladder's `peakMb`: Stage 0's law, 10.25 MB per
+km² plus 5,800 MB, for the row's largest shape (1:3 for 32.8 and 36.9 km,
+1:2 for 41.0 km, the square for 45.1 km). Before Stage 0 the gate charged
+12.25 MB per km² plus 4,096 MB: 17,285, 20,956, 24,963 and 28,965 MB.
+
+Which rows each machine is offered, the peak held against its physical
+memory with no margin added (the hook reports the memory Windows sees,
+often a little under the round figure):
+
+| memory | rows offered | why |
+|---|---|---|
+| 8 GB | none | the smallest row needs 16,836 MB; stock Gigantomaniac alone peaked at 14,210 MB |
+| 16 GB | none | 16,836 MB is past 16,384 MB |
+| 32 GB | all four | the largest needs 26,608 MB |
+| 64 GB | all four | |
+
+The same tiers as before Stage 0: 16 GB was offered none and 32 GB all
+four then too. The new law moves the cut between them; 20 GB now gets
+Big 32.8 and 36.9 km (one row before), and 24 GB three (two before).
 
 Each shape stays inside every wall stock TF3 has, so nothing native is
 patched and the world is safe to load in any game, with or without big
@@ -423,7 +485,7 @@ Its logic is plain Lua in the mod (`scripts/tpf3mp_bigmap/menu.lua`):
   short side first as the game's own shapes are; the preview and Start
   Game use it as they use the game's sizes.
 - A row is offered only if its expected generation peak (the ladder's
-  `peakMb`: 12.25 MB per km² plus 4 GB, PROVISIONAL, from
+  `peakMb`: 10.25 MB per km² plus 5,800 MB, measured by Stage 0, from
   `memory_gate.rs`) fits the machine's physical
   memory, which the hook reports. A line under the dropdown says which
   rows are hidden and why. With the memory unknown, no row is offered.

@@ -242,7 +242,7 @@ constant:**
 Long thin maps reach the octree wall first: 1:5 at 52×260 already crosses
 it.
 
-### 1.5 Memory: the binding constraint (MEASURED, one log)
+### 1.5 Memory: the binding constraint (MEASURED: one log, then Stage 0)
 
 The game's own log
 (`userdata/…/3493540/local/crash_dump/d9ded1c3-…_1008.txt`, 2026-09-30)
@@ -269,6 +269,33 @@ The climate was subarctic. TF2's law is `MB = (64nx+1)(64ny+1) × N × 4 /
   - about 211 GB at 512²
 - **Unknowns.** Whether all 49 maps are alive at once in TF3 is
   NOT MEASURED. Neither is the runtime footprint after entry.
+
+**Stage 0 (MEASURED, 2026-10-05).** Stock build 40408 on Windows, 94 GB
+of memory, no Big Maps code, the game's own New Game at Gigantomaniac,
+temperate, one run each of 1:1 and 1:5. Sources: the game log and a
+5-second private-bytes logger (docs/BIGMAPS.md, "Stage 0", has the raw
+numbers):
+
+| shape | area | toolkit | MB/km² | peak private in generation | in game | `estimatedMb` | save time |
+|---|---|---|---|---|---|---|---|
+| 1:1, 112 x 112 | 822.084 km² | 41 maps, 8,428 MB | 10.25 | 14,210 MB | ~13.4 GB | 18,916 | 3,276 ms |
+| 1:5, 50 x 250 | 819.2 km² | 38 maps, 7,785 MB | 9.50 | not clean (the previous world was still resident) | ~13.1 GB | 18,654 | 6,078 ms |
+
+Both runs also logged a first pass, "Terrain toolkit used 11 maps and
+~2260 MB".
+
+- The 1:1 peak is 5,782 MB above the toolkit's 8,428 MB, so the toolkit's
+  maps do add to the rest of the game, as on TPF2; the game's own share
+  is 5.8 GB, not TPF2's 4 GB.
+- The memory gate (`crates/tpf3mp-bigmap/src/memory_gate.rs`) now charges
+  the worse measured rate, **10.25 MB per km²**, plus **5,800 MB**,
+  both MEASURED. At that law 176² (2,030 km²) expects about 26.6 GB.
+- Temperate used fewer maps than the subarctic log above (41 against
+  49), so the climate matters: the 12.25 MB/km² subarctic figure is more
+  than the gate charges.
+- Not measured yet: other climates, Linux/Proton, sizes bigger than
+  stock, the private bytes after loading the save, and the save's size on
+  disk.
 
 **What this means:**
 

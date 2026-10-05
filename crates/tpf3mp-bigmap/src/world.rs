@@ -5,8 +5,9 @@
 //! seen live, or assumed, carried over without evidence for this build.
 //! TPF2 build 35924's are silver2127's Big Maps measurements. TF3 build
 //! 40408's are read from its executable and scripts
-//! (investigation/TF3_BIGMAPS_PORT_2026-10-01.md) and one game log; stage 0
-//! of that plan measures them in the game (docs/BIGMAPS.md, "Stage 0").
+//! (investigation/TF3_BIGMAPS_PORT_2026-10-01.md), except the memory law,
+//! which stage 0 of that plan measured in the game (docs/BIGMAPS.md,
+//! "Stage 0").
 
 /// How a number is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,8 +113,8 @@ impl WorldModel {
     };
 
     /// Transport Fever 3 build 40408, from its executable and scripts
-    /// (investigation/TF3_BIGMAPS_PORT_2026-10-01.md) and one game log.
-    /// Nothing here is measured in a running game yet: stage 0 does that.
+    /// (investigation/TF3_BIGMAPS_PORT_2026-10-01.md). Only the memory law
+    /// is measured in a running game, by stage 0 (crate::memory_gate).
     pub const TF3_BUILD_40408: Self = Self {
         name: "Transport Fever 3 build 40408",
         tile_m: Fact::derived(
@@ -140,14 +141,14 @@ impl WorldModel {
             112,
             "getNumTiles: Gigantomaniac 1:1 is 112 x 112; its longest axis is 250 (1:5)",
         ),
-        // PROVISIONAL: the memory gate's law lives in crate::memory_gate.
-        generation_mb_per_km2: Fact::derived(
+        // The memory gate's law lives in crate::memory_gate.
+        generation_mb_per_km2: Fact::measured(
             crate::memory_gate::GENERATION_MB_PER_KM2,
-            "\"Terrain toolkit used 49 maps and 10074 MB\" for a 56 x 224 subarctic map: 49 maps of 4 B per 16 m² sample",
+            "stage 0, 2026-10-05, Windows, temperate: \"Terrain toolkit used 41 maps and 8428 MB\" at Gigantomaniac 1:1 (822 km²), the worse of one 1:1 and one 1:5 run",
         ),
-        game_base_mb: Fact::assumed(
+        game_base_mb: Fact::measured(
             crate::memory_gate::GAME_BASE_MB,
-            "TPF2's measured own use; TF3's is not measured",
+            "stage 0, 2026-10-05, Windows, temperate: 14,210 MB peak private bytes during Gigantomaniac 1:1 generation less its 8,428 MB toolkit",
         ),
     };
 
@@ -230,11 +231,11 @@ mod tests {
 
     #[test]
     fn tf3s_memory_law_reproduces_the_logged_line() {
-        // (64*56+1)*(64*224+1) samples, 49 maps of 4 bytes: 10,074 MB.
+        // (64*112+1)² samples, 41 maps of 4 bytes: 8,428 MB.
         const TF3: WorldModel = WorldModel::TF3_BUILD_40408;
-        let mb = TF3.area_km2(56, 224) * TF3.generation_mb_per_km2.value;
-        assert!((mb - 10_074.0).abs() < 25.0, "{mb}");
-        assert_eq!(TF3.game_base_mb.evidence, Evidence::Assumed);
+        let mb = TF3.area_km2(112, 112) * TF3.generation_mb_per_km2.value;
+        assert!((mb - 8_428.0).abs() < 5.0, "{mb}");
+        assert_eq!(TF3.game_base_mb.evidence, Evidence::Measured);
     }
 
     #[test]

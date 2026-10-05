@@ -283,17 +283,17 @@ fn offered(menu: &Table, ladder: &Table, ram_mb: Option<u32>) -> (Vec<String>, V
 #[test]
 fn a_size_this_machine_cannot_generate_is_hidden_with_the_reason() {
     let (_lua, menu, ladder) = menu();
-    // 32 GB: every row (the largest needs 28,965 MB).
+    // 32 GB: every row (the largest needs 26,608 MB).
     let (rows, notes) = offered(&menu, &ladder, Some(32 * 1024));
     assert_eq!(rows.len(), 4);
     assert!(notes.is_empty(), "{notes:?}");
-    // 20,000 MB: only the first (17,285 MB; the second needs 20,956).
-    let (rows, notes) = offered(&menu, &ladder, Some(20_000));
+    // 18,000 MB: only the first (16,836 MB; the second needs 19,907).
+    let (rows, notes) = offered(&menu, &ladder, Some(18_000));
     assert_eq!(rows, ["Big 32.8 km"]);
     assert_eq!(notes.len(), 3);
     assert_eq!(
         notes[0],
-        "Big 36.9 km is hidden: generating it needs about 21 GB of memory, and this computer has 19 GB."
+        "Big 36.9 km is hidden: generating it needs about 20 GB of memory, and this computer has 17 GB."
     );
     // 16 GB: none.
     let (rows, notes) = offered(&menu, &ladder, Some(16 * 1024));
