@@ -492,12 +492,39 @@ Its logic is plain Lua in the mod (`scripts/tpf3mp_bigmap/menu.lua`):
 - If the mod's scripts do not load, the page offers the game's sizes only;
   if the copy does not load, the hook serves the game's file.
 
+**Town and industry density.** TF3 counts towns and industries as a
+density per km² (base `mod.script.tl`: towns 0.2 per km² times the Town
+Density slider's `{0.2, 0.3, 0.4, 0.65, 1.0}`, industries 0.8 per km²
+times the Industry Density slider's `{2/3, 5/6, 1, 6/5, 3/2}`, both from
+`difficulty_util.getScale`), so a big map at the stock sliders has 1.3 to
+2.5 times Gigantomaniac's towns and industries. The page's Town Density
+and Industry Density sliders get one more level per ladder row after the
+game's five, "Gigantomaniac count at <size>": Medium times the row's
+`densityScale`, `(112 / tiles)²`, which gives that row's square the counts
+stock Gigantomaniac 1:1 has at Medium. The industry slider sets the
+runtime target (`targetIndustryDensity`) with the start density, as the
+game's own slider does, so the game does not found industries back up to
+the stock count. The level is stored where the game stores its own
+(`modParams[""]`); the hook wraps `difficulty_util` as it loads
+(`menu.extendDifficulty`), so the preview the world is generated from and
+the base mod's run script, which sets the industry target on every load,
+both read it. Every row of the ladder has a level, offered on the machine
+or not, so a level is the same factor everywhere.
+
+**A save made at an added density level needs the mod in every game that
+loads it.** Without it the hook leaves `getScale` the game's own, which
+answers a level past five with 1.0 (Medium), so that game's runtime
+industry target differs from the host's: in a room that is a desync
+waiting for the first industry founding. Not yet enforced; until it is, a
+room on such a world needs `tpf3mp_bigmap_1` in every game.
+
 **Installing.** The mod is not part of the TPF3-MP package. Copy
 `mod/tpf3mp_bigmap_1` next to `tpf3mp_1` in the game's mods folder, and
 start the game from the launcher, so that the hook serves the page. A game
 without the mod, or started by Steam, has the stock sizes. Only the
 machine that creates a world needs it: a room's other games load the
-world from its save, and stage 1's worlds need nothing from them.
+world from its save, and stage 1's worlds need nothing from them, unless
+the world was made at an added density level (above).
 
 **Still to test in the game**, by a person:
 

@@ -57,6 +57,8 @@ local record BigmapMenu
 	indexOf : function(value : number, pick : integer, stockCount : integer, stockNumbers : {number}, rowCount : integer) : integer
 	choose : function(index : integer, stockCount : integer, stockNumbers : {number}) : number, integer
 	gameTiles : function(rows : {BigmapRow}, pick : integer, ratioIndex : integer) : any, any
+	densityValues : function(stockValues : {string}, ladder : {BigmapRow}) : {string}
+	STOCK_DENSITY_LEVELS : integer
 end
 
 local bigmapMenuLoaded, bigmapMenuValue = pcall(ug_require, "tpf3mp_bigmap_1::/scripts/tpf3mp_bigmap/menu.lua")
@@ -175,6 +177,57 @@ local function bigmapAddMapSizeSettingsEntry(settings : {NewGameReactUtil.Settin
 	end
 end
 
+-- TPF3-MP end
+-- TPF3-MP begin: big maps' density levels
+
+-- A density slider (towns, or industries with their runtime target) with
+-- big maps' levels after the game's own: "Gigantomaniac count at <size>"
+-- (scripts/tpf3mp_bigmap/menu.lua). The level is stored where the game's
+-- own slider stores it; the hook's difficulty_util wrap gives it its
+-- factor. Without the mod's scripts, or a slider of another length, the
+-- game's own slider.
+local function bigmapAddDensitySettingsEntry(settings : {NewGameReactUtil.SettingsEntry}, activeModsParamsState : ReactStateT<{string : {string : integer}}>, key : string, filterTags : {string}, otherKeys : {string})
+	local scriptParam = script_param_util.getScriptParam(key, filterTags)
+	if bigmap == nil or bigmapLadder == nil or #bigmapLadder == 0 or scriptParam == nil or #scriptParam.values ~= bigmap.STOCK_DENSITY_LEVELS then
+		new_game_react_util.searchBuildAndAddScriptParamComp(settings, activeModsParamsState, key, false, filterTags, otherKeys)
+		return
+	end
+	local paramForUi : ScriptParamUtil.ParamForUi = {
+		uiType = scriptParam.uiType,
+		defaultIndex = scriptParam.defaultIndex,
+		name = scriptParam.name,
+		values = bigmap.densityValues(scriptParam.values, bigmapLadder),
+		numbers = nil,
+		tooltips = nil,
+		allowCoalesce = true,
+	}
+	local element = script_param_util.buildScriptParamCompSimple({
+		scriptParam = paramForUi,
+		currentValue = activeModsParamsState:old()[""][key],
+		onValueChange = function(value : number)
+			local level = math.floor(value)
+			local copy = table_util.copy(activeModsParamsState:old())
+			copy[""][key] = level
+			for __, other in ipairs(otherKeys or {}) do
+				copy[""][other] = level
+			end
+			if not table_util.deepEquals(copy, activeModsParamsState:old()) then
+				activeModsParamsState:set(copy)
+			end
+		end,
+		toggleButtonsFlowLayout = false,
+		vertical = false,
+		addSpacer = false,
+	})
+	table.insert(settings, {
+		title = scriptParam.name,
+		description = scriptParam.tooltip .. "
+
+Big maps: the levels after the game's own give a big map the count Gigantomaniac has at Medium; pick the one that names your size.",
+		hintIdKey = "hintIdKey" .. scriptParam.name,
+		element = element,
+	})
+end
 -- TPF3-MP end
 -- zero-based getter -.-
 local function getNumTiles(size : integer, format : integer) : Vec2i
@@ -322,21 +375,29 @@ local newGameNewMapStrategy : SettingsStrategy = {
 
 		local settingsCiv : {NewGameReactUtil.SettingsEntry} = {}
 		new_game_react_util.addNamesSettingsEntry(settingsCiv, configDictState)
-		new_game_react_util.searchBuildAndAddScriptParamComp(
-			settingsCiv,
-			activeModsParamsState,
-			"locations.towns.frequency",
-			false, -- addSpacer
-			filterTags
-		)
-		new_game_react_util.searchBuildAndAddScriptParamComp(
-			settingsCiv,
-			activeModsParamsState,
-			"locations.industry.initialIndustryDensity",
-			false, -- addSpacer
-			filterTags,
-			{"locations.industry.targetIndustryDensity"}
-		)
+		-- TPF3-MP begin: the town density slider with big maps' levels
+		bigmapAddDensitySettingsEntry(settingsCiv, activeModsParamsState, "locations.towns.frequency", filterTags, nil)
+		-- TPF3-MP was:
+--		new_game_react_util.searchBuildAndAddScriptParamComp(
+--			settingsCiv,
+--			activeModsParamsState,
+--			"locations.towns.frequency",
+--			false, -- addSpacer
+--			filterTags
+--		)
+		-- TPF3-MP end
+		-- TPF3-MP begin: the industry density slider with big maps' levels
+		bigmapAddDensitySettingsEntry(settingsCiv, activeModsParamsState, "locations.industry.initialIndustryDensity", filterTags, {"locations.industry.targetIndustryDensity"})
+		-- TPF3-MP was:
+--		new_game_react_util.searchBuildAndAddScriptParamComp(
+--			settingsCiv,
+--			activeModsParamsState,
+--			"locations.industry.initialIndustryDensity",
+--			false, -- addSpacer
+--			filterTags,
+--			{"locations.industry.targetIndustryDensity"}
+--		)
+		-- TPF3-MP end
 		new_game_react_util.addStartYearSettingsEntry(settingsCiv, mapState, mapParamsState)
 
 		local settingsEnv : {NewGameReactUtil.SettingsEntry} = {}

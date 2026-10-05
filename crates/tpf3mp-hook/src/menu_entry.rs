@@ -59,6 +59,15 @@ use crate::lobby;
 ///   (big maps' size rows, docs/BIGMAPS.md "Stage 1"). That mod is not
 ///   shipped with TPF3-MP; without it the page is the game's own.
 ///
+/// It also wraps the game's `base/difficulty_util.tl` as it loads, so that
+/// `getScale` answers big maps' added town and industry density levels
+/// (`menu.extendDifficulty` in `tpf3mp_bigmap_1`'s `menu.lua`): the New
+/// Game page's preview, which the new world is generated from, and the base
+/// mod's run script, which sets the runtime industry target on every load,
+/// both read the level through it. Every game of a room runs this hook and
+/// the mod's ladder, so a level is the same factor in each; without the mod
+/// the module stays the game's own.
+///
 /// A path already in one of these mods is never redirected, so the wrap
 /// cannot loop; a copy that does not load falls back to the game's file;
 /// and the original resolved path stays the module's cache key, so the rest
@@ -92,6 +101,25 @@ ru.loadfile = function(path, ...)
 				pcall(debugPrint, "[tpf3mp] " .. copy[3] .. ": " .. copy[2] .. " is not loadable (" .. tostring(ok and err or chunk) .. "); the page stays the game's")
 				break
 			end
+		end
+		if path:find("difficulty_util%.tl$") then
+			local chunk, err = orig(path, ...)
+			if not chunk then return chunk, err end
+			return function(...)
+				local du = chunk(...)
+				local ok, why = pcall(function()
+					local menuChunk = orig("tpf3mp_bigmap_1::/scripts/tpf3mp_bigmap/menu.lua")
+					local ladderChunk = orig("tpf3mp_bigmap_1::/scripts/tpf3mp_bigmap/ladder.lua")
+					if not menuChunk or not ladderChunk then error("the mod tpf3mp_bigmap_1 is not here", 0) end
+					local menu, ladder = menuChunk(), ladderChunk()
+					local note = function(text) pcall(debugPrint, "[tpf3mp] big maps: density " .. text) end
+					if menu.extendDifficulty(du, ladder, note) then
+						note("levels " .. (menu.STOCK_DENSITY_LEVELS + 1) .. " to " .. (menu.STOCK_DENSITY_LEVELS + #ladder) .. " are live")
+					end
+				end)
+				if not ok then pcall(debugPrint, "[tpf3mp] big maps: the density levels are the game's own (" .. tostring(why) .. ")") end
+				return du
+			end, err
 		end
 	end
 	return orig(path, ...)
@@ -916,6 +944,99 @@ mod tests {
             .eval()
             .unwrap();
         assert!(ram.is_nil(), "no memory known, none claimed");
+    }
+
+    /// The game's difficulty_util as loaded through the patched loader,
+    /// with the big-map mod's real scripts, or without the mod.
+    fn difficulty_through_patch(with_mod: bool) -> mlua::Lua {
+        let lua = mlua::Lua::new();
+        lua.globals().set("with_mod", with_mod).unwrap();
+        lua.load("printed = {}").exec().unwrap();
+        lua.globals()
+            .set(
+                "menu_src",
+                include_str!("../../../mod/tpf3mp_bigmap_1/content/scripts/tpf3mp_bigmap/menu.lua"),
+            )
+            .unwrap();
+        lua.globals()
+            .set(
+                "ladder_src",
+                include_str!(
+                    "../../../mod/tpf3mp_bigmap_1/content/scripts/tpf3mp_bigmap/ladder.lua"
+                ),
+            )
+            .unwrap();
+        lua.load(
+            r#"
+            debugPrint = function(text) printed[#printed + 1] = text end
+            resolveutil = { loadfile = function(path)
+                if path == "tpf3mp_bigmap_1::/scripts/tpf3mp_bigmap/menu.lua" then
+                    if not with_mod then return nil, "no such file" end
+                    return (loadstring or load)(menu_src)
+                elseif path == "tpf3mp_bigmap_1::/scripts/tpf3mp_bigmap/ladder.lua" then
+                    if not with_mod then return nil, "no such file" end
+                    return (loadstring or load)(ladder_src)
+                end
+                -- The game's module: towns' and industries' five levels.
+                return function()
+                    local scales = {
+                        ["locations.towns.frequency"] = { 0.2, 0.3, 0.4, 0.65, 1.0 },
+                        ["locations.industry.targetIndustryDensity"] = { 2/3, 5/6, 1.0, 6/5, 3/2 },
+                        ["advancedOptions.cargoIncome"] = { 0.5, 0.75, 1.0, 1.25, 1.5 },
+                    }
+                    return { getScale = function(param, level)
+                        local s = scales[param]
+                        if s == nil or level < 1 or level > #s then return 1.0 end
+                        return s[level]
+                    end }
+                end
+            end }
+        "#,
+        )
+        .exec()
+        .unwrap();
+        lua.load(patch(None)).exec().unwrap();
+        lua.load("du = resolveutil.loadfile('::/base/difficulty_util.tl')()")
+            .exec()
+            .unwrap();
+        lua
+    }
+
+    fn scale(lua: &mlua::Lua, param: &str, level: u32) -> f64 {
+        lua.load(format!("return du.getScale({param:?}, {level})"))
+            .eval()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_density_levels_past_the_games_own_are_big_maps() {
+        let lua = difficulty_through_patch(true);
+        // The game's own levels are its own.
+        assert!((scale(&lua, "locations.towns.frequency", 3) - 0.4).abs() < 1e-12);
+        assert!((scale(&lua, "locations.towns.frequency", 5) - 1.0).abs() < 1e-12);
+        // Level 6 is the first ladder row (128 tiles): Medium times
+        // (112 / 128)²; level 9 the last (176 tiles).
+        let town = scale(&lua, "locations.towns.frequency", 6);
+        let printed: Vec<String> = lua
+            .load("return printed")
+            .eval::<mlua::Table>()
+            .unwrap()
+            .sequence_values()
+            .map(Result::unwrap)
+            .collect();
+        assert!((town - 0.4 * 0.7656).abs() < 1e-12, "{town} {printed:?}");
+        let industry = scale(&lua, "locations.industry.targetIndustryDensity", 9);
+        assert!((industry - 0.405).abs() < 1e-12, "{industry}");
+        // Not a density, or past the ladder: the game answers.
+        assert!((scale(&lua, "advancedOptions.cargoIncome", 6) - 1.0).abs() < 1e-12);
+        assert!((scale(&lua, "locations.towns.frequency", 10) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn without_the_big_map_mod_the_density_levels_are_the_games() {
+        let lua = difficulty_through_patch(false);
+        assert!((scale(&lua, "locations.towns.frequency", 3) - 0.4).abs() < 1e-12);
+        assert!((scale(&lua, "locations.towns.frequency", 6) - 1.0).abs() < 1e-12);
     }
 
     #[test]

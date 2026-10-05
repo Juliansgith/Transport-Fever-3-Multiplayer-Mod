@@ -5,10 +5,12 @@
 -- memory for the row's largest shape, in MB, the game's own included;
 -- measured by Stage 0 at stock Gigantomaniac, one temperate run per
 -- shape, and extrapolated to these sizes (the law is in
--- crates/tpf3mp-bigmap/src/memory_gate.rs).
+-- crates/tpf3mp-bigmap/src/memory_gate.rs). densityScale: the scale on
+-- the stock Medium town and industry density that gives the row's
+-- square stock Gigantomaniac 1:1's counts.
 return {
-	{ label = "Big 32.8 km", tiles = 128, peakMb = 16836, shapes = { { 128, 128 }, { 180, 90 }, { 222, 74 }, { 250, 64 }, { 250, 58 } } },
-	{ label = "Big 36.9 km", tiles = 144, peakMb = 19907, shapes = { { 144, 144 }, { 204, 102 }, { 250, 84 }, { 250, 72 }, { 250, 64 } } },
-	{ label = "Big 41.0 km", tiles = 160, peakMb = 23260, shapes = { { 160, 160 }, { 228, 114 }, { 250, 92 }, { 250, 80 }, { 250, 72 } } },
-	{ label = "Big 45.1 km", tiles = 176, peakMb = 26608, shapes = { { 176, 176 }, { 248, 124 }, { 250, 102 }, { 250, 88 }, { 250, 78 } } },
+	{ label = "Big 32.8 km", tiles = 128, peakMb = 16836, densityScale = 0.7656, shapes = { { 128, 128 }, { 180, 90 }, { 222, 74 }, { 250, 64 }, { 250, 58 } } },
+	{ label = "Big 36.9 km", tiles = 144, peakMb = 19907, densityScale = 0.6049, shapes = { { 144, 144 }, { 204, 102 }, { 250, 84 }, { 250, 72 }, { 250, 64 } } },
+	{ label = "Big 41.0 km", tiles = 160, peakMb = 23260, densityScale = 0.4900, shapes = { { 160, 160 }, { 228, 114 }, { 250, 92 }, { 250, 80 }, { 250, 72 } } },
+	{ label = "Big 45.1 km", tiles = 176, peakMb = 26608, densityScale = 0.4050, shapes = { { 176, 176 }, { 248, 124 }, { 250, 102 }, { 250, 88 }, { 250, 78 } } },
 }

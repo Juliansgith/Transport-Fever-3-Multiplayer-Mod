@@ -10,7 +10,12 @@
 //! cannot build is `false`, never left out, so a ratio's position always
 //! names its shape. `peakMb` is generation's expected peak for the row's
 //! largest buildable shape, the game's own use included, which the page
-//! holds against the machine's memory.
+//! holds against the machine's memory. `densityScale` is the scale on the
+//! stock Medium town and industry density that gives the row's square the
+//! counts stock Gigantomaniac 1:1 gets at Medium: counts are a density per
+//! km², so it is the area ratio, `(stock max tiles / row tiles)²`. The page
+//! offers one density level per row in the ladder (every row, offered or
+//! not, so a level means the same on every machine).
 
 use crate::ceilings::check;
 use crate::config::Config;
@@ -28,7 +33,9 @@ pub fn lua(world: &WorldModel, config: &Config) -> String {
          -- memory for the row's largest shape, in MB, the game's own included;\n\
          -- measured by Stage 0 at stock Gigantomaniac, one temperate run per\n\
          -- shape, and extrapolated to these sizes (the law is in\n\
-         -- crates/tpf3mp-bigmap/src/memory_gate.rs).\n\
+         -- crates/tpf3mp-bigmap/src/memory_gate.rs). densityScale: the scale on\n\
+         -- the stock Medium town and industry density that gives the row's\n\
+         -- square stock Gigantomaniac 1:1's counts.\n\
          return {\n",
     );
     for row in config.rows(world) {
@@ -56,8 +63,10 @@ pub fn lua(world: &WorldModel, config: &Config) -> String {
                 None => "false".to_owned(),
             })
             .collect();
+        let stock_tiles = f64::from(world.stock_max_tiles.value);
+        let density_scale = (stock_tiles / f64::from(row.tiles)).powi(2);
         out.push_str(&format!(
-            "\t{{ label = {:?}, tiles = {}, peakMb = {peak_mb}, shapes = {{ {} }} }},\n",
+            "\t{{ label = {:?}, tiles = {}, peakMb = {peak_mb}, densityScale = {density_scale:.4}, shapes = {{ {} }} }},\n",
             row.label,
             row.tiles,
             cells.join(", ")
@@ -111,5 +120,19 @@ mod tests {
             .find(|line| line.contains("\"32 x 32 km\""))
             .unwrap();
         assert!(row.contains("peakMb = 6788,"), "{row}");
+    }
+
+    #[test]
+    fn the_density_scale_keeps_the_largest_stock_maps_counts() {
+        // TF3: Gigantomaniac 1:1 is 112 x 112 tiles; a 176-tile square is
+        // (112 / 176)² = 0.405 of the density for the same counts.
+        let (big, _) = Config::from_toml(
+            "[sizes]
+add_rows = true
+rows = [{ label = \"Big 45.1 km\", tiles = 176 }]",
+        )
+        .unwrap();
+        let lua = lua(&WorldModel::TF3_BUILD_40408, &big);
+        assert!(lua.contains("densityScale = 0.4050,"), "{lua}");
     }
 }

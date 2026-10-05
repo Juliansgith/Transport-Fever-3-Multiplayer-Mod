@@ -129,6 +129,8 @@ local record BigmapMenu
 	indexOf : function(value : number, pick : integer, stockCount : integer, stockNumbers : {number}, rowCount : integer) : integer
 	choose : function(index : integer, stockCount : integer, stockNumbers : {number}) : number, integer
 	gameTiles : function(rows : {BigmapRow}, pick : integer, ratioIndex : integer) : any, any
+	densityValues : function(stockValues : {string}, ladder : {BigmapRow}) : {string}
+	STOCK_DENSITY_LEVELS : integer
 end
 
 local bigmapMenuLoaded, bigmapMenuValue = pcall(ug_require, "tpf3mp_bigmap_1::/scripts/tpf3mp_bigmap/menu.lua")
@@ -249,6 +251,76 @@ end
 
 "#;
 
+const DENSITY: &str = r#"
+-- A density slider (towns, or industries with their runtime target) with
+-- big maps' levels after the game's own: "Gigantomaniac count at <size>"
+-- (scripts/tpf3mp_bigmap/menu.lua). The level is stored where the game's
+-- own slider stores it; the hook's difficulty_util wrap gives it its
+-- factor. Without the mod's scripts, or a slider of another length, the
+-- game's own slider.
+local function bigmapAddDensitySettingsEntry(settings : {NewGameReactUtil.SettingsEntry}, activeModsParamsState : ReactStateT<{string : {string : integer}}>, key : string, filterTags : {string}, otherKeys : {string})
+	local scriptParam = script_param_util.getScriptParam(key, filterTags)
+	if bigmap == nil or bigmapLadder == nil or #bigmapLadder == 0 or scriptParam == nil or #scriptParam.values ~= bigmap.STOCK_DENSITY_LEVELS then
+		new_game_react_util.searchBuildAndAddScriptParamComp(settings, activeModsParamsState, key, false, filterTags, otherKeys)
+		return
+	end
+	local paramForUi : ScriptParamUtil.ParamForUi = {
+		uiType = scriptParam.uiType,
+		defaultIndex = scriptParam.defaultIndex,
+		name = scriptParam.name,
+		values = bigmap.densityValues(scriptParam.values, bigmapLadder),
+		numbers = nil,
+		tooltips = nil,
+		allowCoalesce = true,
+	}
+	local element = script_param_util.buildScriptParamCompSimple({
+		scriptParam = paramForUi,
+		currentValue = activeModsParamsState:old()[""][key],
+		onValueChange = function(value : number)
+			local level = math.floor(value)
+			local copy = table_util.copy(activeModsParamsState:old())
+			copy[""][key] = level
+			for __, other in ipairs(otherKeys or {}) do
+				copy[""][other] = level
+			end
+			if not table_util.deepEquals(copy, activeModsParamsState:old()) then
+				activeModsParamsState:set(copy)
+			end
+		end,
+		toggleButtonsFlowLayout = false,
+		vertical = false,
+		addSpacer = false,
+	})
+	table.insert(settings, {
+		title = scriptParam.name,
+		description = scriptParam.tooltip .. "
+
+Big maps: the levels after the game's own give a big map the count Gigantomaniac has at Medium; pick the one that names your size.",
+		hintIdKey = "hintIdKey" .. scriptParam.name,
+		element = element,
+	})
+end
+"#;
+
+const TOWN_DENSITY: &str = r#"		new_game_react_util.searchBuildAndAddScriptParamComp(
+			settingsCiv,
+			activeModsParamsState,
+			"locations.towns.frequency",
+			false, -- addSpacer
+			filterTags
+		)
+"#;
+
+const INDUSTRY_DENSITY: &str = r#"		new_game_react_util.searchBuildAndAddScriptParamComp(
+			settingsCiv,
+			activeModsParamsState,
+			"locations.industry.initialIndustryDensity",
+			false, -- addSpacer
+			filterTags,
+			{"locations.industry.targetIndustryDensity"}
+		)
+"#;
+
 const NUM_TILES: &str = r#"	local bigmapSize = bigmapNumTiles(format)
 	if bigmapSize ~= nil then
 		return bigmapSize
@@ -263,7 +335,7 @@ const RENDER: &str = r#"	bigmapRefresh()
 	end
 "#;
 
-const EDITS: [Edit; 5] = [
+const EDITS: [Edit; 8] = [
     Edit {
         why: "the game's files by absolute path",
         anchor: REQUIRES,
@@ -291,6 +363,30 @@ const EDITS: [Edit; 5] = [
         place: Place::Replace,
         lines: "\t\tbigmapAddMapSizeSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n",
         count: 2,
+    },
+    Edit {
+        why: "big maps' density levels",
+        anchor: "-- zero-based getter -.-
+",
+        place: Place::Before,
+        lines: DENSITY,
+        count: 1,
+    },
+    Edit {
+        why: "the town density slider with big maps' levels",
+        anchor: TOWN_DENSITY,
+        place: Place::Replace,
+        lines: "		bigmapAddDensitySettingsEntry(settingsCiv, activeModsParamsState, \"locations.towns.frequency\", filterTags, nil)
+",
+        count: 1,
+    },
+    Edit {
+        why: "the industry density slider with big maps' levels",
+        anchor: INDUSTRY_DENSITY,
+        place: Place::Replace,
+        lines: "		bigmapAddDensitySettingsEntry(settingsCiv, activeModsParamsState, \"locations.industry.initialIndustryDensity\", filterTags, {\"locations.industry.targetIndustryDensity\"})
+",
+        count: 1,
     },
     Edit {
         why: "the added row picked is page state, so a pick redraws the page and its preview",
@@ -439,7 +535,7 @@ mod tests {
     /// A stand-in for the game's file: every anchor, in order.
     fn game() -> String {
         format!(
-            "{REQUIRES}\n-- zero-based getter -.-\nlocal function getNumTiles(size : integer, format : integer) : Vec2i\n\
+            "{REQUIRES}{TOWN_DENSITY}{INDUSTRY_DENSITY}\n-- zero-based getter -.-\nlocal function getNumTiles(size : integer, format : integer) : Vec2i\n\
              \tformat = script_param_util.clampScriptParamValueIndex(format, mapFormatParam) - 1\n\
              \treturn api.type.Vec2i.new(16, 16)\nend\n\
              \t\tnew_game_react_util.addMapSizeSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n\
@@ -455,8 +551,11 @@ mod tests {
         let copy = build(&game).unwrap();
         assert_ne!(copy, game);
         assert_eq!(original(&copy).unwrap(), game);
-        assert_eq!(copy.matches(BEGIN).count(), 6, "five edits, one twice");
+        assert_eq!(copy.matches(BEGIN).count(), 9, "eight edits, one twice");
         assert!(copy.contains("\t\tbigmapAddMapSizeSettingsEntry("));
+        assert!(copy.contains(
+            "\t\tbigmapAddDensitySettingsEntry(settingsCiv, activeModsParamsState, \"locations.towns.frequency\""
+        ));
         assert!(copy.contains("--\t\tnew_game_react_util.addMapSizeSettingsEntry("));
     }
 

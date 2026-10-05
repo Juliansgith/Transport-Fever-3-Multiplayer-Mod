@@ -430,3 +430,63 @@ fn a_shape_the_settings_cannot_build_is_refused_not_guessed() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn the_density_sliders_get_one_level_per_ladder_row() {
+    let (lua, menu, ladder) = menu();
+    let stock = lua
+        .create_sequence_from(["Sparse", "Scattered", "Medium", "Dense", "Packed"])
+        .unwrap();
+    let values: Table = menu
+        .get::<Function>("densityValues")
+        .unwrap()
+        .call((stock, ladder.clone()))
+        .unwrap();
+    let values: Vec<String> = values.sequence_values().map(Result::unwrap).collect();
+    assert_eq!(
+        values,
+        [
+            "Sparse",
+            "Scattered",
+            "Medium",
+            "Dense",
+            "Packed",
+            "Gigantomaniac count at 32.8 km",
+            "Gigantomaniac count at 36.9 km",
+            "Gigantomaniac count at 41.0 km",
+            "Gigantomaniac count at 45.1 km",
+        ]
+    );
+    // Each level gives its row's square Gigantomaniac 1:1's area times the
+    // Medium density: the counts stay Gigantomaniac's.
+    let medium = lua
+        .create_function(|_, (_param, level): (String, i64)| Ok(if level == 3 { 0.4 } else { 1.0 }))
+        .unwrap();
+    let scale = menu.get::<Function>("densityScale").unwrap();
+    for (level, tiles) in [(6, 128.0), (7, 144.0), (8, 160.0), (9, 176.0)] {
+        let factor: f64 = scale
+            .call((
+                ladder.clone(),
+                medium.clone(),
+                "locations.towns.frequency",
+                level,
+            ))
+            .unwrap();
+        let towns_per_gigantomaniac = 0.2 * 0.4 * 112.0 * 112.0;
+        let towns = 0.2 * factor * tiles * tiles;
+        assert!(
+            (towns / towns_per_gigantomaniac - 1.0).abs() < 1e-3,
+            "level {level}: {towns} towns-units, Gigantomaniac {towns_per_gigantomaniac}"
+        );
+    }
+    // The game's own levels, and anything not a density, stay the game's.
+    for (param, level) in [
+        ("locations.towns.frequency", 5),
+        ("advancedOptions.cargoIncome", 6),
+    ] {
+        let answer: Value = scale
+            .call((ladder.clone(), medium.clone(), param, level))
+            .unwrap();
+        assert!(answer.is_nil(), "{param} {level}");
+    }
+}
