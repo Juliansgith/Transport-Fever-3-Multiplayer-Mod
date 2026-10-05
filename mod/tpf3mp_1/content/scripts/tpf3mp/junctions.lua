@@ -501,11 +501,14 @@ end
 
 -- Canonical, portable rows for checkpoints. Phase indices are expressed as
 -- the turns/crosswalks they lock, so local entity/vector ordering is irrelevant.
-function junctions.rows(api, baseEdges)
+function junctions.rows(api, baseEdges, selectedNodes)
 	-- These complete maps already contain the adjacency needed below. Fetching
 	-- each node's segments again crosses the engine boundary thousands of times.
-	local maps = { Street = api.engine.system.streetSystem.getNode2StreetEdgeMap(),
-		Track = api.engine.system.streetSystem.getNode2TrackEdgeMap() }
+	local maps
+	if not selectedNodes then
+		maps = { Street = api.engine.system.streetSystem.getNode2StreetEdgeMap(),
+			Track = api.engine.system.streetSystem.getNode2TrackEdgeMap() }
+	end
 	local w, rows, seen, memo = remembered(api, baseEdges, maps), {}, {}, {}
 	-- Each edge's key, made once: remembered() gives an edge the same table
 	-- every time, and every junction at its ends names it again.
@@ -515,8 +518,8 @@ function junctions.rows(api, baseEdges)
 		if k == nil then k = edgeKey(e) keys[e] = k end
 		return k
 	end
-	for _, kind in ipairs({"Street", "Track"}) do
-		for node in pairs(maps[kind]) do
+	for _, kind in ipairs(selectedNodes and {"Selected"} or {"Street", "Track"}) do
+		for node in pairs(selectedNodes or maps[kind]) do
 			if not seen[node] then
 				seen[node] = true
 				local c = component(node,"BASE_NODE_CONFIG",api)

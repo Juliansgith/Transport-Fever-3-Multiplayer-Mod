@@ -530,7 +530,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          dump = nil, dumped = {} }
 tpf3mp_native = {
     copy = function(text) HOOK.copied = text return true end,
-    version = 13,
+    version = 14,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
         if value == nil then return HOOK.notes[key] end
@@ -572,7 +572,8 @@ tpf3mp_native = {
     end,
     world = function() HOOK.worlds = HOOK.worlds + 1 end,
     room = function() return HOOK.room end,
-    checkpoint = function() return HOOK.checkpoint end,
+    checkpoint = function() return HOOK.checkpoint, HOOK.scanStep end,
+    scanned = function(ok, why) HOOK.scanResult = {ok=ok,why=why} return ok end,
     seed = function() return HOOK.seed end,
     lanes = function(lanes)
         if not HOOK.checkpoint then return false, 'no checkpoint is due in this update' end
@@ -884,7 +885,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 13; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 14; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -977,7 +978,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 13, command = print, log = print })
+             why({ version = 14, command = print, log = print })
              return out",
         )
         .eval()
@@ -1180,10 +1181,10 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 13 }
+             local native = { version = 14 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
-                                  'status', 'chat', 'say', 'takeReplay', 'replayed' }) do
+                                  'status', 'chat', 'say', 'takeReplay', 'replayed', 'scanned' }) do
                  native[n] = function() end
              end
              native.room = function() error('gone') end
@@ -1557,6 +1558,45 @@ fn missing_diagnostic_clock_does_not_break_checkpoints() {
 }
 
 #[test]
+fn spatial_network_covers_full_rows_without_global_maps_or_entity_id_dependence() {
+    let mut replicas = Vec::new();
+    for offset in [0, 5000] {
+        let game = junction_game(offset);
+        let baseline = read_lanes(&game)[0].1.clone();
+        let actual: String = game
+            .load(
+                r#"
+            local lanes = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')
+            api.engine.system.octreeSystem = {
+                findIntersectingEntities = function(box, visit)
+                    for e in pairs(EDGES) do visit(e) visit(e) end
+                end,
+            }
+            local street = api.engine.system.streetSystem
+            street.getNode2SegmentMap = function() error('a spatial read enumerated the world') end
+            street.getNode2StreetEdgeMap = street.getNode2SegmentMap
+            street.getNode2TrackEdgeMap = street.getNode2SegmentMap
+            return lanes.spatial(api, {})[0]
+        "#,
+            )
+            .eval()
+            .unwrap();
+        assert_ne!(actual, "err");
+        assert_eq!(
+            baseline, actual,
+            "same coverage, duplicate query results deduplicated"
+        );
+        let edited: String = game
+            .load("CONFIGS[1+OFFSET].doubleSlipSwitch=true; return ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua').spatial(api,{})[0]")
+            .eval()
+            .unwrap();
+        assert_ne!(actual, edited, "spatial reads see fresh junction edits");
+        replicas.push(actual);
+    }
+    assert_eq!(replicas[0], replicas[1]);
+}
+
+#[test]
 fn native_checkpoint_snapshots_and_fallback_preserve_hashes_and_refresh() {
     let game = junction_game(0);
     let before = read_lanes(&game);
@@ -1801,6 +1841,181 @@ fn read_lanes(lua: &Lua) -> Vec<(u16, String)> {
         .collect();
     out.sort();
     out
+}
+
+const FAKE_SPATIAL: &str = r#"
+api.type.Vec3f = { new = function(x,y,z) return {x=x,y=y,z=z} end }
+api.type.Box3 = { new = function(a,b) return {min=a,max=b} end }
+api.engine.terrain = { getBoundingBox = function()
+    return {min={x=0,y=0},max={x=1024,y=1024}}
+end }
+WORLD[1][101].node0, WORLD[1][101].node1 = 11,12
+WORLD[1][102].node0, WORLD[1][102].node1 = 12,13
+api.engine.system.octreeSystem = { findIntersectingEntities = function(box, visit)
+    for kind, entries in pairs(WORLD) do
+        if kind == 1 or kind == 2 then
+            for e,c in pairs(entries) do
+                local a,b
+                if kind == 1 then a,b=c.position0,c.position1
+                else a={x=c.transf[13],y=c.transf[14]} b=a end
+                if math.max(a.x,b.x) >= box.min.x and math.min(a.x,b.x) <= box.max.x
+                    and math.max(a.y,b.y) >= box.min.y and math.min(a.y,b.y) <= box.max.y then
+                    visit(e)
+                end
+            end
+        end
+    end
+end }
+ROLL = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')
+ROLL_STEP = function(step, checkpoint)
+    local out
+    SCAN, out = ROLL.rolling(api, SCAN, step, checkpoint)
+    return out
+end
+"#;
+
+fn rolling_game() -> Lua {
+    let (lua, _) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    lua.load(FAKE_SPATIAL).exec().unwrap();
+    lua
+}
+
+#[test]
+fn rolling_checks_resume_from_saved_history_and_refuse_gaps_and_read_failures() {
+    let a = rolling_game();
+    let b = rolling_game();
+    a.load("for step=1,7 do ROLL_STEP(step,false) end")
+        .exec()
+        .unwrap();
+    let saved: mlua::Value = a.globals().get("SCAN").unwrap();
+    b.globals()
+        .set("SCAN", lua_value(&b, &common::tree(&saved)))
+        .unwrap();
+    let read = |lua: &Lua| -> Vec<String> {
+        lua.load(
+            "local r=ROLL_STEP(8,true) local out={} for n=0,6 do out[#out+1]=r[n] end return out",
+        )
+        .eval()
+        .unwrap()
+    };
+    assert_eq!(
+        read(&a),
+        read(&b),
+        "a fresh Lua state resumes a mid-window save"
+    );
+    assert!(
+        b.load("ROLL_STEP(10,false)").exec().is_err(),
+        "skipped update"
+    );
+    assert!(
+        b.load("ROLL_STEP(8,false)").exec().is_err(),
+        "repeated update"
+    );
+    assert!(
+        b.load("SCAN=nil ROLL_STEP(9,false)").exec().is_err(),
+        "missing saved history"
+    );
+    b.load("ROLL_STEP(1,false)").exec().unwrap();
+    assert!(
+        b.load("api.engine.system.octreeSystem=nil ROLL_STEP(2,false)")
+            .exec()
+            .is_err()
+    );
+}
+
+#[test]
+fn rolling_checks_detect_builds_deletions_geometry_and_dynamic_changes() {
+    for change in [
+        "WORLD[2][201].fileName='changed.con'",
+        "WORLD[2][201]=nil",
+        "WORLD[2][203]={fileName='new.con',transf={1,0,0,0,0,1,0,0,0,0,1,0,610,0,0,1}}",
+        "WORLD[1][101].position1.x=123",
+        "WORLD[9][401].dyn.pathPos.pos=14",
+        "WORLD[6][25].balance=123",
+    ] {
+        let a = rolling_game();
+        let b = rolling_game();
+        b.load(change).exec().unwrap();
+        let read = |lua: &Lua| -> Vec<String> {
+            lua.load("for s=1,15 do ROLL_STEP(s,false) end local r=ROLL_STEP(16,true) local out={} for n=0,6 do out[#out+1]=r[n] end return out").eval().unwrap()
+        };
+        assert_ne!(read(&a), read(&b), "{change}");
+    }
+}
+
+#[test]
+fn rolling_checks_split_dense_areas_before_serializing_and_resume_the_split_queue() {
+    let a = rolling_game();
+    let b = rolling_game();
+    for lua in [&a, &b] {
+        lua.load(
+            r#"
+            WORLD[1]={} WORLD[2]={}
+            for n=0,99 do
+                WORLD[2][1000+n]={fileName='house.con',transf={1,0,0,0,0,1,0,0,0,0,1,0,
+                    20+(n%10)*100,20+math.floor(n/10)*100,0,1}}
+            end
+            local get=api.engine.getComponent
+            ROWS=0
+            api.engine.getComponent=function(e,kind)
+                local c=get(e,kind)
+                if kind==2 and c then
+                    return setmetatable({}, {__index=function(_,key)
+                        if key=='fileName' then ROWS=ROWS+1 end
+                        return c[key]
+                    end})
+                end
+                return c
+            end
+        "#,
+        )
+        .exec()
+        .unwrap();
+    }
+    a.load("ROLL_STEP(1,false) assert(ROWS==0 and #SCAN.pending==4)")
+        .exec()
+        .unwrap();
+    let saved: mlua::Value = a.globals().get("SCAN").unwrap();
+    b.globals()
+        .set("SCAN", lua_value(&b, &common::tree(&saved)))
+        .unwrap();
+    let sweep = |lua: &Lua| -> String {
+        lua.load(
+            r#"
+            local step=2
+            while SCAN.sweeps==0 do
+                ROWS=0 ROLL_STEP(step,false)
+                assert(ROWS<=32, 'too much canonicalization in one update')
+                assert(step<30, 'the sweep did not complete')
+                step=step+1
+            end
+            return ROLL_STEP(step,true)[1]
+        "#,
+        )
+        .eval()
+        .unwrap()
+    };
+    assert_eq!(sweep(&a), sweep(&b));
+}
+
+#[test]
+fn the_game_script_runs_rolling_checks_between_checkpoints_and_saves_their_history() {
+    let lua = rolling_game();
+    lua.load(
+        r#"
+        HOOK.scanStep=1 UPDATE({},STATE,0.2)
+        assert(HOOK.scanResult.ok, HOOK.scanResult.why)
+        assert(HOOK.lanes==nil and STATE:get().worldCheck.step==1)
+        HOOK.scanStep=2 HOOK.checkpoint=true UPDATE({},STATE,0.2)
+        assert(HOOK.scanResult.ok, HOOK.scanResult.why)
+        assert(HOOK.lanes[0]:find('rolling-v1:1-2:',1,true)==1)
+        HOOK.scanStep=4 UPDATE({},STATE,0.2)
+        assert(not HOOK.scanResult.ok and HOOK.scanResult.why:find('skipped',1,true))
+    "#,
+    )
+    .exec()
+    .unwrap();
 }
 
 #[test]

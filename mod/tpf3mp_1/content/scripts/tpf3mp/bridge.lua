@@ -5,7 +5,7 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 13,                 -- bridge.VERSION; anything else is refused
+--     version = 14,                 -- bridge.VERSION; anything else is refused
 --     command = function(action, password), -- the player acted: an action
 --                                   -- table, for the room to order, and a
 --                                   -- company's password for joining or
@@ -25,8 +25,8 @@
 --     saved   = function(name, ok, why), -- the GUI's answer to a save
 --     world   = function(),         -- a world's GUI started
 --     room    = function(),         -- whether the room's game runs -> boolean
---     checkpoint = function(),      -- in a game script's postUpdate: whether
---                                   -- to read the world's lanes now
+--     checkpoint = function(),      -- report due, absolute simulation step
+--     scanned = function(ok, why, ms), -- rolling read completed; failure holds
 --     lanes   = function(t),        -- those lanes, { [lane] = text }
 --                                   -- -> true | false, why
 --     clicks  = function(),         -- in the GUI: the player's builds queued
@@ -142,7 +142,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 13
+bridge.VERSION = 14
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -158,7 +158,7 @@ function bridge.attach(native)
 	end
 	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room",
 			"checkpoint", "lanes", "clicks", "replaying", "applied", "results", "status", "chat",
-			"say", "takeReplay", "replayed" }) do
+			"say", "takeReplay", "replayed", "scanned" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -310,11 +310,15 @@ function Link:seed()
 	return nil
 end
 
--- Whether this update is the last of a batch that ends at a checkpoint:
--- the world's lanes are read now, after it.
+-- Whether this update reports a checkpoint, and the absolute simulation step
+-- whose rolling sample must be read. No step is returned outside room updates.
 function Link:checkpoint()
-	local ok, due = pcall(self.native.checkpoint)
-	return ok and due == true
+	local ok, due, step = pcall(self.native.checkpoint)
+	return ok and due == true, ok and step or nil
+end
+
+function Link:scanned(ok, why, ms)
+	return self.native.scanned(ok, why, ms)
 end
 
 -- Hands the lanes read at a checkpoint to the hook. Returns true, or nil

@@ -461,7 +461,7 @@ function data()
 				for _, event in ipairs(EVENTS) do state:subscribeToEvent(event) end
 			end
 			local actions, origins, seals = l:take()
-			local checkpoint = l:checkpoint()
+			local checkpoint, scanStep = l:checkpoint()
 			-- The registry begins at the room's first update, the same in
 			-- every game (tpf3mp/registry.lua), or at the first update since
 			-- the registry gained a kind.
@@ -488,10 +488,10 @@ function data()
 			local watch = l:edgewatch()
 			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies
 				and not loanInit and not loanRefresh
-				and not watch then
+				and not watch and not scanStep then
 				return nil
 			end
-			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint,
+			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint, scanStep = scanStep,
 				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
 				subsidies = subsidies and day or nil, loanInit = loanInit, loanRefresh = loanRefresh, watch = watch }
 		end,
@@ -648,9 +648,32 @@ function data()
 					state:set(saved)
 				end
 			end
+			local rollingRead
+			if work.scanStep then
+				local t0 = lanes.clock()
+				local saved = state:get()
+				if type(saved) ~= "table" then saved = {} end
+				local ok, scan, read, report = pcall(lanes.rolling, api, saved.worldCheck, work.scanStep, work.checkpoint)
+				if not ok then
+					l:log("the rolling world check failed: " .. tostring(scan))
+					l:scanned(false, tostring(scan))
+					return
+				end
+				saved.worldCheck = scan
+				state:set(saved)
+				rollingRead = read
+				local t1 = lanes.clock()
+				l:scanned(true, nil, t0 and t1 and (t1 - t0) * 1000 or nil)
+				if report then l:log(report) end
+			end
 			if work.checkpoint then
-				local read, failed = lanes.read(api)
-				l:log(lanes.costLine())
+				local read, failed = rollingRead, {}
+				if not work.scanStep then
+					-- Stand-in engines without a running native step retain the
+					-- full reader; real room updates always supply scanStep.
+					read, failed = lanes.read(api)
+					l:log(lanes.costLine())
+				end
 				if #failed > 0 and not told then
 					told = true
 					l:log("lanes read as err: " .. table.concat(failed, "; "))

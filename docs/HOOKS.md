@@ -3384,10 +3384,10 @@ mod's game script, which sees the world between updates:
   at (`RoomGate::next_step`) and so whether it ends at one, and tells the
   hook's Lua side (`lua::begin_batch`), which counts the batch's updates by
   their `take()`.
-- In that last update, `tpf3mp_native.checkpoint()` answers true; the game
-  script's `update` returns that, and its `postUpdate` reads the lanes
-  (`mod/tpf3mp_1/content/scripts/tpf3mp/lanes.lua`) and hands them over
-  (`tpf3mp_native.lanes`).
+- `tpf3mp_native.checkpoint()` returns whether a report is due and the
+  absolute simulation step (Lua bridge version 14). Every `postUpdate`
+  reads a small part of the world at that step. The last update hands over
+  the accumulated observations through `tpf3mp_native.lanes`.
 - After the batch the driver takes them (`lua::end_batch`), makes a
   SHA-256 digest of each lane's text (`step::lane_digests`), and the
   session reports them for the checkpoint step. A batch that ended at a
@@ -3411,10 +3411,57 @@ matter:
 
 Nothing is read by an entity id that two games agreeing on the world could
 number differently, except where the save carries it (towns, the player).
-A lane the engine cannot read is `err` on every game alike and says why in
-`hook.log`, once per Lua state. On build 40408 `getEntitiesWithComponent`
+On build 40408 `getEntitiesWithComponent`
 refuses `BASE_EDGE`, `LINE` and `PLAYER` ("Cannot loop over this component
 type"), hence the street and line systems.
+
+#### Rolling observations
+
+Normal checkpoints no longer scan the whole network and construction list
+in one update. `lanes.rolling` visits 1 km squares of the map through the
+engine's octree, collecting IDs in its callback and reading components only
+after it returns. Intersecting edges include their endpoint junctions,
+including endpoints outside the square. Border squares extend outside the
+terrain bounds. All component references and per-read caches die in the
+same update.
+
+A square with more than 32 edges and constructions subdivides into four
+before canonicalization. The split's static counts are observations too:
+different inventories cannot silently select different read schedules.
+Subdivision stops at 32 m cells, where all remaining objects are read;
+extreme concentrations can therefore still exceed the usual per-update
+cost. A wall-clock deadline never changes which objects or steps are read.
+
+One of lanes 2–6 is also read each update, rotating every five steps (one
+second at the room's normal five steps/s). Lanes 0–1 cover a full spatial
+sweep, whose duration depends on map area and density. This trades immediate
+whole-map comparison for bounded-area observations: a persistent static
+change is detected when its area is visited and the next checkpoint is
+reported. It is not a snapshot of the entire world at the report step.
+
+Each observed lane hashes its sorted rows together with the simulation
+step and area. The window hashes, pending subdivision queue and cursor are
+saved in `worldCheck` in the mod's game-script state after every update.
+Joining or rebasing from a mid-window save resumes that history; starting
+a room at step 1 starts a new history. Missing history, skipped/repeated
+steps or a failed lane read hold the game through `scanned(false, why)`.
+`lua::end_batch` also refuses requested reads that were not acknowledged.
+Matching `err` strings are not accepted as successful rolling checks.
+
+The old full reader remains for diagnostic dumps and stand-in engines.
+`rolling world check` logs the window and cursor; `rolling world sweep`
+logs completed coverage. `rolling-check-cost` reports the mean and maximum
+per-update read cost, including saving the scan state. These diagnostic
+times are never saved or hashed. The older measurements below concern
+the synchronous full reader, not the rolling implementation.
+
+On the large Silver fixture, two real games completed the same first sweep
+in 2,412 updates (8 minutes 2.4 seconds at 1x). Across 7,400 retained reads,
+the mean was 3.73 ms and the maximum 21 ms, including saving the rolling
+state. There was no reported divergence. This removes the recurring full
+scan; game saves and industry generation can still pause independently.
+Methodology, raw data and limits are in
+[the rolling-check investigation](../investigation/TF3_ROLLING_CHECKS_2026-10-05.md).
 
 #### What the lanes cost
 
