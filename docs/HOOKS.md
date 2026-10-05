@@ -3462,6 +3462,32 @@ geometry, lane-speed and traffic-light edits. Real-game timings above
 precede this follow-up. A missing diagnostic clock no longer prevents a
 checkpoint from being read.
 
+Measured follow-up (2026-10-05): two local build-40408 games, the shared
+`tpf3mp_silver_ab_20261001` save, roughly 5,850 edges and 19,660 lane
+configs. Baseline `2039a96` and candidate `24d4827` read the same checkpoint
+back to back, with the same native hash. After discarding each game's first
+four observations, the first ten baseline-first and ten candidate-first
+pairs per game were retained: 40 pairs total. The game's Lua pool makes a
+module-local counter non-global, so balancing uses the logged execution
+order, not that counter. Raw observations and selection flags are in
+`investigation/checkpoint_ab_2026-10-05.csv`.
+
+| Reader cost | Original PR median | Follow-up median |
+|---|---:|---:|
+| Full checkpoint read | 637 ms | 620 ms |
+| Network lane | 569 ms | 547 ms |
+| Junction portion | 259.5 ms | 265 ms |
+
+Mean full-read cost was 642.525 -> 626.875 ms; median paired saving was
+14 ms (2.2%), and the candidate was faster in 31/40 retained pairs. The
+incremental gain is modest: junction-only time did not improve in this run.
+All 64 observations collected before cleanup had identical baseline and
+candidate digests and zero failed lane reads; no room divergence was
+reported during the measured interval. These are paired reader timings
+(`os.clock` on Windows), not an FPS benchmark or a normal checkpoint-step
+duration: benchmark steps run both readers. The games were quit normally
+and the staging copy restored without instrumentation afterwards.
+
 The Windows rig's successful injection tests use a test-only DLL that
 signals the normal hook-ready event. A system DLL is still used to test
 startup timeout cleanup; production readiness checks are unchanged.
