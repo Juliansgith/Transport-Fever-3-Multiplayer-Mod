@@ -19,6 +19,7 @@ pub mod persons;
 pub mod previewcancel;
 pub mod probe;
 pub mod seeds;
+pub mod simperf;
 pub mod stoptool;
 pub mod streettrace;
 pub mod terrain;

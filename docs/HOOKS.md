@@ -4486,6 +4486,12 @@ so the hook keeps them as any function would; the upper `ymm` halves are
 volatile at every call, and both sites follow a `call` with no vector
 instruction between (the disassembly), so nothing lives in them there.
 
+**The in-place rewrite** (`tpf3mp_hookcore::detour::Rewrite`) replaces
+bytes one for one after checking the site holds exactly the bytes expected
+(a site holding anything else is refused unwritten), and restores them when
+detached or dropped. The simulation timers use it to swap a vtable slot's
+pointer for the timer's ("The game's own systems: the `perf: sim` line").
+
 **Land-vehicle reservation order** (the survey's item 1, CONFIRMED). In
 `ecs::LandVehicleMoveSystem::Update2` (`0xac0f90`) the engine walks its
 family's node list (20-byte records: the entity id, then four component
@@ -4997,7 +5003,9 @@ lines off; hook.log says which at install (`perf: timing the hook's
 work, ...` or `perf: timing off (...)`).
 
 Every 10 seconds of wall time, after a call of the step, two lines go to
-hook.log (nothing while no step runs, at the main menu):
+hook.log (nothing while no step runs, at the main menu), and a third,
+`perf: sim`, with the game's own costliest systems ("The game's own
+systems: the `perf: sim` line" below):
 
 ```
 perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses
@@ -5054,7 +5062,7 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_SCRIPT_RESEED` | the game scripts' per-call reseed (the per-update detour stays, so the mod's own `tpf3mp_native.seed` still works) |
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
-| `TPF3MP_HOOK_PERF` | the timing and these lines |
+| `TPF3MP_HOOK_PERF` | the timing and these lines, the `perf: sim` line's timers with them (`full` keeps them on and counts the component lookups too) |
 
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
@@ -5076,6 +5084,83 @@ nothing the game computes, so one game of a room may run them alone.
 
 The `road-entry:` digest at every checkpoint needs no switch: it is on
 while `road-entry-order` sorts.
+
+### The game's own systems: the `perf: sim` line
+
+`crates/tpf3mp-hook/src/simperf.rs` times the game systems whose cost
+grows most with the map (investigation/TF3_SIM_COST_2026-10-05.md): timing
+only, each timer calls the game's function with the arguments it was
+given. They are in while the timing is (`TPF3MP_HOOK_PERF` not `0`), at
+two clock reads a call (about 56 ns) against milliseconds of work, and
+each one fails closed on its own: hook.log says at install, for each,
+`perf: sim timer <name>: in (...)` or `perf: sim timer <name>: absent,
+<why>`.
+
+| name | the game's function | how it is reached |
+|---|---|---|
+| `emission-grid` | `ecs::EmissionGridSystem::Update` (`0xaa9230`): the noise and pollution grids' diffusion, wind and averaging | its vtable slot (`0x1436fcb10`) |
+| `emission-emitters` | `ecs::EmissionEmitterSystem::Update2` (`0xaa51c0`): the emitters' splat into the grids | its vtable slot (`0x1436fc490`) |
+| `towns` | `ecs::TownSystem`'s update (`0xb61cc0`), which sums the grids per district | its vtable slot (`0x143708bb8`) |
+| `parcel-collision` | `parcel_util::UpdateParcelCollision` (`0x9312e0`): each applied proposal's octree walk over the union of its boxes plus 50 m | its only call (`0x1425fcb9a`), redirected |
+
+The three systems have no direct caller (the static proof checks it), so
+their timers replace the vtable slot's pointer after checking it holds the
+function the profile resolved: a detour of the function itself, by any
+other feature, still runs, inside the timer. Once a window:
+
+```
+perf: sim emission-grid 600/24000.00ms/40000.00us, emission-emitters 600/3000.00ms/5000.00us, towns 600/1200.00ms/2000.00us, parcel-collision 40/2000.00ms/50000.00us (50.333 ms/update together); parcel boxes 120, union mean 1.000 km², max 25.500 km²; component-index fast, not counted (TPF3MP_HOOK_PERF=full counts it)
+```
+
+Each timer is `<name> <calls>/<total ms>/<mean µs>` (`<name> absent` when
+it is not in); then their sum per simulation update; the parcel walk's
+boxes and the mean and largest area of its query box (a few large unions
+or many small ones decide which of the investigation's option 6 helps);
+then the component lookup below. With `TPF3MP_HOOK_PERF=full` the lookup's
+calls are counted too (`component-index <n> calls`), one `lock add` a call
+on a counter picked by the thread's stack: cheap, but on millions of calls
+a second, so not by default. Set the time against the first line's `game
+step ... ms/update`. The emitters' and grid's passes run on the game's
+thread pool and are waited for, so their time is wall time on the
+simulation's thread.
+
+### The faster component lookup
+
+`crates/tpf3mp-hook/src/fastindex.rs` (`fast-component-index`, on unless
+`TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` or `off`). The game's
+`ecs::Engine::GetComponentDataIndex(engine, entity, type)` (`0xa4b90`,
+about 1,600 direct calls) is a linear search: the entity's list of
+`{type, index}` pairs at `[engine+0x90] + entity·24`, the first pair of
+the type, its index; a miss asserts (`Engine.h:0x143`). It keeps a 0xE0
+byte frame and a `/GS` cookie on every call for the assert's formatting.
+The hook jumps from its entry to a frameless copy of the hit path: the
+same reads in the same order, the same first match. A miss goes, with
+every argument register as it came, to the original's trampoline, which
+searches again and asserts as the game does.
+
+- **Exact, so not a room setting.** Nothing is cached, so nothing must be
+  kept coherent with the engine, and a call on any thread reads what the
+  original read. The tests run the game's own function, relocated from
+  the executable, and the hook's on 320,000 random queries over random
+  worlds (duplicate types in a list, empty and 200-pair lists, negative
+  entities, `INT_MIN`/`INT_MAX` types, misses): the same answer every time,
+  and every miss reaches the game's assert, every hit never does. A third
+  test runs both with every register set to a known value: a hit changes
+  `rax` and `r9` only, all of which the original changes too.
+- **Fails closed**: the profile's signature is the whole hit path, entry
+  to `ret`, so a build whose lookup differs anywhere leaves the game's.
+- **What it gains**, measured on the development PC
+  (`fastindex::original_tests::a_lookup_costs`, release): about 1.5 to 2
+  ns of 10 to 14 ns when the lists are in the cache (about 15%), and
+  nothing measurable when they are not (100 ns and more, two dependent
+  cache misses: the entity's list header, then its list). So it trims the
+  per-call overhead only; the parcel walk's cost on a large map is mostly
+  the misses, which only fewer lookups remove (the investigation's
+  option 6a).
+
+To A/B it, run the same save with and without
+`TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` and compare the first line's `ms/update`
+and the `perf: sim` line's `parcel-collision`.
 
 ## Release-day procedure: adding a target for a new build
 
