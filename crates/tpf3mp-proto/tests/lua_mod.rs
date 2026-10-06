@@ -13982,11 +13982,14 @@ NODES[20] = { x = 0, y = 200, z = 0 }
 NODES[21] = { x = 100, y = 200, z = 0 }
 NODES[22] = { x = 200, y = 200, z = 0 }
 EDGES[200] = { node0 = 20, node1 = 21, tangent0 = { x = 100, y = 0, z = 0 }, tangent1 = { x = 100, y = 0, z = 0 },
-               type = 0, typeIndex = -1, objects = { { 300, 2 }, { 301, 2 } } }
+               type = 0, typeIndex = -1, objects = { { 300, 2 }, { 301, 2 } }, laneConfigs = { 'track' } }
 EDGES[201] = { node0 = 22, node1 = 21, tangent0 = { x = -100, y = 0, z = 0 }, tangent1 = { x = -100, y = 0, z = 0 },
-               type = 0, typeIndex = -1, objects = {} }
+               type = 0, typeIndex = -1, objects = {}, laneConfigs = { 'track' } }
 TRACKS = { [20] = { 200 }, [21] = { 200, 201 }, [22] = { 201 } }
-CONFIGS[21] = true
+-- Node 21's turn from track 200 into 201, which the player set by hand.
+CONFIGS[21] = api.type.BaseNodeConfig.new()
+CONFIGS[21].laneConnections = { { segment0 = 200, lane0 = 0, segment1 = 201, lane1 = 0, withRoad = false, withTram = false } }
+CONFIGS[21].userModifiedLaneConnections = true
 OBJECTS[300] = { param = 0.25, edgeObjectConstruction = '::/infrastructure/signal/signal_path_c.con',
                  params = { auto_signals_distance = 3 } }
 OBJECTS[301] = { param = 0.75, edgeObjectConstruction = '::/infrastructure/signal/signal_path_a.con' }
@@ -14250,16 +14253,20 @@ fn auto_signals_spacing_goes_to_the_room_and_every_game_builds_it() {
          -2@0.75L ::/infrastructure/signal/signal_path_c.con 25 \
          | -200,201 | -301 | 21 | 25 true"
     );
-    // The junction between them names both rebuilt tracks.
+    // The junction between them names both rebuilt tracks, its turn still
+    // marked as set by hand.
     let junction: String = lua
         .load(
             "local p = SENT[1].proposal.streetProposal \
-             for _, n in ipairs(p.nodeConfigsToAdd) do if n.entity == 21 then return 'configured' end end \
+             for _, n in ipairs(p.nodeConfigsToAdd) do if n.entity == 21 then \
+                 local t = n.comp.laneConnections[1] \
+                 return t.segment0 .. '>' .. t.segment1 .. ' ' .. tostring(n.comp.userModifiedLaneConnections) \
+             end end \
              return 'not configured'",
         )
         .eval()
         .unwrap();
-    assert_eq!(junction, "configured");
+    assert_eq!(junction, "-1>-2 true");
 }
 
 /// What the capture of a script's signals refuses, saying why: anything
