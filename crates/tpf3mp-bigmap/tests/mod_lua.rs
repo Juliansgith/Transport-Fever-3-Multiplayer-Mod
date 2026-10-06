@@ -448,10 +448,10 @@ fn the_density_sliders_get_one_level_per_ladder_row() {
     assert_eq!(
         values,
         [
-            "Giga 45 km",
-            "Giga 41 km",
-            "Giga 36 km",
-            "Giga 32 km",
+            "----",
+            "---",
+            "--",
+            "-",
             "Sparse",
             "Scattered",
             "Medium",
