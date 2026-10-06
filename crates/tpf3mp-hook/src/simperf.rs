@@ -190,8 +190,18 @@ unsafe extern "system-unwind" fn parcel_collision(
     if start.is_some() {
         note_parcel_boxes(boxes);
     }
+    // The probe (crate::parcelprobe, check only) watches the walk.
+    let probe = match self::boxes(boxes) {
+        Some(list) if crate::parcelprobe::installed() && !list.is_empty() => {
+            Some(crate::parcelprobe::begin(list))
+        }
+        _ => None,
+    };
     // SAFETY: the game's own call, with its own arguments.
     unsafe { original(rcx, rdx, boxes, r9) };
+    if let Some(outer) = probe {
+        crate::parcelprobe::end(outer);
+    }
     if let Some(start) = start {
         COUNTERS[System::ParcelCollision as usize].add(crate::perf::nanos_since(start));
     }
@@ -208,6 +218,8 @@ pub struct Window {
     /// `GetComponentDataIndex`'s calls (`crate::fastindex`), when counted.
     pub lookups: Option<u64>,
     pub lookup_state: crate::fastindex::State,
+    /// The parcel walk's probe (crate::parcelprobe), when it is in.
+    pub parcel_probe: Option<crate::parcelprobe::Counts>,
 }
 
 /// Takes every counter, zero again.
@@ -226,6 +238,7 @@ pub fn take() -> Window {
         parcel_max_area: PARCEL_MAX_AREA.swap(0, Ordering::Relaxed),
         lookups: crate::fastindex::take_calls(),
         lookup_state: crate::fastindex::state(),
+        parcel_probe: crate::parcelprobe::take(),
     }
 }
 
@@ -275,6 +288,9 @@ pub fn line(window: &Window, updates: u64) -> Option<String> {
             mean,
             window.parcel_max_area as f64 / 1e6
         ));
+        if let Some(probe) = &window.parcel_probe {
+            out.push_str(&probe.line());
+        }
     }
     out.push_str(&match (window.lookup_state, window.lookups) {
         (State::Counting, Some(n)) => format!("; component-index {n} calls"),
@@ -343,7 +359,9 @@ pub fn install(resolved: &ResolvedProfile, base: u64) -> Vec<String> {
             "the profile lacks {PARCEL_COLLISION:?} or {PARCEL_COLLISION_CALL:?}"
         )),
     };
+    let timer_in = outcome.is_ok();
     lines.push(timer_line(System::ParcelCollision, outcome));
+    lines.push(crate::parcelprobe::install(resolved, base, timer_in));
     lines
 }
 
@@ -458,6 +476,7 @@ mod tests {
             parcel_max_area: 25_500_000,
             lookups: Some(123_456_789),
             lookup_state: State::Counting,
+            parcel_probe: None,
         }
     }
 
@@ -470,6 +489,24 @@ mod tests {
              parcel-collision 40/2000.00ms/50000.00us (48.333 ms/update together); \
              parcel boxes 120, union mean 1.000 km², max 25.500 km²; \
              component-index 123456789 calls"
+        );
+    }
+
+    #[test]
+    fn the_sim_line_carries_the_parcel_probe_after_the_walks() {
+        let mut w = window();
+        w.parcel_probe = Some(crate::parcelprobe::Counts {
+            walks: 40,
+            ..Default::default()
+        });
+        let line = line(&w, 600).unwrap();
+        assert!(
+            line.contains("max 25.500 km²; parcel probe 40 walks: nodes 0"),
+            "{line}"
+        );
+        assert!(
+            line.ends_with("; component-index 123456789 calls"),
+            "{line}"
         );
     }
 

@@ -218,6 +218,11 @@ const TARGETS: &[(&str, u64)] = &[
     ("simperf: TownSystem::Update2", 0xb61cc0),
     ("simperf: UpdateParcelCollision", 0x9312e0),
     ("simperf: UpdateParcelCollision call", 0x25fcb9a),
+    // The parcel walk's probe (crates/tpf3mp-hook/src/parcelprobe.rs).
+    ("parcel-probe: visitor node call", 0x926253),
+    ("parcel-probe: visitor bounding-volume index call", 0x9262c9),
+    ("parcel-probe: visitor street call", 0x926486),
+    ("parcel-probe: parcel element test call", 0x93210a),
     (
         "fast-component-index: Engine::GetComponentDataIndex",
         0xa4b90,
@@ -434,6 +439,53 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     // system's vtable slot (.rdata, the file's pointers at the preferred
     // base) holds its function; nothing in .text calls them directly.
     assert_eq!(callee(0x25fcb9a), 0x9312e0);
+    // The parcel walk's probe: each call reaches its callee; the visitor
+    // (0x926240) and the descent (0x925e30) are reached only from the walk
+    // and from the descent itself, so the probe's calls run in no other
+    // walk. The node's entity vector is read at +0x20/+0x28 after the
+    // dereference; the BoundingVolume record is found as the probe finds
+    // it ([engine+0x78][type], dense +0x68 below 0x40000000, else 32-record
+    // pages of 16-byte entries at +0x80; 24-byte records); the element
+    // test's result is the caller's vector, compared begin to end after.
+    assert_eq!(callee(0x926253), 0x2fe150);
+    assert_eq!(callee(0x9262c9), 0xa4b90);
+    assert_eq!(callee(0x926486), 0xae7110);
+    assert_eq!(callee(0x93210a), 0x931a70);
+    let reaching = |function: u64| {
+        let mut sites = Vec::new();
+        for i in 0..text_bytes.len().saturating_sub(5) {
+            if text_bytes[i] != 0xE8 && text_bytes[i] != 0xE9 {
+                continue;
+            }
+            let rel = i32::from_le_bytes(text_bytes[i + 1..i + 5].try_into().unwrap());
+            if (base as i64 + i as i64 + 5 + i64::from(rel)) as u64 == function {
+                sites.push(base + i as u64);
+            }
+        }
+        sites
+    };
+    assert_eq!(reaching(0x926240), [0x925ecc, 0x93169e]);
+    assert_eq!(reaching(0x925e30), [0x925f46, 0x9317c9]);
+    assert_eq!(reaching(0x9312e0), [0x25fcb9a]);
+    assert_eq!(
+        &text_bytes[at(0x926258)..at(0x926258) + 8],
+        &[0x4C, 0x8B, 0x78, 0x20, 0x48, 0x8B, 0x68, 0x28]
+    );
+    assert_eq!(
+        &text_bytes[at(0x9262ce)..at(0x92631d)],
+        &[
+            0x48, 0x8B, 0x4E, 0x78, 0x4C, 0x8B, 0x0C, 0xF9, 0x3D, 0x00, 0x00, 0x00, 0x40, 0x7D,
+            0x0C, 0x48, 0x98, 0x48, 0x8D, 0x0C, 0x40, 0x49, 0x8B, 0x41, 0x68, 0xEB, 0x2C, 0x05,
+            0x00, 0x00, 0x00, 0xC0, 0x99, 0x83, 0xE2, 0x1F, 0x03, 0xC2, 0x8B, 0xC8, 0x83, 0xE0,
+            0x1F, 0x2B, 0xC2, 0xC1, 0xF9, 0x05, 0x49, 0x8B, 0x91, 0x80, 0x00, 0x00, 0x00, 0x4C,
+            0x63, 0xC1, 0x48, 0x98, 0x4D, 0x03, 0xC0, 0x48, 0x8D, 0x0C, 0x40, 0x4A, 0x8B, 0x04,
+            0xC2, 0x48, 0x8D, 0x14, 0xC8, 0x49, 0x8B, 0x46, 0x08
+        ]
+    );
+    assert_eq!(
+        &text_bytes[at(0x93210f)..at(0x93210f) + 10],
+        &[0x48, 0x8B, 0x4C, 0x24, 0x40, 0x48, 0x3B, 0x4C, 0x24, 0x48]
+    );
     let systems = [
         (0x36fcb10u64, 0xaa9230u64),
         (0x36fc490, 0xaa51c0),

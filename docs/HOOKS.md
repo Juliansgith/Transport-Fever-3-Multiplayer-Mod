@@ -5155,6 +5155,7 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_SCRIPT_RESEED` | the game scripts' per-call reseed (the per-update detour stays, so the mod's own `tpf3mp_native.seed` still works) |
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
+| `TPF3MP_HOOK_PARCEL_PROBE=1` | (unset by default) the parcel walk's probe, check only ("The parcel walk's probe") |
 | `TPF3MP_HOOK_PERF` | the timing and these lines, the `perf: sim` line's timers with them (`full` keeps them on and counts the component lookups too) |
 
 Each switch changes what the game computes, so a game with one off
@@ -5268,6 +5269,49 @@ searches again and asserts as the game does.
 To A/B it, run the same save with and without
 `TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` and compare the first line's `ms/update`
 and the `perf: sim` line's `parcel-collision`.
+
+### The parcel walk's probe
+
+`crates/tpf3mp-hook/src/parcelprobe.rs`, **off unless
+`TPF3MP_HOOK_PARCEL_PROBE=1`**, and only with the timers
+(`TPF3MP_HOOK_PERF` not `0`). CHECK ONLY: it changes nothing the game
+computes, so one game of a room may run it alone. It asks whether
+`UpdateParcelCollision` could query the octree once per changed piece's box
+(plus its 50 m) instead of once over the union of all of them, and lose
+nothing (investigation/TF3_PARCEL_COLLISION_2026-10-06.md).
+
+Four calls inside the walk are redirected, each to a counter that calls
+the game's callee with its arguments and returns its result: the node
+visitor's node dereference (`0x926253`), its `BoundingVolume` lookup per
+entity (`0x9262c9`), its hand-over of each street edge to the
+ParcelSystem (`0x926486`) and the element test of each of the street's
+parcels (`0x93210a`). The static proof checks that each call reaches its
+callee, that the visitor and the descent are reached only from the walk,
+and the bytes of the layouts the probe reads. All four go in, or none;
+hook.log says `perf: sim parcel probe: in (CHECK ONLY, changes nothing;
+...)`, `absent, <why>` or `off`. It costs a few box tests per entity the
+walk visits, and two clock reads per street.
+
+Once a window it adds to the `perf: sim` line, after the parcel boxes:
+
+```
+; parcel probe 85 walks: nodes 9000 (near 700), entities 400000 (in near nodes 30000, in union 250000, near 9000), streets 20000 (near 900), parcels 60000 (acted 300, lost 0 by street, 0 by node at 50 m; margin needed 12.34 m), street work 500.00 ms (far 470.00 ms)
+```
+
+- `nodes`, `entities`: what the walk visited and tested; `near` (and `in
+  near nodes`): what a per-box walk would visit and test, its node or
+  entity meeting some box plus 50 m; `in union`: entities in the game's
+  own query.
+- `streets`: street edges handed to the ParcelSystem, `near` as above.
+- `parcels`: parcels tested; `acted`: those the walk writes (a non-empty
+  result: their elements' collision flags and change notes).
+- `lost ... by street` / `by node`: acted-on parcels whose street, or
+  whose street's node, meets no box plus 50 m: a per-box walk would not
+  write them. **Both must stay 0** for a per-box walk to be exact.
+- `margin needed`: the largest margin an acted-on parcel's street and node
+  needed to be reached from their nearest box (`none acted` if none).
+- `street work`: time in the streets' parcels, and in far streets' (what
+  a per-box walk saves there; it saves the far nodes' entity tests too).
 
 Two more switches are a **proposal for the owner** ([BIGMAPS.md](BIGMAPS.md),
 "Simulation switches (proposal)"). Unlike the patches above, they **change

@@ -55,6 +55,7 @@ pub mod menu;
 pub mod modules;
 pub mod network;
 pub mod order;
+pub mod parcelprobe;
 pub mod perf;
 pub mod persons;
 mod platform;

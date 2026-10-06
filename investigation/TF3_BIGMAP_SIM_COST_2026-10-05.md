@@ -606,3 +606,7 @@ unmeasured, and the pruned query's exactness is unproven. Next steps: first
 option 0's counts per call (boxes, union area, node-box area); then a
 check-only prune that changes nothing and logs every parcel a prune would
 have lost.
+
+*Added 2026-10-06:* the walk reversed in full and the check-only probe
+built (`TPF3MP_HOOK_PARCEL_PROBE=1`): see
+[TF3_PARCEL_COLLISION_2026-10-06.md](TF3_PARCEL_COLLISION_2026-10-06.md).

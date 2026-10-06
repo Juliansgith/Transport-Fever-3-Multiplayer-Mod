@@ -1818,6 +1818,55 @@ offset = 26
 prologue = "E8 41 47 33 FE"
 required = false
 
+# The parcel walk's probe (crates/tpf3mp-hook/src/parcelprobe.rs;
+# investigation/TF3_PARCEL_COLLISION_2026-10-06.md), off unless
+# TPF3MP_HOOK_PARCEL_PROBE=1: four calls inside parcel_util::
+# UpdateParcelCollision's walk, each redirected to a counter that calls the
+# game's callee with its arguments. Each call is the only one of its site;
+# its callee is pinned by the prologue (the call's displacement) and
+# checked again at install (simperf.rs in this bundle).
+#
+# The octree node visitor (0x926240, called only from the walk's root test
+# 0x93169e and its descent 0x925ecc): its first call, the node iterator's
+# dereference 0x2fe150 (rcx the iterator; rax the 0xc0-byte node).
+[[target]]
+name = "parcel-probe: visitor node call"
+signature = "40 55 41 56 41 57 48 81 EC A0 00 00 00 4C 8B F1 48 8B CA E8 ?? ?? ?? ?? 4C 8B 78 20 48 8B 68 28 4C 3B FD"
+offset = 19
+prologue = "E8 F8 7E 9D FF"
+required = false
+
+# Per entity of the node: GetComponentDataIndex(engine, entity,
+# BoundingVolume type) (0xa4b90), whose record the visitor tests against
+# the union box.
+[[target]]
+name = "parcel-probe: visitor bounding-volume index call"
+signature = "41 8B 1F 49 8B 36 8B D3 49 63 7E 54 48 8B CE 44 8B C7 89 9C 24 C0 00 00 00 E8 ?? ?? ?? ?? 48 8B 4E 78 4C 8B 0C F9"
+offset = 25
+prologue = "E8 C2 E8 77 FF"
+required = false
+
+# Per street edge in the union box, not excluded: the ParcelSystem's
+# per-street visit (0xae7110; rcx the system, edx the street, r8 the
+# std::function called with each of its parcels).
+[[target]]
+name = "parcel-probe: visitor street call"
+signature = "4C 89 64 24 48 C5 FC 11 44 24 50 C5 F8 77 E8 ?? ?? ?? ?? 49 83 C7 04 4C 3B FD 0F 85"
+offset = 14
+prologue = "E8 85 0C 1C 00"
+required = false
+
+# Per parcel of such a street: the element test (0x931a70; rcx the
+# collision context, rdx the Parcel, r8d, r9 the boxes, [rsp+0x20] the
+# result vector of {element, flag}); a parcel with a non-empty result is
+# the only kind the walk acts on.
+[[target]]
+name = "parcel-probe: parcel element test call"
+signature = "4C 8B 4E 20 44 8B 84 24 80 00 00 00 48 8B D7 48 8B 4E 08 E8 ?? ?? ?? ?? 48 8B 4C 24 40 48 3B 4C 24 48"
+offset = 19
+prologue = "E8 61 F9 FF FF"
+required = false
+
 # The faster component lookup (crates/tpf3mp-hook/src/fastindex.rs).
 # ecs::Engine::GetComponentDataIndex (0xa4b90, Engine.h:0x143): the
 # signature is the whole hit path, entry to `ret` (the cookie's RIP

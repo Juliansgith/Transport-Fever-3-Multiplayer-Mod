@@ -38,3 +38,40 @@ pub const ENTITY_LISTS: usize = 0x90;
 pub const ENTITY_LIST_STRIDE: usize = 24;
 /// One `{type, index}` pair.
 pub const PAIR_SIZE: usize = 8;
+
+/// The parcel walk's probe (`crate::parcelprobe`): four calls inside the
+/// walk, each the only call of its site, and the callee each must reach
+/// (RVAs). See hooks.toml for their bytes.
+pub const PROBE_NODE_CALL: &str = "parcel-probe: visitor node call";
+/// The octree node iterator's dereference: `rcx` the iterator, returns
+/// the node.
+pub const PROBE_NODE_CALLEE: u64 = 0x2fe150;
+pub const PROBE_INDEX_CALL: &str = "parcel-probe: visitor bounding-volume index call";
+/// `ecs::Engine::GetComponentDataIndex(engine, entity, type)`.
+pub const PROBE_INDEX_CALLEE: u64 = 0xa4b90;
+pub const PROBE_STREET_CALL: &str = "parcel-probe: visitor street call";
+/// The ParcelSystem's visit of one street's parcels: `rcx` the system,
+/// `edx` the street, `r8` a `std::function` called with each parcel.
+pub const PROBE_STREET_CALLEE: u64 = 0xae7110;
+pub const PROBE_PARCEL_CALL: &str = "parcel-probe: parcel element test call";
+/// The element test of one parcel: `rcx` the collision context, `rdx`
+/// the Parcel, `r8d`, `r9` the boxes, the fifth argument the result
+/// vector of 8-byte `{element, flag}` (begin, end, capacity).
+pub const PROBE_PARCEL_CALLEE: u64 = 0x931a70;
+
+/// The octree node component (`EcsOctreeNode`, 0xc0 bytes): its loose box
+/// `{min x, y, z, max x, y, z}` and its entities (`std::vector<int>`).
+pub const NODE_BOX: usize = 0x8;
+pub const NODE_ENTITIES: usize = 0x20;
+/// `[engine+0x78]`: one storage per component type, by type index.
+pub const ENGINE_STORAGES: usize = 0x78;
+/// A storage's dense array, used below [`STORAGE_PAGED_FROM`].
+pub const STORAGE_DENSE: usize = 0x68;
+/// A storage's pages (16-byte entries, the page's pointer first), of
+/// [`STORAGE_PAGE_LEN`] records, for indices from [`STORAGE_PAGED_FROM`].
+pub const STORAGE_PAGES: usize = 0x80;
+pub const STORAGE_PAGED_FROM: i32 = 0x4000_0000;
+pub const STORAGE_PAGE_LEN: i32 = 32;
+pub const STORAGE_PAGE_ENTRY: usize = 16;
+/// One `BoundingVolume`: `{min x, y, z, max x, y, z}`.
+pub const BOUNDING_VOLUME_STRIDE: usize = 24;
