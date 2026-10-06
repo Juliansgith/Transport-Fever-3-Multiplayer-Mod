@@ -224,6 +224,8 @@ const TARGETS: &[(&str, u64)] = &[
     ),
     // The fused emission grid (crates/tpf3mp-hook/src/emission).
     ("emission::EmissionGridSystem::Update", 0xaa9230),
+    // The banded emitter splat (crates/tpf3mp-hook/src/emitters).
+    ("emitters::EmissionEmitterSystem::Update2", 0xaa51c0),
     // The emission throttle (crates/tpf3mp-hook/src/bigmap/emission.rs).
     ("bigmap::EmissionGridSystem::Update", 0xaa9230),
     ("bigmap::EmissionGridSystem vtable load", 0xaa7ea9),
@@ -488,6 +490,11 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
         &[0x41, 0xFF, 0x51, 0x60],
         "EmissionEmitterSystem's slot 11: call [r9+0x60]"
     );
+    // The banded emitter splat: Update2 calls lambda_1's dispatcher, lambda_2's
+    // loop and lambda_2's pool dispatcher at the sites the hook redirects.
+    assert_eq!(callee(0xaa56cd), 0xaa3e70);
+    assert_eq!(callee(0xaa5743), 0xaa4ab0);
+    assert_eq!(callee(0xaa57dd), 0xaa33a0);
     // The emission cells: the new-game path creates both grids, the factor
     // load reads 0.0625 and the coarse constant holds 0.125.
     assert_eq!(callee(0x1559ef), 0xba0170);

@@ -606,3 +606,13 @@ unmeasured, and the pruned query's exactness is unproven. Next steps: first
 option 0's counts per call (boxes, union area, node-box area); then a
 check-only prune that changes nothing and logs every parcel a prune would
 have lost.
+
+## 8. Follow-up (2026-10-06): the emitters' splat, exactly
+
+`EmissionEmitterSystem::Update2` (§1.4) is reversed in full and replaced by a
+bit-identical splat by row bands, in
+[TF3_EMITTER_SPLAT_2026-10-06.md](TF3_EMITTER_SPLAT_2026-10-06.md)
+(crates/tpf3mp-hook/src/emitters; docs/HOOKS.md, "The fast emitters"). It
+corrects §1.4 on two points: the 32 tasks are 2 grids x 16 regions, each
+walking its bucket in ascending node order; and the region test drops a
+sample whose two rows straddle a region boundary in y.

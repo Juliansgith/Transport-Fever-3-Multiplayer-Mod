@@ -5080,6 +5080,106 @@ on every writer or a full comparison against a copy, which costs most of
 what skipping saves. The fused step leaves the grid exact without that
 proof.
 
+### The fast emitters
+
+`crates/tpf3mp-hook/src/emitters` replaces the splat of
+`ecs::EmissionEmitterSystem::Update2` (`0xaa51c0`, profile target
+`emitters::EmissionEmitterSystem::Update2`) with one by row bands whose
+result is the game's to the bit
+(investigation/TF3_EMITTER_SPLAT_2026-10-06.md).
+
+**What the game does.** Each update adds every emitter (industries,
+buildings, streets: a position, a noise and a pollution power, a radius
+each) into the noise and pollution grids that "The fast emission grid"
+then diffuses. Lambda_1 buckets the emitters into a fixed 4 x 4 split of
+the grid; lambda_2 then runs 32 tasks (2 grids x 16 regions), each walking
+its region's emitters in node order: a `logf` per emitter and grid, then a
+point (one sample) or a disc of samples one grid point apart, each sample
+adding to its four neighbouring cells `max(c + w, 0)`, clipped to the
+region. On a big world that is a cache miss per emitter and per cell, and
+the work sits in the few regions with towns. Measured in game on a ~78 x
+390-tile world: about 5.5 ms per update.
+
+**What the hook does.** It redirects `Update2`'s call of lambda_1's
+dispatcher (`+0x50d`, skipped) and its two calls of lambda_2's (`+0x583`
+inline, `+0x61d` pool), and splats in their place: first, by chunks of
+emitters, each emitter's records (its value and samples exactly as the
+game computes them, with which cells the game keeps); then, by row bands
+on the hook's threads (16 bands per thread, heaviest first), each band
+adds the records that reach it, in node order, to its own rows only. A
+cell lies in one region and one band, so it gets the same additions in the
+same order, each the game's single-precision sequence (no FMA, the game's
+grouping, `max` with the game's operand order, the game's own `logf`). Two
+quirks of the game are kept: a sample whose two rows straddle a region
+boundary in y adds nothing, and a disc's last column can lose the corner
+that falls in a region it is not bucketed in. Small records keep their
+additions as such; larger discs go a row of samples at a time, eight cells
+per AVX instruction. A chunk whose emitters are bit for bit unchanged keeps
+its records. `Update2` itself (its lookups, asserts and factors) stays the
+game's. Offline (78 x 390 tiles, 20,000 to 300,000 emitters in towns, the
+game's code from the executable): 1.6 to 2.4x on one thread with every
+emitter changed, 2.1 to 3.6x with none changed; on 16 threads with 5% of
+the emitters changing each update 1.3 to 2.5x (the PC ran three games
+meanwhile, so these swing).
+
+**Fail-closed.** `TPF3MP_HOOK_FAST_EMITTERS=0` in the game's environment
+leaves the game's splat (on by default: the result is bit-identical, so a
+game with it and one without agree, and the room sets nothing). It also
+stays off without the profile target, on a CPU without AVX and SSE4.1, or
+when any byte of `Update2`, its lambdas and dispatchers, the bucket
+bookkeeping that fixes the walk's order, the inserts or the `logf` thunk
+differs from the FNV-1a hashes in `profiles/.../emitters.rs`. An update
+the model does not cover runs the game's own lambda_1 and lambda_2 (from a
+copy of lambda_1's captures: `Update2` reuses their place for lambda_2's),
+before anything was written: grids of another shape, regions a quarter of
+the grid cannot split, a node naming no component, a radius past 4,096
+cells, a non-default MXCSR on the simulation thread or a worker. The first
+three updates, and one in 1,024 after, run the game's own lambdas on the
+real grids and the band splat on copies of three windows of 16 rows taken
+before; a difference turns the band splat off for the rest of the game.
+
+**In `hook.log`:**
+
+```
+emitters: band splat installed (at 0x...: by row bands on up to 16 threads, bit-identical to the game's Update2; TPF3MP_HOOK_FAST_EMITTERS=0 turns it off)
+emitters: 3 windows of the real grids (1250x6242, 85000 emitters) bit-identical to the game's Update2; banded from now on
+emitters: self-check <n> passed                         (at n = 4, 8, 16, ...)
+emitters: 4096 updates banded, 1.10 ms each on average (last 4096: records 0.30 ms, bands 0.75 ms, 900 emitters made again per update); last update: 85000 emitters, 120000 records (9000 as lattices), 12 of 128 chunks made again; 0 updates ran the game's way
+```
+
+The summary line says what is not known offline: how many emitters the
+world has, how many are large discs (lattices), and how many change per
+update (`emitters made again`; a chunk is made again if any of its
+emitters changed). Compare `perf: sim`'s `emission-emitters` mean with
+`TPF3MP_HOOK_FAST_EMITTERS=0` on the same save. Lines to worry about:
+`emitters: the game's own splat, <why>` at install (the fix is not
+active), `this update runs the game's way: <why>` (one update fell back;
+harmless, the game's code ran), and `OFF for the rest of this game:
+self-check failed: <grid> differs at (x, y) ...`, which means the model
+and the game disagree: report it with the log.
+
+**Tested without the game** (`emitters::original_tests`, which map the
+whole executable into the test, base relocations applied and the C
+runtime's imports resolved, and run the game's own `Update2` with stubs
+for the pool, the ECS lookups and the thread-local indices):
+
+- 200 random worlds (4 x 4 to 130 x 66 and 80 x 400 cells, up to 4,000
+  emitters, odd grid point sizes and origins, zero, negative and NaN
+  radii, zero, negative, tiny, NaN and infinite powers, positions on cell
+  edges, distances past the reach, grids with negative zeros, negatives
+  and denormals, `dt` 0.2 and 0.4), four updates each with some emitters
+  changing: both grids bit-identical with 1 to 400 bands, 1 to 4 threads,
+  with and without AVX lanes, records kept between updates; removing
+  either quirk, or reversing the order of two emitters, fails it;
+- the hook installed in the mapped `Update2` against the unhooked one, on
+  one and four pool threads (the game's lambdas run on the test's threads
+  as its pool runs them): identical through checked, banded and fallen
+  back updates (a non-default MXCSR); a sabotaged self-check turns it off
+  and leaves the game's result; a window of rows equals the whole run's;
+- the recorded hashes, call sites and `logf` slot match the executable;
+- `emitters_speed` and `emitters_parts` (ignored, benchmarks): `cargo test
+  -p tpf3mp-hook --release --lib -- --ignored emitters_speed --nocapture`.
+
 ### What the hook costs: the `perf:` lines
 
 `crates/tpf3mp-hook/src/perf.rs` times the hook's per-update work where

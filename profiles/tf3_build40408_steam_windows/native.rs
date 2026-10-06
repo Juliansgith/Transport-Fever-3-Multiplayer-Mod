@@ -11,6 +11,7 @@ pub mod builds;
 pub mod drawing;
 pub mod edgewatch;
 pub mod emission;
+pub mod emitters;
 pub mod guiplayer;
 pub mod junctions;
 pub mod menu;

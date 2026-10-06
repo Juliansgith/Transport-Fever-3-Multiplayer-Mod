@@ -1846,6 +1846,22 @@ offset = 0
 prologue = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08"
 required = false
 
+# The banded emitter splat (crates/tpf3mp-hook/src/emitters; investigation/
+# TF3_EMITTER_SPLAT_2026-10-06.md). ecs::EmissionEmitterSystem::Update2
+# (0xaa51c0, vtable 0x1436fc430 slot 12; Game/ecs/EmissionEmitterSystem.cpp):
+# rcx the system, rdx the engine, r8d the node count, xmm3 dt. It calls
+# lambda_1's dispatcher at +0x50d (bucketing) and lambda_2's loop at +0x583
+# (one pool thread) or its pool dispatcher at +0x61d (the splat). The hook
+# redirects those three calls and splats by row bands, bit-identical;
+# emitters.rs records the offsets from here and the FNV-1a hash of every byte
+# the model covers, which the hook checks before it patches anything.
+[[target]]
+name = "emitters::EmissionEmitterSystem::Update2"
+signature = "C5 FA 11 5C 24 20 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 98 48 81 EC 68 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 58 44 89 44 24 78"
+offset = 0
+prologue = "C5 FA 11 5C 24 20 55 53 56 57 41 54 41 55 41 56"
+required = false
+
 # Simulation-changing big-map switches, a PROPOSAL for the owner, off by
 # default (crates/tpf3mp-hook/src/bigmap/emission.rs; investigation/
 # TF3_BIGMAP_SIM_COST_2026-10-05.md, "Switches built"). The emission throttle
