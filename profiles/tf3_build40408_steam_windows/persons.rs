@@ -116,4 +116,57 @@ pub mod freed_ids {
         0x48, 0x89, 0x44, 0x24, 0x20, 0x4D, 0x8B, 0x09, 0x4D, 0x8B, 0x85, 0xF8, 0x00, 0x00, 0x00,
         0x48, 0x8D, 0x55, 0x87, 0xE8,
     ];
+
+    /// The free-id trace (logging only). `r12` at the site is `r13 +
+    /// BETWEEN_CHANGES`, `r13` the engine (`0x2bb4dc2`, `0x2bb4dc5`).
+    pub const BETWEEN_CHANGES: u64 = 0x1f0;
+
+    /// The free-id deque `std::deque<Entity>` in the engine: its map at
+    /// `+0x08`, map size `+0x10`, offset `+0x18` and size `+0x20` from here
+    /// (`AddEntity` `0x2bb37fe`, `0x2bb39ed..0x2bb3a16`), four ids a block.
+    pub const FREE_IDS: u64 = 0xd8;
+
+    pub const QUEUE_MAP: u64 = 0x08;
+
+    pub const QUEUE_MAP_SIZE: u64 = 0x10;
+
+    pub const QUEUE_OFFSET: u64 = 0x18;
+
+    pub const QUEUE_SIZE: u64 = 0x20;
+
+    pub const QUEUE_BLOCK_IDS: u64 = 4;
+
+    /// The entity table, a vector of 0x18-byte rows: a new id is its size
+    /// when the deque is empty (`AddEntity` `0x2bb3810..0x2bb3831`).
+    pub const ENTITY_TABLE: u64 = 0x90;
+
+    pub const ENTITY_ROW: u64 = 0x18;
+
+    /// `EndModification`'s head, `0x241` bytes before the site: three
+    /// stores into the caller's home slots, five pushes (`rbp`, `r12` to
+    /// `r15`), then `sub rsp, 0x100`, so the return address is at the site's
+    /// `rsp + RETURN_FROM_SITE`.
+    pub const HEAD_FROM_SITE: i64 = -0x241;
+
+    pub const HEAD: [u8; 36] = [
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20,
+        0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0xC9, 0x48,
+        0x81, 0xEC, 0x00, 0x01, 0x00, 0x00,
+    ];
+
+    pub const RETURN_FROM_SITE: u64 = 0x128;
+
+    /// The simulation's engine as `GameSim::Step` names it for each update:
+    /// `mov rcx, [rbp+8]; vmovaps xmm1, xmm6; mov rcx, [rcx+0x18]; call`
+    /// `ecs::Engine::Update` (`0x159550`), `rbp` being the step's `this`
+    /// (`0x15939b`).
+    pub const STEP_ENGINE_CALL_AT: u64 = 0x1c0;
+
+    pub const STEP_ENGINE_CALL: [u8; 13] = [
+        0x48, 0x8B, 0x4D, 0x08, 0xC5, 0xF8, 0x28, 0xCE, 0x48, 0x8B, 0x49, 0x18, 0xE8,
+    ];
+
+    pub const STEP_DATA: u64 = 0x08;
+
+    pub const DATA_ENGINE: u64 = 0x18;
 }

@@ -4780,6 +4780,7 @@ ids in place.
 | `TPF3MP_HOOK_PERSON_ARRIVALS_ORDER` | `person-arrivals-order` |
 | `TPF3MP_HOOK_PERSON_NEEDS_PATH_ORDER` | `person-needs-path-order` |
 | `TPF3MP_HOOK_FREED_ID_ORDER` | `freed-id-order` |
+| `TPF3MP_HOOK_FREED_ID_TRACE` | the free-id trace (logging only; it never needs to match between games) |
 
 Each fix installs on its own and fails closed on its own:
 
@@ -4895,6 +4896,68 @@ of `RemoveEntity` include walks of node lists and hash maps.
   `EndModification`. So it sorts the same batches, and its `AddEntity`
   check (`entity == c.entity`) still holds.
 
+**What the sort cannot reach.** Read with `tools/tpfre` on build 40408,
+`EndModification` is the only code that appends to the free-id queue (its
+insert `0x2bb1110` has one caller, `0x2bb4ff3`), `AddEntity` the only code
+that pops it or grows the entity table, and `RemoveEntity` (`0x2bb75f0`)
+only pushes to the modification's removed ids. `Engine::Load` and
+`Engine::Clone` replace the queue whole. So with the sort, the ids a game
+hands out are a function of one thing: the sequence of the simulation
+engine's modifications, each with the ids it took and freed. Two games can
+only part on ids when that sequence differs, for example when a
+modification lands at a moment the frames choose rather than the room's
+steps (the paused path runs the game scripts' system, and a batch's first
+update drains the command list before `ecs::Engine::Update` begins).
+
+Seen once in production (release 1.2.8, 2026-10-06, two games from the
+start world, no reload): the signals placed by the room had equal ids in
+both games up to room step 34900, and from step 35100 on other ids. The
+only actions in between were a bulldozed signal and nine line edits.
+Vehicles diverged in lane 3 about 1,300 steps later, at step 36400.
+
+#### The free-id trace
+
+Logging only, on with `freed-id-order` (`TPF3MP_HOOK_FREED_ID_TRACE=0`
+turns it off). It rides on the fix's own splice and reads, through
+`image::Readable`, only the simulation's engine: the one `GameSim::Step`
+hands `ecs::Engine::Update` (`[[this+8]+0x18]`), noted at every call of
+the room's game's step. The replicated engine is left out.
+
+- At every checkpoint (and the first batch after a load), right after the
+  `ticks:` line:
+
+  ```
+  free ids: step <n>: queued=<ids> front=<id> hash=<16 hex>; updates: <m> modification(s) took <t> and freed <f> (<16 hex>); outside updates: <m> took <t> and freed <f>
+  ```
+
+  The queue's size, front and a hash of every id in pop order, then what
+  the modifications in the room's updates took (new and reused ids) and
+  freed since the last checkpoint, with a hash of the freed ids in order.
+  Two games of a room must log equal lines at equal steps. The first line
+  that differs bounds where their ids parted to one checkpoint interval,
+  long before a placed object's id or a vehicle shows it.
+- Each modification of the simulation's engine that took or freed ids
+  outside the room's updates (the first 16, then every 1024th):
+
+  ```
+  freed-id trace: the simulation's engine took <t> and freed <f> id(s) <where> (returning to <rva>); <n> such modification(s) since the world loaded
+  ```
+
+  `<where>` is `in the game's step outside the room's updates` (the paused
+  path, or a batch's first update before the engine's update began) or
+  `outside the game's step` (another frame or thread). `<rva>` is the
+  return address of `EndModification` (its head is checked: the return
+  address is `0x128` above the site's `rsp`), the code to read with
+  `tpfre q <db> func <rva>`. In a sound game there are none; a room
+  action is applied for its step and counts as an update.
+
+The checks: `EndModification`'s head before the site, and the step's
+`mov rcx, [rbp+8]; ...; mov rcx, [rcx+0x18]; call ecs::Engine::Update`
+at `GameSim::Step + 0x1c0`. A mismatch leaves the trace off and says why
+(`freed-id trace: off, ...`); the fix itself stays on. `freed-id-order`'s
+own `in-step` counts are not comparable between games: the paused path's
+modifications run inside the step too, as many as there are frames.
+
 **Not ported**:
 
 - *Capacity maps* (TF2's `capacity`). TF3's `SimEntityUpdateHelper` keeps
@@ -4957,8 +5020,10 @@ than a game with a bigger pool.
   ```
 
   `freed-id-order` also counts the second engine's modifications, which
-  run outside the step as often as frames come. That is why the in-step
-  counts are the ones to compare.
+  run outside the step as often as frames come, and the paused path's,
+  which run inside it as often as frames come. Its in-step counts can
+  therefore differ between games of a room; the free-id trace's `free
+  ids:` lines are the ones to compare (above).
 
 The time goes to the `person-order` piece of the `perf:` line.
 

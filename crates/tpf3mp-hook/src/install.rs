@@ -415,6 +415,8 @@ unsafe fn run_step(
     crate::image::invalidate();
     let perf = crate::perf::start();
     let started = crate::steptrace::step_timer(perf, crate::steptrace::enabled());
+    // The free-id trace learns which engine this game simulates.
+    crate::persons::freed_ids::trace::note_step(this as u64, room);
     crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
@@ -440,6 +442,11 @@ fn log_counters(first: u64, updates: u32, checkpoint: bool) {
     if checkpoint || before.saturating_add(1) != first {
         let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
         log_line(&crate::ticks::checkpoint_line(last, counters));
+        // The free-id queue's fingerprint (docs/HOOKS.md, "The free-id
+        // trace").
+        if let Some(line) = crate::persons::freed_ids::trace::checkpoint_line(last) {
+            log_line(&line);
+        }
         // The road entry trace's digest of the in-step appends since the
         // last checkpoint (docs/HOOKS.md, "The road entry trace").
         if let Some(line) = crate::roadtrace::take_checkpoint(last) {

@@ -320,6 +320,76 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     assert_eq!(callee(0xb17d0a), 0xb186c0);
     // freed ids: the call after the site is the free-id deque's insert.
     assert_eq!(callee(0x2bb4ff3), 0x2bb1110);
+    // The free-id trace (crates/tpf3mp-hook/src/persons.rs, freed_ids::
+    // trace). That insert has no other caller: EndModification is the only
+    // code that appends to the free-id queue.
+    let inserts: Vec<u64> = (0..text_bytes.len().saturating_sub(5))
+        .filter(|&i| matches!(text_bytes[i], 0xE8 | 0xE9))
+        .filter(|&i| {
+            let rel = i32::from_le_bytes(text_bytes[i + 1..i + 5].try_into().unwrap());
+            (base as i64 + i as i64 + 5 + i64::from(rel)) as u64 == 0x2bb1110
+        })
+        .map(|i| base + i as u64)
+        .collect();
+    assert_eq!(inserts, vec![0x2bb4ff3]);
+    // EndModification's head, 0x241 bytes before the site: three stores
+    // into the caller's home slots, five pushes and `sub rsp, 0x100`, so
+    // the return address is 0x128 above the site's rsp.
+    assert_eq!(0x2bb4fd1 - 0x2bb4d90, 0x241);
+    assert_eq!(
+        &text_bytes[at(0x2bb4d90)..at(0x2bb4d90) + 36],
+        &[
+            0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24,
+            0x20, 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24,
+            0xC9, 0x48, 0x81, 0xEC, 0x00, 0x01, 0x00, 0x00
+        ]
+    );
+    // `mov r13, rcx; lea r12, [rcx+0x1f0]`: r13 is the engine at the site.
+    assert_eq!(
+        &text_bytes[at(0x2bb4dc2)..at(0x2bb4dc2) + 10],
+        &[0x4C, 0x8B, 0xE9, 0x4C, 0x8D, 0xA1, 0xF0, 0x01, 0x00, 0x00]
+    );
+    // AddEntity pops the queue's front when its size (+0xf8) is not 0,
+    // reading the map (+0xe0), its size (+0xe8) and the offset (+0xf0) in
+    // blocks of four; else the new id is the entity table's (+0x90) size
+    // in 0x18-byte rows.
+    assert_eq!(
+        &text_bytes[at(0x2bb37fe)..at(0x2bb37fe) + 7],
+        &[0x4C, 0x8B, 0x87, 0xF8, 0x00, 0x00, 0x00]
+    );
+    assert_eq!(
+        &text_bytes[at(0x2bb39ed)..at(0x2bb39ed) + 0x29],
+        &[
+            0x48, 0x8B, 0x97, 0xF0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x8F, 0xE8, 0x00, 0x00, 0x00,
+            0x48, 0xFF, 0xC9, 0x48, 0x8B, 0xC2, 0x48, 0xC1, 0xE8, 0x02, 0x48, 0x23, 0xC8, 0x83,
+            0xE2, 0x03, 0x48, 0x8B, 0x87, 0xE0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x0C, 0xC8
+        ]
+    );
+    assert_eq!(
+        &text_bytes[at(0x2bb3810)..at(0x2bb3810) + 7],
+        &[0x4C, 0x8D, 0x97, 0x90, 0x00, 0x00, 0x00]
+    );
+    assert_eq!(
+        &text_bytes[at(0x2bb3821)..at(0x2bb3821) + 10],
+        &[0x48, 0xB8, 0xAB, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0x2A]
+    );
+    // The step keeps `this` in rbp and hands ecs::Engine::Update the
+    // engine at [[this+8]+0x18].
+    assert_eq!(
+        &text_bytes[at(0x15939b)..at(0x15939b) + 3],
+        &[0x48, 0x8B, 0xE9]
+    );
+    assert_eq!(
+        &text_bytes[at(0x159550)..at(0x159550) + 13],
+        &[
+            0x48, 0x8B, 0x4D, 0x08, 0xC5, 0xF8, 0x28, 0xCE, 0x48, 0x8B, 0x49, 0x18, 0xE8
+        ]
+    );
+    assert_eq!(callee(0x15955c), 0x2bb8a50);
+    assert_eq!(
+        resolved.get("ecs::Engine::Update").map(|t| t.address),
+        Some(0x2bb8a50)
+    );
     // The town trace: the applier calls Develop between its two sites, and
     // reads updateCount for the seed through its getter.
     assert_eq!(callee(0x9dfccb), 0x8dc240);
