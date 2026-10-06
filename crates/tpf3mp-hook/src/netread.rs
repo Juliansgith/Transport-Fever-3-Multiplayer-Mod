@@ -1,12 +1,14 @@
-//! The network lane's edge rows read natively (docs/HOOKS.md, "The network
-//! lane read natively"): the rows `tpf3mp/lanes.lua` builds from every
-//! street and track edge at a checkpoint, the same text, from the engine's
-//! memory instead of a `getComponent` call and a dozen field reads an edge.
+//! The rolling world checks' static lanes read natively, a part at a time
+//! (docs/HOOKS.md, "The network lane read natively"): the rows
+//! `tpf3mp/lanes.lua` builds from the street and track edges, junctions and
+//! constructions, the same text, from the engine's memory instead of a
+//! `getComponent` call and a dozen field reads an object ([`read_part`]).
 //!
-//! [`ENV`] sets it: off (the default), `compare`, where the mod reads both
-//! and logs whether they agree but hashes its own, or `on`, where the mod
-//! hashes these rows and reads its own only when they did not read. The
-//! junction rows of the lane stay the mod's.
+//! [`ENV`] sets it: off (the default), `on`, where a room's rolling history
+//! is kept in native parts, or `compare`, where the mod also reads each
+//! part in Lua, compares the rows and hashes its own. The full readers
+//! ([`network`], [`construction_rows`]) remain for the tests that hold the
+//! rows to the mod's Lua.
 //!
 //! Where it reads (investigation/TF3_NATIVE_NETWORK_2026-10-04.md; the
 //! offsets are the build's, in its native bundle):
@@ -25,8 +27,8 @@
 //! Fail closed: anything that does not read as the layout says (a pointer
 //! out of order, a count past its bound, an entity whose bits and list
 //! disagree, a number that is not finite) fails the whole read with why,
-//! and the mod reads its own. Nothing is written, nothing of the game's is
-//! called.
+//! and the room's history of parts holds. Nothing is written, nothing of
+//! the game's is called.
 
 #![allow(unsafe_code)]
 
