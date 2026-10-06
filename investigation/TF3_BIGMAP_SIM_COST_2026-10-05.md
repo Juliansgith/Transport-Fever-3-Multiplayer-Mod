@@ -618,3 +618,6 @@ bit-identical splat by row bands, in
 corrects §1.4 on two points: the 32 tasks are 2 grids x 16 regions, each
 walking its bucket in ascending node order; and the region test drops a
 sample whose two rows straddle a region boundary in y.
+*Added 2026-10-06:* the walk reversed in full and the check-only probe
+built (`TPF3MP_HOOK_PARCEL_PROBE=1`): see
+[TF3_PARCEL_COLLISION_2026-10-06.md](TF3_PARCEL_COLLISION_2026-10-06.md).
