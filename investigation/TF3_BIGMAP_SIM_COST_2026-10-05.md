@@ -32,7 +32,9 @@ Rough budget for one ~260 ms update on 100 x 1000 (stock ~70 ms): emission grid
 ~30-60 ms (DERIVED); parcel-collision octree path ~44% of sim-thread samples,
 ~100-115 ms if the sim thread is busy for the whole update (DERIVED from the
 profile shares, GUESS that most `GetComponentDataIndex` samples come from this
-path); the hook's `ZwQueryVirtualMemory` ~12% (~30 ms, being fixed). Together this
+path); the hook's `ZwQueryVirtualMemory` ~12% (~30 ms; region caches first, then
+guarded reads with no system call at all, docs/HOOKS.md "Reading the game's memory:
+guarded reads", 2026-10-06). Together this
 covers the ~180-200 ms difference within the uncertainty. Instrument before
 optimising (section 5, option 0).
 
