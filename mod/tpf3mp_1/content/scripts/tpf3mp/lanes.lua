@@ -200,6 +200,41 @@ local function townGrowth(api)
 	end
 end
 
+-- One edge's row: its ends to 0.1 m (the one whose text sorts first
+-- first), its road template and its lanes, turned with the edge where its
+-- ends were swapped. `net` (optional) counts the lane configs; with `api`,
+-- the hook decodes the lanes from an owned copy of the component
+-- (tpf3mp_native.laneRows), else this Lua reads each.
+function lanes.edgeRow(edge, net, api)
+	local a, b = vec01(edge.position0), vec01(edge.position1)
+	local reversed = a > b
+	if reversed then a, b = b, a end
+	local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
+	local native = tpf3mp_native
+	local laneText, count
+	local copy = api and api.type and api.type.BaseEdge and api.type.BaseEdge.new
+	if type(native) == "table" and type(native.laneRows) == "function" and type(copy) == "function" then
+		-- getComponent returns a borrowed reference. Copy once;
+		-- Rust reads the owned snapshot, including nested vectors.
+		laneText, count = native.laneRows(copy(edge), reversed)
+	end
+	if laneText == nil then
+		local laneRows, configs = {}, edge.laneConfigs
+		count = #configs
+		for i = 1, count do
+			local l, modes = configs[i], {}
+			local transportModes = l.transportModes
+			for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
+			laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
+				l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+		end
+		table.sort(laneRows)
+		laneText = table.concat(laneRows,";")
+	end
+	if net then net.laneConfigs = net.laneConfigs + count end
+	return row .. "|lanes:" .. laneText
+end
+
 -- Each reader returns its lane's text. With `emit` (a dump), it also calls
 -- emit(kind, entity, row, fields) for every row it hashes: the registry's
 -- kind that names the entity, if any, the row as hashed, and the raw values
@@ -225,36 +260,10 @@ readers[lanes.NETWORK] = function(api, emit, ids, selected)
 				if g0 and g1 then net.get = net.get + (g1 - g0) end
 				net.edges = net.edges + 1
 				if edge then
-					local a, b = vec01(edge.position0), vec01(edge.position1)
-					local reversed = a > b
-					if reversed then a, b = b, a end
-					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
 					local l0 = clock()
-					local native = tpf3mp_native
-					local laneText, count
-					local copy = api.type.BaseEdge and api.type.BaseEdge.new
-					if native and type(native.laneRows) == "function" and type(copy) == "function" then
-						-- getComponent returns a borrowed reference. Copy once;
-						-- Rust reads the owned snapshot, including nested vectors.
-						laneText, count = native.laneRows(copy(edge), reversed)
-					end
-					if laneText == nil then
-						local laneRows, configs = {}, edge.laneConfigs
-						count = #configs
-						for i = 1, count do
-							local l, modes = configs[i], {}
-							local transportModes = l.transportModes
-							for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
-							laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
-								l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
-						end
-						table.sort(laneRows)
-						laneText = table.concat(laneRows,";")
-					end
-					net.laneConfigs = net.laneConfigs + count
+					local row = lanes.edgeRow(edge, net, api)
 					local l1 = clock()
 					if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
-					row = row .. "|lanes:" .. laneText
 					rows[#rows + 1] = row
 					if emit then
 						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
@@ -631,6 +640,166 @@ function lanes.spatial(api, box, limit)
 	return out, selected
 end
 
+-- Rolling checks in parts (version 2): where the hook reads the static
+-- lanes natively (tpf3mp_native.part, crates/tpf3mp-hook/src/netread.rs),
+-- every update reads one of PARTS parts of them, so that every PARTS
+-- updates the whole map is read. An object's part follows from its row
+-- alone: the place the row names it at (an edge by its first end, a
+-- junction by its node, a construction by its own), in the cell of
+-- CELL_TENTHS tenths of a metre (CELL_MM millimetres for a junction row's
+-- node key), the cells taking turns in the parts.
+lanes.PARTS = 10
+local CELL_TENTHS, CELL_MM = 2560, 256000
+
+local function partOf(x, y, side, n)
+	return (math.floor(x / side) + 3 * math.floor(y / side)) % n
+end
+lanes.partOf = partOf
+
+local function tenthsOf(text)
+	local v = tonumber(text)
+	if type(v) ~= "number" or v ~= v then error("a row's place is no number", 0) end
+	return math.floor(v * 10 + 0.5)
+end
+
+-- The part of `n` a canonical row of `lane` (NETWORK or CONSTRUCTIONS) is in.
+function lanes.rowPart(lane, row, n)
+	if lane == lanes.CONSTRUCTIONS then
+		local x, y = string.match(row, "@([^@,]+),([^@,]+)$")
+		if not x then error("a construction row without its place", 0) end
+		return partOf(tenthsOf(x), tenthsOf(y), CELL_TENTHS, n)
+	end
+	local jx, jy = string.match(row, "^junction:%a+:([^,|]+),([^,|]+),")
+	if jx then
+		local x, y = tonumber(jx), tonumber(jy)
+		if type(x) ~= "number" or type(y) ~= "number" then error("a junction row without its place", 0) end
+		return partOf(x, y, CELL_MM, n)
+	end
+	local x, y = string.match(row, "^([^,>]+),([^,>]+),")
+	if not x then error("an edge row without its place", 0) end
+	return partOf(tenthsOf(x), tenthsOf(y), CELL_TENTHS, n)
+end
+
+-- Whether this state's hook reads parts: its part() answers at all (nil
+-- where TPF3MP_HOOK_NATIVE_LANES leaves it off).
+function lanes.nativeParts()
+	local native = tpf3mp_native
+	if not (type(native) == "table" and type(native.part) == "function"
+		and type(native.partTexts) == "function") then return false end
+	return native.part() ~= nil
+end
+
+-- The part's rows as this Lua makes them (the reference the hook's are
+-- compared with): every row of the two lanes, kept where it is in part k.
+local function luaPart(api, n, k)
+	local rows = { [lanes.NETWORK] = {}, [lanes.CONSTRUCTIONS] = {} }
+	for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
+		local list = rows[lane]
+		readers[lane](api, function(_, _, row)
+			if lanes.rowPart(lane, row, n) == k then list[#list + 1] = row end
+		end)
+	end
+	return rows
+end
+
+-- Up to three rows in one sorted list and not the other.
+local function onlyIn(a, b)
+	local out, i, j = {}, 1, 1
+	while i <= #a and #out < 3 do
+		if j > #b or a[i] < b[j] then out[#out + 1] = a[i] i = i + 1
+		elseif a[i] == b[j] then i, j = i + 1, j + 1
+		else j = j + 1 end
+	end
+	return out
+end
+
+-- How the parts read and compared since the last checkpoint, for the log only.
+local compared = { agree = 0, differ = 0, nativeMs = 0, nativeMax = 0, reads = 0, timing = nil }
+
+local function rollingParts(api, scan, step, checkpoint)
+	local t0 = clock()
+	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
+	local n = scan.parts
+	if type(n) ~= "number" or n < 1 or n % 1 ~= 0 then error("invalid world-check parts", 0) end
+	local k = (step - 1) % n
+	local native = tpf3mp_native
+	local read = type(native) == "table" and type(native.part) == "function" and native.part(n, k) or nil
+	-- A history of parts goes on only in parts: never another reading in
+	-- their place.
+	if read == nil then error("this game reads no parts of the world", 0) end
+	if read.why then error("part " .. k .. " of the world did not read: " .. tostring(read.why), 0) end
+	local compare = read.mode == "compare"
+	local preferences, lights = junctions.names(api, read.lights)
+	local deferred = junctions.rowsOf(api, read.deferred)
+	local net, cons, netRows, consRows = native.partTexts(preferences, lights, deferred, compare)
+	if net == nil then error("part " .. k .. " of the world has no texts: " .. tostring(cons), 0) end
+	compared.reads = compared.reads + 1
+	compared.nativeMs = compared.nativeMs + (read.ms or 0)
+	compared.nativeMax = math.max(compared.nativeMax, read.ms or 0)
+	compared.timing = read.timing
+	local values = { [lanes.NETWORK] = net, [lanes.CONSTRUCTIONS] = cons }
+	local note
+	if compare then
+		local own = luaPart(api, n, k)
+		local theirs = { [lanes.NETWORK] = netRows, [lanes.CONSTRUCTIONS] = consRows }
+		local differ = {}
+		for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
+			local text = summary(own[lane])
+			if text ~= values[lane] then
+				differ[#differ + 1] = string.format("lane %d lua %s native %s; only lua: %s; only native: %s",
+					lane, text, tostring(values[lane]), table.concat(onlyIn(own[lane], theirs[lane] or {}), " || "),
+					table.concat(onlyIn(theirs[lane] or {}, own[lane]), " || "))
+			end
+			-- Compared, this Lua's own text counts.
+			values[lane] = text
+		end
+		if #differ > 0 then
+			compared.differ = compared.differ + 1
+			note = string.format("part %d/%d at step %d differs: %s", k, n, step, table.concat(differ, "; "))
+		else
+			compared.agree = compared.agree + 1
+		end
+	end
+	local dynamic = lanes.LINES + (step - 1) % 5
+	values[dynamic] = readers[dynamic](api)
+	local context = string.format("%d|parts|%d/%d|", step, k, n)
+	for lane, text in pairs(values) do
+		if type(text) ~= "string" or text == "err" then error("world-check lane " .. lane .. " was not read", 0) end
+		scan.hashes[lane] = fastHash((scan.hashes[lane] or "rolling-v2") .. context .. text)
+		scan.counts[lane] = (scan.counts[lane] or 0) + 1
+	end
+	scan.step = step
+	local t1 = clock()
+	local ms = t0 and t1 and (t1 - t0) * 1000 or 0
+	local out, report
+	if k == n - 1 then
+		scan.sweeps = scan.sweeps + 1
+		report = string.format("rolling world sweep: cycle=%d steps=%d-%d samples=%d",
+			scan.sweeps, scan.sweepStart, step, step - scan.sweepStart + 1)
+		scan.sweepStart = step + 1
+	end
+	if checkpoint then
+		out = {}
+		local texts = {}
+		for lane = lanes.NETWORK, lanes.PEOPLE do
+			out[lane] = string.format("rolling-v2:%d-%d:%d:%s", scan.first, step,
+				scan.counts[lane] or 0, scan.hashes[lane] or "empty")
+			texts[#texts + 1] = out[lane]
+		end
+		local line = string.format("rolling world check: steps=%d-%d part=%d/%d last_ms=%.3f"
+			.. " native_mean_ms=%.2f native_max_ms=%.2f (%s)%s signature=%s",
+			scan.first, step, k, n, ms, compared.nativeMs / math.max(1, compared.reads), compared.nativeMax,
+			tostring(compared.timing),
+			compare and string.format(" compared agree=%d differ=%d", compared.agree, compared.differ) or "",
+			fastHash(table.concat(texts, "\n")))
+		report = report and (report .. "; " .. line) or line
+		compared.agree, compared.differ, compared.nativeMs, compared.nativeMax, compared.reads = 0, 0, 0, 0, 0
+		scan.first, scan.hashes, scan.counts = step + 1, {}, {}
+	end
+	if note then report = report and (report .. "; " .. note) or note end
+	return scan, out, report, ms
+end
+
 -- A rolling observation window, saved with the world so a joining/rebased
 -- game resumes the exact same window. Only numbers and digest strings survive
 -- an update. Samples use absolute room steps, never frame rate or a stopwatch.
@@ -641,11 +810,19 @@ end
 function lanes.rolling(api, previous, step, checkpoint)
 	if type(step) ~= "number" or step < 1 or step % 1 ~= 0 then error("invalid world-check step", 0) end
 	local scan = previous
-	if step == 1 then scan = { version = 1, step = 0, first = 1, hashes = {}, counts = {},
-		tile = 0, pending = {}, sweepStart = 1, sweeps = 0 } end
-	if type(scan) ~= "table" or scan.version ~= 1 or scan.step ~= step - 1 then
+	if step == 1 then
+		if lanes.nativeParts() then
+			scan = { version = 2, step = 0, first = 1, hashes = {}, counts = {},
+				parts = lanes.PARTS, sweepStart = 1, sweeps = 0 }
+		else
+			scan = { version = 1, step = 0, first = 1, hashes = {}, counts = {},
+				tile = 0, pending = {}, sweepStart = 1, sweeps = 0 }
+		end
+	end
+	if type(scan) ~= "table" or (scan.version ~= 1 and scan.version ~= 2) or scan.step ~= step - 1 then
 		error("the rolling world-check history is missing or skipped an update", 0)
 	end
+	if scan.version == 2 then return rollingParts(api, scan, step, checkpoint) end
 	local t0 = clock()
 	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
 	local bounds = api.engine.terrain.getBoundingBox()

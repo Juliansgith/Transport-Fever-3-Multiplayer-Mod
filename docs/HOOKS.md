@@ -839,6 +839,26 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.hash(s)`: the lanes' text hash of `s`, exactly what the
   mod's Lua `hashStr` returns (`crate::lanehash`), without a Lua loop over
   every byte ("What the lanes cost" below); `nil` without a string.
+- `tpf3mp_native.network()`: in a game script's `postUpdate` at a
+  checkpoint, the network lane read by the hook ("The network lane read
+  natively" below): `nil` when `TPF3MP_HOOK_NATIVE_LANES` leaves it off;
+  compared, `{ mode = "compare", count, deferred, rows, junctions = {
+  heads, preferences, lights, tails } }`; on, `{ mode = "on", count,
+  deferred, junctions = { lights } }`, the read kept for `networkSummary`.
+  `deferred` lists the junctions' nodes left to the mod. `why` stands for
+  all but the mode when the edges did not read, `junctionsWhy` for the
+  junctions. Outside a checkpoint's last update, or off the game's step's
+  own thread, it reads nothing and says so.
+  Optional: the mod reads its own without it.
+- `tpf3mp_native.constructions()`: in a game script's `postUpdate`, the
+  constructions lane read by the hook: `nil` when off, else `{ mode, text =
+  "count:hash", ms }` (compared, with its `rows`), or `{ mode, why }`.
+- `tpf3mp_native.networkSummary(preferences, lights, deferred)`: right
+  after `network()`, the network lane's text (`count:hash`) from what it
+  read, the junctions' names given as `{ [value] = name }` and `{ [type] =
+  name }` (`junctions.names`), and the rows the mod made for the junctions
+  `network()` left to it (`deferred`, its nodes; `junctions.rowsOf`); `nil`
+  and why when it cannot be made.
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
@@ -3516,8 +3536,111 @@ against the old read at every checkpoint):
 
 Together the read took 200-275 ms there, the checkpoint's step 240-300 ms:
 still a visible stutter, about a quarter of it. Reading the network natively
-would take most of the rest; the layouts it would need are in
-`investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
+takes most of the rest (below).
+
+The mod logs, at each checkpoint, what applying the room's actions cost
+since the last one, when it applied any: the actions themselves, every
+`registry.sync` (once before the actions of an update and once after each
+action, each walking every vehicle, line, station group, town and
+industry) and reading and writing the game script's state:
+
+```
+mod: actions since the last checkpoint: 3 in 2 updates, applied in 4.0 ms (longest 2.0), registry.sync 21.0 ms over 5 calls (longest 5.0), state 3.0 ms
+```
+
+#### The network lane read natively
+
+`TPF3MP_HOOK_NATIVE_LANES` in the game's environment lets the hook read
+the network lane's rows from the engine's memory
+(`crates/tpf3mp-hook/src/netread.rs`; the build's offsets in its native
+bundle, `profiles/<build>/netread.rs`; the layouts in
+`investigation/TF3_NATIVE_NETWORK_2026-10-04.md`):
+
+| value | the mod |
+|---|---|
+| unset, `off` | reads its own, as before |
+| `compare` | reads both, hashes its own, and logs whether they agree |
+| `on` | takes the hook's text of the lane; reads its own where it did not read |
+
+The hook makes the same text the mod's Lua makes: each edge's row as
+`lanes.edgeRow` makes it, numbers printed as the game's Lua 5.2 prints
+them (`%.14g`, `%.3f`, `%.0f`, checked against a real Lua in the tests),
+and each junction's row as `junctions.rows` makes it, but for its traffic
+light preference and its light's resource name, which only the game's Lua
+names: the hook hands their values, and `junctions.rowsFromParts` puts the
+names in. So the lane's digest is the same whichever reads it, and games
+of one room may differ in the setting.
+
+What it reads, only while the game's step runs (the engine is
+`[CGameTime+8]` of the `CGameTime` the step called its speed getter on, so
+only inside the game script's `postUpdate`, where the mod reads its
+lanes):
+
+- the pools of `BaseEdge`, `BaseNode` and `BaseNodeConfig`, each the one
+  of the engine's pools (`engine+0x78`) whose vtable is its `CompVec`'s;
+  its index there is its type id;
+- every entity whose component bits (`engine+0xc0`, 16 bytes an entity)
+  hold that type id, its data index from its component list
+  (`engine+0x90`, which must list the type id), its component from the
+  pool's dense vector or its pages; a removed entity is skipped;
+- each edge's ends, lane configs, road template, nodes and network; each
+  node's position; each junction's turns, crosswalk set, phases, flags,
+  preference and light type.
+
+Anything that does not read as the layout says fails the read with why:
+a pointer out of order, a count past its bound, an entity whose bits and
+list disagree, a flag that is not 0 or 1, a number that is not finite, a
+turn naming an edge that is not there. The edges and the junctions fail
+apart; the mod then reads its own and the cost line says why. Nothing is
+written, and nothing of the game's is called. It reads only in the last
+update of a checkpoint's batch, before the lanes are handed over (the
+check `lanes()` makes), and only on the thread running the game's step,
+inside it: there nothing changes the engine beside the step's own work.
+On build 40408 the game script's `postUpdate` runs there (thread 3 in the
+hook's numbering, every time); its `update` runs on the game's pool of
+threads, one or another, and so do no reads. A call from anywhere else,
+the GUI's state, another mod's or the console, reads nothing and says so.
+
+A junction whose phases name its crosswalks in an order that matters is
+left to the mod: one with two crosswalks or more, one of whose phases
+locks some of them but not all. A phase names its lanes by index, the
+crosswalks' part in the order the game's Lua lists the crosswalk set, and
+the Lua lists a copy of the component, whose hash set a copy may lay out
+in another order than the engine's own (phmap's copy inserts anew). The
+hook hands those junctions' nodes over (`deferred`), the mod makes their
+rows itself (`junctions.rowsOf`) and gives them to the summary; the cost
+line counts them (`n junctions left to Lua`; none on `MP_crash_1004`).
+
+The same setting reads the constructions lane natively: each
+construction's file (its `ResName`, +0) and the translation of its
+`transf` (16 float32 at +0x58, x and y at +0x88 and +0x8c), `file@x,y` to
+0.1 m, sorted, joined and hashed in the hook; compared, the mod checks the
+text and names the rows that differ.
+
+On, the hook also sorts the lane's rows, joins and hashes them as
+`summary` does (`tpf3mp_native.networkSummary`), so no row comes into the
+mod's Lua at all; compared, the cost line says whether that text agrees
+with the mod's (`native summary agrees`), which checks the rows' order too:
+the mod sorts with Lua's `table.sort`.
+
+The cost line ends with what the hook did:
+
+```
+...; native edges (compare) 4.0 ms, 2212 rows, agree with the mod's 2212; native junctions, agree with the mod's 2126
+```
+
+`DIFFER` in its place names the first rows each side has that the other
+has not.
+
+Measured on build 40408, two games on `MP_crash_1004` (2212-2214 edges,
+2126-2127 junction rows, 1857-1863 constructions, about 140 000 entities):
+compared, the hook's rows and texts agreed with the mod's at every
+checkpoint of eight rooms, towns growing streets and buildings meanwhile.
+On, the lanes read in 26-30 ms (the median of 62 checkpoints a game; at
+most 39) instead of 200-310, and the checkpoint's step took 42-53 ms
+instead of 240-340, the other steps 14-18 ms. Of it the hook's network
+read took 12-15 ms (edges about 5, junctions about 7), its summary of the
+lane about 6, the constructions 4-5.
 
 The follow-up shares the network lane's already-read edge components with
 junction rows and memoizes each node's street/track adjacency within that
