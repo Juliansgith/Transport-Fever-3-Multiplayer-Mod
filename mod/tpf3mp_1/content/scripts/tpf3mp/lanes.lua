@@ -701,9 +701,10 @@ end
 -- read by this Lua alone, without the hook's decoders of a component
 -- (laneRows, junctionConfig: lanes.decoders and junctions.decoders off),
 -- so that none of the hook's reading is compared with itself; of the same
--- owned copies as ever. The decoders are back however the read ends.
+-- owned copies as ever. The switches are as before however the read ends.
 local function luaPart(api, n, k)
 	local rows = { [lanes.NETWORK] = {}, [lanes.CONSTRUCTIONS] = {} }
+	local before = { lanes.decoders, junctions.decoders }
 	lanes.decoders, junctions.decoders = false, false
 	local ok, why = pcall(function()
 		for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
@@ -713,7 +714,7 @@ local function luaPart(api, n, k)
 			end)
 		end
 	end)
-	lanes.decoders, junctions.decoders = nil, nil
+	lanes.decoders, junctions.decoders = before[1], before[2]
 	if not ok then error(why, 0) end
 	return rows
 end

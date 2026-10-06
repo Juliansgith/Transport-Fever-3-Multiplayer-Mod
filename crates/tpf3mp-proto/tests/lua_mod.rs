@@ -1670,8 +1670,15 @@ fn junction_rows_read_the_owned_copy_with_or_without_the_hooks_decoder() {
         local ref = L.partRows(api, 1, 0)[L.NETWORK]
         table.sort(ref)
         local text = #ref .. ":" .. L.hash(table.concat(ref, "\30"))
-        assert(J.decoders == nil and L.decoders == nil, "the decoders are back")
-        return { borrowed, decoded, own, text, L.read(api)[L.NETWORK] }
+        assert(J.decoders == nil and L.decoders == nil, "the switches are as before")
+        J.decoders = false
+        L.partRows(api, 1, 0)
+        assert(J.decoders == false, "a switch set before stays set")
+        J.decoders = nil
+        -- A decoder that reads nothing leaves the rows to the same copy.
+        tpf3mp_native.junctionConfig = function() return nil end
+        local undecoded = table.concat(J.rows(api), "\n")
+        return { borrowed, decoded, own, text, L.read(api)[L.NETWORK], undecoded }
     "#,
         )
         .eval()
@@ -1682,6 +1689,7 @@ fn junction_rows_read_the_owned_copy_with_or_without_the_hooks_decoder() {
         rows[3], rows[4],
         "compare mode's reference is the lane read"
     );
+    assert_eq!(rows[5], rows[1], "nothing decoded, the copy still counts");
 }
 
 #[test]
