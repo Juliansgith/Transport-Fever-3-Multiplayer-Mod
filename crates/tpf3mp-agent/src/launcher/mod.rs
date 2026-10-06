@@ -161,7 +161,10 @@ pub struct Launcher {
     /// The page's address, when it serves one.
     url: Option<String>,
     shared: Arc<Shared>,
+    /// The launcher controller.
     task: JoinHandle<()>,
+    /// The page server, when this launcher serves a page.
+    page_task: Option<JoinHandle<()>>,
 }
 
 impl Launcher {
@@ -183,13 +186,11 @@ impl Launcher {
         let (shared, actions, lobby) = Shared::new(&config);
         let control = tokio::spawn(control(Arc::clone(&shared), config, actions, lobby));
         let serve = tokio::spawn(http::serve(listener, Arc::clone(&shared), page));
-        let task = tokio::spawn(async move {
-            let _ = tokio::join!(control, serve);
-        });
         Ok(Self {
             url: Some(url),
             shared,
-            task,
+            task: control,
+            page_task: Some(serve),
         })
     }
 
@@ -203,7 +204,40 @@ impl Launcher {
             url: None,
             shared,
             task,
+            page_task: None,
         }
+    }
+
+    /// Starts serving the browser page from this existing local launcher.
+    /// The page and any native frontend continue to use the same controller,
+    /// room session and game link. It can be attached once; a browser-started
+    /// launcher already has a page.
+    pub async fn serve_local(&mut self, listen: SocketAddr) -> std::io::Result<()> {
+        if self.url.is_some() || self.page_task.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "the launcher already serves a page",
+            ));
+        }
+        if !listen.ip().is_loopback() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the launcher serves the loopback interface only",
+            ));
+        }
+        let listener = TcpListener::bind(listen).await?;
+        let address = listener.local_addr()?;
+        let page = Arc::new(Page {
+            token: random_token(),
+            address,
+        });
+        self.url = Some(format!("http://{address}/#{}", page.token));
+        self.page_task = Some(tokio::spawn(http::serve(
+            listener,
+            Arc::clone(&self.shared),
+            page,
+        )));
+        Ok(())
     }
 
     /// The page's address, with the token it needs, if it serves one.
@@ -218,15 +252,25 @@ impl Launcher {
         }
     }
 
-    /// Runs until the task ends, which it does only if both halves stop.
+    /// Runs until the controller or page server ends.
     pub async fn wait(mut self) {
-        let _ = (&mut self.task).await;
+        if let Some(page_task) = self.page_task.as_mut() {
+            tokio::select! {
+                _ = &mut self.task => {}
+                _ = page_task => {}
+            }
+        } else {
+            let _ = (&mut self.task).await;
+        }
     }
 }
 
 impl Drop for Launcher {
     fn drop(&mut self) {
         self.task.abort();
+        if let Some(page_task) = self.page_task.take() {
+            page_task.abort();
+        }
     }
 }
 
@@ -2251,6 +2295,99 @@ fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_config(worlds_dir: &Path) -> LauncherConfig {
+        let (identity, _) = Identity::generate().unwrap();
+        LauncherConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            tunnel: crate::TunnelChoice::Off,
+            remember: None,
+            server: None,
+            server_fixed: false,
+            default_server: None,
+            server_name: None,
+            trust: ServerTrust::WebPki,
+            identity: Arc::new(identity),
+            name: "renderer recovery test".into(),
+            content: ContentManifest::new(tpf3mp_proto::Text::new("test").unwrap(), Vec::new()),
+            mods: None,
+            picker: None,
+            installed: None,
+            link: "renderer-recovery-test".into(),
+            worlds: crate::Worlds::open(worlds_dir, 1 << 20).unwrap(),
+            room_settings: RoomSettings::DEFAULT,
+            diagnostics: None,
+            game_logs: None,
+            hook: None,
+            game_exe: None,
+            game_env: Vec::new(),
+            start_save: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_local_page_reuses_the_live_controller_and_only_attaches_once() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let worlds = tempfile::tempdir().unwrap();
+        let mut launcher = Launcher::start_local(local_config(worlds.path()));
+        let original_handle = launcher.handle();
+        let original_shared = Arc::clone(&launcher.shared);
+        let original_control_task = launcher.task.id();
+        let banner = tpf3mp_proto::BANNERS[0].to_owned();
+        original_handle
+            .act(Action::SetBanner {
+                banner: Some(banner.clone()),
+            })
+            .await
+            .unwrap();
+
+        launcher
+            .serve_local("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&launcher.shared, &original_shared));
+        assert!(Arc::ptr_eq(&launcher.shared, &original_handle.shared));
+        assert_eq!(launcher.task.id(), original_control_task);
+        let page_task = launcher.page_task.as_ref().unwrap().id();
+        let url = launcher.url().unwrap().to_owned();
+        let (address_and_path, token) = url.split_once('#').unwrap();
+        let address = address_and_path
+            .strip_prefix("http://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "GET /api/state HTTP/1.1\r\nHost: {address}\r\nx-launcher-token: {token}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK"));
+        let page_state: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(page_state["banner"], banner);
+
+        let error = launcher
+            .serve_local("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(launcher.url(), Some(url.as_str()));
+        assert_eq!(launcher.page_task.as_ref().unwrap().id(), page_task);
+        assert_eq!(
+            original_handle.state().banner.as_deref(),
+            Some(banner.as_str())
+        );
+    }
 
     fn invite() -> Invite {
         Invite("K7QM2X".parse().unwrap())
