@@ -1990,10 +1990,7 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
     assert_eq!(rc[..2], rd[..2]);
     assert_ne!(rc[0], first[0]);
     let reports: Vec<String> = d.load("return REPORTS").eval().unwrap();
-    assert!(
-        reports.iter().any(|r| r.contains("differs")),
-        "{reports:?}"
-    );
+    assert!(reports.iter().any(|r| r.contains("differs")), "{reports:?}");
     // A save in the middle of a window resumes in a fresh state.
     let e = game("for s=1,7 do ROLL_STEP(s,false) end");
     let f = game("");
@@ -2003,7 +2000,11 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
         .unwrap();
     assert_eq!(read(&e, 8, 12), read(&f, 8, 12));
     // Fail closed: a part that did not read, a game that reads no parts.
-    assert!(f.load("PART_FAIL='no pool' ROLL_STEP(13,false)").exec().is_err());
+    assert!(
+        f.load("PART_FAIL='no pool' ROLL_STEP(13,false)")
+            .exec()
+            .is_err()
+    );
     let g = game("for s=1,3 do ROLL_STEP(s,false) end tpf3mp_native.part=nil");
     assert!(g.load("ROLL_STEP(4,false)").exec().is_err());
     // Every `stride` updates one part: 3 of 4 parts in 12 updates.

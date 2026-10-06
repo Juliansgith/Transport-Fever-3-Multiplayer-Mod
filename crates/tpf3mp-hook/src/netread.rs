@@ -106,11 +106,22 @@ pub fn mode() -> Mode {
 pub struct Process {
     /// Readable regions `[base, end)`, sorted and apart.
     regions: std::cell::RefCell<Vec<(usize, usize)>>,
+    /// The region the last check found, asked first: reads come in runs
+    /// through the same table or pool.
+    last: std::cell::Cell<(usize, usize)>,
+    /// Checks made and regions asked of the system, for the log.
+    checks: std::cell::Cell<usize>,
+    queries: std::cell::Cell<usize>,
 }
 
 impl Process {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The checks made and the regions asked of the system so far.
+    pub fn counts(&self) -> (usize, usize) {
+        (self.checks.get(), self.queries.get())
     }
 
     /// Whether `len` bytes at `address` are readable, asking the system
@@ -119,15 +130,24 @@ impl Process {
         let Some(end) = address.checked_add(len) else {
             return false;
         };
+        self.checks.set(self.checks.get() + 1);
+        let (lo, hi) = self.last.get();
+        if lo <= address && end <= hi {
+            return true;
+        }
         let mut regions = self.regions.borrow_mut();
         let mut at = address;
         while at < end {
             // The last region beginning at or before `at`.
             let i = regions.partition_point(|(base, _)| *base <= at);
             if i > 0 && at < regions[i - 1].1 {
+                if at == address {
+                    self.last.set(regions[i - 1]);
+                }
                 at = regions[i - 1].1;
                 continue;
             }
+            self.queries.set(self.queries.get() + 1);
             let Some((base, region_end)) = crate::image::region(at) else {
                 return false;
             };
@@ -146,6 +166,9 @@ impl Process {
             });
             let j = regions.partition_point(|(b, _)| *b < lo);
             regions.insert(j, (lo, hi));
+            if lo <= address {
+                self.last.set((lo, hi));
+            }
             at = hi;
         }
         true
@@ -454,8 +477,15 @@ impl<'m> Store<'m> {
             MAX_COMPONENTS,
             "an entity's components",
         )?;
-        let mut buffer = [0u8; MAX_COMPONENTS * layout::COMPONENT_PAIR];
-        let list = &mut buffer[..count * layout::COMPONENT_PAIR];
+        // Most entities list a few components: no heap and little to clear.
+        let mut small = [0u8; 32 * layout::COMPONENT_PAIR];
+        let mut large = Vec::new();
+        let list: &mut [u8] = if count <= 32 {
+            &mut small[..count * layout::COMPONENT_PAIR]
+        } else {
+            large.resize(count * layout::COMPONENT_PAIR, 0);
+            &mut large
+        };
         if count > 0 && !self.memory.read_into(pairs, list) {
             return Err("an entity's components does not read".into());
         }
@@ -593,12 +623,33 @@ pub fn edge_rows(memory: &dyn Memory, engine: usize, image: usize) -> Result<Vec
     Ok(read_edges(&store, &edges)?.0)
 }
 
-type Ends = HashMap<usize, EdgeEnds>;
+/// Maps by entity: hashed by one multiply, not SipHash, for the engine's
+/// own numbers, which no one chooses.
+#[derive(Default, Clone, Copy)]
+struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(*b)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+    fn write_usize(&mut self, n: usize) {
+        self.0 = (n as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+type IdMap<V> = HashMap<usize, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+type Ends = IdMap<EdgeEnds>;
 
 /// The edges' rows and their ends, by entity.
 fn read_edges(store: &Store, kind: &Kind) -> Result<(Vec<String>, Ends), String> {
     let mut rows = Vec::new();
-    let mut ends = HashMap::new();
+    let mut ends = Ends::default();
     let mut memo = Memo::default();
     for entity in store.with(kind)? {
         let Some(index) = store.index(entity, kind)? else {
@@ -832,7 +883,7 @@ pub fn read_part(
     let t1 = std::time::Instant::now();
     let mut memo = Memo::default();
     let mut edges = Vec::new();
-    let mut ends = HashMap::with_capacity(edge_ids.len());
+    let mut ends = Ends::with_capacity_and_hasher(edge_ids.len(), Default::default());
     for entity in edge_ids {
         let Some(index) = store.index(entity, &edge_kind)? else {
             continue;
@@ -864,7 +915,9 @@ pub fn read_part(
             continue;
         };
         if config.is_none() {
-            return Err(format!("entity {node} has the BaseNodeConfig bit but no BaseNodeConfig"));
+            return Err(format!(
+                "entity {node} has the BaseNodeConfig bit but no BaseNodeConfig"
+            ));
         }
         let place = place.ok_or_else(|| format!("node {node} has no position"))?;
         nodes_seen += 1;
@@ -933,7 +986,10 @@ pub fn read_part(
 /// Part `k` of `n` of the world the game's step is running now.
 pub fn part_now(n: u32, k: u32) -> Result<Part, String> {
     let (memory, engine, image) = engine_now()?;
-    read_part(&memory, engine, image, n, k)
+    let mut part = read_part(&memory, engine, image, n, k)?;
+    let (checks, queries) = memory.counts();
+    part.timing += &format!(", {checks} checks, {queries} regions asked");
+    Ok(part)
 }
 
 thread_local! {
@@ -1146,8 +1202,8 @@ struct Junctions<'s, 'm> {
     store: &'s Store<'m>,
     ends: &'s Ends,
     nodes: Kind,
-    positions: HashMap<usize, [f32; 3]>,
-    keys: HashMap<usize, std::rc::Rc<str>>,
+    positions: IdMap<[f32; 3]>,
+    keys: IdMap<std::rc::Rc<str>>,
 }
 
 impl Junctions<'_, '_> {
@@ -1174,9 +1230,9 @@ impl Junctions<'_, '_> {
 
     fn keep_position(&mut self, node: usize, raw: &[u8]) -> Result<[f32; 3], String> {
         let p = [
-            f32_at(&raw, layout::NODE_POSITION),
-            f32_at(&raw, layout::NODE_POSITION + 4),
-            f32_at(&raw, layout::NODE_POSITION + 8),
+            f32_at(raw, layout::NODE_POSITION),
+            f32_at(raw, layout::NODE_POSITION + 4),
+            f32_at(raw, layout::NODE_POSITION + 8),
         ];
         if p.iter().any(|v| !v.is_finite()) {
             return Err(format!("node {node}: an invalid junction position"));
@@ -1241,7 +1297,7 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<(Vec<Junction>, Vec<usiz
 fn junction_reader<'s, 'm>(
     store: &'s Store<'m>,
     ends: &'s Ends,
-) -> Result<(Junctions<'s, 'm>, Kind, HashMap<usize, bool>), String> {
+) -> Result<(Junctions<'s, 'm>, Kind, IdMap<bool>), String> {
     let nodes = store.kind(
         layout::BASE_NODE_POOL_VTABLE,
         layout::BASE_NODE_SIZE,
@@ -1252,7 +1308,7 @@ fn junction_reader<'s, 'm>(
         layout::BASE_NODE_CONFIG_SIZE,
         "BaseNodeConfig",
     )?;
-    let mut street_node = HashMap::<usize, bool>::new();
+    let mut street_node = IdMap::<bool>::default();
     for e in ends.values() {
         for n in [e.node0, e.node1] {
             *street_node.entry(n).or_insert(false) |= e.street;
@@ -1262,8 +1318,8 @@ fn junction_reader<'s, 'm>(
         store,
         ends,
         nodes,
-        positions: HashMap::new(),
-        keys: HashMap::new(),
+        positions: IdMap::default(),
+        keys: IdMap::default(),
     };
     Ok((j, configs, street_node))
 }
