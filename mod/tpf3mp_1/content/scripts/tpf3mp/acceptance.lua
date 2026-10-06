@@ -5,7 +5,9 @@
 -- See investigation/STATION_TERRAIN_2026-10-02.md for evidence and limits.
 -- Bridge/tunnel window rebuilds use ordinary road/track actions and are
 -- gated at capture.windowBuild until their own two-game acceptance.
-local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false }
+-- Signals a script places along tracks (PlaceSignals: Auto Signals) wait
+-- for their own two-game acceptance.
+local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false, signals = false }
 
 function acceptance.check(action)
     local feature
@@ -14,6 +16,7 @@ function acceptance.check(action)
     if action.Perk then feature = "perks" end
     -- A town building's Historic Preservation (action::Preservation).
     if action.Preserve then feature = "preservation" end
+    if action.PlaceSignals then feature = "signals" end
     if action.Rename or (action.VehicleOp and type(action.VehicleOp.change) == "table"
         and action.VehicleOp.change.Recolor) then feature = "rename" end
     local line = action.CreateLine and action.CreateLine.line

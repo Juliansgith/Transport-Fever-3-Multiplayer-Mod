@@ -433,7 +433,7 @@ nine, build 40391), `mods web/tf3mod-minimap`, the Mod Hub cache on this PC
 | **Timetables** (celmi, mod.io 6037864) | carried | its game script (`timetable/game_script/celmi_timetables.gs.lua`); its run scripts only print; commands `makeVehicleSetManualDepartureCmd`, `makeVehicleTryToDepartCmd`, `makeScriptingSendEventCmd` (game script), `makeScriptingSendEventCmd` and `makeLineUpdateCmd` (GUI); says `"cosmetic": true` | personal-safe after the measurements below, with `--personal-game-scripts`: see "Timetables" |
 | **Auto Line Namer** (mod.io 6414403) | carried | a game script renaming lines (`aln.script.lua:43`, `makeEntitySetNameCmd`, from `update` on `os.time` timers), and a rename scheme for the line manager (GUI) | personal-safe after the measurements below, with `--personal-game-scripts`: its renames go to the room as `EditLine` renames of the player's own lines. Its line manager button already works as a personal GUI mod (the game sends the rename, which the guard carries) |
 | **Automatic Signal Spacing** (mod.io 6414934) | shared | a run script with `addModifier` on signal constructions (it adds two parameters to every signal), and a game script whose `guiUpdate` builds signals (`makeWorldBuildProposalCmd`, removing and re-adding the track edges by entity id with the new signals) | must be shared, and even shared its builds are refused in a room today: see "Automatic Signal Spacing" |
-| signal_distance_1, auto_signals_1 (mod.io) | shared | run scripts with `addModifier`; auto_signals a game script building | must be shared. Signal Distance works in a room (2026-10-02). Auto Signals builds nothing yet: see "Parallel Tracks, Parallel Roads, Auto Signals" |
+| signal_distance_1, auto_signals_1 (mod.io) | shared | run scripts with `addModifier`; auto_signals a game script building | must be shared. Signal Distance works in a room (2026-10-02). Auto Signals: its signal carries its spacing, and its spacing goes to the room as `PlaceSignals`, gated off until the two-player test: see "Parallel Tracks, Parallel Roads, Auto Signals" |
 | parallel_tracks_1, parallel_roads_1 (mod.io) | shared | a game script whose GUI half builds new tracks or roads beside the one drawn (`makeWorldBuildProposalCmd`), and a `construction_tool` resource adding the tool's settings | must be shared; with D27 their builds go to the room: see "Parallel Tracks, Parallel Roads, Auto Signals" |
 | Urban Games legacy packs (6, mod.io) | shared | vehicles: 189 to 449 model files each | must be shared |
 | GW Bigger Station Range, GW Buy Industries, GW HQ Growth Boost | shared | run scripts with `addModifier` | must be shared |
@@ -541,11 +541,24 @@ With D27 (`tpf3mp/modbuild.lua`, HOOKS.md "Scripts' follow-up builds"):
   (`guard.callers`): the log says `a script's follow-up build` without
   `from parallel_tracks_1`. The rule does not depend on it.
 
-Auto Signals still needs, beyond D27: the signal's parameters carried with
+Auto Signals needed, beyond D27, the signal's parameters carried with
 `PlaceStop`, and its spacing (edges removed and re-added with signals)
 carried as signals on existing edges ("Automatic Signal Spacing" above,
 reasons 1 and 2). Parallel Roads takes the same path as Parallel Tracks;
 it was not played.
+
+Built (schema 26, branch `feat/auto-signals`): the signal tool's settings
+travel in `PlaceStop::params` and every game sets them on the signal it
+builds (`SimpleStreetProposal.EdgeObject.params`, a member the API
+reference does not list; seen on build 40408, 2026-10-06, in a single
+game: a signal built through a script with `auto_signals_distance = 4`
+kept it, and Auto Signals queued its job, `job 2: signal 29930, 200 m`).
+The mod's spacing build then goes to the room from its player's game as
+one `PlaceSignals` (HOOKS.md, "Scripts' follow-up builds"), behind
+`acceptance.lua`'s `signals`, off until a two-player test in the game
+shows both worlds equal. Its rebuilds touch tracks that lines run on, as
+every signal the room places already does; PLAN.md's "never rebuilding an
+edge a line runs on" is the owner's to settle for both.
 
 ## To measure in the game
 

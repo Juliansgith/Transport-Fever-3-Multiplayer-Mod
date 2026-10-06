@@ -323,6 +323,7 @@ pub fn place_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         object: EdgeObjectKind::Stop,
         one_way: false,
         name: None,
+        params: BoundedVec::empty(),
     })
 }
 
