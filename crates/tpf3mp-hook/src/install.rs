@@ -1246,6 +1246,10 @@ mod tests {
             script,
             Box::new(FakeControl::default()),
         )));
+        // No step ran in this game: a test that ran the step's detour
+        // before this one leaves its time behind, and the menu then waits
+        // for the world it thinks is closing.
+        LAST_STEP.store(0, Ordering::Release);
         let mut cmenu = [0usize; 3];
         crate::menu::set_load_field(16);
         let at = cmenu.as_mut_ptr() as usize;
