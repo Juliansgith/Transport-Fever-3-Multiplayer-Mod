@@ -266,8 +266,8 @@ end
 -- Density levels. Town and industry counts are a density per km², so a big
 -- map at the stock sliders has many more towns and industries than any
 -- stock map. The Town Density and Industry Density sliders get one more
--- level per ladder row, after the game's own five: "Gigantomaniac count at
--- <row>", the stock Medium scaled by the row's densityScale, which gives
+-- level per ladder row, before the game's own five: "-" to "-...-", one dash per
+-- row (the Gigantomaniac count at that size): the stock Medium scaled by the row's densityScale, which gives
 -- that row's square the counts stock Gigantomaniac 1:1 has at Medium.
 -- Every row counts, offered on this machine or not, so a level is the same
 -- number in every game. As after silver2127's Big Maps for TPF2
@@ -289,17 +289,23 @@ menu.DENSITY_PARAMS = {
 menu.STOCK_DENSITY_LEVELS = 5
 menu.STOCK_DENSITY_MEDIUM = 3
 
--- The density slider's labels: the game's own, then one per ladder row.
-function menu.densityValues(stockValues, ladder)
-	local values = {}
+-- The density slider's labels and the level each stores, sparsest first:
+-- one per ladder row, the largest size first (its scale is the smallest),
+-- then the game's own five. The levels keep their numbers (the game's
+-- 1 to 5, the rows' 6 on), so the slider's order changes nothing saved.
+function menu.densityChoices(stockValues, ladder)
+	local values, numbers = {}, {}
+	for i = #ladder, 1, -1 do
+		-- "----" for the last row (sparsest) down to "-" for the first:
+		-- as short as the slider's own labels.
+		values[#values + 1] = string.rep("-", i)
+		numbers[#numbers + 1] = menu.STOCK_DENSITY_LEVELS + i
+	end
 	for i = 1, #stockValues do
-		values[i] = stockValues[i]
+		values[#values + 1] = stockValues[i]
+		numbers[#numbers + 1] = i
 	end
-	for _, row in ipairs(ladder) do
-		local size = string.gsub(row.label, "^Big ", "")
-		values[#values + 1] = "Gigantomaniac count at " .. size
-	end
-	return values
+	return values, numbers
 end
 
 -- The factor for `param` at `level` (from 1) given the game's own

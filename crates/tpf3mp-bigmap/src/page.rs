@@ -131,7 +131,7 @@ local record BigmapMenu
 	indexOf : function(value : number, pick : integer, stockCount : integer, stockNumbers : {number}, rowCount : integer) : integer
 	choose : function(index : integer, stockCount : integer, stockNumbers : {number}) : number, integer
 	gameTiles : function(rows : {BigmapRow}, pick : integer, ratioIndex : integer) : any, any
-	densityValues : function(stockValues : {string}, ladder : {BigmapRow}) : {string}
+	densityChoices : function(stockValues : {string}, ladder : {BigmapRow}) : {string}, {number}
 	STOCK_DENSITY_LEVELS : integer
 	STOCK_RATIOS : integer
 	extraRatios : function(shapes : any, peakMb : any, ramMb : number, label : any) : {integer}, string
@@ -287,23 +287,30 @@ end
 
 const DENSITY: &str = r#"
 -- A density slider (towns, or industries with their runtime target) with
--- big maps' levels after the game's own: "Gigantomaniac count at <size>"
+-- big maps' levels before the game's own: "-" to "----", one dash per size row
 -- (scripts/tpf3mp_bigmap/menu.lua). The level is stored where the game's
 -- own slider stores it; the hook's difficulty_util wrap gives it its
 -- factor. Without the mod's scripts, or a slider of another length, the
 -- game's own slider.
+local bigmapDensityNoted : {string : boolean} = {}
 local function bigmapAddDensitySettingsEntry(settings : {NewGameReactUtil.SettingsEntry}, activeModsParamsState : ReactStateT<{string : {string : integer}}>, key : string, filterTags : {string}, otherKeys : {string})
 	local scriptParam = script_param_util.getScriptParam(key, filterTags)
 	if bigmap == nil or bigmapLadder == nil or #bigmapLadder == 0 or scriptParam == nil or #scriptParam.values ~= bigmap.STOCK_DENSITY_LEVELS then
+		pcall(debugPrint, "[tpf3mp] big maps: " .. key .. " keeps the game's slider")
 		new_game_react_util.searchBuildAndAddScriptParamComp(settings, activeModsParamsState, key, false, filterTags, otherKeys)
 		return
 	end
+	local values, numbers = bigmap.densityChoices(scriptParam.values, bigmapLadder)
+	if not bigmapDensityNoted[key] then
+		bigmapDensityNoted[key] = true
+		pcall(debugPrint, "[tpf3mp] big maps: " .. key .. " has " .. tostring(#values) .. " levels")
+	end
 	local paramForUi : ScriptParamUtil.ParamForUi = {
 		uiType = scriptParam.uiType,
-		defaultIndex = scriptParam.defaultIndex,
+		defaultIndex = scriptParam.defaultIndex + #bigmapLadder,
 		name = scriptParam.name,
-		values = bigmap.densityValues(scriptParam.values, bigmapLadder),
-		numbers = nil,
+		values = values,
+		numbers = numbers,
 		tooltips = nil,
 		allowCoalesce = true,
 	}
@@ -327,7 +334,7 @@ local function bigmapAddDensitySettingsEntry(settings : {NewGameReactUtil.Settin
 	})
 	table.insert(settings, {
 		title = scriptParam.name,
-		description = scriptParam.tooltip .. "\n\nBig maps: the levels after the game's own give a big map the count Gigantomaniac has at Medium; pick the one that names your size.",
+		description = scriptParam.tooltip .. "\n\n- to ----: fewer, for the big map sizes.",
 		hintIdKey = "hintIdKey" .. scriptParam.name,
 		element = element,
 	})

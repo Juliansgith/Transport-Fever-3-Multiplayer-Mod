@@ -515,7 +515,7 @@ times the Industry Density slider's `{2/3, 5/6, 1, 6/5, 3/2}`, both from
 `difficulty_util.getScale`), so a big map at the stock sliders has 1.3 to
 2.5 times Gigantomaniac's towns and industries. The page's Town Density
 and Industry Density sliders get one more level per ladder row after the
-game's five, "Gigantomaniac count at <size>": Medium times the row's
+game's five, "-" to "----" (one dash per row, "----" the largest: Gigantomaniac's count at that size): Medium times the row's
 `densityScale`, `(112 / tiles)²`, which gives that row's square the counts
 stock Gigantomaniac 1:1 has at Medium. The industry slider sets the
 runtime target (`targetIndustryDensity`) with the start density, as the
