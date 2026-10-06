@@ -106,22 +106,6 @@ impl Splice {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn install_reports_unsupported_architecture() {
-        // SAFETY: on this architecture `install` returns before touching either
-        // pointer, so dangling pointers are fine.
-        let result = unsafe { InlineDetour::install(core::ptr::null_mut(), core::ptr::null()) };
-        assert!(matches!(
-            result,
-            Err(DetourError::UnsupportedArchitecture { .. })
-        ));
-    }
-}
-
 /// Rewrites are x86-64 only.
 pub enum Rewrite {}
 
@@ -149,5 +133,21 @@ impl Rewrite {
     /// Never constructed.
     pub unsafe fn detach(self) -> Result<(), DetourError> {
         match self {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_reports_unsupported_architecture() {
+        // SAFETY: on this architecture `install` returns before touching either
+        // pointer, so dangling pointers are fine.
+        let result = unsafe { InlineDetour::install(core::ptr::null_mut(), core::ptr::null()) };
+        assert!(matches!(
+            result,
+            Err(DetourError::UnsupportedArchitecture { .. })
+        ));
     }
 }

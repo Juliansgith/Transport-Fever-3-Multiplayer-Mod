@@ -358,10 +358,12 @@ moving data does not approve the Preview or add another supported platform.
 A static signature candidate for Steam Preview 40418 is in
 `profiles/tf3_build40418_steam_windows/hooks.toml`. Its original 145 targets matched
 the private archive. The additional optional `lua_touserdata` signature awaits
-an archive recheck; its directory deliberately has no `native.rs` and is not
-selected. The Release bundle and release archive remain active. The changed
-splice bytes, script review and remaining ABI work are recorded in
-[the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
+an archive recheck. Release has since gained seven optional performance
+targets measured only on 40408; they remain Release-only until a verified
+Preview archive supplies signatures. The candidate directory deliberately has
+no `native.rs` and is not selected. The Release bundle and release archive
+remain active. The changed splice bytes, script review and remaining ABI work
+are recorded in [the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
 
 For a new build, create a separate bundle directory, investigate the audit's
 signature/function/script changes, and review its native data alongside its
