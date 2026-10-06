@@ -896,6 +896,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         log_line(&line);
     }
     log_line(&crate::fastindex::install(&absolute));
+    // The fused emission grid (crate::emission): bit-identical, on unless
+    // TPF3MP_HOOK_FAST_EMISSION=0.
+    log_line(&crate::emission::install(&absolute));
     Ok(step_rva)
 }
 

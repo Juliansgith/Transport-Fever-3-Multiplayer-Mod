@@ -1703,3 +1703,19 @@ signature = "48 89 5C 24 20 89 54 24 10 57 48 81 EC E0 00 00 00 48 8B 05 ?? ?? ?
 offset = 0
 prologue = "48 89 5C 24 20 89 54 24 10 57 48 81 EC E0 00 00 00"
 required = false
+
+# The fused emission grid (crates/tpf3mp-hook/src/emission; investigation/
+# TF3_SIM_COST_2026-10-05.md §1). ecs::EmissionGridSystem::Update
+# (0xaa9230, vtable 0x1436fcab8 slot 11; Game/ecs/EmissionGridSystem.cpp):
+# rcx the system, rdx the engine, xmm3 dt; per grid and step it calls the
+# Diffuse, Wind (pollution only) and Average dispatchers at +0x1f2, +0x29e
+# and +0x31c, swapping the buffers after each. The hook redirects those three
+# calls and runs the step fused, bit-identical; emission.rs records the
+# dispatchers' and kernels' offsets from here and the FNV-1a hash of every
+# byte the model covers, which the hook checks before it patches anything.
+[[target]]
+name = "emission::EmissionGridSystem::Update"
+signature = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 00 01 00 00 C5 F8 29 70 B8 C5 F8 28 F3 4C 8B EA 48 8B D9 48 3B 51 40 0F 85"
+offset = 0
+prologue = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08"
+required = false

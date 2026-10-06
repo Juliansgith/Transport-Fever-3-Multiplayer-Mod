@@ -9,6 +9,7 @@ pub const GAME_BUILD: u32 = 40408;
 pub mod builds;
 pub mod drawing;
 pub mod edgewatch;
+pub mod emission;
 pub mod guiplayer;
 pub mod junctions;
 pub mod menu;

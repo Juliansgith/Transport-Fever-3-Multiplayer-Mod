@@ -40,6 +40,7 @@ pub mod builds;
 pub mod clipboard;
 pub mod drawing;
 pub mod edgewatch;
+pub mod emission;
 pub mod fastindex;
 pub mod guiplayer;
 pub mod image;
