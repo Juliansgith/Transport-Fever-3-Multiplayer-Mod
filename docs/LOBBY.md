@@ -229,6 +229,15 @@ talks to mod.io (D28 proposed):
 - Answers from Mod Hub can arrive several before the page draws again;
   each one changes what the one before it changed (`changeInstalls`), so
   none is lost.
+- Each Mod Hub request returns a handle (`UniquePendingRequestId`) that
+  aborts the request once Lua collects it; the game's own pages keep
+  theirs (`createAsyncRef`). The lobby keeps each one until its answer
+  comes (`roommods`, `keep`). Without that, a guest's mods stayed at
+  **Looking up...** for good (playtest 2026-10-06: nine at once).
+- A lookup Mod Hub has not answered within 30 seconds, or a subscription
+  it has not taken by then, fails (**Install failed**, "Mod Hub did not
+  answer") and can be installed again; an answer that comes later changes
+  nothing. An answer this mod cannot read fails too, instead of waiting.
 
 A mod not from Mod Hub cannot be installed from the lobby: its tile says to
 ask the owner where to get it.
