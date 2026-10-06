@@ -859,6 +859,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     } else {
         format!("perf: timing off ({} says so)", crate::perf::ENV)
     });
+    // Guarded reads (docs/HOOKS.md, "Reading the game's memory"): the
+    // handler goes in before any fix reads.
+    log_line(&crate::image::guarded::configure_from_env());
     if let Some(line) = crate::steptrace::configure_from_env() {
         log_line(&line);
     }
