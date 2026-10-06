@@ -221,9 +221,7 @@ local function bigmapAddDensitySettingsEntry(settings : {NewGameReactUtil.Settin
 	})
 	table.insert(settings, {
 		title = scriptParam.name,
-		description = scriptParam.tooltip .. "
-
-Big maps: the levels after the game's own give a big map the count Gigantomaniac has at Medium; pick the one that names your size.",
+		description = scriptParam.tooltip .. "\n\nBig maps: the levels after the game's own give a big map the count Gigantomaniac has at Medium; pick the one that names your size.",
 		hintIdKey = "hintIdKey" .. scriptParam.name,
 		element = element,
 	})
