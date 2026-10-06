@@ -2281,7 +2281,7 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
 /// tables (`{ [value] = name }`, `{ [type] = name }`, as the game's Lua
 /// names them) and `deferred` the Lua's rows of the junctions the part left
 /// to it: `network, constructions` (`count:hash` each), with `rows` true
-/// also their sorted rows, two lists; or `nil` and why.
+/// also their sorted rows, two lists; or `nil, nil` and why.
 unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
@@ -2329,8 +2329,9 @@ unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
                     if (api.checkstack)(l, 6) == 0 {
                         (api.settop)(l, 0);
                         (api.pushnil)(l);
+                        (api.pushnil)(l);
                         push_str(api, l, b"no room on the stack for the rows");
-                        return 2;
+                        return 3;
                     }
                     push_strings(api, l, network.iter().map(String::as_bytes));
                     push_strings(api, l, constructions.iter().map(String::as_bytes));
@@ -2339,9 +2340,11 @@ unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
                 2
             }
             Err(why) => {
+                // Neither lane's text: why comes third, never in a text's place.
+                (api.pushnil)(l);
                 (api.pushnil)(l);
                 push_str(api, l, why.as_bytes());
-                2
+                3
             }
         }
     }
@@ -3752,8 +3755,15 @@ my_timetables";
         crate::netread::keep_part(Some(part(2, Some(9))));
         let answered = script.run(texts).unwrap();
         assert!(answered.starts_with("1:"), "{answered}");
-        // Once only.
-        assert!(script.run(texts).unwrap().contains("no part was read"));
+        // Once only; and a refusal is no text: nil, nil and why.
+        assert!(
+            script
+                .run(
+                    "local a, b, why = tpf3mp_native.partTexts(5, 2, 'all', {}, {}, {})                      return tostring(a) .. '|' .. tostring(b) .. '|' .. why"
+                )
+                .unwrap()
+                .starts_with("nil|nil|no part was read")
+        );
         // Another part, another update: refused, and gone.
         crate::netread::keep_part(Some(part(3, Some(9))));
         assert!(script.run(texts).unwrap().contains("not 2/5"));

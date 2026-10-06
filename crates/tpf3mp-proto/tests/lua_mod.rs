@@ -1997,6 +1997,7 @@ tpf3mp_native.part = function(n, k, kind)
 end
 tpf3mp_native.partTexts = function(n, k, kind, preferences, lights, deferred, rows)
     PART_TEXTS[#PART_TEXTS + 1] = n .. '/' .. k .. '/' .. kind
+    if PART_TEXTS_FAIL then return nil, nil, PART_TEXTS_FAIL end
     local net, cons = '1:' .. NATIVE_TEXT, '1:cons'
     if kind == 'constructions' then net = nil else cons = nil end
     if rows then return net, cons, { 'row' }, { 'con@0,0' } end
@@ -2066,6 +2067,14 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
         .set("SCAN", lua_value(&f, &common::tree(&saved)))
         .unwrap();
     assert_eq!(read(&e, 8, 12), read(&f, 8, 12));
+    // Fail closed: texts refused on a constructions turn are no text of
+    // that lane.
+    let j = game("for s=1,2 do ROLL_STEP(s,false) end");
+    assert!(
+        j.load("PART_TEXTS_FAIL='no part was read' ROLL_STEP(3,false)")
+            .exec()
+            .is_err()
+    );
     // Fail closed: a part that did not read, a game that reads no parts.
     assert!(
         f.load("PART_FAIL='no pool' ROLL_STEP(13,false)")

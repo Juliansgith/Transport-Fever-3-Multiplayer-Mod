@@ -143,7 +143,9 @@ for ($i = 1; $i -lt $pids.Count; $i++) {
     throw "$player did not load the shared snapshot. Test is not ready; games left running for diagnosis in $runDir"
   }
 }
-if (-not (Hook-Says "p1" "playing the room's world from (its save|step 1)")) {
+# A lone host plays from step 1; with guests the host loads the room's save too.
+$hostReady = if ($Players -eq 1) { "playing the room's world from step 1" } else { "playing the room's world from its save" }
+if (-not (Hook-Says "p1" $hostReady)) {
   throw "Host has not loaded the shared snapshot; test not ready in $runDir"
 }
 Start-Sleep -Seconds 15

@@ -815,7 +815,9 @@ local function rollingParts(api, scan, step, checkpoint)
 		local preferences, lights = junctions.names(api, read.lights)
 		local deferred = junctions.rowsOf(api, read.deferred)
 		local net, cons, netRows, consRows = native.partTexts(n, k, kind, preferences, lights, deferred, compare)
-		if net == nil and cons == nil then error("part " .. k .. " of the world has no texts", 0) end
+		if net == nil and cons == nil then
+			error("part " .. k .. " of the world has no texts: " .. tostring(netRows), 0)
+		end
 		if (net ~= nil) ~= lanes.kindReads(kind, lanes.NETWORK)
 			or (cons ~= nil) ~= lanes.kindReads(kind, lanes.CONSTRUCTIONS) then
 			error("part " .. k .. " of the world has texts of other lanes than its " .. kind, 0)
