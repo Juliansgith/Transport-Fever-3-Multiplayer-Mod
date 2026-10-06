@@ -161,6 +161,15 @@ fused pass that leaves every bit as the game's passes would, on by default
 is in [HOOKS.md](HOOKS.md), "The fast emission grid"; the cost analysis in
 investigation/TF3_BIGMAP_SIM_COST_2026-10-05.md.
 
+The emitters (industries, buildings, streets) are added into those grids
+every update too, in the game by a fixed 4 x 4 split of the grid, which
+leaves most threads idle where towns cluster and misses the cache on every
+emitter. The hook adds them by row bands instead, on by default
+(`TPF3MP_HOOK_FAST_EMITTERS=0` keeps the game's own), every cell getting
+the game's additions in the game's order: 1.6 to 3.6x faster offline on
+one thread, 1.3 to 2.5x on 16 (HOOKS.md, "The fast emitters";
+investigation/TF3_EMITTER_SPLAT_2026-10-06.md).
+
 ## What a load actually does
 
 The save holds the 4 m heightmap and every alignment. A load therefore

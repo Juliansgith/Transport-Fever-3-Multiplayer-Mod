@@ -910,6 +910,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     // The fused emission grid (crate::emission): bit-identical, on unless
     // TPF3MP_HOOK_FAST_EMISSION=0.
     log_line(&crate::emission::install(&absolute));
+    // The banded emitter splat (crate::emitters): bit-identical, on unless
+    // TPF3MP_HOOK_FAST_EMITTERS=0.
+    log_line(&crate::emitters::install(&absolute));
     Ok(step_rva)
 }
 

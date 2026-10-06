@@ -82,7 +82,7 @@ pub const REPORT_EVERY: u64 = 4096;
 const SMALL_GRID: usize = 1 << 16;
 /// Threads at most, the caller's included: the step is bound by memory
 /// bandwidth well before this.
-const MAX_THREADS: usize = 16;
+pub(crate) const MAX_THREADS: usize = 16;
 /// Bands per thread, so a thread that starts late still finds work.
 const BANDS_PER_THREAD: usize = 4;
 /// Rows a band has at least, so the four rows each band copies first stay
@@ -674,6 +674,18 @@ unsafe fn fused_step(game: &Game, p: &Pending, actx: &AverageCtx, rows: i32) -> 
     true
 }
 
+/// The hook's threads for the emission systems (this step and
+/// `crate::emitters`, which the game runs one after the other): up to
+/// [`MAX_THREADS`], the caller's included, started on first use.
+pub(crate) fn shared_pool() -> &'static pool::Pool {
+    POOL.get_or_init(|| {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, MAX_THREADS);
+        pool::Pool::new(threads - 1)
+    })
+}
+
 /// Runs the plan's step: on the hook's threads for a large grid.
 ///
 /// # Safety
@@ -681,14 +693,7 @@ unsafe fn fused_step(game: &Game, p: &Pending, actx: &AverageCtx, rows: i32) -> 
 /// The plan's buffers are valid and used by nothing else.
 unsafe fn run(plan: &Plan) -> bool {
     let cells = plan.buffers.width * plan.buffers.height;
-    let pool = (cells >= SMALL_GRID).then(|| {
-        POOL.get_or_init(|| {
-            let threads = std::thread::available_parallelism()
-                .map_or(1, |n| n.get())
-                .clamp(1, MAX_THREADS);
-            pool::Pool::new(threads - 1)
-        })
-    });
+    let pool = (cells >= SMALL_GRID).then(shared_pool);
     let participants = pool.map_or(1, pool::Pool::participants);
     let bands = (participants * BANDS_PER_THREAD).min((plan.buffers.height / MIN_BAND_ROWS).max(1));
     HALO.with(|halo| {

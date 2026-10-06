@@ -60,6 +60,15 @@ impl Exe {
         Some(Self { image, pe })
     }
 
+    /// The file as read, and its headers (`emitters::mapped` maps it).
+    pub fn file(&self) -> &[u8] {
+        &self.image
+    }
+
+    pub fn headers(&self) -> &PeHeaders {
+        &self.pe
+    }
+
     /// `len` bytes at `rva`, from whichever section holds them.
     pub fn bytes(&self, rva: u64, len: usize) -> &[u8] {
         self.try_bytes(rva, len)
