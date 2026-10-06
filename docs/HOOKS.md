@@ -4933,9 +4933,15 @@ the room's game's step. The replicated engine is left out.
   The queue's size, front and a hash of every id in pop order, then what
   the modifications in the room's updates took (new and reused ids) and
   freed since the last checkpoint, with a hash of the freed ids in order.
-  Two games of a room must log equal lines at equal steps. The first line
-  that differs bounds where their ids parted to one checkpoint interval,
-  long before a placed object's id or a vehicle shows it.
+  Two games of a room must log equal **queue** fingerprints (the part
+  before the first `;`) at equal steps. The first that differs bounds where
+  their ids parted to one checkpoint interval, long before a placed
+  object's id or a vehicle shows it. The `updates:` tallies are not
+  comparable between games: which update batches fall before a
+  checkpoint's line depends on each game's frames (measured in a
+  three-game room on 2026-10-06: equal queues at all 31 checkpoints, while
+  the tallies differed, e.g. took 60 against 27). Compare
+  `cut -d';' -f1` of the lines.
 - Each modification of the simulation's engine that took or freed ids
   outside the room's updates (the first 16, then every 1024th):
 

@@ -1122,8 +1122,11 @@ pub mod freed_ids {
             })
         }
 
-        /// The checkpoint line: two games of a room log equal ones at equal
-        /// steps, the counts outside updates (0 in a sound game) included.
+        /// The checkpoint line: two games of a room log equal queue
+        /// fingerprints at equal steps (and 0 outside updates in a sound
+        /// game). The tallies of the room's updates since the last line are
+        /// this game's own: which batches land before the line depends on
+        /// its frames, so they differ between games of a sound room.
         pub fn checkpoint_text(step: u64, queue: Result<Queue, &str>, tally: &Tally) -> String {
             let queue = match queue {
                 Ok(q) => format!(
