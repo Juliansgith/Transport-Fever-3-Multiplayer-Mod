@@ -7735,6 +7735,42 @@ fn a_stop_the_room_cannot_carry_says_why() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(carried, "Signal true auto_signals_distance=4 true");
+    // On a track with a signal on it already, the signal tool lists the new
+    // signal alone in edgeObjectsToAdd (build 40408, 2026-10-06): paired
+    // with the one new object, carried, the other kept. Records that match
+    // neither every object nor the new ones are refused.
+    let beside_signal = signal
+        .replace("objects = {  }", "objects = { { 555, 2 } }")
+        .replace("objects = {  {", "objects = { { 555, 2 }, {");
+    assert!(
+        beside_signal.contains("{ 555, 2 }, { -400000000, 2 }"),
+        "{beside_signal}"
+    );
+    let paired: String = lua
+        .load(format!(
+            "local a, why = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua').placeStop({beside_signal}, nil, true, {{}}) \
+             if a == nil then return why end \
+             return a.PlaceStop.object .. ' ' .. tostring(a.PlaceStop.left) .. ' ' .. tostring(schema_check(a))"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(paired, "Signal true true");
+    let unpaired = beside_signal.replace(
+        "edgeObjectsToAdd = {  {",
+        "edgeObjectsToAdd = { { category = 2 }, { category = 2 }, {",
+    );
+    assert!(
+        unpaired.contains("{ category = 2 }, { category = 2 }"),
+        "{unpaired}"
+    );
+    let refused: String = lua
+        .load(format!(
+            "local _, why = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua').placeStop({unpaired}, nil, true, {{}}) \
+             return why"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(refused, "a stop build whose objects it cannot pair");
     let side = stop_proposal("", "", "").replace("left = true", "left = false");
     assert_eq!(capture(side), "a stop whose side the room cannot say");
     // With a stop on the other side, kept: carried.

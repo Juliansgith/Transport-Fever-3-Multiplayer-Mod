@@ -2957,7 +2957,13 @@ construction's window its edits:
   builds, seen 2026-10-06 in a single-player game: Auto Signals then
   spaced signals from it). `year`, which the game's own tool adds, is not
   among them: no base signal construction reads it.
-  INFERRED, not yet seen in the game: that the tool's proposal lists
+  Seen on build 40408 (2026-10-06): on a track with a signal on it
+  already, the signal tool's `edgeObjectsToAdd` lists the new signal
+  alone, not the kept ones; the capture pairs the records with every
+  object of the edge where there is one for each, else with the new ones
+  where there is one for each of those, and refuses any other count (`a
+  stop build whose objects it cannot pair`).
+  INFERRED, not yet seen in the game: that the stop tool's proposal lists
   `objects` in the order of `edgeObjectsToAdd`, that a kept stop keeps its
   entity there, that `STOP_LEFT` goes with `left`, that a script proposal
   names a new object `-1` in the edge's objects (TPF2's convention), that

@@ -1058,7 +1058,6 @@ function engine.placeStop(proposal, noted, oneWay, params, paramsWhy)
 		local old, new, network = rebuiltEdge(street)
 		local _, had = objectsOf(old)
 		local now, has = objectsOf(new)
-		if #now ~= #toAdd then error("a stop build whose objects it cannot pair", 0) end
 		-- A stop dropped where one stood replaces it, and the game moves its
 		-- lines to the new one, which a replay cannot say (docs/BUILDING.md).
 		for entity in pairs(had) do
@@ -1070,12 +1069,25 @@ function engine.placeStop(proposal, noted, oneWay, params, paramsWhy)
 		end
 		if #added == 0 then return false end
 		if #added > 2 then error("more than two stops at once", 0) end
+		-- The tool's record of each new object: its edgeObjectsToAdd lists
+		-- every object of the rebuilt edge, in the edge's order (the stop
+		-- tool), or the new ones alone (the signal tool on a track with
+		-- signals on it already: build 40408, 2026-10-06); any other count
+		-- cannot be paired.
+		local record = {}
+		if #toAdd == #now then
+			for _, k in ipairs(added) do record[k] = toAdd[k] end
+		elseif #toAdd == #added then
+			for i, k in ipairs(added) do record[k] = toAdd[i] end
+		else
+			error("a stop build whose objects it cannot pair", 0)
+		end
 		local types = enum("EdgeObjectType")
-		local kind = OBJECT_KINDS[get(toAdd[added[1]], "category")]
-		if kind == nil then error("an edge object of category " .. tostring(get(toAdd[added[1]], "category")), 0) end
+		local kind = OBJECT_KINDS[get(record[added[1]], "category")]
+		if kind == nil then error("an edge object of category " .. tostring(get(record[added[1]], "category")), 0) end
 		if kind ~= "Stop" and #added > 1 then error("more than one signal at once", 0) end
 		for _, k in ipairs(added) do
-			local eo = toAdd[k]
+			local eo = record[k]
 			if OBJECT_KINDS[get(eo, "category")] ~= kind then error("a stop and a signal at once", 0) end
 			if kind == "Stop" then
 				-- INFERRED: the engine lists a stop it calls left as STOP_LEFT.
@@ -1090,16 +1102,16 @@ function engine.placeStop(proposal, noted, oneWay, params, paramsWhy)
 			error("a signal whose settings the room cannot read" .. (paramsWhy and (": " .. tostring(paramsWhy)) or ""), 0)
 		end
 		local twoSided = #added == 2
-		if twoSided and (get(toAdd[added[1]], "left") == true) == (get(toAdd[added[2]], "left") == true) then
+		if twoSided and (get(record[added[1]], "left") == true) == (get(record[added[2]], "left") == true) then
 			error("two stops on one side", 0)
 		end
 		local index = added[1]
-		local eo = toAdd[index]
+		local eo = record[index]
 		local left = get(eo, "left") == true
 		-- The model and place of the first of its objects that has them.
 		local instance
 		for _, k in ipairs(added) do
-			instance = instance or get(toAdd[k], "modelInstance")
+			instance = instance or get(record[k], "modelInstance")
 		end
 		local model
 		if instance ~= nil then
@@ -1140,7 +1152,7 @@ function engine.placeStop(proposal, noted, oneWay, params, paramsWhy)
 		-- then names it as the mod does (tpf3mp/apply.lua).
 		local name
 		for _, k in ipairs(added) do
-			local n = get(toAdd[k], "name")
+			local n = get(record[k], "name")
 			if name == nil and type(n) == "string" and n ~= "" and #n <= 64 then name = n end
 		end
 		return { PlaceStop = {
