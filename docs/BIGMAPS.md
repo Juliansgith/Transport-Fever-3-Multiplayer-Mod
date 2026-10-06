@@ -149,6 +149,18 @@ not save files, so games with and without it agree. On by default;
 applied (`faster saves: zstd level 1, a 64 KiB buffer`). The TF3 speed-up
 is not measured yet.
 
+### The emission grid
+
+The noise and pollution grids have 16 m cells, so their cost grows with
+the area: 1,602 x 16,002 floats each on 100 x 1000 tiles, eight times
+Gigantomaniac's, moved one step every update in three full-grid passes
+(about 1.75 GB of memory traffic per update). The hook runs each step as one
+fused pass that leaves every bit as the game's passes would, on by default
+(`TPF3MP_HOOK_FAST_EMISSION=0` keeps the game's own): 2.1x faster offline
+(42 ms to 20 ms per update on the big map's grids). How and why it is exact
+is in [HOOKS.md](HOOKS.md), "The fast emission grid"; the cost analysis in
+investigation/TF3_BIGMAP_SIM_COST_2026-10-05.md.
+
 ## What a load actually does
 
 The save holds the 4 m heightmap and every alignment. A load therefore

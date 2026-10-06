@@ -222,6 +222,8 @@ const TARGETS: &[(&str, u64)] = &[
         "fast-component-index: Engine::GetComponentDataIndex",
         0xa4b90,
     ),
+    // The fused emission grid (crates/tpf3mp-hook/src/emission).
+    ("emission::EmissionGridSystem::Update", 0xaa9230),
 ];
 
 #[test]

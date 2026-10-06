@@ -287,7 +287,8 @@ proposals.
    kernel and the new one on the same buffers, compare bitwise for many ticks;
    the checkpoint/rolling-check tooling can also hash the two grids). Effort: high.
 
-4. **Bit-exact fused/vectorised kernels without skipping.** Fuse Diffuse+Wind+
+4. **Bit-exact fused/vectorised kernels without skipping.** *Built
+   (2026-10-06, §7): 2.1x offline.* Fuse Diffuse+Wind+
    Average per row band with a 2-3 row rolling window (temporal blocking) and
    AVX2 8-wide lanes with the same op order: traffic falls from ~68 to ~20-25 B
    per cell, ~2.5-3x on this system (~12-20 ms). Lockstep: none if bit-exact
@@ -411,3 +412,111 @@ need registers the original's hit path leaves alone.
 - with `TPF3MP_HOOK_PERF=full`: `component-index <n> calls` per window;
 - A/B: the same save with `TPF3MP_HOOK_FAST_COMPONENT_INDEX=0`.
 
+## 7. Follow-up (2026-10-06): the kernels exactly, and the fused step
+
+Option 4 is built (`crates/tpf3mp-hook/src/emission`, docs/HOOKS.md "The fast
+emission grid"); option 3's skipping is not (below). Everything here is
+CONFIRMED-static from the disassembly and CONFIRMED-test: the tests relocate
+the game's kernels and its whole `Update` from the executable and compare
+every bit of every buffer.
+
+### 7.1 Layouts
+
+- `Grid<float>`: `+0 x0, +4 y0, +8 width, +0xc height, +0x10 std::vector<float>`
+  (begin, end, cap), 0x28 bytes.
+- System: `+8` -> `{noiseEntity, pollutionEntity}`, `+0x18` the temporary
+  grid, `+0x40` the engine, `+0x48` Average's `c`, `+0x4c` Diffuse's decay
+  `b`, `+0x50` Diffuse's spread `a`.
+- Component: `+0x10` grid point size (2 x f32), `+0x18` concentration grid,
+  `+0x40` average grid, `+0x68` type, `+0x6c` wind (2 x f32).
+- Dispatchers `LoopImpl(pool, &lambda, innerHeight, 48, &out, tag, 0)`: if
+  `innerHeight <= 48` or the pool has one thread, the inline path calls the
+  kernel once with rows `1 .. innerHeight+1`; else row chunks (`0x140aa6130`,
+  sized from the 48-row minimum and the pool's thread count) go to the pool
+  and the call waits for all. The
+  lambdas capture `{system, comp, dt}` (Diffuse), `{system, comp, &windCopy,
+  dt}` (Wind, the wind copied from `comp+0x6c` onto `Update`'s frame each
+  step), `{system, comp}` (Average).
+- Kernels: `Diffuse(row0, row1, &src, &dst, a, b, dt)` (`0x140aa8570`),
+  `Wind(row0, row1, &src, &dst, &gridPointSize, &wind, dt)` (`0x140aa96f0`),
+  `Average(row0, row1, comp, &dst, c)` (`0x140aa8190`; reads the data
+  pointers at `comp+0x28` and `comp+0x50`). Each asserts `row0 > 0` and
+  `row1 < height`, loops columns `1 .. width-2`, and never writes row 0, row
+  `height-1`, column 0 or column `width-1`.
+
+### 7.2 Per-cell arithmetic (single precision, each operation rounded)
+
+```
+Diffuse: w1 = (a*5)*dt;  w2 = (((1 - a*4) - b)*5)*dt;   assert w2 >= 0 && w1 >= 0 (NaN fails)
+         D = ((((w2*C + w1*W) + w1*E) + w1*N) + w1*S) + 1e-15f   (0x26901d7d)
+Wind:    ivx = (-wx*3)*dt; ivy = (-wy*3)*dt;  assert gx > |ivx| && gy > |ivy|
+         sx = 0 > ivx; sy = 0 > ivy
+         c6 = sx ? gx + ivx : ivx;  c7 = gx - c6;  c5 = sy ? gy + ivy : ivy;  c8 = gy - c5
+         area = gy*gx;  x0 = x - sx;  y0 = y - sy   (x1 = x0+1, y1 = y0+1)
+         Wd = ((((c6*s[y0][x1])*c8 + (c7*s[y0][x0])*c8) + (c7*s[y1][x0])*c5) + (c6*s[y1][x1])*c5) / area
+Average: A = (1 - c)*C + c*V
+```
+
+The unrolled and the tail loops of each kernel compute the same sequence;
+only Diffuse's first addition has its operands in the other order in the
+unrolled loop, which can only matter for two NaNs of different payloads (the
+grid can only make the default NaN). `CheckBoundaryConditions`
+(`0x140aa8350`) only reads: it asserts `|border| < FLT_EPSILON` and writes
+nothing.
+
+### 7.3 One step, buffer by buffer
+
+With `Pc`, `Pa`, `Pt` the buffers the concentration, the average and the
+temporary hold before the step (the swaps exchange whole vectors):
+
+| grid | concentration after | average after | temporary after |
+|---|---|---|---|
+| noise | `Pt`: D inside, `Pt`'s old border | `Pc`: A(D, Pa) inside, `Pc`'s border | `Pa`, untouched |
+| pollution | `Pc`: Wind(D) inside, `Pc`'s border (D's border is `Pt`'s) | `Pt`: A(W, Pa) inside | `Pa`, untouched |
+
+`nSteps` repeats this; dt is the same for every step of an update.
+
+### 7.4 Answers to the open questions
+
+- **Row split.** Every kernel reads one buffer and writes another, and the
+  chunks are disjoint rows, so the result is independent of the pool's
+  split and thread count (CONFIRMED-test: 1 to 64 bands, one to sixteen
+  threads, bit-identical).
+- **Wind constancy.** Not needed: the hook uses the wind `Update` passes for
+  the step, as the kernel does. Only `CreateEmissionGrid` was seen writing
+  `comp+0x6c` (GUESS that nothing else does).
+- **MXCSR.** `.text` holds no `ldmxcsr`, and the executable imports no
+  `_controlfp`, `_control87` or `fesetround`, so the game's threads run the
+  Windows default (`0x1f80`: round to nearest, no FTZ/DAZ). The hook runs
+  the fused step only when the simulation thread and every worker report
+  the default; anything else runs the game's passes.
+
+### 7.5 What was built and measured
+
+One pass over row bands: Diffuse rows go to a three-row ring for Wind (or
+straight into `Pt` for noise), Wind and Average write their rows as soon as
+the rows they read are no longer needed, AVX eight lanes per instruction
+with the game's per-lane sequence, non-temporal stores for the output the
+step does not read again. 32 bytes per cell per update (both grids) instead
+of 68.
+
+Offline benchmark (`emission_speed`, 1,602 x 16,002 noise and pollution, one
+update, 16 threads, Ryzen 9 9950X3D, with the player's game running on the
+same PC): the game's own kernels, split over threads as its pool splits them,
+42 ms (best 41); fused 20 ms (best 19): **2.1x**, both at about 41 GB/s, so
+bound by memory bandwidth, and at the least traffic a step that reads two
+buffers and writes two can have. In the game the saving per update on the
+big map is therefore about 20 ms of the ~260 ms (DERIVED).
+
+### 7.6 Option 3 (skipping still blocks): not built
+
+A block whose inputs are unchanged gives unchanged outputs, and the
+temporary always ends holding the old average, so for pollution a still
+block would need no writes at all. But the inputs also change outside
+`Update`: `EmissionEmitterSystem::Update2` writes the concentration through
+three insert paths, and loading and scripts can too. Skipping is exact only
+if every such write is seen, which takes either hooks on every writer (not
+provable statically) or a comparison with a copy of the grid each update
+(8 more bytes per cell, about half of what skipping would save, plus
+another 200 MB). Noise also rotates all three buffers, so even its still
+blocks need copying. Not worth the proof burden next to the fused step.
