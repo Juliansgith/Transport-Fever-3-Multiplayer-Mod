@@ -24,6 +24,10 @@ foreach ($gp in $GamePids) {
   if (-not $p.Responding) { "game $gp is not responding: nothing sent to it"; continue }
   $q = $QuitAt -split ","; $d = $DesktopAt -split ","
   if (-not $QuitAt -or -not $DesktopAt) {
+    # Measured as it will be clicked: restored and in front first (a click
+    # restores a minimized or maximized window to another size).
+    & $g front -GamePid $gp | Out-Null
+    Start-Sleep -Seconds 1
     $said = (& $g shot "quit-$gp" -GamePid $gp | Out-String)
     if ($said -match "window (\d+)x(\d+)") {
       $cw = [int]$Matches[1] / 2; $ch = [int]$Matches[2] / 2

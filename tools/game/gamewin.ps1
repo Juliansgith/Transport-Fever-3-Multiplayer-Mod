@@ -4,6 +4,7 @@
 # those of a capture: half the window's size, frame and title bar included.
 #
 #   gamewin.ps1 shot <name>              capture to <work>\<name>.png (half size)
+#   gamewin.ps1 front                    restore the window and bring it forward
 #   gamewin.ps1 click <x> <y>            left click
 #   gamewin.ps1 rclick <x> <y>           right click
 #   gamewin.ps1 move <x> <y>             move the cursor (a tooltip, a tool's preview)
@@ -127,6 +128,11 @@ function ScreenX([string]$x) { $r.L + [int]$x * 2 }
 function ScreenY([string]$y) { $r.T + [int]$y * 2 }
 
 switch ($cmd) {
+  "front" {
+    # Restores a minimized or maximized window and brings it forward.
+    Front
+    "fronted"
+  }
   "shot" {
     $bmp = New-Object System.Drawing.Bitmap $w, $hgt
     $g = [System.Drawing.Graphics]::FromImage($bmp)
