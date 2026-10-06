@@ -571,6 +571,28 @@ distributions with an older C library too.
   once most players have that version, and remove the old one later.
   Losing every trusted key means players download the next version by
   hand once.
+- **Announcing on Discord.** Once `sign.yml` has signed a published
+  release, `.github/workflows/announce.yml` posts it to a Discord channel
+  and mentions the announcement role: the release's name, a link to its page
+  and the start of its notes. By then launchers offer the update. It posts
+  nothing for a draft, a prerelease or an unsigned release, and the message
+  can mention that role and no one else, whatever the notes say. A release
+  signed a second time is not announced again; run the workflow by hand
+  with the tag to post it again. Set it up once:
+
+  1. In the Discord channel's settings, Integrations, Webhooks, create a
+     webhook and copy its URL. In Settings, Secrets and variables, Actions,
+     add it as the repository secret **`DISCORD_RELEASE_WEBHOOK`**.
+  2. In Discord, with Developer Mode on (User Settings, Advanced),
+     right-click the announcement role under Server Settings, Roles, and
+     copy its ID. Set it as the repository variable
+     **`DISCORD_ANNOUNCE_ROLE_ID`**.
+  3. Try it: run **announce release** by hand in Actions with the latest
+     tag. If the message shows the role but notifies no one, turn on
+     "Allow anyone to @mention this role" in the role's settings.
+
+  Without the secret the workflow posts nothing and still passes, as in
+  forks; with a malformed webhook URL or role ID it fails and posts nothing.
 - **Building without releasing.** Run the workflow by hand. The packages
   stay workflow artifacts, but the repository is public, so anyone can
   download them.
