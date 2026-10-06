@@ -206,6 +206,8 @@ const TARGETS: &[(&str, u64)] = &[
     ("bigmap::OctreeSystem::Resize", 0xae4c50),
     ("bigmap::octree_root_init", 0x244b8b),
     ("bigmap::octree_root_load", 0x20267d),
+    ("bigmap::Obstacle::Obstacle", 0x8cea50),
+    ("bigmap::placement spacing", 0x8d31f0),
 ];
 
 #[test]
@@ -391,6 +393,13 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     // Big maps: both octree root sites call Resize.
     assert_eq!(callee(0x244b8b + 17), 0xae4c50);
     assert_eq!(callee(0x20267d + 17), 0xae4c50);
+    // The industry, town-connection and fill callers reach the raster's
+    // constructor, and the spacing
+    // score's one caller reaches it.
+    for site in [0x8f219e, 0x8ff06d, 0x9129c3] {
+        assert_eq!(callee(site), 0x8cea50, "{site:#x} builds a raster");
+    }
+    assert_eq!(callee(0x8d63df), 0x8d31f0);
 
     // A required target's bytes changed: resolution fails closed.
     let mut tampered = text_bytes.to_vec();

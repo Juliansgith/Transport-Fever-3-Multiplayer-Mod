@@ -358,7 +358,7 @@ per km², and an earlier subarctic log at 49 maps and 10,074 MB, 12.25 MB
 per km²: three to five times TPF2's.
 
 Whether the project ships big maps is the owner's to decide (PLAN.md, "Big
-maps"). Stages 0 and 1 are built, and Stage 2's opt-in hook patch;
+maps"). Stages 0 and 1 are built, and Stages 2 and 3's opt-in hook patches;
 none changes a stock-sized game, and the mod is not packaged with
 TPF3-MP.
 
@@ -614,6 +614,65 @@ game:
 - a room of two games (Sandboxie) on the 60 x 300 world through
   `tools/scenarios/roads.json` and `rail.json`, the checkpoints agreeing.
 
+### Stage 3: the street raster and placement spacing
+
+Built in the hook, not tested in the game yet
+(investigation/TF3_BIGMAPS_256KM_2026-10-05.md, §2, §3 and §8). Both
+opt-in, both derived from the world:
+
+- **The street raster** (`TPF3MP_BIGMAP_STREET_RASTER=1`). The hook
+  detours `Obstacle::Obstacle` (`0x8cea50`), which every street, town
+  connection and industry raster goes through. Where the cell its caller
+  passes would give more than 2³¹ − 1 cells (stock code aborts there:
+  180 tiles square, 1000 x 32 long), the cell is doubled until the count
+  fits; a raster that fits is never touched, so every world a stock game
+  can generate keeps its 1 m cells. Unlike tpf2-bigmap's 1.5-billion
+  budget, Stage 1's 176² keeps 1 m. The cell grows in powers of two
+  because the raster's fill scales by `extent / (n − 1)` while lookups
+  divide by the cell: they agree exactly only when the cell divides the
+  extent, which 2, 4 and 8 m do for every whole-tile edge. 300² and up to
+  1000 x 130 get 2 m, 1000 x 136 to 1000 x 186 and 512² get 4 m. The
+  hook checks the constructor's 135-byte body (the counts and the 32-bit
+  multiply) before it detours it.
+- **Placement spacing** (`TPF3MP_BIGMAP_PLACEMENT=1`). The hook replaces
+  the spacing score (`0x8d31f0`) with the same arithmetic, squares in 64
+  bits saturated at `INT_MAX`. Where no square overflows it gives the
+  game's scores to the bit, so it changes nothing on any map whose pairs
+  stay within 185 km (every map up to 724 tiles long; with depth 11, only
+  a 512² world's corners are farther). It checks both int32 squarings are
+  where they were read before it replaces the score.
+- **Tested against the game's own code**, relocated from the executable
+  (`crates/tpf3mp-hook/src/bigmap/raster.rs`, `placement.rs`, with
+  `TPF3MP_TF3_EXE`): the constructor's counts and its wrapped size equal
+  the model for 20,000 random boxes and cells; through the detour,
+  Gigantomaniac and 176² keep 1 m, 300² gets 2 m and 1000 x 186 4 m, each
+  sized below 2³¹; the game's score and the replacement agree bit for bit
+  on 3,000 random sets (over 30,000 scores, duplicates and exclusions
+  included) inside the int32 range; past it the game's score is NaN and
+  the replacement's equals a 128-bit reference.
+- The bigmap crate models both: on TF3 `street_raster` grows the cell only
+  past the wall and in powers of two, and a new ceiling,
+  `PlacementSpacing`, blocks a map whose corners are more than 185 km apart
+  unless `limits.placement_distance` is set.
+  `crates/tpf3mp-bigmap/tpf3mp_bigmap.stage3.toml` adds square rows up to
+  384 tiles (98.3 km) on top of Stage 2; every shape is buildable on TF3
+  with the three patches. Not wired to the mod.
+
+**Still to test in the game**, by a person, with the settings on in every
+game:
+
+- generate the largest square past 180² the machine's memory allows (200²
+  needs 32 GB; 256² about 50 GB): `hook.log` shows the street raster line
+  at 2 m, generation does not abort, towns get streets, industries are
+  connected;
+- with the settings off, stock and Stage 1 worlds generate as before, with
+  no raster line;
+- a room of two games on a world past 180² founding industries (each
+  founding builds a raster) through the scenario runner, the checkpoints
+  agreeing;
+- placement: nothing to see until a map is longer than 724 tiles, which
+  needs depth 12.
+
 ### The rest of the prototype
 
 `crates/tpf3mp-bigmap` also carries the rest of Big Maps' features, as far
@@ -623,7 +682,7 @@ investigation):
 | Big Maps on TPF2 | the prototype |
 |---|---|
 | The added size rows (`add_size_rows`) | `ladder`: the rows and their 1:k shapes; on TF3, the mod's page copy above (`page`, `mod_data`). |
-| The street raster's 32-bit wall past 180 tiles (`street_raster`, `cell_budget_millions`) | `ceilings`: the cell count at the stock cell, and the cell the budget needs. TF3's site: `sub_8cea50`. |
+| The street raster's 32-bit wall past 180 tiles (`street_raster`, `cell_budget_millions`) | `ceilings`: the cell count at the stock cell, and the cell the budget needs. TF3: the hook's detour of `0x8cea50`, only past the wall, in powers of two (Stage 3). |
 | The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. TF3: `octree_max_depth` 11, the hook's root splice at `0x244b8b` and `0x20267d` (Stage 2). |
 | The heightmap's 32-bit pixel count (derived, about 722 tiles) | `ceilings`: refused, since no setting passes it. |
 | The memory law | `ceilings` and `world`: the expected peak for every size, before it is generated; `measure` checks it against a log. |

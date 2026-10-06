@@ -1,0 +1,32 @@
+# Big maps for Transport Fever 3, stage 3 (investigation/TF3_BIGMAPS_256KM_2026-10-05.md,
+# section 8): stage 2 plus squares past the street raster's 180-tile wall.
+# The hook grows the raster's cell only where one metre would overflow 2^31
+# cells (TPF3MP_BIGMAP_STREET_RASTER=1), and scores placement spacing in 64
+# bits (TPF3MP_BIGMAP_PLACEMENT=1), which changes nothing on a map whose
+# pairs stay within 185 km; with depth 11 (TPF3MP_BIGMAP_OCTREE=11) only a
+# 512 x 512 world's corners reach that.
+#
+# Not wired to the mod: the mod's ladder stays stage 1's until each patch is
+# seen working in the game. Memory, not these walls, decides what a machine
+# is offered: the 256 x 256 tile row expects 49.8 GB, the 384 x 384 row
+# 104.9 GB (crates/tpf3mp-bigmap/src/memory_gate.rs).
+
+[sizes]
+add_rows = true
+max_tiles = 512
+rows = [
+    { label = "Big 32.8 km", tiles = 128 },
+    { label = "Big 36.9 km", tiles = 144 },
+    { label = "Big 41.0 km", tiles = 160 },
+    { label = "Big 45.1 km", tiles = 176 },
+    { label = "Big 49.2 km", tiles = 192 },
+    { label = "Big 57.3 km", tiles = 224 },
+    { label = "Big 65.5 km", tiles = 256 },
+    { label = "Big 81.9 km", tiles = 320 },
+    { label = "Big 98.3 km", tiles = 384 },
+]
+
+[limits]
+octree_depth = 11
+street_raster = true
+placement_distance = true

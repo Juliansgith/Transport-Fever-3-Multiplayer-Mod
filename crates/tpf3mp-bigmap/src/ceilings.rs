@@ -36,6 +36,9 @@ pub enum Ceiling {
     },
     /// The heightmap's pixel count, past a 32-bit int.
     Heightmap { pixels: u64 },
+    /// Placement's farthest squared separation, in heightmap pixels, past
+    /// a 32-bit int: pairs farther apart than 185 km wrap.
+    PlacementSpacing { pixels_squared: u64 },
 }
 
 impl Ceiling {
@@ -46,6 +49,7 @@ impl Ceiling {
             Self::StreetRaster { .. } => "limits.street_raster = true",
             Self::OctreeRoot { .. } => "a deeper limits.octree_depth",
             Self::Heightmap { .. } => "nothing: the engine cannot build it",
+            Self::PlacementSpacing { .. } => "limits.placement_distance = true",
         }
     }
 }
@@ -76,10 +80,11 @@ impl SizeReport {
 
 const INT_MAX: u64 = i32::MAX as u64;
 
-/// The street raster's cell count at `cell_m`.
+/// The street raster's cell count at `cell_m`, as the raster's constructor
+/// counts a side: `floor(extent / cell) + 1`.
 fn street_cells(world: &WorldModel, tiles: (u32, u32), cell_m: u32) -> u64 {
     let cell = u64::from(cell_m.max(1));
-    world.edge_m(tiles.0).div_ceil(cell) * world.edge_m(tiles.1).div_ceil(cell)
+    (world.edge_m(tiles.0) / cell + 1) * (world.edge_m(tiles.1) / cell + 1)
 }
 
 /// Checks a map of `tiles_x` by `tiles_y` against `world`'s ceilings under
@@ -102,7 +107,16 @@ pub fn check(world: &WorldModel, config: &Config, tiles_x: u32, tiles_y: u32) ->
     let stock_cell = world.street_cell_m.value;
     let stock_cells = street_cells(world, tiles, stock_cell);
     let mut street_cell_m = stock_cell;
-    if config.limits.street_raster {
+    if config.limits.street_raster && world.patches_from_world {
+        // TF3's patch (crates/tpf3mp-hook/src/bigmap/raster.rs): only where
+        // the stock cell overflows, doubled until the count fits.
+        if stock_cells > INT_MAX {
+            street_cell_m = stock_cell * 2;
+            while street_cells(world, tiles, street_cell_m) > INT_MAX && street_cell_m < 64 {
+                street_cell_m *= 2;
+            }
+        }
+    } else if config.limits.street_raster {
         let budget = u64::from(config.limits.cell_budget_millions) * 1_000_000;
         while street_cells(world, tiles, street_cell_m) > budget && street_cell_m < 64 {
             street_cell_m += 1;
@@ -151,7 +165,20 @@ pub fn check(world: &WorldModel, config: &Config, tiles_x: u32, tiles_y: u32) ->
         }
     }
 
+    // Placement's farthest pair: corner to corner, in heightmap pixels.
     let samples = u64::from(world.samples_per_tile.value);
+    let (px, py) = (u64::from(tiles_x) * samples, u64::from(tiles_y) * samples);
+    let pixels_squared = px * px + py * py;
+    if pixels_squared > INT_MAX {
+        let ceiling = Ceiling::PlacementSpacing { pixels_squared };
+        // Big Maps on TPF2 fixes it on every Steam load, unasked.
+        if config.limits.placement_distance || !world.patches_from_world {
+            handled.push(ceiling);
+        } else {
+            blocked.push(ceiling);
+        }
+    }
+
     let pixels = (u64::from(tiles_x) * samples + 1) * (u64::from(tiles_y) * samples + 1);
     if pixels > INT_MAX {
         blocked.push(Ceiling::Heightmap { pixels });
@@ -294,7 +321,7 @@ mod tests {
         // settings ask.
         for depth in [11, 12, 13] {
             let settings = config(&format!(
-                "[sizes]\nmax_tiles = 1000\n[limits]\nstreet_raster = true\noctree_depth = {depth}"
+                "[sizes]\nmax_tiles = 1000\n[limits]\nstreet_raster = true\nplacement_distance = true\noctree_depth = {depth}"
             ));
             let report = check(&TF3, &settings, 40, 1000);
             assert!(
@@ -313,6 +340,78 @@ mod tests {
         let tpf2 =
             config("[sizes]\nmax_tiles = 1024\n[limits]\nstreet_raster = true\noctree_depth = 12");
         assert!(check(&TPF2, &tpf2, 40, 1000).buildable());
+    }
+
+    #[test]
+    fn tf3_grows_the_street_cell_only_where_1_m_overflows() {
+        let raster = config("[limits]\nstreet_raster = true\noctree_depth = 11");
+        // 176² fits at 1 m (Big Maps' 1.5-billion budget would have grown it).
+        assert_eq!(check(&TF3, &raster, 176, 176).street_cell_m, 1);
+        assert_eq!(check(&TF3, &raster, 180, 180).street_cell_m, 1);
+        let wall = check(&TF3, &raster, 182, 182);
+        assert!(wall.buildable(), "{wall:?}");
+        assert_eq!(wall.street_cell_m, 2);
+        assert_eq!(check(&TF3, &raster, 300, 300).street_cell_m, 2);
+        assert_eq!(check(&TF3, &raster, 512, 512).street_cell_m, 4);
+        // The memory table's 256 km shapes (with depth 12, not built).
+        let long = config(
+            "[sizes]\nmax_tiles = 1000\n[limits]\nstreet_raster = true\nplacement_distance = true",
+        );
+        for (short, cell) in [(32, 1), (40, 2), (88, 2), (130, 2), (136, 4), (186, 4)] {
+            assert_eq!(
+                check(&TF3, &long, short, 1000).street_cell_m,
+                cell,
+                "{short}"
+            );
+        }
+        // Without the patch past 180²: blocked.
+        let stock = check(&TF3, &config("[limits]\noctree_depth = 11"), 182, 182);
+        assert!(matches!(stock.blocked[..], [Ceiling::StreetRaster { .. }]));
+    }
+
+    #[test]
+    fn tf3_spacing_wraps_only_past_185_km() {
+        let depth11 = config("[limits]\noctree_depth = 11\nstreet_raster = true");
+        // 390 x 78 (stage 2's longest): 100 km apart at most.
+        assert!(check(&TF3, &depth11, 390, 78).buildable());
+        // 512 x 512's corners are 2^31 px² apart: one past INT_MAX.
+        let corner = check(&TF3, &depth11, 512, 512);
+        assert_eq!(
+            corner.blocked,
+            [Ceiling::PlacementSpacing {
+                pixels_squared: 1 << 31
+            }]
+        );
+        assert_eq!(
+            corner.blocked[0].remedy(),
+            "limits.placement_distance = true"
+        );
+        let fixed =
+            config("[limits]\noctree_depth = 11\nstreet_raster = true\nplacement_distance = true");
+        assert!(check(&TF3, &fixed, 512, 512).buildable());
+        // Every 1,000-tile map has pairs 256 km apart.
+        assert!(
+            check(&TF3, &depth11, 2, 1000)
+                .blocked
+                .iter()
+                .any(|c| matches!(c, Ceiling::PlacementSpacing { .. }))
+        );
+    }
+
+    #[test]
+    fn every_stage3_shape_is_buildable_on_tf3() {
+        let (settings, notes) =
+            Config::from_toml(include_str!("../tpf3mp_bigmap.stage3.toml")).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        let mut coarse = false;
+        for row in settings.rows(&TF3) {
+            for (x, y) in crate::ladder::shapes(&row, settings.sizes.max_tiles) {
+                let report = check(&TF3, &settings, x, y);
+                assert!(report.buildable(), "{} {x}x{y}: {report:?}", row.label);
+                coarse |= report.street_cell_m > 1;
+            }
+        }
+        assert!(coarse, "stage 3 has rows past the 1 m raster");
     }
 
     #[test]

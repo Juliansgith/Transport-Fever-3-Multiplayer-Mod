@@ -5087,6 +5087,8 @@ of the room must have it (not checked by the room yet). Each logs a
 | switch | turns on |
 |---|---|
 | `TPF3MP_BIGMAP_OCTREE=11` | the octree root at depth 11 (±65,536 m) for worlds with an axis over 256 tiles, at the new-game and load sites |
+| `TPF3MP_BIGMAP_STREET_RASTER=1` | the street and obstacle raster's cell doubled (2, 4, 8 m) where 1 m would overflow 2^31 cells; every raster that fits is the game's |
+| `TPF3MP_BIGMAP_PLACEMENT=1` | town and industry spacing in 64 bits, saturated at `INT_MAX`; the game's scores to the bit wherever no pair is 185 km apart |
 
 ## Release-day procedure: adding a target for a new build
 

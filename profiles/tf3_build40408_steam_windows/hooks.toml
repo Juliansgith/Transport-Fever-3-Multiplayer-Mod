@@ -1701,3 +1701,32 @@ signature = "81 7E 04 80 00 00 00 7E 16 C5 FA 10 15 ?? ?? ?? ?? 48 8B 4D 38 BA 0
 offset = 9
 prologue = "C5 FA 10 15 B3 09 48 03 48 8B 4D 38 BA 0A 00 00 00 E8 BD 25 8E 00 C5 FA 10 56 20"
 required = false
+
+# Obstacle::Obstacle (TPF2 0x90d410; here 0x8cea50): the street and obstacle
+# raster. rcx this, rdx the box {minX, minY, maxX, maxY}, xmm2 the cell in
+# metres; n = floor(extent / cell) + 1 a side, sized through a 32-bit
+# `imul eax,edx; movsxd rdx,eax` (0x8ceae5) that overflows past 2^31 cells.
+# Called by CreateAndAddIndustry (0x8f219e), the town connections
+# (0x8ff06d), 0x912940 (0x9129c3) and the native map preview (0x28dcd46).
+# The hook grows the cell, only where the count would overflow, and checks
+# the body between the prologue and the resize call (bigmap.rs) first.
+[[target]]
+name = "bigmap::Obstacle::Obstacle"
+signature = "48 89 4C 24 08 53 48 83 EC 20 48 8B D9 48 8D 05 ?? ?? ?? ?? 48 89 01 C5 F8 10 02"
+offset = 0
+prologue = "48 89 4C 24 08 53 48 83 EC 20 48 8B D9 48 8D 05 1C 81 E1 02"
+required = false
+
+# The placement spacing score (TPF2 0x910ce0; here 0x8d31f0), one caller
+# (0x8d6390, beside RandomLocationFactory): rcx the output vector<float>,
+# rdx the candidates {int32 x, int32 y, float angle}, xmm2 the minimum
+# distance, r9 the exclusions {int32 x, int32 y}, the resolution on the
+# stack. Squares candidate separations in int32 (0x8d334b, 0x8d33ab), which
+# wrap past 46,340 px (185 km). The hook replaces it with the same scores in
+# 64 bits, saturated at INT_MAX.
+[[target]]
+name = "bigmap::placement spacing"
+signature = "4C 8B DC 4D 89 4B 20 49 89 4B 08 57 41 55"
+offset = 0
+prologue = "4C 8B DC 4D 89 4B 20 49 89 4B 08 57 41 55"
+required = false

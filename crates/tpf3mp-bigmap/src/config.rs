@@ -18,6 +18,7 @@
 //! octree_depth = 11      # 0: the game's own choice; 11 to 13: a larger root
 //! street_raster = true   # coarsen the street raster's cells past its budget
 //! cell_budget_millions = 1500
+//! placement_distance = true  # spacing in 64 bits past 185 km (TF3: the hook's patch)
 //!
 //! [generation]
 //! placement_attempts = 200   # the stock budget; Big Maps offers 50
@@ -93,6 +94,8 @@ pub struct Limits {
     pub octree_depth: u8,
     pub street_raster: bool,
     pub cell_budget_millions: u32,
+    /// Placement spacing in 64 bits, for maps with pairs past 185 km.
+    pub placement_distance: bool,
 }
 
 impl Default for Limits {
@@ -101,6 +104,7 @@ impl Default for Limits {
             octree_depth: 0,
             street_raster: false,
             cell_budget_millions: 1500,
+            placement_distance: false,
         }
     }
 }

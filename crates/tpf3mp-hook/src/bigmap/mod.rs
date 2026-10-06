@@ -15,8 +15,14 @@
 //!
 //! - [`octree`]: the octree root at depth 11 (±65,536 m, 512 tiles) for a
 //!   world with an axis over 256 tiles, [`OCTREE_ENV`].
+//! - [`raster`]: the street and obstacle raster's cell doubled where 1 m
+//!   would overflow 2^31 cells, [`RASTER_ENV`].
+//! - [`placement`]: town and industry spacing in 64 bits, saturated,
+//!   [`PLACEMENT_ENV`].
 
 pub mod octree;
+pub mod placement;
+pub mod raster;
 
 #[cfg(all(test, windows, target_arch = "x86_64"))]
 pub(crate) mod original;
@@ -24,6 +30,8 @@ pub(crate) mod original;
 use tpf3mp_hookcore::profile::ResolvedProfile;
 
 pub use octree::OCTREE_ENV;
+pub use placement::PLACEMENT_ENV;
+pub use raster::RASTER_ENV;
 
 /// Whether a switch's value turns it on: `1`, `on`, `true` or `yes`. Unset
 /// or empty is off, as is anything else, and the caller says so.
@@ -38,7 +46,11 @@ pub fn switch(value: Option<&str>) -> Result<bool, String> {
 /// Installs every big-map patch its setting asks for, from the targets at
 /// their addresses in this process. Returns the lines for `hook.log`.
 pub fn install(resolved: &ResolvedProfile) -> Vec<String> {
-    vec![octree::install(resolved)]
+    vec![
+        octree::install(resolved),
+        raster::install(resolved),
+        placement::install(resolved),
+    ]
 }
 
 #[cfg(test)]

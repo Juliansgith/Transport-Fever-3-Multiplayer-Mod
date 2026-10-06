@@ -36,7 +36,7 @@ pub struct Feature {
 }
 
 /// Big Maps' features, as TF3 would carry them.
-pub const FEATURES: [Feature; 6] = [
+pub const FEATURES: [Feature; 7] = [
     Feature {
         // TPF2: UI::GetNumTilesNew (MenuUI.cpp:264) and the size dropdown's
         // fill. TF3's New Game page is a script: the mod's copy of it
@@ -48,11 +48,20 @@ pub const FEATURES: [Feature; 6] = [
         wanted: |config| config.sizes.add_rows,
     },
     Feature {
-        // TPF2: the street raster's size, RVA 0x90d410.
+        // TPF2: the street raster's size, RVA 0x90d410. TF3: the Obstacle
+        // constructor, detoured by the hook (bigmap/raster.rs).
         name: "street_raster",
         effect: Effect::Simulation,
-        targets: &["bigmap::street_raster"],
+        targets: &["bigmap::Obstacle::Obstacle"],
         wanted: |config| config.limits.street_raster,
+    },
+    Feature {
+        // TPF2: the spacing score, RVA 0x910ce0. TF3: 0x8d31f0, replaced by
+        // the hook (bigmap/placement.rs).
+        name: "placement_distance",
+        effect: Effect::Simulation,
+        targets: &["bigmap::placement spacing"],
+        wanted: |config| config.limits.placement_distance,
     },
     Feature {
         // TPF2: ecs::OctreeSystem's root box, a two-tier constant. TF3:
@@ -239,7 +248,7 @@ mod tests {
     #[test]
     fn a_missing_simulation_feature_refuses_the_room() {
         let settings = config("[limits]\nstreet_raster = true\noctree_depth = 11");
-        let plan = plan(&settings, |target| target == "bigmap::street_raster");
+        let plan = plan(&settings, |target| target == "bigmap::Obstacle::Obstacle");
         assert_eq!(plan.state("street_raster"), Some(&State::On));
         assert_eq!(
             plan.state("octree_depth"),
@@ -264,10 +273,18 @@ mod tests {
     }
 
     #[test]
-    fn the_octree_targets_are_the_tf3_profiles() {
+    fn the_native_targets_are_the_tf3_profiles() {
         let profile = include_str!("../../../profiles/tf3_build40408_steam_windows/hooks.toml");
-        let octree = FEATURES.iter().find(|f| f.name == "octree_depth").unwrap();
-        for target in octree.targets {
+        for target in FEATURES
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.name,
+                    "octree_depth" | "street_raster" | "placement_distance"
+                )
+            })
+            .flat_map(|f| f.targets)
+        {
             assert!(
                 profile.contains(&format!("name = \"{target}\"")),
                 "{target} is not in the TF3 profile"
