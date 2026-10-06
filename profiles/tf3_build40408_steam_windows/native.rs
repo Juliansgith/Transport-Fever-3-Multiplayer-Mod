@@ -20,6 +20,7 @@ pub mod order;
 pub mod persons;
 pub mod previewcancel;
 pub mod savefast;
+pub mod simswitch;
 pub mod probe;
 pub mod seeds;
 pub mod stoptool;

@@ -5269,6 +5269,17 @@ To A/B it, run the same save with and without
 `TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` and compare the first line's `ms/update`
 and the `perf: sim` line's `parcel-collision`.
 
+Two more switches are a **proposal for the owner** ([BIGMAPS.md](BIGMAPS.md),
+"Simulation switches (proposal)"). Unlike the patches above, they **change
+simulation results** on every world they are set for, and are not derived
+from it. Each logs a `big maps: emission ... (PROPOSAL, changes simulation
+results)` line at install:
+
+| switch | turns on |
+|---|---|
+| `TPF3MP_BIGMAP_EMISSION_EVERY=N` (2 to 16) | `EmissionGridSystem::Update` and `EmissionEmitterSystem::Update2` run only when `GameTime.updateCount % N == 0`, with the game's `dt` (two vtable slots, `bigmap/emission.rs`); every game of a room needs the same N, which the room does not check yet |
+| `TPF3MP_BIGMAP_EMISSION_CELL=32` | new worlds' noise and pollution grids at 8 cells per tile (32 m) instead of 16 (`CreateEmissionGrid` rewritten, `bigmap/emission_cell.rs`); the cell size travels with the save |
+
 ## Release-day procedure: adding a target for a new build
 
 The first TF3 build's targets are already located (RVAs, RTTI/source

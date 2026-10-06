@@ -1845,3 +1845,52 @@ signature = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08 55 56 57 41 54 41 55 4
 offset = 0
 prologue = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08"
 required = false
+
+# Simulation-changing big-map switches, a PROPOSAL for the owner, off by
+# default (crates/tpf3mp-hook/src/bigmap/emission.rs; investigation/
+# TF3_BIGMAP_SIM_COST_2026-10-05.md, "Switches built"). The emission throttle
+# patches two vtable slots, never code: ecs::Engine::Update (0x2bb8a50) calls
+# every system's slot 11 serially on the step's thread, and
+# EmissionEmitterSystem's slot 11 (0xaa5920) calls its slot 12. The functions
+# pin what each slot must hold; the constructors' `lea rax,[vftable]` give the
+# vtables (EmissionGridSystem 0x36fcab8, slot 11 at 0x36fcb10;
+# EmissionEmitterSystem 0x36fc430, slot 12 at 0x36fc490).
+[[target]]
+name = "bigmap::EmissionGridSystem::Update"
+signature = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 00 01 00 00 C5 F8 29 70 B8 C5 F8 28 F3"
+offset = 0
+prologue = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08"
+required = false
+
+[[target]]
+name = "bigmap::EmissionGridSystem vtable load"
+signature = "48 8B F2 48 8B D9 33 ED 48 8D 05 ?? ?? ?? ?? 48 89 01 48 C7 44 24 48 FF FF FF FF 8D 4D 18"
+offset = 8
+prologue = "48 8D 05 08 4C C5 02"
+required = false
+
+[[target]]
+name = "bigmap::EmissionEmitterSystem::Update2"
+signature = "C5 FA 11 5C 24 20 55 53 56 57 41 54 41 55"
+offset = 0
+prologue = "C5 FA 11 5C 24 20 55 53 56 57 41 54 41 55"
+required = false
+
+[[target]]
+name = "bigmap::EmissionEmitterSystem vtable load"
+signature = "48 C7 41 08 00 00 00 00 48 C7 41 10 00 00 00 00 48 8D 05 ?? ?? ?? ?? 48 89 01 48 89 51 18 48 8D 71 20"
+offset = 16
+prologue = "48 8D 05 FA 83 C5 02"
+required = false
+
+# ecs::component::CreateEmissionGrid (0xba0170, EmissionGrid.cpp), called only
+# from the new-game path (0x155630, twice: noise and pollution). The emission
+# cell switch rewrites its four `shl reg,4` (0xba0201, 0xba0212, 0xba021b,
+# 0xba0225) to `shl reg,3` and points its `vmovss xmm2,[0.0625]` (0xba025a)
+# at the game's 0.125f (0x36b2fa4), after checking the body (simswitch.rs).
+[[target]]
+name = "bigmap::CreateEmissionGrid"
+signature = "48 89 5C 24 18 48 89 4C 24 08 55 56 57 41 56 41 57 48 81 EC 80 00 00 00"
+offset = 0
+prologue = "48 89 5C 24 18 48 89 4C 24 08 55 56 57 41 56"
+required = false

@@ -93,10 +93,16 @@ pub struct Page {
 
 impl Page {
     pub fn new() -> Self {
+        Self::with_len(0x10000)
+    }
+
+    /// A region of `len` bytes, zeroed: also memory of its own for a test
+    /// that rewrites "code" in place, so changing its protection touches
+    /// no page another test uses.
+    pub fn with_len(len: usize) -> Self {
         use windows_sys::Win32::System::Memory::{
             MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc,
         };
-        let len = 0x10000;
         // SAFETY: a fresh region for the test's own code and data.
         let base = unsafe {
             VirtualAlloc(
@@ -123,6 +129,11 @@ impl Page {
         // SAFETY: inside the region, which nothing else uses.
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, bytes.len()) };
         at
+    }
+
+    /// The region's start.
+    pub fn base(&self) -> usize {
+        self.base
     }
 
     /// Where the next code goes.

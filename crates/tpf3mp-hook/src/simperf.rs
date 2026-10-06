@@ -288,11 +288,13 @@ pub fn line(window: &Window, updates: u64) -> Option<String> {
     Some(out)
 }
 
-/// The slot must hold the function the profile resolved.
+/// The slot must hold the function the profile resolved, or the big-map
+/// emission throttle's gate in front of it (crate::bigmap::emission, which
+/// installs first and calls the function): the timer then times the gate.
 pub fn check_slot(found: Option<u64>, function: u64) -> Result<(), String> {
     match found {
         None => Err("the slot is unreadable".to_owned()),
-        Some(found) if found == function => Ok(()),
+        Some(found) if found == function || crate::bigmap::emission::is_gate(found) => Ok(()),
         Some(found) => Err(format!(
             "the slot holds {found:#x}, not the function at {function:#x}"
         )),
@@ -360,22 +362,28 @@ fn install_slot(system: System, slot: u64, function: u64, hook: usize) -> Result
         unsafe { std::ptr::read_unaligned(at as *const u64) }
     });
     check_slot(found, function)?;
-    ORIGINALS[system as usize].store(function as usize, Ordering::Release);
+    // What the slot holds: the function, or the throttle's gate before it.
+    let held = found.unwrap_or(function);
+    ORIGINALS[system as usize].store(held as usize, Ordering::Release);
     // SAFETY: the vtable slot holds the function (checked); no game thread
     // runs yet, and the hook has the function's ABI and calls it.
     let rewrite = unsafe {
         Rewrite::install(
             at as *mut u8,
-            &function.to_le_bytes(),
+            &held.to_le_bytes(),
             &(hook as u64).to_le_bytes(),
         )
     }
     .map_err(|error| format!("the slot at {slot:#x}: {error}"))?;
     std::mem::forget(rewrite);
     INSTALLED[system as usize].store(true, Ordering::Release);
-    Ok(format!(
-        "vtable slot {slot:#x}, the function at {function:#x}"
-    ))
+    Ok(if held == function {
+        format!("vtable slot {slot:#x}, the function at {function:#x}")
+    } else {
+        format!(
+            "vtable slot {slot:#x}, the emission throttle's gate before the function at {function:#x}"
+        )
+    })
 }
 
 fn install_call(call: u64, function: u64) -> Result<String, String> {
@@ -422,6 +430,10 @@ mod tests {
                 .contains("not the function")
         );
         assert!(check_slot(None, 1).is_err());
+        // The emission throttle's gate, installed first, is wrapped too.
+        let gate = crate::bigmap::emission::grid_gate_address();
+        assert!(crate::bigmap::emission::is_gate(gate));
+        assert!(check_slot(Some(gate), 0x1_40aa_9230).is_ok());
     }
 
     fn window() -> Window {

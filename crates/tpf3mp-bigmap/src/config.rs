@@ -26,6 +26,9 @@
 //!
 //! [ui]
 //! minimap = false
+//!
+//! [simulation]               # a PROPOSAL; changes simulation results
+//! emission_every = 1         # 1: the game's own; 2 to 16: emissions every Nth update
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -44,6 +47,10 @@ pub const OCTREE_DEPTHS: std::ops::RangeInclusive<u8> = 11..=13;
 pub const STOCK_PLACEMENT_ATTEMPTS: u32 = 200;
 /// The longest label the dropdown shows whole (Big Maps' rule).
 pub const MAX_LABEL: usize = 15;
+/// The emission throttle's range: 1 is the game's own, up to 16 the hook
+/// runs the emission systems on every Nth update
+/// (`TPF3MP_BIGMAP_EMISSION_EVERY`, crates/tpf3mp-hook/src/bigmap/emission.rs).
+pub const EMISSION_EVERY: std::ops::RangeInclusive<u32> = 1..=16;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -57,6 +64,8 @@ pub enum ConfigError {
     CellBudget(u32),
     #[error("the size label {0:?} must be 1 to 15 characters")]
     Label(String),
+    #[error("emission_every must be 1 (the game's own) to 16, not {0}")]
+    EmissionEvery(u32),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +75,7 @@ pub struct Config {
     pub limits: Limits,
     pub generation: Generation,
     pub ui: Ui,
+    pub simulation: Simulation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +141,23 @@ pub struct Ui {
     pub minimap: bool,
 }
 
+/// Switches that trade simulation fidelity for speed: a proposal for the
+/// owner (docs/BIGMAPS.md, "Simulation switches (proposal)"). Each changes
+/// the results, so every game of a room must share it ([`crate::terms`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Simulation {
+    /// The emission grid and emitters run on every Nth update; 1 is the
+    /// game's own.
+    pub emission_every: u32,
+}
+
+impl Default for Simulation {
+    fn default() -> Self {
+        Self { emission_every: 1 }
+    }
+}
+
 impl Config {
     /// The settings in `text`, and a note for each value that was clamped.
     pub fn from_toml(text: &str) -> Result<(Self, Vec<String>), ConfigError> {
@@ -149,6 +176,10 @@ impl Config {
         }
         if !(1..=2147).contains(&limits.cell_budget_millions) {
             return Err(ConfigError::CellBudget(limits.cell_budget_millions));
+        }
+        let every = self.simulation.emission_every;
+        if !EMISSION_EVERY.contains(&every) {
+            return Err(ConfigError::EmissionEvery(every));
         }
         let attempts = self.generation.placement_attempts;
         if !(1..=STOCK_PLACEMENT_ATTEMPTS).contains(&attempts) {
@@ -203,6 +234,7 @@ mod tests {
         assert_eq!(config.generation.placement_attempts, 200);
         assert!(!config.generation.density_levels);
         assert!(!config.ui.minimap);
+        assert_eq!(config.simulation.emission_every, 1);
     }
 
     #[test]
@@ -239,6 +271,18 @@ mod tests {
             ),
             Err(ConfigError::Label(_))
         ));
+        assert_eq!(
+            Config::from_toml("[simulation]\nemission_every = 17"),
+            Err(ConfigError::EmissionEvery(17))
+        );
+        assert_eq!(
+            Config::from_toml("[simulation]\nemission_every = 0"),
+            Err(ConfigError::EmissionEvery(0))
+        );
+        let every = Config::from_toml("[simulation]\nemission_every = 4")
+            .unwrap()
+            .0;
+        assert_eq!(every.simulation.emission_every, 4);
         assert!(matches!(
             Config::from_toml("[limits]\noctree = 1"),
             Err(ConfigError::Toml(_))

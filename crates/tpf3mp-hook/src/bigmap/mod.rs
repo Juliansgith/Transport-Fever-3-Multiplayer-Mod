@@ -19,8 +19,19 @@
 //!   would overflow 2^31 cells, [`RASTER_ENV`].
 //! - [`placement`]: town and industry spacing in 64 bits, saturated,
 //!   [`PLACEMENT_ENV`].
+//!
+//! A PROPOSAL, not derived from the world, and it CHANGES SIMULATION
+//! RESULTS on any world it is set for (docs/BIGMAPS.md, "Simulation
+//! switches (proposal)"):
+//!
+//! - [`emission`]: the noise and pollution grids and their emitters run on
+//!   every `N`-th update only, [`EMISSION_EVERY_ENV`].
+//! - [`emission_cell`]: new worlds' emission grids at 8 cells per tile,
+//!   [`EMISSION_CELL_ENV`].
 
 pub mod depth12;
+pub mod emission;
+pub mod emission_cell;
 pub mod octree;
 pub mod placement;
 pub mod raster;
@@ -30,6 +41,8 @@ pub(crate) mod original;
 
 use tpf3mp_hookcore::profile::ResolvedProfile;
 
+pub use emission::EVERY_ENV as EMISSION_EVERY_ENV;
+pub use emission_cell::CELL_ENV as EMISSION_CELL_ENV;
 pub use octree::OCTREE_ENV;
 pub use placement::PLACEMENT_ENV;
 pub use raster::RASTER_ENV;
@@ -51,6 +64,8 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<String> {
         octree::install(resolved),
         raster::install(resolved),
         placement::install(resolved),
+        emission::install(resolved),
+        emission_cell::install(resolved),
     ]
 }
 

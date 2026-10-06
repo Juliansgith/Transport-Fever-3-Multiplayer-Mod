@@ -520,3 +520,89 @@ provable statically) or a comparison with a copy of the grid each update
 (8 more bytes per cell, about half of what skipping would save, plus
 another 200 MB). Noise also rotates all three buffers, so even its still
 blocks need copying. Not worth the proof burden next to the fused step.
+
+## 7. Switches built (proposal; changes simulation results)
+
+Options 1 and 2 of section 5 are built as opt-in hook switches, off by default
+(`crates/tpf3mp-hook/src/bigmap/emission.rs`, `emission_cell.rs`). Option 6 is
+analysed below and not built. They are a proposal for the owner. The
+trade-offs and the in-game test are in docs/BIGMAPS.md, "Simulation switches
+(proposal)". This section holds the static evidence. As before, no game
+process was started or touched.
+
+### 7.1 Emission throttle (`TPF3MP_BIGMAP_EMISSION_EVERY=N`)
+
+| fact | label |
+|---|---|
+| `ecs::Engine::Update` (`0x2bb8a50`) loops over its systems and calls each one's slot 11 (`call [r9+0x58]`, `0x2bb8ae8`) serially, with `dt` in xmm3, on the calling thread | CONFIRMED-static |
+| `GameSim::Step` advances GameTime (`0xbace10`, `r8b=1`, which increments `updateCount` at +0x40) at `0x15954b`, before each `Engine::Update` (`0x15955c`); the paused path never increments it | CONFIRMED-static (ticks.rs) |
+| `updateCount` is equal in two games of a room at every checkpoint, and it persists across loads (47,250 at room step 9,800) | MEASURED (TPF3_ROAD_TERMINALS_2026-10-01.md) |
+| `EmissionEmitterSystem` slot 11 (`0xaa5920`) sets its node list and calls slot 12 `Update2(Engine*, int, float) const` (`call [r9+0x60]`, `0xaa59c1`); the RTTI lambda names give the signature | CONFIRMED-static |
+| `Update2`'s per-system buffers (`this+0x20`, 16 x 0x50) are scratch, resized and cleared on every call; the splat adds into the grid, `c = max(c + w·amount, 0)` (`0xba200e`, `0xba20aa`) | CONFIRMED-static |
+| `Diffuse(hBegin, hEnd, src, dst, a, decay, dt)` (`0xaa8570`): `w1 = a·5·dt`, `w2 = (1 − 4a − decay)·5·dt` (constants 5.0 `0x3678cdc`, 4.0 `0x3677b5c`, 1.0 `0x3676644`, bias 1e-15 `0x36fd270`); `a = this+0x50`, `decay = this+0x4c` | CONFIRMED-static; the test runs it |
+
+The hook therefore reads `updateCount` through the game's getter, from the
+step's `CGameTime` (`install::update_count_now`), and it is the same in both
+gates within an update. Two tests run the relocated `Diffuse`. With `dt·4`, a
+unit mass passes 10³⁰ within 40 updates. With the game's `dt` it never grows.
+With a constant emitter, the throttled grid after 300 updates (N = 4) equals the
+stock grid after 75, bit for bit, and both converge to the same field.
+
+### 7.2 Emission cells (`TPF3MP_BIGMAP_EMISSION_CELL=32`)
+
+The patch sites are the four `shl reg,4` at `0xba0201`, `0xba0212`, `0xba021b`
+and `0xba0225`. The load `vmovss xmm2,[0x36a3a64]` (0.0625) at `0xba025a` is
+pointed at `0x36b2fa4` (0.125, read by 22 other instructions). Ten other
+instructions read the 0.0625 constant (overlays), so the constant itself stays
+as it is. `CreateEmissionGrid` is called only from `0x155630`, the new-game
+path, at `0x1559ef` and `0x155a4f`.
+
+Consumer audit. Every item is CONFIRMED-static unless it says otherwise:
+
+- `Update2`: its asserts compare the noise grid with the pollution grid, not
+  with the map. Its width/4 x height/4 split only divides the grid into 16
+  sub-grids for 32 parallel tasks, and the outer ones extend to INT_MIN and
+  INT_MAX. Emitters are placed at `floor(pos/gp − 0.5)` (`0xba1ba0`).
+  Attenuation is in metres (`0xaa4650`). The point splat deposits the raw
+  amount per cell; the radius splat deposits `amount/(gpx·gpy)` per sample.
+- `Update` and its kernels take every size from the Grids. `Wind` compares
+  and divides by gridPointSize. The wind generator (`0xba1420`) caps the speed
+  at `min(max(gp − 1, 0), 4.0)`, which is 4.0 at both cell sizes.
+- `GetSumPolygonEmission` (`0xaa8fc0`, rows `0xaa7f50`) maps the polygon box at
+  `floor(world/gp − 0.5)` and sums with no area weight. `CalculateTownPollution`
+  (`0x976620`) passes the sum on.
+- The script getters `getInterpolatedEmission` (`0xaa8ca0`, bilinear on gp and
+  X0) and `getTownNoisePerDistrict` (`0x97c8c0`) both follow the grid. Two
+  getters, `getPollutionEmittersInSettlementArea` and
+  `getNoiseEmittersNearSettlementLandUses`, do not read the grid (DERIVED).
+  The whole component is exposed to Lua. A game script that indexes
+  `concentrationBuffer` assuming 16 m cells cannot be ruled out (GUESS; the
+  mechanics scripts are not readable on disk).
+- The visualisation grids (`0xba06c0`, `0xba0410`) copy the component's size.
+  How the overlay texture is placed on the terrain is unverified (GUESS:
+  display only). `GridCollision`'s only emission use is the animal score.
+- Load (`0x2074b0`) reads X0, Y0, size, gridPointSize, both Grids and the type
+  from the save; saves of version 0x1c2 and later also hold the wind. Nothing
+  recomputes the grid from the map or compares it with the map. The replica
+  copy takes the whole component (DERIVED). A save's cell size therefore
+  travels with it: there is no conflict a load could refuse.
+- The wind (+0x6c) is written only by `CreateEmissionGrid`, by the loader and
+  by the `changeWind` command (`0xba0a90`).
+
+### 7.3 Parcel collision (`0x9312e0`): not built
+
+| fact | label |
+|---|---|
+| Signature: `UpdateParcelCollision(Engine&, const StreetToolkit&, const vector<Box2>& boxes, const unordered_set<Entity>& exclude)`. The only caller (`0x25fc630`, from `construction_builder_util::Apply` `0x9ff25a`) passes an empty exclude set, plus one more box: the new nodes' bbox ±20 m | CONFIRMED-static (caller box: GUESS on the meaning) |
+| The walk visits **streets** whose bounding volume overlaps (union of boxes) ±50 m with z unbounded; each street gives its parcels (`0xae7110`); `0x931a70` tests each parcel element's xy AABB against each individual box, with no margin | CONFIRMED-static |
+| Results go into an `unordered_map<parcel, vector>` (asserting a unique insert) in DFS order. They are applied in that order, with `NoteComponentAboutToBeChanged` and `NoteComponentChanged` per parcel; the change records and listeners follow that order | CONFIRMED-static |
+| Pruning the descent `0x925e30` (called only from `0x9312e0+0x4e9` and from itself) per box ±M keeps the DFS order. It equals stock only if a parcel element overlapping box i always belongs to a street whose bounds overlap box i ±50 m | DERIVED (exactness: GUESS) |
+
+Both a cap on proposals per update (town developer loops `0x90b850` and
+`0x90bfd0`, industry `0x8ed8b0` and `0x8ef620`) and the pruned query would be
+deterministic. The cap changes results by design; the pruned query changes
+them only where the invariant fails. Neither is built: their gain is
+unmeasured, and the pruned query's exactness is unproven. Next steps: first
+option 0's counts per call (boxes, union area, node-box area); then a
+check-only prune that changes nothing and logs every parcel a prune would
+have lost.

@@ -794,6 +794,154 @@ boxes. It changes nothing the game computes. The faster component lookup
 ("The faster component lookup" there) is on by default and exact; it
 trims the lookup's per-call overhead, not its cache misses.
 
+### Simulation switches (proposal)
+
+**A proposal for the owner, not a decision.** These switches make the
+simulation cheaper on big maps by **changing its results**, which none of
+the stages above does. They are built in the hook, off by default, and
+not tested in the game. Whether TPF3-MP should offer them at all, and
+under what conditions, is for the owner to decide. This page does not
+change docs/DECISIONS.md or docs/PLAN.md.
+
+The cost they target is in investigation/TF3_BIGMAP_SIM_COST_2026-10-05.md.
+On 100 x 1000 tiles the noise and pollution grids hold 25.6 M cells each.
+Sweeping them takes about 30 to 60 ms of a ~260 ms update. Applying
+construction proposals, through the parcel-collision octree walk, takes
+about 44% of the sim thread. Its section 7 ("Switches built") holds the
+evidence for each line below.
+
+| switch | what it changes | built |
+|---|---|---|
+| `TPF3MP_BIGMAP_EMISSION_EVERY=N` (2 to 16) | the emission grid's update and the emitters' splat run only on updates whose `GameTime.updateCount` is a multiple of N, with the game's `dt` | yes |
+| `TPF3MP_BIGMAP_EMISSION_CELL=32` | new worlds get 8 emission cells per tile (32 m) instead of 16 | yes |
+| a cap or a cheaper query for `parcel_util::UpdateParcelCollision` | — | no; see below |
+
+**The emission throttle (`TPF3MP_BIGMAP_EMISSION_EVERY`)**
+
+- *What it does.* `EmissionGridSystem`'s slot 11 (`Update`) and
+  `EmissionEmitterSystem`'s slot 12 (`Update2`) are pointed at gates.
+  On updates whose `updateCount % N` is not 0, the gates skip both
+  systems, so the grids stand still. The other updates run the game's
+  own code with the game's `dt`. Only vtable slots change, never code.
+- *Why not `dt·N`.* The grid's update scales its weights by `5·dt` and
+  also runs `round(dt / 0.2)` steps. With `dt·N` the weights sum to
+  `N·(1 − decay)`, more than 1, and the field grows without bound. A test
+  runs the game's own `Diffuse`, relocated from the executable, and shows
+  this: with `dt·4` the mass passes 10³⁰ within 40 updates, while with
+  the game's `dt` it never grows.
+- *Trade-off.* The steady field for steady emitters stays exactly the
+  same. The same test shows the throttled grid after `k·N` updates
+  equals the stock grid after `k` updates, bit for bit. What changes is
+  speed: noise and pollution answer a new road, industry or demolition
+  N times slower. Town ratings, eco levels, animals and the script
+  getters read the grids, so their results change. The average cost
+  falls to 1/N, but every N-th update still pays the whole sweep, so the
+  slowest update does not shrink.
+- *Lockstep.* The counter is `GameTime.updateCount`. It counts each
+  released update once, never a paused frame. It is saved with the
+  world, and two games' checkpoint lines show it equal. `Engine::Update`
+  calls every system serially on the step's thread, after the counter
+  advances, so both gates see the same count in an update. Every game of
+  a room therefore skips the same updates, but only if every game runs
+  the same N. The room does not compare it yet. The bigmap crate's terms
+  (`[simulation] emission_every`) add it to the fingerprint the room is
+  meant to compare and name it when it differs, but that comparison is
+  not wired into the room. Until it is, `hook.log` states the setting at
+  install and at the first skipped update.
+- *Saves.* Nothing new is stored. The grids keep their size and the
+  phase comes from the saved counter, so a reload, a rebase or a joiner
+  skips the same updates as everyone else.
+- *Fails closed.* The four optional targets are the two functions and
+  the two constructors' `lea` of their vtables. Each slot must hold the
+  function the profile pinned. Both slots are patched or neither. An
+  unset, `0` or `1` setting leaves the game's own code. If the counter
+  cannot be read, that update runs the stock code, and the log says so
+  once.
+
+**Coarser emission cells (`TPF3MP_BIGMAP_EMISSION_CELL=32`)**
+
+- *What it does.* In `CreateEmissionGrid`, the four `shl reg,4` become
+  `shl reg,3` and the cell factor load reads the game's 0.125f instead of
+  0.0625f. The patch never touches the shared 0.0625f constant. A
+  grid then has a quarter of the cells: 128 MB instead of 513 MB on
+  100 x 1000, and about a quarter of the sweep.
+- *Why it is safe to build.* A static audit found that every consumer
+  reads the geometry from the grid component and none assumes 16 cells
+  per tile. That covers the emitters' splat and its sub-grid split,
+  `Diffuse`, `Wind` (whose wind cap is 4 m at both sizes),
+  `GetSumPolygonEmission`, `GetInterpolatedEmission` (the script getters
+  and animal scores), the visualisation grids, the replica copy and the
+  loader. The loader reads origin, size and cell size from the save and
+  never compares them with the map. So a world's cells travel with its
+  save. There is no load conflict to refuse: a coarse save loads coarse
+  everywhere, and a stock save loads stock with the switch on. The
+  switch acts only when a world is generated.
+- *Trade-off.* The diffusion, decay and average weights are per cell and
+  per step, so emissions spread twice as far in metres. A point emitter
+  puts the same amount into a cell four times as large, a radius emitter
+  puts in a quarter, and a town's sum covers a quarter of the cells, with
+  no area weight. Noise in dB, town pollution, ratings and eco levels
+  all shift. Keeping the stock balance would need further patches (the
+  weights, the splat amount, an area weight in the polygon sum), which
+  are not designed. The noise and pollution overlays become 32 m pixels.
+  One open risk is a game script that reads `concentrationBuffer` and
+  assumes 16 m cells (GUESS). The game's mechanics scripts are not
+  readable on disk.
+- *Lockstep.* A room's world reaches every game as the owner's save, so
+  only the generating game needs the switch. It is not a room term,
+  because the grid itself is in the save. It applies to every world
+  generated while it is set, small ones too.
+- *Fails closed.* The 106-byte body from the first shift to the factor's
+  multiplies is checked byte for byte. The load must read 0.0625f and
+  the target must hold 0.125f. All five sites are rewritten or none.
+
+**The parcel-collision walk: not built**
+
+`UpdateParcelCollision` (`0x9312e0`) runs once per applied construction
+proposal. It walks the octree for streets inside one box, the union of
+the proposal's boxes plus 50 m, and collects their parcels. Each parcel
+element is then tested against every individual box.
+
+- *A cap* would go in the town developer's per-update loops (`0x90b850`,
+  `0x90bfd0`) or industry founding (`0x8ed8b0`, `0x8ef620`). A cap
+  delays growth. It would be deterministic as a room setting, but it
+  needs those loops reverse-engineered first.
+- *A cheaper query* would detour the descent `0x925e30` and prune
+  subtrees that overlap no single box plus a margin. That keeps the
+  stock visit order, which matters because the parcels go into an
+  `unordered_map` whose order drives the change notifications. The
+  result equals the game's only under one invariant: a parcel element
+  that overlaps a box belongs to a street whose bounds overlap that box
+  plus 50 m. That cannot be shown statically.
+- *Why not built.* The gain depends on how far apart a proposal's boxes
+  are, which nobody has measured, and the exactness rests on an unproven
+  invariant. The next step is the measurement (the timing hooks of
+  option 0). After that, a check-only mode would prune nothing and count
+  the parcels a prune would have lost, which proves or disproves the
+  invariant in real games before anything changes results.
+
+**The in-game test**, by a person, on one machine, outside a room first:
+
+1. `TPF3MP_BIGMAP_EMISSION_EVERY=4` in the launcher's environment.
+   `hook.log` shows `big maps: emission throttle (PROPOSAL, changes
+   simulation results): installed (TPF3MP_BIGMAP_EMISSION_EVERY=4: ...)`,
+   then, once a world runs, `skipping the emission systems at
+   updateCount <n>` with `<n>` not a multiple of 4. The noise layer still
+   answers a new road, about four times more slowly. Compare the
+   update's time with the perf overlay against a run with the switch
+   off on the same save. Save, reload and check that the next skip line
+   shows the same phase.
+2. `TPF3MP_BIGMAP_EMISSION_CELL=32`, then generate a new world.
+   `hook.log` shows `big maps: emission cells (...): installed`. The
+   noise and pollution overlays have 32 m pixels, and towns still get
+   ratings. Save and reload with the switch off: the world keeps its
+   coarse grid, with no assert.
+3. With both switches off, nothing in `hook.log` but the two `off`
+   lines, and the game is unchanged.
+4. Only after the owner decides to take the throttle further: a room of
+   two games (Sandboxie), both with the same N, through the scenarios,
+   with the checkpoints agreeing.
+
 ### The rest of the prototype
 
 `crates/tpf3mp-bigmap` also carries the rest of Big Maps' features, as far
