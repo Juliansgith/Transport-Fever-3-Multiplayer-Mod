@@ -199,8 +199,16 @@ static EPOCH: AtomicU64 = AtomicU64::new(1);
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
 
+/// Regions each thread's cache remembers. 8 was enough on stock maps; a
+/// big map's world spreads over far more heap regions, and with 8 the road
+/// fix's walk evicted regions it needed again within the same update: on a
+/// 100 x 1000 tile world a fifth of all checks (230,000 per 10 s) asked
+/// `VirtualQuery`, 12% of the simulation thread's working time. A hit is a
+/// short scan, a miss a system call, so the list can be longer.
+pub const REGIONS_PER_THREAD: usize = 32;
+
 thread_local! {
-    static SHARED: RefCell<EpochCache<8>> = const { RefCell::new(EpochCache::new()) };
+    static SHARED: RefCell<EpochCache<REGIONS_PER_THREAD>> = const { RefCell::new(EpochCache::new()) };
 }
 
 /// Forgets every region every thread's [`Readable`] cache remembers (they
@@ -290,6 +298,25 @@ pub fn readable(_address: usize, _len: usize) -> bool {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+
+    #[test]
+    fn a_walk_over_twenty_regions_asks_once_per_region() {
+        // A big map's road walk touches many heap regions each update; the
+        // shared cache must hold them all, not thrash.
+        let mut cache = EpochCache::<REGIONS_PER_THREAD>::new();
+        let mut asked = 0;
+        for _round in 0..5 {
+            for region in 0..20usize {
+                let base = 0x10_0000 * (region + 1);
+                let (readable, n) = cache.readable_with(1, base + 8, 8, |at| {
+                    Some((at & !0xF_FFFF, (at & !0xF_FFFF) + 0x1000))
+                });
+                assert!(readable);
+                asked += n;
+            }
+        }
+        assert_eq!(asked, 20);
+    }
 
     #[test]
     fn a_remembered_region_answers_without_asking_again() {
