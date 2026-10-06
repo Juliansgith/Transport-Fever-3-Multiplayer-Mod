@@ -162,24 +162,15 @@ pub struct Launcher {
     url: Option<String>,
     shared: Arc<Shared>,
     task: JoinHandle<()>,
+    /// The page served later by [`Launcher::serve`], for a launcher started
+    /// without one.
+    page: Option<JoinHandle<()>>,
 }
 
 impl Launcher {
     /// Starts serving the page and returns once it is reachable.
     pub async fn start(config: LauncherConfig) -> std::io::Result<Self> {
-        if !config.listen.ip().is_loopback() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "the launcher serves the loopback interface only",
-            ));
-        }
-        let listener = TcpListener::bind(config.listen).await?;
-        let address = listener.local_addr()?;
-        let page = Arc::new(Page {
-            token: random_token(),
-            address,
-        });
-        let url = format!("http://{address}/#{}", page.token);
+        let (listener, page, url) = bind_page(config.listen).await?;
         let (shared, actions, lobby) = Shared::new(&config);
         let control = tokio::spawn(control(Arc::clone(&shared), config, actions, lobby));
         let serve = tokio::spawn(http::serve(listener, Arc::clone(&shared), page));
@@ -190,6 +181,7 @@ impl Launcher {
             url: Some(url),
             shared,
             task,
+            page: None,
         })
     }
 
@@ -203,7 +195,27 @@ impl Launcher {
             url: None,
             shared,
             task,
+            page: None,
         }
+    }
+
+    /// Starts serving the page of a launcher started without one
+    /// ([`Launcher::start_local`]), on `listen`, and returns its address.
+    /// The room session and the game's link go on as they were: a front
+    /// end in this process that can no longer show the launcher, such as a
+    /// window whose graphics failed, hands the player to the browser.
+    /// A launcher that serves its page already returns that page's address.
+    pub async fn serve(&mut self, listen: SocketAddr) -> std::io::Result<&str> {
+        if self.url.is_none() {
+            let (listener, page, url) = bind_page(listen).await?;
+            self.page = Some(tokio::spawn(http::serve(
+                listener,
+                Arc::clone(&self.shared),
+                page,
+            )));
+            self.url = Some(url);
+        }
+        Ok(self.url.as_deref().unwrap_or_default())
     }
 
     /// The page's address, with the token it needs, if it serves one.
@@ -227,7 +239,29 @@ impl Launcher {
 impl Drop for Launcher {
     fn drop(&mut self) {
         self.task.abort();
+        if let Some(page) = &self.page {
+            page.abort();
+        }
     }
+}
+
+/// Binds the page's address on `listen`, a loopback address, with a new
+/// token: the listener, the page, and its address with the token.
+async fn bind_page(listen: SocketAddr) -> std::io::Result<(TcpListener, Arc<Page>, String)> {
+    if !listen.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the launcher serves the loopback interface only",
+        ));
+    }
+    let listener = TcpListener::bind(listen).await?;
+    let address = listener.local_addr()?;
+    let page = Arc::new(Page {
+        token: random_token(),
+        address,
+    });
+    let url = format!("http://{address}/#{}", page.token);
+    Ok((listener, page, url))
 }
 
 /// A front end's way into a running launcher.

@@ -411,7 +411,8 @@ async fn a_window_drives_the_launcher_in_process() {
         &trust,
         Arc::new(Identity::generate().unwrap().0),
     );
-    let launcher = Launcher::start_local(config);
+    let listen = config.listen;
+    let mut launcher = Launcher::start_local(config);
     assert_eq!(launcher.url(), None, "no page");
     let handle = launcher.handle();
     assert_eq!(handle.state().connection, Connection::Disconnected);
@@ -467,6 +468,17 @@ async fn a_window_drives_the_launcher_in_process() {
     assert_eq!(room.phase, Phase::Lobby);
     assert!(room.you_own);
     assert!(room.invite.is_some());
+
+    // The window failed (its graphics device was lost, 2026-10-06): the
+    // same launcher serves its page, in the same room, for the browser.
+    let url = launcher.serve(listen).await.unwrap().to_owned();
+    assert_eq!(launcher.url(), Some(url.as_str()));
+    assert_eq!(launcher.serve(listen).await.unwrap(), url, "served once");
+    let page = Page::of(&launcher);
+    let state = page.state().await;
+    assert_eq!(state["room"]["name"], "window room", "{state}");
+    assert_eq!(state["connection"], "connected", "{state}");
+    assert_eq!(handle.state().room.unwrap().name, "window room");
 
     drop(launcher);
     let _ = stop.send(());

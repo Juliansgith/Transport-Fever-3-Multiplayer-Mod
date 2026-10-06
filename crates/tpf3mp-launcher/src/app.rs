@@ -202,6 +202,14 @@ impl<B: Backend> LauncherApp<B> {
         self
     }
 
+    /// The window with `words` shown as a toast when it opens, such as
+    /// why it opened again.
+    #[must_use]
+    pub fn with_toast(mut self, words: &str) -> Self {
+        self.toast = Some((words.to_owned(), Instant::now()));
+        self
+    }
+
     pub fn backend(&self) -> &B {
         &self.backend
     }

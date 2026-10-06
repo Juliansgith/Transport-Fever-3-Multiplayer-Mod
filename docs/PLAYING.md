@@ -115,7 +115,12 @@ connection to the server, closing it ends your session, and during a game
 it asks first. On a system where the window cannot open, the launcher
 opens the same launcher as a page in your browser instead (`--browser`
 does so on purpose); that page works only on your own machine, in the tab
-the launcher opened, and has the whole lobby in it.
+the launcher opened, and has the whole lobby in it. Should the window
+crash, as when the graphics driver resets while the game runs, your game
+and your room keep running: the window opens again and says so, and a
+window that keeps crashing (more than three times in ten minutes) gives
+way to the same page in your browser. The launcher's log says why, in a
+line from "the launcher's window crashed".
 
 The window starts the game and shows where things stand; you play from the
 game's own **Multiplayer** button (next section).

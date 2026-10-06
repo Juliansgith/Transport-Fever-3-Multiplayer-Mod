@@ -6,7 +6,7 @@
 
 use std::{
     process::ExitCode,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
@@ -28,7 +28,7 @@ use tpf3mp_launcher::{
     icon, logs,
     notes::ReleaseNotes,
     probe::Probe,
-    update,
+    update, window,
 };
 use tracing::{error, info, warn};
 
@@ -242,14 +242,14 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         Launcher::start_local(config.clone())
     };
     // A launcher of another build asks this one to close: the window
-    // closes, or the process ends before the window is open.
-    let window: Arc<OnceLock<egui::Context>> = Arc::default();
+    // closes, or the process ends when no window is open.
+    let window: Arc<Mutex<Option<egui::Context>>> = Arc::default();
     if serving {
         let window = Arc::clone(&window);
         instance::watch(
             config.link.clone(),
             launcher.handle(),
-            move || match window.get() {
+            move || match &*window.lock().unwrap_or_else(PoisonError::into_inner) {
                 Some(ctx) => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     ctx.request_repaint();
@@ -260,58 +260,122 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
     }
     auto_room(&runtime, &launcher, &config, args.auto.clone());
     // Whether the package's own server is up, shown before connecting.
-    let probe = config
-        .server
-        .as_deref()
-        .filter(|_| config.server_fixed)
-        .and_then(Probe::start);
-    let mut backend = Local::new(launcher.handle(), runtime.handle().clone());
-    let updater = update::Updater::start(runtime.handle().clone());
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Transport Fever 3 · Multiplayer")
-            .with_app_id("tpf3mp-launcher")
-            // The page's size, as tearded's launcher opens, and still
-            // within a 1366x768 screen.
-            .with_inner_size([1100.0, 690.0])
-            .with_min_inner_size([960.0, 620.0])
-            .with_icon(icon::icon()),
-        ..Default::default()
+    let probe = || {
+        config
+            .server
+            .as_deref()
+            .filter(|_| config.server_fixed)
+            .and_then(Probe::start)
     };
-    let opened = eframe::run_native(
-        "TPF3-MP",
-        options,
-        Box::new(move |creation| {
-            // The window and its renderer exist: this version works, so an
-            // update just installed is complete.
-            update::started();
-            let _ = window.set(creation.egui_ctx.clone());
-            backend.repaint_with(creation.egui_ctx.clone());
-            updater.repaint_with(creation.egui_ctx.clone());
-            Ok(Box::new(LauncherApp::new(
-                backend,
-                Extras {
-                    updater: Some(updater),
-                    probe,
-                    notes: Some(ReleaseNotes::fetch()),
-                    shown: Shown::default(),
-                },
-            )))
-        }),
-    );
-    drop(launcher);
-    match opened {
-        Ok(()) => {
+    let updater = update::Updater::start(runtime.handle().clone());
+    let notes = ReleaseNotes::fetch();
+    // The room session and the game's link run on `runtime`, beside the
+    // window: a window that crashes, as when the graphics device is lost,
+    // opens again, and the game keeps playing (2026-10-06).
+    let ended = window::keep_open(window::Crashes::default(), |crashed| {
+        let mut backend = Local::new(launcher.handle(), runtime.handle().clone());
+        let updater = updater.clone();
+        let probe = probe();
+        let notes = notes.clone();
+        let open_window = Arc::clone(&window);
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("Transport Fever 3 · Multiplayer")
+                .with_app_id("tpf3mp-launcher")
+                // The page's size, as tearded's launcher opens, and still
+                // within a 1366x768 screen.
+                .with_inner_size([1100.0, 690.0])
+                .with_min_inner_size([960.0, 620.0])
+                .with_icon(icon::icon()),
+            // The event loop stays for the window to open again.
+            run_and_return: true,
+            ..Default::default()
+        };
+        let opened = eframe::run_native(
+            "TPF3-MP",
+            options,
+            Box::new(move |creation| {
+                // The window and its renderer exist: this version works, so
+                // an update just installed is complete.
+                update::started();
+                if let Some(render) = &creation.wgpu_render_state {
+                    render.device.set_device_lost_callback(log_device_lost);
+                }
+                *open_window.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some(creation.egui_ctx.clone());
+                backend.repaint_with(creation.egui_ctx.clone());
+                updater.repaint_with(creation.egui_ctx.clone());
+                let app = LauncherApp::new(
+                    backend,
+                    Extras {
+                        updater: Some(updater),
+                        probe,
+                        notes: Some(notes),
+                        shown: Shown::default(),
+                    },
+                );
+                Ok(Box::new(if crashed {
+                    app.with_toast(window::REOPENED)
+                } else {
+                    app
+                }))
+            }),
+        );
+        // Closed or crashed: no window for another build to close.
+        *window.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        opened
+    });
+    match ended {
+        window::Ended::Closed(Ok(())) => {
+            drop(launcher);
             info!("the launcher closes");
             // A download may still be running; it can be picked up next time.
             runtime.shutdown_timeout(Duration::from_secs(2));
             Ok(())
         }
-        Err(error) => {
+        window::Ended::Closed(Err(error)) => {
+            // Also a window that cannot open again after a crash: the
+            // launcher in the room goes on, in the browser.
             warn!(%error, "cannot open the launcher's window; opening it in the browser instead");
-            in_browser(&runtime, config, serving)
+            to_browser(&runtime, launcher, &config);
+            Ok(())
+        }
+        window::Ended::GaveUp(_) => {
+            to_browser(&runtime, launcher, &config);
+            Ok(())
         }
     }
+}
+
+/// Logs that the window's graphics device was lost, the reason the
+/// renderer then panics (egui-wgpu 0.36.2): a window dropping its device
+/// itself is no news.
+fn log_device_lost(reason: eframe::wgpu::DeviceLostReason, message: String) {
+    if reason != eframe::wgpu::DeviceLostReason::Destroyed {
+        warn!(?reason, %message, "the launcher window's graphics device was lost");
+    }
+}
+
+/// Where the window cannot open, or gave up: the same launcher, in the
+/// same room and with the game's link, goes on as a page in the browser,
+/// as `--browser` runs. Should the page not open, the session runs on
+/// without one.
+fn to_browser(runtime: &tokio::runtime::Runtime, mut launcher: Launcher, config: &LauncherConfig) {
+    runtime.block_on(async {
+        match launcher.serve(config.listen).await {
+            Ok(url) => {
+                info!("the launcher runs in the browser");
+                if !setup::open_in_browser(url) {
+                    // Not the address: its token stays out of the log.
+                    warn!("cannot open the browser for the launcher's page");
+                }
+            }
+            Err(error) => {
+                warn!(%error, "cannot serve the launcher's page; the game and the room keep running");
+            }
+        }
+        launcher.wait().await;
+    });
 }
 
 /// Gets into a room without clicking (see [`AutoRoom`]). Failures are
