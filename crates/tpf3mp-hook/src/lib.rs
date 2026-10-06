@@ -40,6 +40,8 @@ pub mod builds;
 pub mod clipboard;
 pub mod drawing;
 pub mod edgewatch;
+pub mod emission;
+pub mod fastindex;
 pub mod guiplayer;
 pub mod image;
 mod install;
@@ -52,6 +54,10 @@ pub mod menu;
 pub mod modules;
 pub mod network;
 pub mod order;
+/// Tests' harness: the game's own functions, relocated from the
+/// executable and run in the test process.
+#[cfg(all(test, windows, target_arch = "x86_64"))]
+pub(crate) mod original;
 pub mod perf;
 pub mod persons;
 mod platform;
@@ -60,6 +66,7 @@ pub mod previews;
 pub mod probe;
 pub mod roadtrace;
 pub mod seeds;
+pub mod simperf;
 pub mod step;
 pub mod steptrace;
 pub mod stoptool;

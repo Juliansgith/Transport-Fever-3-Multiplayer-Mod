@@ -123,6 +123,8 @@ impl Vectors {
 /// A fix's counters, from any thread.
 pub struct State {
     broken: AtomicBool,
+    /// Set once the fix's splice is in the game's code.
+    installed: AtomicBool,
     calls: AtomicU64,
     reordered: AtomicU64,
     refused: AtomicU64,
@@ -135,6 +137,7 @@ impl State {
     pub const fn new() -> Self {
         Self {
             broken: AtomicBool::new(false),
+            installed: AtomicBool::new(false),
             calls: AtomicU64::new(0),
             reordered: AtomicU64::new(0),
             refused: AtomicU64::new(0),
@@ -390,6 +393,7 @@ fn install_batch(
     } {
         Ok(splice) => {
             let _kept = std::mem::ManuallyDrop::new(splice);
+            batch.state.installed.store(true, Ordering::Release);
             outcome_line(batch.fix, true, &format!("at {site:#x}, {}", batch.does))
         }
         Err(error) => outcome_line(batch.fix, false, &format!("the site at {site:#x}: {error}")),
@@ -444,7 +448,27 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<String> {
             &read_code,
             &none,
         ),
+        freed_ids::trace::install(
+            resolved,
+            crate::ticks::wanted(std::env::var(freed_ids::trace::TOGGLE_ENV).ok().as_deref()),
+            &read_code,
+            image_base(),
+        ),
     ]
+}
+
+/// The executable's base, for return addresses as RVAs; 0 where unknown.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn image_base() -> u64 {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    // SAFETY: a null name asks for the executable's own module handle, its
+    // base address, which stays mapped for the life of the process.
+    unsafe { GetModuleHandleW(std::ptr::null()) as u64 }
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn image_base() -> u64 {
+    0
 }
 
 /// The first line: the master switch's answer, and the rule that goes with
@@ -816,6 +840,581 @@ pub mod freed_ids {
 
     unsafe extern "system" fn hook(regs: *mut SavedRegs) {
         run(&BATCH, regs);
+        // SAFETY: the stub's block, held until the hook returns.
+        trace::observe(unsafe { &*regs });
+    }
+
+    /// The free-id trace (logging only; docs/HOOKS.md, "The free-id
+    /// trace"). Which id a new entity gets is a function of the order of
+    /// every modification of the simulation's engine that took or freed an
+    /// id, so two games of a room hand out the same ids only while the
+    /// histories of their simulations' engines agree. The sort above makes
+    /// each modification's batch canonical; it cannot help when the
+    /// modifications themselves come at other moments in two games. This
+    /// trace says when that happened:
+    ///
+    /// - at every checkpoint, a fingerprint of the free-id queue (its size,
+    ///   its front and a hash of every id in order) and what the
+    ///   simulation's modifications took and freed since the last one: two
+    ///   games must log equal lines at equal steps, so the first line that
+    ///   differs bounds where their ids parted to one checkpoint interval;
+    /// - each modification of the simulation's engine that took or freed
+    ///   ids outside a room step's update (from another thread, on the
+    ///   paused path, or in a batch's first update before the engine's own
+    ///   update began), with the return address it came from: such a
+    ///   modification lands at a moment that depends on the frames, not on
+    ///   the room's steps.
+    ///
+    /// The simulation's engine is the one `GameSim::Step` hands
+    /// `ecs::Engine::Update` (`[[this+8]+0x18]`), noted at every call of the
+    /// room's game's step ([`note_step`]); the replicated engine (the
+    /// GUI's) is left out. Every read goes through [`crate::image`]; a
+    /// refused read loses a count or a line and never touches the game.
+    /// `TPF3MP_HOOK_FREED_ID_TRACE=0` turns it off.
+    pub mod trace {
+        use super::*;
+        use crate::build_data::native::persons::freed_ids as layout;
+        use crate::order::Fnv1a;
+
+        /// `0` (or `off`, `false`, `no`) turns the trace off.
+        pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_FREED_ID_TRACE";
+        /// The most ids of the queue the trace reads; a longer queue is
+        /// not hashed.
+        pub const MAX_QUEUE: u64 = 1 << 22;
+        /// Lines for modifications outside an update: the first this many,
+        /// then every [`OUTSIDE_EVERY`]th.
+        pub const OUTSIDE_FIRST: u64 = 16;
+        pub const OUTSIDE_EVERY: u64 = 1024;
+
+        static ON: AtomicBool = AtomicBool::new(false);
+        static BROKEN: AtomicBool = AtomicBool::new(false);
+        /// The simulation's engine of the room's game; 0 when unknown or
+        /// outside a room.
+        static SIM_ENGINE: AtomicU64 = AtomicU64::new(0);
+        /// The executable's base, for return addresses as RVAs.
+        static BASE: AtomicU64 = AtomicU64::new(0);
+        static TALLY: Mutex<Tally> = Mutex::new(Tally::new());
+
+        /// Where a modification of the simulation's engine ran.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Place {
+            /// In the game's step, inside an update the room released (its
+            /// step is current) or a room's action applied for its step.
+            Update,
+            /// In the game's step, but outside the room's updates: the
+            /// paused path, or a batch's first update before
+            /// `ecs::Engine::Update` began.
+            StepOutsideUpdate,
+            /// Outside the game's step: another frame or another thread.
+            OutsideStep,
+        }
+
+        impl Place {
+            /// `in_step` is the calling thread's (the step detour's flag);
+            /// `current_step` the room's step of the update the simulation
+            /// thread runs, so it only counts on that thread.
+            pub fn of(in_step: bool, current_step: Option<u64>) -> Self {
+                match (in_step, current_step) {
+                    (false, _) => Self::OutsideStep,
+                    (true, Some(_)) => Self::Update,
+                    (true, None) => Self::StepOutsideUpdate,
+                }
+            }
+
+            fn says(self) -> &'static str {
+                match self {
+                    Self::Update => "in an update",
+                    Self::StepOutsideUpdate => "in the game's step outside the room's updates",
+                    Self::OutsideStep => "outside the game's step",
+                }
+            }
+        }
+
+        /// The engine's counts read at one modification's end, before its
+        /// freed ids join the queue.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct Seen {
+            /// Rows in the entity table: the next new id.
+            pub table: u64,
+            /// Ids in the free-id queue.
+            pub queued: u64,
+            /// Ids this modification freed.
+            pub freed: u64,
+        }
+
+        /// The ids taken since the modification `before` (new ids and ids
+        /// popped from the queue), or `None` when the counts do not fit one
+        /// history (the queue grew by more than the ids freed, or the table
+        /// shrank): only `EndModification` appends to the queue, and only
+        /// `AddEntity` pops it or grows the table.
+        pub fn taken_since(before: Seen, now: Seen) -> Option<u64> {
+            let grown = now.table.checked_sub(before.table)?;
+            let popped = before
+                .queued
+                .checked_add(before.freed)?
+                .checked_sub(now.queued)?;
+            grown.checked_add(popped)
+        }
+
+        /// What the simulation's modifications did between two checkpoints.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct Tally {
+            last: Option<Seen>,
+            pub modifications: u64,
+            pub taken: u64,
+            pub freed: u64,
+            /// The ids the modifications in updates freed, in order.
+            pub freed_hash: u64,
+            pub outside: u64,
+            pub outside_taken: u64,
+            pub outside_freed: u64,
+            /// Modifications whose counts did not fit (see [`taken_since`]).
+            pub unfit: u64,
+            /// Every modification outside an update since the engine was
+            /// noted.
+            pub outside_total: u64,
+        }
+
+        impl Default for Tally {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl Tally {
+            pub const fn new() -> Self {
+                Self {
+                    last: None,
+                    modifications: 0,
+                    taken: 0,
+                    freed: 0,
+                    freed_hash: Fnv1a::new().0,
+                    outside: 0,
+                    outside_taken: 0,
+                    outside_freed: 0,
+                    unfit: 0,
+                    outside_total: 0,
+                }
+            }
+
+            /// Counts one modification. Returns what it took when it took
+            /// or freed ids outside an update, for its own line.
+            pub fn count(&mut self, seen: Seen, ids: &[i32], place: Place) -> Option<u64> {
+                let taken = match self.last {
+                    Some(before) => taken_since(before, seen),
+                    // The first one since the engine was noted: nothing to
+                    // compare with.
+                    None => Some(0),
+                };
+                self.last = Some(seen);
+                let Some(taken) = taken else {
+                    self.unfit += 1;
+                    return None;
+                };
+                if place == Place::Update {
+                    self.modifications += 1;
+                    self.taken += taken;
+                    self.freed += seen.freed;
+                    if !ids.is_empty() {
+                        let mut hash = Fnv1a(self.freed_hash);
+                        for id in ids {
+                            hash.write(&id.to_le_bytes());
+                        }
+                        hash.write_u32(u32::MAX);
+                        self.freed_hash = hash.0;
+                    }
+                    return None;
+                }
+                if taken == 0 && seen.freed == 0 {
+                    return None;
+                }
+                self.outside += 1;
+                self.outside_total += 1;
+                self.outside_taken += taken;
+                self.outside_freed += seen.freed;
+                Some(taken)
+            }
+
+            /// The counts for a checkpoint line; they start again from 0,
+            /// the last modification and the total kept.
+            pub fn take(&mut self) -> Self {
+                let last = self.last;
+                let outside_total = self.outside_total;
+                let taken = std::mem::take(self);
+                self.last = last;
+                self.outside_total = outside_total;
+                taken
+            }
+        }
+
+        /// A fingerprint of the free-id queue, front to back.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct Queue {
+            pub len: u64,
+            pub front: Option<i32>,
+            pub hash: u64,
+        }
+
+        /// The header of the engine's `std::deque<Entity>` (MSVC): the
+        /// block map, its size (a power of two), the front's offset and the
+        /// number of ids.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct Header {
+            pub map: u64,
+            pub map_size: u64,
+            pub offset: u64,
+            pub len: u64,
+        }
+
+        /// Reads the queue `header` describes, front to back as `AddEntity`
+        /// pops it, through `read_u64` (a block pointer of the map) and
+        /// `read_i32` (an id): id `i` is in block `((offset + i) / 4) &
+        /// (map_size - 1)`, at slot `(offset + i) % 4`.
+        pub fn read_queue(
+            header: Header,
+            read_u64: &mut dyn FnMut(u64) -> Option<u64>,
+            read_i32: &mut dyn FnMut(u64) -> Option<i32>,
+        ) -> Result<Queue, &'static str> {
+            let mut hash = Fnv1a::new();
+            hash.write(&header.len.to_le_bytes());
+            if header.len == 0 {
+                return Ok(Queue {
+                    len: 0,
+                    front: None,
+                    hash: hash.0,
+                });
+            }
+            if header.len > MAX_QUEUE {
+                return Err("the free-id queue is longer than the trace reads");
+            }
+            if header.map == 0 || !header.map_size.is_power_of_two() {
+                return Err("the free-id queue's block map is not one");
+            }
+            let block_ids = layout::QUEUE_BLOCK_IDS;
+            let mut front = None;
+            let mut block_at = u64::MAX;
+            let mut block = 0u64;
+            for i in 0..header.len {
+                let at = header
+                    .offset
+                    .checked_add(i)
+                    .ok_or("the queue's offset overflows")?;
+                let index = (at / block_ids) & (header.map_size - 1);
+                if index != block_at {
+                    block = read_u64(header.map.wrapping_add(index * 8))
+                        .ok_or("a block of the free-id queue is unreadable")?;
+                    if block == 0 {
+                        return Err("the free-id queue has a block missing");
+                    }
+                    block_at = index;
+                }
+                let id = read_i32(block.wrapping_add((at % block_ids) * 4))
+                    .ok_or("an id of the free-id queue is unreadable")?;
+                if i == 0 {
+                    front = Some(id);
+                }
+                hash.write(&id.to_le_bytes());
+            }
+            Ok(Queue {
+                len: header.len,
+                front,
+                hash: hash.0,
+            })
+        }
+
+        /// The checkpoint line: two games of a room log equal ones at equal
+        /// steps, the counts outside updates (0 in a sound game) included.
+        pub fn checkpoint_text(step: u64, queue: Result<Queue, &str>, tally: &Tally) -> String {
+            let queue = match queue {
+                Ok(q) => format!(
+                    "queued={} front={} hash={:016x}",
+                    q.len,
+                    q.front.map_or_else(|| "-".to_owned(), |f| f.to_string()),
+                    q.hash
+                ),
+                Err(why) => format!("queue unread ({why})"),
+            };
+            let mut line = format!(
+                "free ids: step {step}: {queue}; updates: {} modification(s) took {} and freed {} ({:016x}); outside updates: {} took {} and freed {}",
+                tally.modifications,
+                tally.taken,
+                tally.freed,
+                tally.freed_hash,
+                tally.outside,
+                tally.outside_taken,
+                tally.outside_freed
+            );
+            if tally.unfit > 0 {
+                line.push_str(&format!("; {} unfit", tally.unfit));
+            }
+            line
+        }
+
+        /// The line for one modification that took or freed ids outside an
+        /// update.
+        pub fn outside_text(
+            place: Place,
+            taken: u64,
+            freed: u64,
+            caller: Option<u64>,
+            total: u64,
+        ) -> String {
+            let to = caller.map_or_else(
+                || "an unread return address".to_owned(),
+                |rva| format!("{rva:#x}"),
+            );
+            format!(
+                "freed-id trace: the simulation's engine took {taken} and freed {freed} id(s) {} (returning to {to}); {total} such modification(s) since the world loaded",
+                place.says()
+            )
+        }
+
+        /// Whether the line for the `n`th modification outside an update is
+        /// written.
+        pub fn outside_logged(n: u64) -> bool {
+            n <= OUTSIDE_FIRST || n.is_multiple_of(OUTSIDE_EVERY)
+        }
+
+        /// The simulation's engine as the step names it: `[[this +
+        /// STEP_DATA] + DATA_ENGINE]`.
+        pub fn engine_of(this: u64, read_u64: &mut dyn FnMut(u64) -> Option<u64>) -> Option<u64> {
+            let data = read_u64(this.checked_add(layout::STEP_DATA)?)?;
+            if data == 0 {
+                return None;
+            }
+            let engine = read_u64(data.checked_add(layout::DATA_ENGINE)?)?;
+            (engine != 0).then_some(engine)
+        }
+
+        /// Whether the trace runs.
+        pub fn on() -> bool {
+            ON.load(Ordering::Acquire) && !BROKEN.load(Ordering::Acquire)
+        }
+
+        /// Turns the trace on once its checks passed.
+        pub(crate) fn arm(base: u64) {
+            BASE.store(base, Ordering::Release);
+            ON.store(true, Ordering::Release);
+        }
+
+        fn tally() -> std::sync::MutexGuard<'static, Tally> {
+            TALLY
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        /// From the step detour, on the simulation thread, before each call
+        /// of the game's step: the room's game names its simulation's
+        /// engine, any other game none. Another engine (a world loaded)
+        /// starts the counts again.
+        pub fn note_step(this: u64, room: bool) {
+            if !on() {
+                return;
+            }
+            let engine = if room {
+                let mut probe = Probe::new();
+                engine_of(this, &mut |at| probe.read::<u64>(at)).unwrap_or(0)
+            } else {
+                0
+            };
+            if SIM_ENGINE.swap(engine, Ordering::AcqRel) != engine {
+                *tally() = Tally::new();
+            }
+        }
+
+        fn read_header(engine: u64, probe: &mut Probe) -> Option<Header> {
+            let at = engine.checked_add(layout::FREE_IDS)?;
+            Some(Header {
+                map: probe.read(at.checked_add(layout::QUEUE_MAP)?)?,
+                map_size: probe.read(at.checked_add(layout::QUEUE_MAP_SIZE)?)?,
+                offset: probe.read(at.checked_add(layout::QUEUE_OFFSET)?)?,
+                len: probe.read(at.checked_add(layout::QUEUE_SIZE)?)?,
+            })
+        }
+
+        fn table_rows(engine: u64, probe: &mut Probe) -> Option<u64> {
+            let at = engine.checked_add(layout::ENTITY_TABLE)?;
+            let begin: u64 = probe.read(at)?;
+            let end: u64 = probe.read(at.checked_add(8)?)?;
+            let bytes = end.checked_sub(begin)?;
+            bytes
+                .is_multiple_of(layout::ENTITY_ROW)
+                .then_some(bytes / layout::ENTITY_ROW)
+        }
+
+        /// At the free-id site, after the sort: counts the modification
+        /// when it is the simulation's engine's, and says one that took or
+        /// freed ids outside an update.
+        /// `saved` is the stub's block: the trace reads the return address
+        /// from the stack right above it.
+        pub fn observe(saved: &SavedRegs) {
+            if !on() {
+                return;
+            }
+            let body = || {
+                let engine = SIM_ENGINE.load(Ordering::Acquire);
+                if engine == 0
+                    || saved.r13 != engine
+                    || Some(saved.r12) != engine.checked_add(layout::BETWEEN_CHANGES)
+                {
+                    return;
+                }
+                let _timer = perf::time(Piece::PersonOrder);
+                let mut probe = Probe::new();
+                let Some(vector) = probe.read::<u64>(saved.r12) else {
+                    return;
+                };
+                let (Some(begin), Some(end)) = (
+                    probe.read::<u64>(vector),
+                    probe.read::<u64>(vector.wrapping_add(8)),
+                ) else {
+                    return;
+                };
+                let Ok(count) = vector_len(begin, end, end) else {
+                    return;
+                };
+                let Ok(count) = usize::try_from(count) else {
+                    return;
+                };
+                let ids: Vec<i32> = (0..count as u64)
+                    .map_while(|i| probe.read::<i32>(begin.wrapping_add(4 * i)))
+                    .collect();
+                if ids.len() != count {
+                    return;
+                }
+                let (Some(table), Some(header)) = (
+                    table_rows(engine, &mut probe),
+                    read_header(engine, &mut probe),
+                ) else {
+                    return;
+                };
+                let seen = Seen {
+                    table,
+                    queued: header.len,
+                    freed: count as u64,
+                };
+                let place = Place::of(crate::order::in_step(), crate::seeds::current_step());
+                let (taken, total) = {
+                    let mut tally = tally();
+                    let taken = tally.count(seen, &ids, place);
+                    (taken, tally.outside_total)
+                };
+                let Some(taken) = taken else {
+                    return;
+                };
+                if !outside_logged(total) {
+                    return;
+                }
+                let base = BASE.load(Ordering::Acquire);
+                let slot = SavedRegs::rsp(std::ptr::from_ref(saved))
+                    .wrapping_add(layout::RETURN_FROM_SITE);
+                let caller = probe
+                    .read::<u64>(slot)
+                    .filter(|_| base != 0)
+                    .and_then(|address| address.checked_sub(base));
+                log::line(&outside_text(place, taken, seen.freed, caller, total));
+            };
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err() {
+                BROKEN.store(true, Ordering::Release);
+                log::line(
+                    "freed-id trace: panicked on the game's thread; switched off for this game",
+                );
+            }
+        }
+
+        /// At a checkpoint (and the first batch after a load): the line two
+        /// games must agree on; nothing when the trace is off or knows no
+        /// engine.
+        pub fn checkpoint_line(step: u64) -> Option<String> {
+            if !on() {
+                return None;
+            }
+            let engine = SIM_ENGINE.load(Ordering::Acquire);
+            if engine == 0 {
+                return None;
+            }
+            let body = || {
+                let mut probe = Probe::new();
+                let queue = match read_header(engine, &mut probe) {
+                    Some(header) => {
+                        read_queue(header, &mut |at| Probe::new().read::<u64>(at), &mut |at| {
+                            Probe::new().read::<i32>(at)
+                        })
+                    }
+                    None => Err("the free-id queue's header is unreadable"),
+                };
+                let tally = tally().take();
+                checkpoint_text(step, queue, &tally)
+            };
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+                Ok(line) => Some(line),
+                Err(_) => {
+                    BROKEN.store(true, Ordering::Release);
+                    Some(
+                        "freed-id trace: panicked at a checkpoint; switched off for this game"
+                            .into(),
+                    )
+                }
+            }
+        }
+
+        /// Checks the code the trace relies on: `EndModification`'s head
+        /// leaves the return address where the trace reads it, and the step
+        /// names the engine it updates where the layout says.
+        pub fn check(
+            site: u64,
+            step: Option<u64>,
+            engine_update: Option<u64>,
+            read: &dyn Fn(u64, usize) -> Option<Vec<u8>>,
+        ) -> Result<(), String> {
+            check_context(site, &[(layout::HEAD_FROM_SITE, &layout::HEAD[..])], read)
+                .map_err(|why| format!("EndModification's head: {why}"))?;
+            let step = step.ok_or("the profile has no GameSim::Step")?;
+            let update = engine_update
+                .ok_or_else(|| format!("the profile has no {}", crate::seeds::UPDATE_TARGET))?;
+            let call = step.wrapping_add(layout::STEP_ENGINE_CALL_AT);
+            check_context(call, &[(0, &layout::STEP_ENGINE_CALL[..])], read)
+                .map_err(|why| format!("GameSim::Step's engine update: {why}"))?;
+            let at = call.wrapping_add(layout::STEP_ENGINE_CALL.len() as u64 - 1);
+            match call_target(at, read) {
+                Some(target) if target == update => Ok(()),
+                Some(target) => Err(format!(
+                    "GameSim::Step's engine update calls {target:#x}, not {}",
+                    crate::seeds::UPDATE_TARGET
+                )),
+                None => Err("GameSim::Step's engine update call is unreadable".into()),
+            }
+        }
+
+        /// Turns the trace on when the freed-id fix is in and the code the
+        /// trace relies on is the measured code; returns hook.log's line.
+        pub fn install(
+            resolved: &ResolvedProfile,
+            wanted: bool,
+            read: &dyn Fn(u64, usize) -> Option<Vec<u8>>,
+            base: u64,
+        ) -> String {
+            if !wanted {
+                return format!("freed-id trace: off ({TOGGLE_ENV} says so)");
+            }
+            if !BATCH.state.installed.load(Ordering::Acquire) {
+                return "freed-id trace: off (the freed-id-order fix is not installed)".into();
+            }
+            let Some(site) = resolved.get(SITE) else {
+                return format!("freed-id trace: off (the profile has no {SITE:?})");
+            };
+            let step = resolved.get("GameSim::Step").map(|t| t.address);
+            let update = resolved.get(crate::seeds::UPDATE_TARGET).map(|t| t.address);
+            match check(site.address, step, update, read) {
+                Ok(()) => {
+                    arm(base);
+                    format!(
+                        "freed-id trace: on (a fingerprint of the free-id queue at every checkpoint, which two games must log alike, and each modification of the simulation's engine that takes or frees ids outside the room's updates; {TOGGLE_ENV}=0 turns it off)"
+                    )
+                }
+                Err(why) => format!("freed-id trace: off ({why})"),
+            }
+        }
     }
 }
 
@@ -1195,5 +1794,415 @@ mod splice_tests {
         assert_eq!(ids, vec![10, 20, 40, 50]);
         drop(splice);
         drop(header);
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use std::collections::HashMap;
+
+    use super::freed_ids::trace::*;
+    use crate::build_data::native::persons::freed_ids as layout;
+
+    /// A fake memory: block pointers and ids by address.
+    #[derive(Default)]
+    struct Memory {
+        words: HashMap<u64, u64>,
+        ids: HashMap<u64, i32>,
+    }
+
+    impl Memory {
+        fn read(&self, header: Header) -> Result<Queue, &'static str> {
+            read_queue(header, &mut |at| self.words.get(&at).copied(), &mut |at| {
+                self.ids.get(&at).copied()
+            })
+        }
+    }
+
+    /// A queue of `ids` in a map of `map_size` blocks of four, its front at
+    /// `offset`: the blocks are at 0x1000 * (block + 1), the map at 0x100.
+    fn queue(ids: &[i32], map_size: u64, offset: u64) -> (Memory, Header) {
+        let mut memory = Memory::default();
+        for block in 0..map_size {
+            memory.words.insert(0x100 + 8 * block, 0x1000 * (block + 1));
+        }
+        for (i, id) in ids.iter().enumerate() {
+            let at = offset + i as u64;
+            let block = (at / 4) & (map_size - 1);
+            memory.ids.insert(0x1000 * (block + 1) + 4 * (at % 4), *id);
+        }
+        let header = Header {
+            map: 0x100,
+            map_size,
+            offset,
+            len: ids.len() as u64,
+        };
+        (memory, header)
+    }
+
+    #[test]
+    fn the_queue_is_read_front_to_back_across_blocks_and_around_the_map() {
+        // Front at 13: slots 1..3 of block 3, then the map wraps to block 0.
+        let ids = [70, 10, 50, 20, 60, 30];
+        let (memory, header) = queue(&ids, 4, 13);
+        let read = memory.read(header).unwrap();
+        assert_eq!(read.len, 6);
+        assert_eq!(read.front, Some(70));
+        // The same ids in the same order hash alike wherever they sit.
+        let (other, at) = queue(&ids, 8, 2);
+        assert_eq!(other.read(at).unwrap(), read);
+        // Another order of the same ids is another queue.
+        let (swapped, at) = queue(&[10, 70, 50, 20, 60, 30], 4, 13);
+        assert_ne!(swapped.read(at).unwrap().hash, read.hash);
+        // So is one id fewer.
+        let (shorter, at) = queue(&ids[..5], 4, 13);
+        assert_ne!(shorter.read(at).unwrap().hash, read.hash);
+        // An empty queue needs no map.
+        let empty = Memory::default()
+            .read(Header {
+                map: 0,
+                map_size: 0,
+                offset: 0,
+                len: 0,
+            })
+            .unwrap();
+        assert_eq!((empty.len, empty.front), (0, None));
+    }
+
+    #[test]
+    fn a_queue_that_is_not_one_is_refused() {
+        let (memory, header) = queue(&[1, 2, 3], 4, 0);
+        assert!(
+            memory
+                .read(Header {
+                    map_size: 3,
+                    ..header
+                })
+                .is_err()
+        );
+        assert!(memory.read(Header { map: 0, ..header }).is_err());
+        assert!(
+            memory
+                .read(Header {
+                    len: MAX_QUEUE + 1,
+                    ..header
+                })
+                .is_err()
+        );
+        // A block missing, an id unreadable.
+        let missing = Memory {
+            words: HashMap::new(),
+            ids: memory.ids.clone(),
+        };
+        assert!(missing.read(header).is_err());
+        let hole = Memory {
+            words: memory.words.clone(),
+            ids: HashMap::new(),
+        };
+        assert!(hole.read(header).is_err());
+    }
+
+    fn seen(table: u64, queued: u64, freed: u64) -> Seen {
+        Seen {
+            table,
+            queued,
+            freed,
+        }
+    }
+
+    #[test]
+    fn ids_taken_are_new_rows_and_ids_popped_from_the_queue() {
+        // 10 queued, 2 freed by the last modification: 12 after it. Now 9
+        // queued and 3 more rows: 3 popped and 3 new.
+        assert_eq!(taken_since(seen(100, 10, 2), seen(103, 9, 0)), Some(6));
+        assert_eq!(taken_since(seen(100, 10, 2), seen(100, 12, 5)), Some(0));
+        // The queue grew by more than was freed: another writer.
+        assert_eq!(taken_since(seen(100, 10, 2), seen(100, 13, 0)), None);
+        // The table shrank: another engine, or a load.
+        assert_eq!(taken_since(seen(100, 10, 0), seen(99, 10, 0)), None);
+    }
+
+    #[test]
+    fn a_place_is_named_by_the_threads_step_and_the_rooms_update() {
+        assert_eq!(Place::of(true, Some(5)), Place::Update);
+        assert_eq!(Place::of(true, None), Place::StepOutsideUpdate);
+        // Another thread, whatever update the simulation runs meanwhile.
+        assert_eq!(Place::of(false, Some(5)), Place::OutsideStep);
+        assert_eq!(Place::of(false, None), Place::OutsideStep);
+    }
+
+    #[test]
+    fn the_tally_keeps_updates_and_what_came_outside_them_apart() {
+        let mut tally = Tally::new();
+        assert_eq!(tally.count(seen(100, 10, 2), &[4, 9], Place::Update), None);
+        assert_eq!(tally.count(seen(101, 11, 0), &[], Place::Update), None);
+        // Outside an update and taking an id: said.
+        assert_eq!(
+            tally.count(seen(101, 10, 1), &[3], Place::StepOutsideUpdate),
+            Some(1)
+        );
+        // Outside an update and touching no id: not counted.
+        assert_eq!(tally.count(seen(101, 11, 0), &[], Place::OutsideStep), None);
+        assert_eq!(
+            (tally.modifications, tally.taken, tally.freed),
+            (2, 2, 2),
+            "the first one has nothing to compare with; then 1 new row and 1 popped"
+        );
+        assert_eq!(
+            (tally.outside, tally.outside_taken, tally.outside_freed),
+            (1, 1, 1)
+        );
+        let taken = tally.take();
+        assert_eq!(taken.modifications, 2);
+        assert_eq!((tally.modifications, tally.outside), (0, 0));
+        assert_eq!(tally.outside_total, 1, "the total stays");
+        // The last modification stays too: the next one is compared with it.
+        assert_eq!(tally.count(seen(102, 11, 0), &[], Place::Update), None);
+        assert_eq!(tally.taken, 1);
+        // Counts that do not fit one history are counted apart.
+        assert_eq!(tally.count(seen(90, 11, 0), &[], Place::OutsideStep), None);
+        assert_eq!(tally.unfit, 1);
+    }
+
+    #[test]
+    fn the_freed_ids_hash_follows_the_order_of_the_modifications() {
+        let mut a = Tally::new();
+        let mut b = Tally::new();
+        a.count(seen(10, 0, 2), &[1, 2], Place::Update);
+        a.count(seen(10, 2, 1), &[3], Place::Update);
+        b.count(seen(10, 0, 1), &[3], Place::Update);
+        b.count(seen(10, 1, 2), &[1, 2], Place::Update);
+        assert_eq!(a.freed, b.freed);
+        assert_ne!(a.freed_hash, b.freed_hash);
+        // The same ids split into other modifications differ too.
+        let mut c = Tally::new();
+        c.count(seen(10, 0, 3), &[1, 2, 3], Place::Update);
+        assert_ne!(a.freed_hash, c.freed_hash);
+    }
+
+    #[test]
+    fn the_lines_say_what_two_games_compare() {
+        let mut tally = Tally::new();
+        tally.count(seen(100, 10, 2), &[4, 9], Place::Update);
+        tally.count(seen(101, 11, 1), &[5], Place::OutsideStep);
+        let queue = Queue {
+            len: 12,
+            front: Some(4),
+            hash: 0xabc,
+        };
+        let line = checkpoint_text(350, Ok(queue), &tally);
+        assert!(
+            line.starts_with(
+                "free ids: step 350: queued=12 front=4 hash=0000000000000abc; updates: 1 modification(s) took 0 and freed 2 ("
+            ),
+            "{line}"
+        );
+        assert!(
+            line.ends_with("); outside updates: 1 took 2 and freed 1"),
+            "{line}"
+        );
+        assert_eq!(
+            checkpoint_text(1, Err("why"), &Tally::new()),
+            format!(
+                "free ids: step 1: queue unread (why); updates: 0 modification(s) took 0 and freed 0 ({:016x}); outside updates: 0 took 0 and freed 0",
+                Tally::new().freed_hash
+            )
+        );
+        assert_eq!(
+            outside_text(Place::StepOutsideUpdate, 2, 1, Some(0xbace10), 3),
+            "freed-id trace: the simulation's engine took 2 and freed 1 id(s) in the game's step outside the room's updates (returning to 0xbace10); 3 such modification(s) since the world loaded"
+        );
+        assert!(
+            outside_text(Place::OutsideStep, 0, 1, None, 1)
+                .contains("outside the game's step (returning to an unread return address)")
+        );
+        assert!(outside_logged(1) && outside_logged(OUTSIDE_FIRST));
+        assert!(!outside_logged(OUTSIDE_FIRST + 1));
+        assert!(outside_logged(OUTSIDE_EVERY * 3));
+    }
+
+    #[test]
+    fn the_engine_is_the_one_the_step_updates() {
+        let memory: HashMap<u64, u64> = [
+            (0x500 + layout::STEP_DATA, 0x900),
+            (0x900 + layout::DATA_ENGINE, 0x7000),
+        ]
+        .into_iter()
+        .collect();
+        let mut read = |at: u64| memory.get(&at).copied();
+        assert_eq!(engine_of(0x500, &mut read), Some(0x7000));
+        assert_eq!(engine_of(0x600, &mut read), None);
+        let empty: HashMap<u64, u64> = [(0x500 + layout::STEP_DATA, 0)].into_iter().collect();
+        assert_eq!(engine_of(0x500, &mut |at| empty.get(&at).copied()), None);
+    }
+
+    /// Code with `EndModification`'s head before its site, and the step's
+    /// engine update calling `update_from_call` bytes past the call.
+    fn code(update_from_call: i32) -> (HashMap<u64, u8>, u64, u64, u64) {
+        let site = 0x10_0000u64;
+        let step = 0x20_0000u64;
+        let mut bytes = HashMap::new();
+        let head = site.wrapping_add_signed(layout::HEAD_FROM_SITE);
+        for (i, b) in layout::HEAD.iter().enumerate() {
+            bytes.insert(head + i as u64, *b);
+        }
+        let call = step + layout::STEP_ENGINE_CALL_AT;
+        for (i, b) in layout::STEP_ENGINE_CALL.iter().enumerate() {
+            bytes.insert(call + i as u64, *b);
+        }
+        let e8 = call + layout::STEP_ENGINE_CALL.len() as u64 - 1;
+        for (i, b) in update_from_call.to_le_bytes().iter().enumerate() {
+            bytes.insert(e8 + 1 + i as u64, *b);
+        }
+        let update = (e8 + 5).wrapping_add_signed(i64::from(update_from_call));
+        (bytes, site, step, update)
+    }
+
+    #[test]
+    fn the_trace_checks_the_code_it_relies_on() {
+        let (bytes, site, step, update) = code(0x1234);
+        let read = |at: u64, len: usize| -> Option<Vec<u8>> {
+            (0..len as u64)
+                .map(|i| bytes.get(&(at + i)).copied())
+                .collect()
+        };
+        assert_eq!(check(site, Some(step), Some(update), &read), Ok(()));
+        assert!(check(site, Some(step), Some(update + 1), &read).is_err());
+        assert!(check(site, None, Some(update), &read).is_err());
+        assert!(check(site, Some(step), None, &read).is_err());
+        assert!(check(site + 1, Some(step), Some(update), &read).is_err());
+        assert!(check(site, Some(step + 1), Some(update), &read).is_err());
+    }
+
+    #[test]
+    fn the_frame_puts_the_return_address_where_the_trace_reads_it() {
+        // Three stores into the caller's home slots, then five pushes and
+        // `sub rsp, 0x100`: the site's rsp is 0x128 below the return address.
+        assert_eq!(
+            &layout::HEAD[15..24],
+            &[0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57]
+        );
+        assert_eq!(
+            &layout::HEAD[29..36],
+            &[0x48, 0x81, 0xEC, 0x00, 0x01, 0x00, 0x00]
+        );
+        assert_eq!(layout::RETURN_FROM_SITE, 5 * 8 + 0x100);
+    }
+
+    /// The engine's fields the trace reads, in this test's memory.
+    #[cfg(windows)]
+    struct Engine {
+        words: Vec<u64>,
+        table: Vec<u8>,
+        map: Vec<u64>,
+        block: Vec<i32>,
+        removed: Vec<i32>,
+        vector: Box<[u64; 3]>,
+    }
+
+    #[cfg(windows)]
+    impl Engine {
+        fn new() -> Self {
+            Self {
+                words: vec![0; 0x300 / 8],
+                table: vec![0; 0x18 * 64],
+                map: vec![0; 4],
+                block: vec![0; 16],
+                removed: Vec::with_capacity(8),
+                vector: Box::new([0; 3]),
+            }
+        }
+
+        fn at(&self) -> u64 {
+            self.words.as_ptr() as u64
+        }
+
+        fn put(&mut self, offset: u64, value: u64) {
+            self.words[(offset / 8) as usize] = value;
+        }
+
+        /// The engine as one modification ends: `rows` entities, the queue
+        /// `queued` (one block), `removed` freed by the modification.
+        fn set(&mut self, rows: u64, queued: &[i32], removed: &[i32]) {
+            let table = self.table.as_ptr() as u64;
+            self.put(layout::ENTITY_TABLE, table);
+            self.put(layout::ENTITY_TABLE + 8, table + rows * layout::ENTITY_ROW);
+            self.block[..queued.len()].copy_from_slice(queued);
+            self.map[0] = self.block.as_ptr() as u64;
+            self.put(
+                layout::FREE_IDS + layout::QUEUE_MAP,
+                self.map.as_ptr() as u64,
+            );
+            self.put(layout::FREE_IDS + layout::QUEUE_MAP_SIZE, 1);
+            self.put(layout::FREE_IDS + layout::QUEUE_OFFSET, 0);
+            self.put(layout::FREE_IDS + layout::QUEUE_SIZE, queued.len() as u64);
+            self.removed.clear();
+            self.removed.extend_from_slice(removed);
+            let begin = self.removed.as_ptr() as u64;
+            *self.vector = [
+                begin,
+                begin + 4 * removed.len() as u64,
+                begin + 4 * self.removed.capacity() as u64,
+            ];
+            let vector = self.vector.as_ptr() as u64;
+            self.put(layout::BETWEEN_CHANGES, vector);
+        }
+    }
+
+    // Reads real memory through the hook's readable check, which only
+    // answers on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn the_trace_counts_the_simulations_modifications_and_fingerprints_its_queue() {
+        use tpf3mp_hookcore::detour::SavedRegs;
+
+        let mut engine = Engine::new();
+        // A GameSim whose data names the engine.
+        let data: Box<[u64; 4]> = Box::new([0, 0, 0, engine.at()]);
+        let sim: Box<[u64; 2]> = Box::new([0, data.as_ptr() as u64]);
+        assert_eq!(layout::STEP_DATA, 8);
+        assert_eq!(layout::DATA_ENGINE, 0x18);
+
+        super::freed_ids::trace::arm(0);
+        note_step(sim.as_ptr() as u64, true);
+        crate::order::set_in_step(true);
+        let mut frame = vec![0u8; std::mem::size_of::<SavedRegs>() + 0x200];
+        let regs = frame.as_mut_ptr().cast::<SavedRegs>();
+        let observe_at = |engine: &Engine| {
+            // SAFETY: the frame is this test's, as big as the block and the
+            // stack the trace reads above it.
+            unsafe {
+                (*regs).r13 = engine.at();
+                (*regs).r12 = engine.at() + layout::BETWEEN_CHANGES;
+            }
+            // SAFETY: as above.
+            observe(unsafe { &*regs });
+        };
+        // Modifications inside the step while no room's update is current
+        // (the paused path's place): the first frees two ids and is the
+        // baseline the next one's taken ids are counted from.
+        engine.set(10, &[3, 5], &[8, 9]);
+        observe_at(&engine);
+        // The next one took a new id and popped one: said and counted.
+        engine.set(11, &[5, 8, 9], &[]);
+        observe_at(&engine);
+        // Another engine's modification (the GUI's) is left alone.
+        let other = Engine::new();
+        observe_at(&other);
+        crate::order::set_in_step(false);
+
+        let line = checkpoint_line(50).expect("a line while the trace knows the engine");
+        assert!(
+            line.starts_with("free ids: step 50: queued=3 front=5 hash="),
+            "{line}"
+        );
+        assert!(
+            line.ends_with("; outside updates: 2 took 2 and freed 2"),
+            "{line}"
+        );
+        // Outside a room the trace knows no engine and says nothing.
+        note_step(sim.as_ptr() as u64, false);
+        assert_eq!(checkpoint_line(100), None);
+        drop((data, sim));
     }
 }

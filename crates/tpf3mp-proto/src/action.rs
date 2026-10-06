@@ -1292,6 +1292,11 @@ pub enum Action {
     /// A town building's Historic Preservation (`Preservation`). Appended
     /// under schema version 24: the variants before it keep their bytes.
     Preserve(Preservation),
+    /// Shared calendar pace, independent of simulation speed. Zero pauses
+    /// the date; positive values are the game's day length in milliseconds.
+    CalendarSpeed {
+        millis_per_day: u32,
+    },
     /// Signals added to and removed from existing tracks in one build
     /// (`PlaceSignals`). Appended under schema version 26: the variants
     /// before it keep their bytes.
@@ -1300,6 +1305,8 @@ pub enum Action {
 
 #[derive(Debug, Error)]
 pub enum ActionError {
+    #[error("calendar day length exceeds the game's signed integer range")]
+    CalendarSpeed,
     #[error("invalid junction configuration: {0}")]
     Junction(&'static str),
     #[error("action schema {found}; this game speaks {ACTION_SCHEMA_VERSION}")]
@@ -1353,6 +1360,7 @@ impl Action {
             Action::Rename { .. } => "Rename",
             Action::Perk(_) => "Perk",
             Action::Preserve(_) => "Preserve",
+            Action::CalendarSpeed { .. } => "CalendarSpeed",
             Action::PlaceSignals(_) => "PlaceSignals",
         }
     }
@@ -1362,6 +1370,9 @@ impl Action {
     /// ([`ActionError::SellOnArrival`]).
     pub fn validate(&self) -> Result<(), ActionError> {
         let changes = match self {
+            Self::CalendarSpeed { millis_per_day } if *millis_per_day > i32::MAX as u32 => {
+                return Err(ActionError::CalendarSpeed);
+            }
             Self::VehicleOp(VehicleOp {
                 change: VehicleChange::ToDepot { sell: true },
                 ..
@@ -1758,7 +1769,7 @@ mod tests {
         });
         assert_eq!(
             signals.to_payload().unwrap().as_bytes(),
-            [26, 23, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+            [26, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),

@@ -10,7 +10,8 @@
 //! so the hook's cost can be set against the game's.
 //!
 //! Every [`WINDOW`] of wall time the step detour takes the counters and
-//! writes two lines to hook.log ([`lines`]). [`ENV`] set to `0` turns the
+//! writes two lines to hook.log ([`lines`]), then the game's own systems'
+//! (`crate::simperf`, the `perf: sim` line). [`ENV`] set to `0` turns the
 //! timing off; it is on otherwise, because a timed call costs two reads of
 //! the clock and two atomic adds, about 56 ns (measured on the development
 //! PC, see the `a_timed_call_costs_two_clock_reads` benchmark), against
@@ -28,8 +29,12 @@ use std::{
 };
 
 /// The game's environment: `0` (or `off`, `false`, `no`) turns the timing
-/// and its lines off; anything else, or unset, leaves them on.
+/// and its lines off; anything else, or unset, leaves them on. [`FULL`]
+/// also counts the game's component lookups (`crate::fastindex`).
 pub const ENV: &str = "TPF3MP_HOOK_PERF";
+/// [`ENV`]'s value that also counts `GetComponentDataIndex`'s calls, a
+/// few cycles on each of millions of calls a second, so not by default.
+pub const FULL: &str = "full";
 /// The wall time between two `perf:` line pairs.
 pub const WINDOW: Duration = Duration::from_secs(10);
 
@@ -162,6 +167,7 @@ impl Sample {
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
+static FULL_ON: AtomicBool = AtomicBool::new(false);
 static PIECES: [Counter; Piece::ALL.len()] = [const { Counter::new() }; Piece::ALL.len()];
 /// The game's `GameSim::Step`, one call per batch.
 static GAME: Counter = Counter::new();
@@ -176,11 +182,23 @@ pub fn wanted(value: Option<&str>) -> bool {
     crate::ticks::wanted(value)
 }
 
+/// Whether [`ENV`]'s value asks for the [`FULL`] timing.
+pub fn wanted_full(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim().eq_ignore_ascii_case(FULL))
+}
+
 /// Reads [`ENV`] and switches the timing on or off; `true` when on.
 pub fn configure_from_env() -> bool {
-    let on = wanted(std::env::var(ENV).ok().as_deref());
+    let value = std::env::var(ENV).ok();
+    let on = wanted(value.as_deref());
     ENABLED.store(on, Ordering::Release);
+    FULL_ON.store(on && wanted_full(value.as_deref()), Ordering::Release);
     on
+}
+
+/// Whether the [`FULL`] timing was asked for.
+pub fn full() -> bool {
+    FULL_ON.load(Ordering::Relaxed)
 }
 
 pub fn enabled() -> bool {
@@ -250,6 +268,10 @@ pub struct Window {
     /// system.
     pub cache_hits: u64,
     pub cache_misses: u64,
+    /// Guarded reads ([`crate::image::guarded`]), and those a fault
+    /// refused.
+    pub guarded_reads: u64,
+    pub guarded_faults: u64,
 }
 
 /// The window's two lines: the game's step and the hook's total against
@@ -285,8 +307,8 @@ pub fn lines(window: &Window) -> [String; 2] {
         hook.millis() / seconds,
     );
     let first = format!(
-        "{first}; readable cache {} hits, {} misses",
-        window.cache_hits, window.cache_misses
+        "{first}; readable cache {} hits, {} misses; guarded reads {}, {} faults",
+        window.cache_hits, window.cache_misses, window.guarded_reads, window.guarded_faults
     );
     let mut second = String::from("perf: ");
     for (i, (piece, sample)) in Piece::ALL.iter().zip(window.pieces.iter()).enumerate() {
@@ -317,6 +339,7 @@ pub fn lines(window: &Window) -> [String; 2] {
 /// Takes every counter, zero again, into a window of `seconds`.
 fn take(seconds: f64) -> Window {
     let (cache_hits, cache_misses) = crate::image::take_counts();
+    let (guarded_reads, guarded_faults) = crate::image::take_guarded_counts();
     let mut pieces = [Sample::default(); Piece::ALL.len()];
     for (sample, counter) in pieces.iter_mut().zip(PIECES.iter()) {
         *sample = counter.take();
@@ -329,12 +352,15 @@ fn take(seconds: f64) -> Window {
         road_refusals: crate::order::road::take_refusals(),
         cache_hits,
         cache_misses,
+        guarded_reads,
+        guarded_faults,
     }
 }
 
 /// From the step detour after each call: once a window has passed, its
-/// lines for the log. The first call starts the first window.
-pub fn tick(now: Instant) -> Option<[String; 2]> {
+/// lines for the log, the game's own systems' last
+/// ([`crate::simperf::line`]). The first call starts the first window.
+pub fn tick(now: Instant) -> Option<Vec<String>> {
     if !enabled() {
         return None;
     }
@@ -343,6 +369,7 @@ pub fn tick(now: Instant) -> Option<[String; 2]> {
         *start = Some(now);
         // Whatever ran before the first step belongs to no window.
         let _ = take(0.0);
+        let _ = crate::simperf::take();
         return None;
     };
     let elapsed = now.saturating_duration_since(began);
@@ -351,7 +378,13 @@ pub fn tick(now: Instant) -> Option<[String; 2]> {
     }
     *start = Some(now);
     drop(start);
-    Some(lines(&take(elapsed.as_secs_f64())))
+    let window = take(elapsed.as_secs_f64());
+    let mut out = lines(&window).to_vec();
+    out.extend(crate::simperf::line(
+        &crate::simperf::take(),
+        window.updates,
+    ));
+    Some(out)
 }
 
 #[cfg(test)]
@@ -426,8 +459,10 @@ mod tests {
             updates: 600,
             pieces,
             road_refusals: vec![("the edge's entity has no slot", 12)],
-            cache_hits: 90_000,
-            cache_misses: 1_200,
+            cache_hits: 0,
+            cache_misses: 0,
+            guarded_reads: 90_000,
+            guarded_faults: 3,
         }
     }
 
@@ -437,7 +472,7 @@ mod tests {
         assert_eq!(
             first,
             "perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates \
-             (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses"
+             (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 0 hits, 0 misses; guarded reads 90000, 3 faults"
         );
     }
 
@@ -489,6 +524,11 @@ mod tests {
         assert!(wanted(Some("1")));
         for off in ["0", "off", "false", "no"] {
             assert!(!wanted(Some(off)), "{off}");
+        }
+        assert!(wanted(Some("full")));
+        assert!(wanted_full(Some(" FULL ")));
+        for not_full in [None, Some("1"), Some("0"), Some("fully")] {
+            assert!(!wanted_full(not_full), "{not_full:?}");
         }
     }
 

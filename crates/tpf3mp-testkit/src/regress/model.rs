@@ -632,6 +632,8 @@ impl State {
             // A town building's preservation: the model keeps no towns'
             // buildings.
             Action::Preserve(_) => Ok(()),
+            // The model has no native calendar.
+            Action::CalendarSpeed { .. } => Ok(()),
             // Signals a mod spaces along a track: the model keeps no
             // signals' places along their edges.
             Action::PlaceSignals(_) => Ok(()),
