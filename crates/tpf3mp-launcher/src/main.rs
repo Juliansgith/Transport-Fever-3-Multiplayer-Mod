@@ -544,12 +544,11 @@ fn in_browser_local(
             Ok(url) => url,
             Err(error) => {
                 error!(%error, "cannot serve the browser fallback; keeping the existing launcher session alive");
-                show_error(&format!(
-                    "The native window stopped and the browser page could not start at {}: {error}. \
-                     The existing launcher session is still running. Start another launcher to take over, \
-                     or close this process when you are ready.",
-                    config.listen
-                ));
+                show_browser_fallback_failure(
+                    config.listen,
+                    &error,
+                    show_browser_fallback_error,
+                );
                 tokio::select! {
                     () = launcher.wait() => {}
                     _ = tokio::signal::ctrl_c() => {}
@@ -571,14 +570,49 @@ async fn serve_existing_launcher(
     launcher: &mut Launcher,
     listen: std::net::SocketAddr,
 ) -> Result<String> {
-    launcher
-        .serve_local(listen)
-        .await
-        .context("serving the existing launcher in the browser")?;
+    match launcher.serve_local(listen).await {
+        Ok(()) => {}
+        Err(error)
+            if listen.ip().is_loopback()
+                && listen.port() != 0
+                && error.kind() == std::io::ErrorKind::AddrInUse =>
+        {
+            warn!(%listen, "browser fallback port is occupied; retrying on another loopback port");
+            let retry = std::net::SocketAddr::new(listen.ip(), 0);
+            launcher.serve_local(retry).await.with_context(|| {
+                format!("serving the existing launcher after {listen} was already in use")
+            })?;
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("serving the existing launcher at {listen}"));
+        }
+    }
     launcher
         .url()
         .map(str::to_owned)
         .context("the launcher serves no page after its window stopped")
+}
+
+fn show_browser_fallback_failure(
+    listen: std::net::SocketAddr,
+    error: &anyhow::Error,
+    show_failure: impl FnOnce(&str),
+) {
+    let message = format!(
+        "The native window stopped, and its browser page could not be served at {listen}: {error:#}. \
+         The existing launcher and session are still running. Keep this process open; the browser page \
+         is unavailable. Close it when you are ready to end the session."
+    );
+    show_failure(&message);
+}
+
+fn show_browser_fallback_error(message: &str) {
+    #[cfg(windows)]
+    windows_fallback_notice::show_message(message);
+
+    #[cfg(not(windows))]
+    eprintln!("{message}");
 }
 
 fn open_browser_or_show_recovery_url(url: &str) {
@@ -649,7 +683,11 @@ mod windows_fallback_notice {
                 "{message}\n\nClipboard access was unavailable. Press Ctrl+C to copy this notice, paste it into a text editor, and copy the private address line.\n"
             )
         };
-        let message = wide_null(&message);
+        show_message(&message);
+    }
+
+    pub(super) fn show_message(message: &str) {
+        let message = wide_null(message);
         let title = wide_null("TPF3-MP browser fallback");
         // SAFETY: both strings are nul-terminated UTF-16 buffers that remain
         // alive until the native modal dialog returns.
@@ -813,7 +851,8 @@ mod tests {
 
     use super::{
         Args, Launcher, NativeWindowFailure, open_browser_or_show_failure, package_server,
-        ready_to_start, run_native_window, serve_existing_launcher, stale_invite,
+        ready_to_start, run_native_window, serve_existing_launcher, show_browser_fallback_failure,
+        stale_invite,
     };
     use tpf3mp_agent::launcher::setup::{RELAY, RELAY_NAME};
 
@@ -858,6 +897,21 @@ mod tests {
         );
 
         assert!(!showed_failure);
+    }
+
+    #[test]
+    fn an_unavailable_browser_fallback_shows_cause_and_live_session_guidance() {
+        let listen = "127.0.0.1:43871".parse().unwrap();
+        let error = anyhow::anyhow!("permission denied while binding");
+        let mut shown = None;
+
+        show_browser_fallback_failure(listen, &error, |message| shown = Some(message.to_owned()));
+
+        let message = shown.expect("fallback failure must be presented");
+        assert!(message.contains("127.0.0.1:43871"));
+        assert!(message.contains("permission denied while binding"));
+        assert!(message.contains("session are still running"));
+        assert!(message.contains("Keep this process open"));
     }
 
     #[tokio::test]
@@ -924,6 +978,88 @@ mod tests {
             .next()
             .unwrap();
         let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "GET /api/state HTTP/1.1\r\nHost: {address}\r\nx-launcher-token: {token}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK"));
+        let page_state: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(page_state["banner"], banner);
+    }
+
+    #[tokio::test]
+    async fn an_occupied_loopback_port_retries_without_restarting_the_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let game_exe = game.join("TransportFever3.exe");
+        std::fs::write(&game_exe, b"").unwrap();
+        let mods = temp.path().join("mods.txt");
+        std::fs::write(&mods, "").unwrap();
+        let identity = temp.path().join("identity.key");
+        let worlds = temp.path().join("worlds");
+        let args = parse(&[
+            "--listen",
+            "127.0.0.1:0",
+            "--server",
+            "127.0.0.1:29470",
+            "--name",
+            "occupied-port recovery test",
+            "--identity",
+            identity.to_str().unwrap(),
+            "--worlds",
+            worlds.to_str().unwrap(),
+            "--game-exe",
+            game_exe.to_str().unwrap(),
+            "--game-build",
+            "occupied-port-recovery-test",
+            "--mods",
+            mods.to_str().unwrap(),
+        ])
+        .unwrap();
+        let config = args.launcher.config().unwrap();
+        let mut launcher = Launcher::start_local(config.clone());
+        let original_handle = launcher.handle();
+        let banner = tpf3mp_proto::BANNERS[0].to_owned();
+        original_handle
+            .act(tpf3mp_agent::launcher::Action::SetBanner {
+                banner: Some(banner.clone()),
+            })
+            .await
+            .unwrap();
+
+        let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let occupied = blocker.local_addr().unwrap();
+        let url = serve_existing_launcher(&mut launcher, occupied)
+            .await
+            .unwrap();
+        let (address_and_path, token) = url.split_once('#').unwrap();
+        let address = address_and_path
+            .strip_prefix("http://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        let served: std::net::SocketAddr = address.parse().unwrap();
+        assert_eq!(served.ip(), occupied.ip());
+        assert_ne!(served.port(), occupied.port());
+        assert_ne!(served.port(), 0);
+        assert_eq!(
+            original_handle.state().banner.as_deref(),
+            Some(banner.as_str()),
+            "the original launcher controller remains alive"
+        );
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(served).await.unwrap();
         stream
             .write_all(
                 format!(

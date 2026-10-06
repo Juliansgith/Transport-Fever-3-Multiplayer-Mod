@@ -120,8 +120,10 @@ window fails, the page takes over the existing launcher session, including
 its room and game link. If Windows cannot open the page automatically, a
 Windows dialog shows the private address and copies it to the clipboard when
 available; otherwise it explains how to copy the address from the dialog.
-Paste it into a browser on this computer. Keep the launcher running while
-you use the page.
+Paste it into a browser on this computer. If the configured local port is
+already in use, the launcher tries another loopback port. If it still cannot
+serve the page, a Windows notice explains why; the existing session remains
+connected, so keep the launcher running while you play.
 
 The window starts the game and shows where things stand; you play from the
 game's own **Multiplayer** button (next section).
