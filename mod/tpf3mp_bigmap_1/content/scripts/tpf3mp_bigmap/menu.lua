@@ -158,8 +158,8 @@ end
 -- Density levels. Town and industry counts are a density per km², so a big
 -- map at the stock sliders has many more towns and industries than any
 -- stock map. The Town Density and Industry Density sliders get one more
--- level per ladder row, after the game's own five: "Gigantomaniac count at
--- <row>", the stock Medium scaled by the row's densityScale, which gives
+-- level per ladder row, before the game's own five: "Giga <km> km" (the
+-- Gigantomaniac count at that size): the stock Medium scaled by the row's densityScale, which gives
 -- that row's square the counts stock Gigantomaniac 1:1 has at Medium.
 -- Every row counts, offered on this machine or not, so a level is the same
 -- number in every game. As after silver2127's Big Maps for TPF2
@@ -188,8 +188,9 @@ menu.STOCK_DENSITY_MEDIUM = 3
 function menu.densityChoices(stockValues, ladder)
 	local values, numbers = {}, {}
 	for i = #ladder, 1, -1 do
-		local size = string.gsub(ladder[i].label, "^Big ", "")
-		values[#values + 1] = "Gigantomaniac count at " .. size
+		-- "Giga 45 km": short, as the slider's own labels are.
+		local km = string.match(ladder[i].label, "(%d+)%.?%d* km") or "?"
+		values[#values + 1] = "Giga " .. km .. " km"
 		numbers[#numbers + 1] = menu.STOCK_DENSITY_LEVELS + i
 	end
 	for i = 1, #stockValues do

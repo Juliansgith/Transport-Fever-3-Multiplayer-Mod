@@ -448,10 +448,10 @@ fn the_density_sliders_get_one_level_per_ladder_row() {
     assert_eq!(
         values,
         [
-            "Gigantomaniac count at 45.1 km",
-            "Gigantomaniac count at 41.0 km",
-            "Gigantomaniac count at 36.9 km",
-            "Gigantomaniac count at 32.8 km",
+            "Giga 45 km",
+            "Giga 41 km",
+            "Giga 36 km",
+            "Giga 32 km",
             "Sparse",
             "Scattered",
             "Medium",

@@ -253,7 +253,7 @@ end
 
 const DENSITY: &str = r#"
 -- A density slider (towns, or industries with their runtime target) with
--- big maps' levels before the game's own: "Gigantomaniac count at <size>"
+-- big maps' levels before the game's own: "Giga <km> km" (the Gigantomaniac count at that size)
 -- (scripts/tpf3mp_bigmap/menu.lua). The level is stored where the game's
 -- own slider stores it; the hook's difficulty_util wrap gives it its
 -- factor. Without the mod's scripts, or a slider of another length, the
@@ -300,7 +300,7 @@ local function bigmapAddDensitySettingsEntry(settings : {NewGameReactUtil.Settin
 	})
 	table.insert(settings, {
 		title = scriptParam.name,
-		description = scriptParam.tooltip .. "\n\nBig maps: the levels before the game's own give a big map the count Gigantomaniac has at Medium; pick the one that names your size.",
+		description = scriptParam.tooltip .. "\n\nGiga <km>: Gigantomaniac's count on a map that size.",
 		hintIdKey = "hintIdKey" .. scriptParam.name,
 		element = element,
 	})
