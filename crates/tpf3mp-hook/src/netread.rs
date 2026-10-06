@@ -833,6 +833,8 @@ fn edge_anchor(edge: &[u8]) -> Result<(i64, i64), String> {
 pub struct Part {
     pub n: u32,
     pub k: u32,
+    /// The room's step it was read at, when it was read in one.
+    pub step: Option<u64>,
     pub edges: Vec<String>,
     pub junctions: Vec<Junction>,
     /// The part's junctions only the game's Lua can make rows of
@@ -975,6 +977,7 @@ pub fn read_part(
     Ok(Part {
         n,
         k,
+        step: None,
         edges,
         junctions,
         deferred,
@@ -987,6 +990,7 @@ pub fn read_part(
 pub fn part_now(n: u32, k: u32) -> Result<Part, String> {
     let (memory, engine, image) = engine_now()?;
     let mut part = read_part(&memory, engine, image, n, k)?;
+    part.step = crate::seeds::current_step();
     let (checks, queries) = memory.counts();
     part.timing += &format!(", {checks} checks, {queries} regions asked");
     Ok(part)
@@ -1004,12 +1008,14 @@ pub fn keep_part(part: Option<Part>) {
 }
 
 /// The two static lanes' texts of the part [`keep_part`] kept last on this
-/// thread, once: the network lane's (its edge rows, and its junction rows
+/// thread, once, when it is part `k` of `n` read at `step`: the network lane's (its edge rows, and its junction rows
 /// named as [`summary`] names them, with `deferred`, the rows the game's
 /// Lua made of the part's junctions left to it) and the constructions
 /// lane's, each `count:hash` as lanes.lua's `summary` makes it; and with
 /// `rows`, their rows, sorted.
 pub fn part_texts(
+    (n, k): (u32, u32),
+    step: Option<u64>,
     preferences: &HashMap<i32, String>,
     lights: &HashMap<i32, String>,
     deferred: &[String],
@@ -1018,6 +1024,13 @@ pub fn part_texts(
     let part = LAST_PART
         .with(|last| last.borrow_mut().take())
         .ok_or("no part was read on this thread")?;
+    // Only the part asked for, read in this same update.
+    if (part.n, part.k) != (n, k) || part.step != step {
+        return Err(format!(
+            "the part kept is {}/{} of step {:?}, not {k}/{n} of step {step:?}",
+            part.k, part.n, part.step
+        ));
+    }
     let mut network = network_rows(
         &part.edges,
         &part.junctions,
@@ -1415,6 +1428,7 @@ fn read_junction(
             let locked_bytes = read(store.memory, locked_at, count * 4, "a phase's locked lanes")?;
             let mut locked = Vec::with_capacity(count);
             let mut locked_walks = std::collections::BTreeSet::new();
+            let mut walk_locks = 0;
             for k in 0..count {
                 let index = usize::try_from(i32_at(&locked_bytes, k * 4))
                     .ok()
@@ -1422,10 +1436,16 @@ fn read_junction(
                     .ok_or("traffic phase references no lane")?;
                 if walks.contains(&index) {
                     locked_walks.insert(index);
+                    walk_locks += 1;
                 }
                 locked.push(lanes[index].as_str());
             }
-            if walks.len() >= 2 && !locked_walks.is_empty() && locked_walks.len() < walks.len() {
+            // Some of several crosswalks, or one of them twice: which ones
+            // the row names depends on the crosswalk set's order.
+            if walks.len() >= 2
+                && !locked_walks.is_empty()
+                && (locked_walks.len() < walks.len() || walk_locks > locked_walks.len())
+            {
                 ambiguous = true;
             }
             locked.sort_unstable();
@@ -2321,6 +2341,24 @@ mod tests {
                 custom: false,
                 phases: vec![],
             },
+            // Two crosswalks, one of them locked twice: which one the row
+            // names twice depends on the set's order, so it is left to the
+            // game's Lua.
+            Config {
+                node: 10,
+                turns: vec![],
+                crosswalks: vec![2, 1],
+                preference: 0,
+                light: -1,
+                double_slip: false,
+                custom: false,
+                phases: vec![Phase {
+                    locked: vec![0, 1, 1],
+                    duration: 10.0,
+                    minimum: 0.0,
+                    skip: false,
+                }],
+            },
             // At no edge: junctions.lua never reads it.
             Config {
                 node: 30,
@@ -2817,13 +2855,14 @@ api = {
         let engine = junction_engine(&mut fake);
         let network = network(&fake, engine, IMAGE).unwrap();
         let parts = network.junctions.unwrap();
-        // Node 11 has two crosswalks and a phase locking one of them: its
-        // row is left to the game's Lua. Node 12 locks both together.
-        assert_eq!(network.deferred, vec![11]);
+        // Node 11 has two crosswalks and a phase locking one of them, node
+        // 10 one locking one of its two twice: their rows are left to the
+        // game's Lua. Node 12 locks both together.
+        assert_eq!(network.deferred, vec![10, 11]);
         assert_eq!(parts.len(), 2, "the node at no edge is left out");
         let (rows, made, left) = lua_junctions(&parts, &network.deferred);
-        assert_eq!(rows.len(), 3);
-        assert_eq!(left.len(), 1);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(left.len(), 2);
         assert_eq!(made, rows);
     }
 

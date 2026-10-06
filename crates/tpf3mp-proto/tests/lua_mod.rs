@@ -1930,7 +1930,7 @@ fn rolling_checks_resume_from_saved_history_and_refuse_gaps_and_read_failures() 
 const FAKE_PARTS: &str = r#"
 api.type.enum = api.type.enum or {}
 api.type.enum.TrafficLightPreference = api.type.enum.TrafficLightPreference or { AUTO = 0, YES = 1, NO = 2 }
-PART_CALLS = {}
+PART_CALLS, PART_TEXTS = {}, {}
 NATIVE_TEXT = 'native'
 tpf3mp_native.part = function(n, k)
     if n == nil then return { mode = PART_MODE or 'on', why = 'a part number is missing', parts = PLAN_PARTS, stride = PLAN_STRIDE } end
@@ -1938,7 +1938,8 @@ tpf3mp_native.part = function(n, k)
     if PART_FAIL then return { mode = 'on', why = PART_FAIL } end
     return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} }
 end
-tpf3mp_native.partTexts = function(preferences, lights, deferred, rows)
+tpf3mp_native.partTexts = function(n, k, preferences, lights, deferred, rows)
+    PART_TEXTS[#PART_TEXTS + 1] = n .. '/' .. k
     if rows then return '1:' .. NATIVE_TEXT, '1:cons', { 'row' }, { 'con@0,0' } end
     return '1:' .. NATIVE_TEXT, '1:cons'
 end
@@ -1979,6 +1980,8 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
     let calls: Vec<String> = a.load("return PART_CALLS").eval().unwrap();
     let turns: Vec<String> = (0..12).map(|s| format!("10/{}", s % 10)).collect();
     assert_eq!(calls, turns);
+    let texts: Vec<String> = a.load("return PART_TEXTS").eval().unwrap();
+    assert_eq!(texts, turns, "texts asked for the part just read");
     // The hook's text counts: another text, another history.
     let other = read(&game("NATIVE_TEXT='other'"), 1, 12);
     assert_ne!(other[0], first[0]);
@@ -2013,6 +2016,15 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
     assert!(strided[0].starts_with("rolling-v2:1-12:3:"), "{strided:?}");
     let calls: Vec<String> = h.load("return PART_CALLS").eval().unwrap();
     assert_eq!(calls, ["4/0", "4/1", "4/2"]);
+    // Between two parts too, a history of parts holds once the game reads
+    // none.
+    let i = game(
+        "PLAN_PARTS=4 PLAN_STRIDE=5 for s=1,2 do ROLL_STEP(s,false) end tpf3mp_native.part=nil",
+    );
+    assert!(
+        i.load("ROLL_STEP(3,false)").exec().is_err(),
+        "not a slot, still held"
+    );
     // Without parts, the rolling history of version 1.
     assert!(read(&rolling_game(), 1, 12)[0].starts_with("rolling-v1:"));
 }
@@ -2109,6 +2121,20 @@ fn the_game_script_runs_rolling_checks_between_checkpoints_and_saves_their_histo
     )
     .exec()
     .unwrap();
+}
+
+/// A simulation state without `os` (or its clock) times nothing but still
+/// applies the room's actions and runs its world checks.
+#[test]
+fn the_game_script_runs_without_a_clock() {
+    for missing in ["os = nil", "os = { }"] {
+        let lua = rolling_game();
+        lua.load(format!(
+            "{missing} HOOK.scanStep=1 HOOK.batch = {{ {{ SellVehicle = {{ vehicles = {{ 7 }} }} }} }}              UPDATE({{}},STATE,0.2) assert(HOOK.scanResult.ok, HOOK.scanResult.why)              assert(HOOK.batch == nil, 'the action was taken')"
+        ))
+        .exec()
+        .unwrap();
+    }
 }
 
 #[test]

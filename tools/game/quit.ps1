@@ -30,9 +30,10 @@ foreach ($gp in $GamePids) {
       if (-not $QuitAt) { $q = @([int]($cw * $quitFraction[0]), [int]($ch * $quitFraction[1])) }
       if (-not $DesktopAt) { $d = @([int]($cw * $desktopFraction[0]), [int]($ch * $desktopFraction[1])) }
     } else {
-      # The window's size did not read: the coordinates of a 1291x748 capture.
-      if (-not $QuitAt) { $q = @(214, 508) }
-      if (-not $DesktopAt) { $d = @(793, 508) }
+      # The window's size did not read: no guessed clicks into a game whose
+      # buttons may be elsewhere. -QuitAt and -DesktopAt name them instead.
+      "game ${gp}: its window's size did not read; nothing clicked (give -QuitAt and -DesktopAt)"
+      continue
     }
   }
   [void]$p.CloseMainWindow()

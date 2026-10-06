@@ -696,16 +696,34 @@ function lanes.nativeParts()
 end
 
 -- The part's rows as this Lua makes them (the reference the hook's are
--- compared with): every row of the two lanes, kept where it is in part k.
+-- compared with): every row of the two lanes, kept where it is in part k;
+-- read by this Lua alone, without the hook's decoders of a component
+-- (laneRows, junctionConfig), so that none of the hook's reading is
+-- compared with itself. The hook's table is back however the read ends.
 local function luaPart(api, n, k)
 	local rows = { [lanes.NETWORK] = {}, [lanes.CONSTRUCTIONS] = {} }
-	for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
-		local list = rows[lane]
-		readers[lane](api, function(_, _, row)
-			if lanes.rowPart(lane, row, n) == k then list[#list + 1] = row end
-		end)
-	end
+	local hook = tpf3mp_native
+	tpf3mp_native = { hash = hook.hash }
+	local ok, why = pcall(function()
+		for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
+			local list = rows[lane]
+			readers[lane](api, function(_, _, row)
+				if lanes.rowPart(lane, row, n) == k then list[#list + 1] = row end
+			end)
+		end
+	end)
+	tpf3mp_native = hook
+	if not ok then error(why, 0) end
 	return rows
+end
+
+-- Whether two sorted lists hold the same rows, as many times each.
+local function sameRows(a, b)
+	if #a ~= #b then return false end
+	for i = 1, #a do
+		if a[i] ~= b[i] then return false end
+	end
+	return true
 end
 
 -- Up to three rows in one sorted list and not the other.
@@ -722,6 +740,10 @@ end
 -- How the parts read and compared since the last checkpoint, for the log only.
 local compared = { agree = 0, differ = 0, nativeMs = 0, nativeMax = 0, reads = 0, timing = nil }
 
+local function countsReset()
+	compared.agree, compared.differ, compared.nativeMs, compared.nativeMax, compared.reads = 0, 0, 0, 0, 0
+end
+
 local function rollingParts(api, scan, step, checkpoint)
 	local t0 = clock()
 	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
@@ -732,7 +754,10 @@ local function rollingParts(api, scan, step, checkpoint)
 	-- One part every `stride` updates, in turn.
 	local slot = (step - 1) % stride == 0
 	local k = math.floor((step - 1) / stride) % n
-	local values, note, compare = {}, nil, false
+	-- A history of parts goes on only in parts, every update: never another
+	-- reading in their place, not even between two parts.
+	if not lanes.nativeParts() then error("this game reads no parts of the world", 0) end
+	local values, note = {}, nil
 	if slot then
 		local native = tpf3mp_native
 		local read = type(native) == "table" and type(native.part) == "function" and native.part(n, k) or nil
@@ -740,10 +765,10 @@ local function rollingParts(api, scan, step, checkpoint)
 		-- their place.
 		if read == nil then error("this game reads no parts of the world", 0) end
 		if read.why then error("part " .. k .. " of the world did not read: " .. tostring(read.why), 0) end
-		compare = read.mode == "compare"
+		local compare = read.mode == "compare"
 		local preferences, lights = junctions.names(api, read.lights)
 		local deferred = junctions.rowsOf(api, read.deferred)
-		local net, cons, netRows, consRows = native.partTexts(preferences, lights, deferred, compare)
+		local net, cons, netRows, consRows = native.partTexts(n, k, preferences, lights, deferred, compare)
 		if net == nil then error("part " .. k .. " of the world has no texts: " .. tostring(cons), 0) end
 		compared.reads = compared.reads + 1
 		compared.nativeMs = compared.nativeMs + (read.ms or 0)
@@ -756,7 +781,8 @@ local function rollingParts(api, scan, step, checkpoint)
 			local differ = {}
 			for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
 				local text = summary(own[lane])
-				if text ~= values[lane] then
+				-- The rows themselves, not only their count and hash.
+				if text ~= values[lane] or not sameRows(own[lane], theirs[lane] or {}) then
 					differ[#differ + 1] = string.format("lane %d lua %s native %s; only lua: %s; only native: %s",
 						lane, text, tostring(values[lane]), table.concat(onlyIn(own[lane], theirs[lane] or {}), " || "),
 						table.concat(onlyIn(theirs[lane] or {}, own[lane]), " || "))
@@ -802,10 +828,11 @@ local function rollingParts(api, scan, step, checkpoint)
 			.. " native_mean_ms=%.2f native_max_ms=%.2f (%s)%s signature=%s",
 			scan.first, step, k, n, ms, compared.nativeMs / math.max(1, compared.reads), compared.nativeMax,
 			tostring(compared.timing),
-			compare and string.format(" compared agree=%d differ=%d", compared.agree, compared.differ) or "",
+			(compared.agree + compared.differ > 0)
+				and string.format(" compared agree=%d differ=%d", compared.agree, compared.differ) or "",
 			fastHash(table.concat(texts, "\n")))
 		report = report and (report .. "; " .. line) or line
-		compared.agree, compared.differ, compared.nativeMs, compared.nativeMax, compared.reads = 0, 0, 0, 0, 0
+		countsReset()
 		scan.first, scan.hashes, scan.counts = step + 1, {}, {}
 	end
 	if note then report = report and (report .. "; " .. note) or note end

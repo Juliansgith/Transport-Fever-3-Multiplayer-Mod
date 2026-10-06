@@ -101,7 +101,10 @@ function data()
 	-- the script's state. The wall clock only: nothing read from it reaches
 	-- the world.
 	local function clock()
-		local ok, t = pcall(os.clock)
+		-- A state without os (or its clock) times nothing; it still applies.
+		local readClock = type(os) == "table" and os.clock
+		if type(readClock) ~= "function" then return nil end
+		local ok, t = pcall(readClock)
 		if ok and type(t) == "number" then return t end
 		return nil
 	end
