@@ -14212,8 +14212,11 @@ fn auto_signals_spacing_goes_to_the_room_and_every_game_builds_it() {
          HOOK.batch = {{ {stop} }} HOOK.origins = {{ 'me' }} UPDATE({{}}, STATE, 0.2) \
          SENT = {{}} \
          SCRIPT.guiUpdate({{}}, nil, nil) \
+         local acceptance = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua') \
+         ON = acceptance.signals \
+         acceptance.signals = false \
          BUILD({SIGNALS_BUILD}) \
-         ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').signals = true \
+         acceptance.signals = true \
          BUILD({SIGNALS_BUILD})"
     ))
     .exec()
@@ -14223,7 +14226,11 @@ fn auto_signals_spacing_goes_to_the_room_and_every_game_builds_it() {
         logged
             .iter()
             .any(|l| l.contains("signals awaits two-player game acceptance")),
-        "the switch is off by default: {logged:?}"
+        "with its switch off, nothing goes: {logged:?}"
+    );
+    assert!(
+        lua.load("return ON").eval::<bool>().unwrap(),
+        "on since the two-player game of 2026-10-06"
     );
     let handed: String = lua
         .load(

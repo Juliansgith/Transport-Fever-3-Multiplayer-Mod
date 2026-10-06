@@ -376,8 +376,9 @@ Dev B:
   removals stay stopped (Auto Signals, [MODS.md](MODS.md)). *Added
   (proposed, for the owner):* signals a script places along existing
   tracks (Auto Signals) go as one `PlaceSignals`, the signal's own
-  settings in `PlaceStop`, gated off (`acceptance.lua`, `signals`) until
-  a two-player test. Its tracks are rebuilt in place, lines on them too,
+  settings in `PlaceStop`, behind `acceptance.lua`'s `signals`, on after
+  a two-player game (2026-10-06, [MODS.md](MODS.md)); no regression
+  scenario yet. Its tracks are rebuilt in place, lines on them too,
   as every placed signal's is: see the item below.
 - [ ] *Added (D25, proposed):* personal mods ([MODS.md](MODS.md)). Built:
   the scan (`tpf3mp-modscan`), the content check on shared mods only, the

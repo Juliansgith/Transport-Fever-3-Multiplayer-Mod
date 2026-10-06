@@ -3042,8 +3042,8 @@ follow-ups`. In the room's game:
   flipped where its track runs the other way, the lane configurations at
   their ends naming the rebuilt tracks at once (`junctions.renamedAll`,
   which keeps a junction's turns set by hand marked so), and gives the new
-  signals to the acting company. Gated off until a two-player test
-  (`acceptance.lua`, `signals`). The mod then hears the room's build in
+  signals to the acting company. Behind `acceptance.lua`'s `signals`, on
+  since a two-player game on 2026-10-06 ([MODS.md](MODS.md)). The mod then hears the room's build in
   every game, finds the first signal among the removed tracks' objects and
   its new signals with no spacing set, and builds nothing more;
 - any other is stopped with why: `a script's follow-up of another player's

@@ -5,9 +5,10 @@
 -- See investigation/STATION_TERRAIN_2026-10-02.md for evidence and limits.
 -- Bridge/tunnel window rebuilds use ordinary road/track actions and are
 -- gated at capture.windowBuild until their own two-game acceptance.
--- Signals a script places along tracks (PlaceSignals: Auto Signals) wait
--- for their own two-game acceptance.
-local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false, signals = false }
+-- Signals a script places along tracks (PlaceSignals: Auto Signals) passed
+-- local two-game acceptance on build 40408, 2026-10-06 (runs
+-- run-1006-225251 and run-1006-230635; docs/MODS.md).
+local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false, signals = true }
 
 function acceptance.check(action)
     local feature
