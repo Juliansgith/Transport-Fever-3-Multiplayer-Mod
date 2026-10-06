@@ -26,7 +26,10 @@ foreach ($gp in $GamePids) {
   if (-not $QuitAt -or -not $DesktopAt) {
     # Measured as it will be clicked: restored and in front first (a click
     # restores a minimized or maximized window to another size).
-    & $g front -GamePid $gp | Out-Null
+    try { & $g front -GamePid $gp | Out-Null } catch {
+      "game ${gp}: it did not come to the front ($_); nothing clicked"
+      continue
+    }
     Start-Sleep -Seconds 1
     $said = (& $g shot "quit-$gp" -GamePid $gp | Out-String)
     if ($said -match "window (\d+)x(\d+)") {
