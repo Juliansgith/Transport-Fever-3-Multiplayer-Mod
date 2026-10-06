@@ -213,7 +213,8 @@ function lanes.edgeRow(edge, net, api)
 	local native = tpf3mp_native
 	local laneText, count
 	local copy = api and api.type and api.type.BaseEdge and api.type.BaseEdge.new
-	if type(native) == "table" and type(native.laneRows) == "function" and type(copy) == "function" then
+	if lanes.decoders ~= false and type(native) == "table" and type(native.laneRows) == "function"
+		and type(copy) == "function" then
 		-- getComponent returns a borrowed reference. Copy once;
 		-- Rust reads the owned snapshot, including nested vectors.
 		laneText, count = native.laneRows(copy(edge), reversed)
@@ -698,12 +699,12 @@ end
 -- The part's rows as this Lua makes them (the reference the hook's are
 -- compared with): every row of the two lanes, kept where it is in part k;
 -- read by this Lua alone, without the hook's decoders of a component
--- (laneRows, junctionConfig), so that none of the hook's reading is
--- compared with itself. The hook's table is back however the read ends.
+-- (laneRows, junctionConfig: lanes.decoders and junctions.decoders off),
+-- so that none of the hook's reading is compared with itself; of the same
+-- owned copies as ever. The decoders are back however the read ends.
 local function luaPart(api, n, k)
 	local rows = { [lanes.NETWORK] = {}, [lanes.CONSTRUCTIONS] = {} }
-	local hook = tpf3mp_native
-	tpf3mp_native = { hash = hook.hash }
+	lanes.decoders, junctions.decoders = false, false
 	local ok, why = pcall(function()
 		for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
 			local list = rows[lane]
@@ -712,10 +713,11 @@ local function luaPart(api, n, k)
 			end)
 		end
 	end)
-	tpf3mp_native = hook
+	lanes.decoders, junctions.decoders = nil, nil
 	if not ok then error(why, 0) end
 	return rows
 end
+lanes.partRows = luaPart
 
 -- Whether two sorted lists hold the same rows, as many times each.
 local function sameRows(a, b)

@@ -506,10 +506,15 @@ end
 local function junctionRow(api, w, memo, key, node)
 	local c = component(node,"BASE_NODE_CONFIG",api)
 	if not c then return nil end
+	-- Where the hook decodes junctions, every row is of an owned copy:
+	-- copying can lay the crosswalk set out anew, and a phase names its
+	-- crosswalks by their order there (docs/HOOKS.md). The copy is made
+	-- whoever decodes it; junctions.decoders = false reads its fields here.
 	local native = tpf3mp_native
 	local copy = api.type.BaseNodeConfig and api.type.BaseNodeConfig.new
 	if native and type(native.junctionConfig) == "function" and type(copy) == "function" then
-		c = native.junctionConfig(copy(c)) or c
+		local owned = copy(c)
+		c = junctions.decoders ~= false and native.junctionConfig(owned) or owned
 	end
 	local v, lanes = captureConfig(c,w,api,memo), {}
 	for _, t in ipairs(v.connections) do lanes[#lanes+1] = key(t.incoming)..":"..t.lane_in..">"..key(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end

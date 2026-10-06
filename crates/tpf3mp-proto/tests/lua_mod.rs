@@ -1635,6 +1635,55 @@ fn native_checkpoint_snapshots_and_fallback_preserve_hashes_and_refresh() {
     assert_eq!(changed, read_lanes(&game));
 }
 
+/// Where the hook decodes junctions, every reader names a phase's
+/// crosswalks by the owned copy's order, which copying can change: the
+/// rows read with the hook's decoder and those read here without it
+/// (`junctions.decoders = false`, compare mode's reference) are the same,
+/// and both differ from a read of the borrowed original.
+#[test]
+fn junction_rows_read_the_owned_copy_with_or_without_the_hooks_decoder() {
+    let game = junction_game(0);
+    let rows: Vec<String> = game
+        .load(
+            r#"
+        local J = ug_require('tpf3mp_1::/scripts/tpf3mp/junctions.lua')
+        local borrowed = table.concat(J.rows(api), "\n")
+        -- A copy lays the crosswalk set out anew: here, reversed.
+        api.type.BaseNodeConfig = { new = function(c)
+            local copy = {}
+            for k, v in pairs(c) do copy[k] = v end
+            local walks = {}
+            for i = #c.crosswalks, 1, -1 do walks[#walks + 1] = c.crosswalks[i] end
+            copy.crosswalks = walks
+            return copy
+        end }
+        DECODED = 0
+        tpf3mp_native.junctionConfig = function(c) DECODED = DECODED + 1 return c end
+        local decoded = table.concat(J.rows(api), "\n")
+        assert(DECODED > 0)
+        J.decoders = false
+        local own = table.concat(J.rows(api), "\n")
+        J.decoders = nil
+        -- Compare mode's reference of the whole network lane, as one part,
+        -- is the lane the hook's decoders read, row for row.
+        local L = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')
+        local ref = L.partRows(api, 1, 0)[L.NETWORK]
+        table.sort(ref)
+        local text = #ref .. ":" .. L.hash(table.concat(ref, "\30"))
+        assert(J.decoders == nil and L.decoders == nil, "the decoders are back")
+        return { borrowed, decoded, own, text, L.read(api)[L.NETWORK] }
+    "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(rows[1], rows[2], "the reference reads the same copy");
+    assert_ne!(rows[0], rows[1], "the copy's order shows in the rows");
+    assert_eq!(
+        rows[3], rows[4],
+        "compare mode's reference is the lane read"
+    );
+}
+
 #[test]
 fn every_junction_in_one_checkpoint_keeps_its_own_light_settings() {
     // One read names each light preference and resource once for all the
