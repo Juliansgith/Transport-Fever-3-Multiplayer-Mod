@@ -453,6 +453,17 @@ These travel on the control stream.
   - **Closed rounds.** A report for a step whose round was closed and
     dropped is ignored, so nobody can reopen old rounds and crowd out new
     ones.
+  - **A world handed out.** When the room hands out a snapshot (see
+    "Everyone loads it" below), it forgets every report made past the
+    snapshot's step by a game that did not play from that snapshot,
+    checkpoints and saves alike. Those games played a world nobody plays
+    any more, and a replay from the save may differ from them: the load
+    numbers entities otherwise. A round left without reports is dropped
+    (a report opens it again, unless a later round closed since); one with
+    reports left is decided again, with a new deadline.
+    Before this, the room ignored a reloaded game's second report of a step
+    as a repeat, and judged a game that had not reported it yet against
+    the old worlds' verdict: a false divergence, and a needless rebase.
 
 Game messages that arrive when the sender is not in a running room are
 ignored; an intent is answered with `IntentRejected(GameNotRunning)`. Such
