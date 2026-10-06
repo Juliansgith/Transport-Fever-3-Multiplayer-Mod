@@ -10,6 +10,7 @@ pub mod bigmap;
 pub mod builds;
 pub mod drawing;
 pub mod edgewatch;
+pub mod emission;
 pub mod guiplayer;
 pub mod junctions;
 pub mod menu;

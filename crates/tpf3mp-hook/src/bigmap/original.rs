@@ -62,16 +62,22 @@ impl Exe {
 
     /// `len` bytes at `rva`, from whichever section holds them.
     pub fn bytes(&self, rva: u64, len: usize) -> &[u8] {
+        self.try_bytes(rva, len)
+            .unwrap_or_else(|| panic!("{rva:#x}+{len} is in no section's raw data"))
+    }
+
+    /// `len` bytes at `rva`, or `None` outside every section's raw data.
+    pub fn try_bytes(&self, rva: u64, len: usize) -> Option<&[u8]> {
         for section in &self.pe.sections {
             let start = u64::from(section.virtual_address);
             let end = start + u64::from(section.size_of_raw_data);
             if rva >= start && rva + len as u64 <= end {
                 let raw = section.raw(&self.image).unwrap();
                 let at = (rva - start) as usize;
-                return &raw[at..at + len];
+                return Some(&raw[at..at + len]);
             }
         }
-        panic!("{rva:#x}+{len} is in no section's raw data");
+        None
     }
 }
 

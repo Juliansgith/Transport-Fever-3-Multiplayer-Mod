@@ -211,6 +211,8 @@ const TARGETS: &[(&str, u64)] = &[
     ("bigmap::octree descent", 0xae33c0),
     ("bigmap::octree descent start", 0xae3950),
     ("bigmap::octree level decoder", 0x818b5b),
+    // The fused emission grid (crates/tpf3mp-hook/src/emission).
+    ("emission::EmissionGridSystem::Update", 0xaa9230),
 ];
 
 #[test]

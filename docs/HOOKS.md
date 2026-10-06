@@ -4986,6 +4986,100 @@ fixes on) passed step 26100 in sync, past the step-25950 split. Whether it
 also passes the step-36400 fare split was not yet known when this was
 written.
 
+### The fast emission grid
+
+`crates/tpf3mp-hook/src/emission` replaces the work of
+`ecs::EmissionGridSystem::Update` (`0xaa9230`, profile target
+`emission::EmissionGridSystem::Update`) with a fused step whose result is
+the game's to the bit (investigation/TF3_BIGMAP_SIM_COST_2026-10-05.md §1).
+
+**What the game does.** Each update moves the noise and the pollution grid
+(16 m cells: 1,602 x 16,002 floats each on a 100 x 1000-tile map, 1,794 x
+1,794 on Gigantomaniac) one step per 0.2 s of `dt`. A step is up to three
+full-grid passes on the game's thread pool, each reading one buffer and
+writing the system's shared temporary, then a swap of the two vectors:
+Diffuse (5-point stencil, `+1e-15`), Wind (pollution only: bilinear shift
+and a divide per cell) and Average (`(1-c)*conc + c*avg`). The kernels never
+write the border ring, so borders travel with their buffers. About 68 bytes
+of memory traffic per cell and update: 1.75 GB on the big map. The grid is
+simulation state (town noise and pollution ratings, eco levels, scripts) and
+is saved, so every bit must match in every game of a room.
+
+**What the hook does.** It redirects `Update`'s three dispatcher calls
+(`+0x1f2` Diffuse, `+0x29e` Wind, `+0x31c` Average). The Diffuse and Wind
+calls only note their arguments; the Average call runs the whole step at
+once: one pass over row bands on up to 16 threads of the hook's own (the
+game's pool is idle while `Update` waits), eight cells at a time with AVX.
+Every lane does the game's scalar operations in the game's order (no FMA,
+no reassociation; the same `+1e-15`, the same divide), and the step writes
+the same cells into the same buffers that the game's passes and swaps
+would, the temporary included. Each band first copies the up to four rows
+outside it that it reads, so the result does not depend on the number of
+bands or threads. `Update` itself (component lookups, the temporary's
+resize, the swaps, the border checks, the step count) stays the game's.
+Measured offline on the 1,602 x 16,002 grids (both grids, one update,
+16 threads, Ryzen 9 9950X3D): the game's kernels split over threads as
+its pool splits them took 42 ms, the fused step 20 ms (2.1x). Both are bound
+by memory bandwidth; the fused step moves 32 bytes per cell instead of 68,
+the least a step that reads two buffers and writes two can move.
+
+**Fail-closed.** `TPF3MP_HOOK_FAST_EMISSION=0` in the game's environment
+leaves the game's update (on by default: the result is bit-identical, so a
+game with it and one without agree, and the room sets nothing). It also
+stays off without the profile target, on a CPU without AVX, or when any
+byte of `Update`, the three dispatchers or the three kernels differs from
+the FNV-1a hashes in `profiles/.../emission.rs`. A step the model does not
+cover runs the game's own dispatchers, in the game's order: grids of
+different sizes, a weight or wind the game's own code asserts on, a
+non-default MXCSR on the simulation thread or a worker, calls out of order.
+The first three fused steps of each grid, and one in 1,024 after, first run
+three 12-row windows of the real grid through the game's own kernels and
+the fused step side by side; a difference turns the fused step off for the
+rest of the game.
+
+**In `hook.log`:**
+
+```
+emission grid: fused update installed (at 0x...: one pass, AVX, up to 16 threads, bit-identical to the game's three passes; TPF3MP_HOOK_FAST_EMISSION=0 turns it off)
+emission grid: noise 1602x16002: 3 windows of the real grid bit-identical to the game's kernels; fused from now on
+emission grid: pollution 1602x16002: 3 windows of the real grid bit-identical to the game's kernels; fused from now on
+emission grid: self-check <n> passed                    (at n = 8, 16, 32, ...)
+emission grid: 4096 grid steps fused, <t> ms each on average; 0 run the game's way
+```
+
+Lines to worry about: `emission grid: the game's own update, <why>` at
+install (the fix is not active), `this step runs the game's way: <why>`
+(one step fell back; harmless, the game's code ran), and `OFF for the rest
+of this game: self-check failed: <name> differs at (x, y) ...`, which means
+the model and the game disagree: report it with the log.
+
+**Tested without the game** (`emission::original_tests`, which relocate the
+game's code from the executable as `bigmap::original` does):
+
+- the three kernels against the fused step on random grids from 3 x 3 to
+  258 x 129 (zeros, negative zeros, denormals, huge values, infinities,
+  emitter input between steps; winds of every sign and zero), 12 steps
+  each, with 1 to 64 bands, with and without threads and AVX lanes: every
+  bit of every buffer equal;
+- the game's whole `Update` (relocated with stubs for the ECS lookups and a
+  one-thread pool) with and without the redirected calls, on worlds from
+  3 x 3 to 260 x 300 and 34 x 600, eight updates each including a `dt` of
+  0.4 (two steps): the same buffer in every vector and the same bits, with
+  every step fused, and with every step forced down the fall-back path;
+- a non-default MXCSR runs the game's passes; the self-check passes on the
+  game's kernels and catches a one-ulp change of a weight; the recorded
+  hashes, call sites and kernel calls match the executable;
+- `emission_speed` (ignored, a benchmark): `cargo test -p tpf3mp-hook
+  --release --lib -- --ignored emission_speed --nocapture`.
+
+**Not done: skipping still blocks.** A block whose inputs did not change
+would give the same outputs, but the emitters write into the grid outside
+`Update` (`EmissionEmitterSystem::Update2`, three insert paths), and so do
+loading and scripts; proving that no write was missed needs either hooks
+on every writer or a full comparison against a copy, which costs most of
+what skipping saves. The fused step leaves the grid exact without that
+proof.
+
 ### What the hook costs: the `perf:` lines
 
 `crates/tpf3mp-hook/src/perf.rs` times the hook's per-update work where
