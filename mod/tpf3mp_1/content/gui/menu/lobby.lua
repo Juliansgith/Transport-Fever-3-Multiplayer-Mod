@@ -91,6 +91,9 @@ local MIN_PLAYERS, MAX_PLAYERS, DEFAULT_PLAYERS = 2, 16, 4
 -- many of those asks an action is shown as under way at most.
 local POLL = 0.4
 local PENDING_POLLS = 20
+-- Polls a Mod Hub lookup, or a subscription Mod Hub has not taken yet, waits
+-- for Mod Hub's answer before it fails: 30 seconds.
+local HUB_POLLS = 75
 -- How many polls Copy says "Copied" for: about two seconds.
 local COPIED_POLLS = 5
 -- How many polls the launcher's latest notice shows for: about eight
@@ -1155,9 +1158,12 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 	-- The mod whose details a tile's gear asked for: { id, text }.
 	local detailS = react.useState(nil)
 	-- Installs from Mod Hub, by the room mod's id: { number, step, why,
-	-- details } with step "looking" (Mod Hub looks it up), "ask" (the
-	-- player confirms), "subscribing", "downloading", "done" or "failed".
+	-- details, at } with step "looking" (Mod Hub looks it up), "ask" (the
+	-- player confirms), "subscribing", "downloading", "done" or "failed";
+	-- `at` the poll a lookup or subscription was asked at.
 	local installsS = react.useState({})
+	-- The polls so far, to time Mod Hub's answers by.
+	local pollsRef = react.useRef(0)
 	-- The installs as last changed, drawn or not: Mod Hub may answer for
 	-- several mods before the window draws again, and each answer changes
 	-- what the one before it changed.
@@ -1317,13 +1323,24 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 			-- Installs from Mod Hub under way: once the game has the mod, and
 			-- it is the room's (the owner's Mod Hub number is only a claim),
 			-- the launcher finds the installed mods again.
+			-- A lookup or subscription Mod Hub has not answered in HUB_POLLS
+			-- fails, and the mod can be installed again.
 			local found = false
+			local polls = pollsRef:get() + 1
+			pollsRef:set(polls)
 			changeInstalls(function(updated)
 				local changed = false
 				for id, install in pairs(updated) do
-					if install.step == "subscribing" or install.step == "downloading" then
+					local late = polls - (install.at or polls) >= HUB_POLLS
+					if install.step == "looking" and late then
+						updated[id] = { number = install.number, step = "failed", why = _("Mod Hub did not answer") }
+						changed = true
+					elseif install.step == "subscribing" or install.step == "downloading" then
 						local at = roommods.installState(install.number)
-						if at == "installed" then
+						if at == "none" and install.step == "subscribing" and late then
+							updated[id] = { number = install.number, step = "failed", why = _("Mod Hub did not answer") }
+							changed = true
+						elseif at == "installed" then
 							local name = roommods.installedId(install.number)
 							if name == id then
 								updated[id] = { number = install.number, step = "done" }
@@ -1572,12 +1589,17 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 	-- this player's Mod Hub first, then confirmed (the owner's number is
 	-- only a claim of where to get it).
 	local function lookUp(list)
+		local at = pollsRef:get()
 		changeInstalls(function(updated)
-			for _i, m in ipairs(list) do updated[m.id] = { number = m.modio, step = "looking" } end
+			for _i, m in ipairs(list) do updated[m.id] = { number = m.modio, step = "looking", at = at } end
 		end)
 		for _i, m in ipairs(list) do
 			roommods.lookUp(m.modio, function(details, why)
 				changeInstalls(function(now)
+					-- An answer after the lookup gave up, or for another one,
+					-- changes nothing.
+					local one = now[m.id]
+					if not (one and one.step == "looking" and one.number == m.modio) then return false end
 					if details then
 						now[m.id] = { number = m.modio, step = "ask", details = details }
 					else
@@ -1589,11 +1611,12 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 	end
 	local function install(ids)
 		local asked = {}
+		local at = pollsRef:get()
 		changeInstalls(function(updated)
 			for _i, id in ipairs(ids) do
 				local one = updated[id]
 				if one and one.step == "ask" then
-					updated[id] = { number = one.number, step = "subscribing", details = one.details }
+					updated[id] = { number = one.number, step = "subscribing", details = one.details, at = at }
 					asked[#asked + 1] = { id = id, number = one.number }
 				end
 			end
@@ -1602,7 +1625,11 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 			local id = one.id
 			roommods.install(one.number, function(why)
 				if why then
-					changeInstalls(function(now) now[id] = { number = one.number, step = "failed", why = why } end)
+					changeInstalls(function(now)
+						local was = now[id]
+						if not (was and was.step == "subscribing" and was.number == one.number) then return false end
+						now[id] = { number = one.number, step = "failed", why = why }
+					end)
 				end
 			end)
 		end
@@ -1616,7 +1643,7 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 				changeInstalls(function(now)
 					local one = now[m.id]
 					if one and one.step ~= "ask" and one.step ~= "failed" then return false end
-					now[m.id] = { number = m.modio, step = "subscribing" }
+					now[m.id] = { number = m.modio, step = "subscribing", at = pollsRef:get() }
 				end)
 			end
 		end)
