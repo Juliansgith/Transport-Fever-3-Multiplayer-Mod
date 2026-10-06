@@ -5141,7 +5141,7 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
 | `TPF3MP_HOOK_GUARDED_READS` | guarded reads: the hot paths check with `VirtualQuery` through the region caches instead (same answers, slower) |
-| `TPF3MP_HOOK_PERF` | the timing and these lines, the `perf: sim` line's timers with them (`full` keeps them on and counts the component lookups too) |
+| `TPF3MP_HOOK_PERF` | the timing and these lines |
 
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
