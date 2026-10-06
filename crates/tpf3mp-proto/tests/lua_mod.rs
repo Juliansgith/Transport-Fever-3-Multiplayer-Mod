@@ -1667,12 +1667,12 @@ fn junction_rows_read_the_owned_copy_with_or_without_the_hooks_decoder() {
         -- Compare mode's reference of the whole network lane, as one part,
         -- is the lane the hook's decoders read, row for row.
         local L = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')
-        local ref = L.partRows(api, 1, 0)[L.NETWORK]
+        local ref = L.partRows(api, 1, 0, 'all')[L.NETWORK]
         table.sort(ref)
         local text = #ref .. ":" .. L.hash(table.concat(ref, "\30"))
         assert(J.decoders == nil and L.decoders == nil, "the switches are as before")
         J.decoders = false
-        L.partRows(api, 1, 0)
+        L.partRows(api, 1, 0, 'all')
         assert(J.decoders == false, "a switch set before stays set")
         J.decoders = nil
         -- A decoder that reads nothing leaves the rows to the same copy.
@@ -1989,16 +1989,18 @@ api.type.enum = api.type.enum or {}
 api.type.enum.TrafficLightPreference = api.type.enum.TrafficLightPreference or { AUTO = 0, YES = 1, NO = 2 }
 PART_CALLS, PART_TEXTS = {}, {}
 NATIVE_TEXT = 'native'
-tpf3mp_native.part = function(n, k)
+tpf3mp_native.part = function(n, k, kind)
     if n == nil then return { mode = PART_MODE or 'on', why = 'a part number is missing', parts = PLAN_PARTS, stride = PLAN_STRIDE } end
-    PART_CALLS[#PART_CALLS + 1] = n .. '/' .. k
+    PART_CALLS[#PART_CALLS + 1] = n .. '/' .. k .. '/' .. kind
     if PART_FAIL then return { mode = 'on', why = PART_FAIL } end
     return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} }
 end
-tpf3mp_native.partTexts = function(n, k, preferences, lights, deferred, rows)
-    PART_TEXTS[#PART_TEXTS + 1] = n .. '/' .. k
-    if rows then return '1:' .. NATIVE_TEXT, '1:cons', { 'row' }, { 'con@0,0' } end
-    return '1:' .. NATIVE_TEXT, '1:cons'
+tpf3mp_native.partTexts = function(n, k, kind, preferences, lights, deferred, rows)
+    PART_TEXTS[#PART_TEXTS + 1] = n .. '/' .. k .. '/' .. kind
+    local net, cons = '1:' .. NATIVE_TEXT, '1:cons'
+    if kind == 'constructions' then net = nil else cons = nil end
+    if rows then return net, cons, { 'row' }, { 'con@0,0' } end
+    return net, cons
 end
 REPORTS = {}
 ROLL_STEP = function(step, checkpoint)
@@ -2033,9 +2035,14 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
     };
     let a = game("");
     let first = read(&a, 1, 12);
-    assert!(first[0].starts_with("rolling-v2:1-12:12:"), "{first:?}");
+    // Edges and junctions are the network lane's: 8 of 12 updates.
+    assert!(first[0].starts_with("rolling-v2:1-12:8:"), "{first:?}");
+    assert!(first[1].starts_with("rolling-v2:1-12:4:"), "{first:?}");
     let calls: Vec<String> = a.load("return PART_CALLS").eval().unwrap();
-    let turns: Vec<String> = (0..12).map(|s| format!("10/{}", s % 10)).collect();
+    let kinds = ["edges", "junctions", "constructions"];
+    let turns: Vec<String> = (0..12)
+        .map(|s| format!("10/{}/{}", s / 3 % 10, kinds[s % 3]))
+        .collect();
     assert_eq!(calls, turns);
     let texts: Vec<String> = a.load("return PART_TEXTS").eval().unwrap();
     assert_eq!(texts, turns, "texts asked for the part just read");
@@ -2067,12 +2074,12 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
     );
     let g = game("for s=1,3 do ROLL_STEP(s,false) end tpf3mp_native.part=nil");
     assert!(g.load("ROLL_STEP(4,false)").exec().is_err());
-    // Every `stride` updates one part: 3 of 4 parts in 12 updates.
+    // Every `stride` updates one part of one kind: 3 in 12 updates.
     let h = game("PLAN_PARTS=4 PLAN_STRIDE=5");
     let strided = read(&h, 1, 12);
-    assert!(strided[0].starts_with("rolling-v2:1-12:3:"), "{strided:?}");
+    assert!(strided[0].starts_with("rolling-v2:1-12:2:"), "{strided:?}");
     let calls: Vec<String> = h.load("return PART_CALLS").eval().unwrap();
-    assert_eq!(calls, ["4/0", "4/1", "4/2"]);
+    assert_eq!(calls, ["4/0/edges", "4/0/junctions", "4/0/constructions"]);
     // Between two parts too, a history of parts holds once the game reads
     // none.
     let i = game(

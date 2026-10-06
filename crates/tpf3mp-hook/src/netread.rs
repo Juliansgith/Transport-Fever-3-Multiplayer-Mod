@@ -39,6 +39,27 @@ use crate::modules::{Memory, i32_at, res_name, u64_at};
 /// `off` (unset), `compare` or `on`.
 pub const ENV: &str = "TPF3MP_HOOK_NATIVE_LANES";
 
+/// Entities looked up together ([`Store::locate`]).
+const BUNCH: usize = 64;
+
+/// An entity and its data index of each kind looked up ([`Store::locate`]).
+type Located<const N: usize> = (usize, [Option<i32>; N]);
+
+/// A hint to the processor to fetch the cache line at `address` before it
+/// is read: it reads nothing into the program and cannot fault, whatever
+/// the address.
+#[inline]
+fn prefetch(address: usize) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a prefetch is only a hint to the cache; it never faults, and
+    // nothing is read from it.
+    unsafe {
+        std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(address as *const i8);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = address;
+}
+
 /// Most component pools, entities, lane configs an edge and components an
 /// entity read; past any of them the read fails.
 pub const MAX_POOLS: usize = 4096;
@@ -465,18 +486,33 @@ impl<'m> Store<'m> {
         entity: usize,
         kinds: [&Kind; N],
     ) -> Result<Option<[Option<i32>; N]>, String> {
+        let list = self.list_of(entity)?;
+        self.indices_in(entity, list, kinds)
+    }
+
+    /// Where `entity`'s component list is, and how many pairs it holds.
+    fn list_of(&self, entity: usize) -> Result<(usize, usize), String> {
         let record: [u8; layout::ENTITY_RECORD] = read_array(
             self.memory,
             self.records + entity * layout::ENTITY_RECORD,
             "an entity's record",
         )?;
-        let (pairs, count) = vector(
+        vector(
             &record,
             0,
             layout::COMPONENT_PAIR,
             MAX_COMPONENTS,
             "an entity's components",
-        )?;
+        )
+    }
+
+    /// [`Store::indices`] from `entity`'s list at `(pairs, count)`.
+    fn indices_in<const N: usize>(
+        &self,
+        entity: usize,
+        (pairs, count): (usize, usize),
+        kinds: [&Kind; N],
+    ) -> Result<Option<[Option<i32>; N]>, String> {
         // Most entities list a few components: no heap and little to clear.
         let mut small = [0u8; 32 * layout::COMPONENT_PAIR];
         let mut large = Vec::new();
@@ -507,6 +543,35 @@ impl<'m> Store<'m> {
             }
         }
         Ok(Some(found))
+    }
+
+    /// Each of `entities`' data indices of `kinds`, as [`Store::indices`]
+    /// finds them, removed entities left out: read a bunch at a time, the
+    /// bunch's records asked of the processor first, then their component
+    /// lists, so that their waits for memory overlap instead of following
+    /// one another.
+    fn locate<const N: usize>(
+        &self,
+        entities: &[usize],
+        kinds: [&Kind; N],
+    ) -> Result<Vec<Located<N>>, String> {
+        let mut out = Vec::with_capacity(entities.len());
+        let mut lists = [(0usize, 0usize); BUNCH];
+        for bunch in entities.chunks(BUNCH) {
+            for &entity in bunch {
+                prefetch(self.records + entity * layout::ENTITY_RECORD);
+            }
+            for (list, &entity) in lists.iter_mut().zip(bunch) {
+                *list = self.list_of(entity)?;
+                prefetch(list.0);
+            }
+            for (list, &entity) in lists.iter().zip(bunch) {
+                if let Some(found) = self.indices_in(entity, *list, kinds)? {
+                    out.push((entity, found));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Whether `entity`'s component bits hold `kind`.
@@ -550,8 +615,17 @@ impl<'m> Store<'m> {
     /// For each of `kinds`, every entity whose component bits hold it, in
     /// id order: one pass over the bits for all.
     fn with_each<const N: usize>(&self, kinds: [&Kind; N]) -> Result<[Vec<usize>; N], String> {
-        let at: [(usize, usize); N] = kinds.map(|kind| ((kind.id / 64) * 8, kind.id % 64));
-        let mut out: [Vec<usize>; N] = std::array::from_fn(|_| Vec::new());
+        let mut lists = self.with_all(&kinds)?.into_iter();
+        Ok(std::array::from_fn(|_| lists.next().unwrap_or_default()))
+    }
+
+    /// [`Store::with_each`] for as many kinds as `kinds` holds.
+    fn with_all(&self, kinds: &[&Kind]) -> Result<Vec<Vec<usize>>, String> {
+        let at: Vec<(usize, usize)> = kinds
+            .iter()
+            .map(|kind| ((kind.id / 64) * 8, kind.id % 64))
+            .collect();
+        let mut out: Vec<Vec<usize>> = vec![Vec::new(); kinds.len()];
         let mut bits = vec![0u8; CHUNK * layout::BITS_PER_ENTITY];
         let mut first = 0;
         while first < self.entities {
@@ -825,14 +899,61 @@ fn edge_anchor(edge: &[u8]) -> Result<(i64, i64), String> {
     Ok((x, y))
 }
 
-/// One part of the static lanes, read natively for a rolling check: the
-/// network lane's edge rows and junction rows and the constructions lane's
-/// rows of the objects in part `k` of `n` ([`part_of`]): an edge by the
-/// lower of the ends its row names, a junction by its node's place, a
+/// Which objects a part reads: its edges, its junctions, its constructions,
+/// or several of them (the edges and junctions are both the network lane's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kinds {
+    pub edges: bool,
+    pub junctions: bool,
+    pub constructions: bool,
+}
+
+impl Kinds {
+    pub const ALL: Self = Self {
+        edges: true,
+        junctions: true,
+        constructions: true,
+    };
+
+    /// `edges`, `junctions`, `constructions` or `all`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        let none = Self {
+            edges: false,
+            junctions: false,
+            constructions: false,
+        };
+        match name {
+            "edges" => Some(Self {
+                edges: true,
+                ..none
+            }),
+            "junctions" => Some(Self {
+                junctions: true,
+                ..none
+            }),
+            "constructions" => Some(Self {
+                constructions: true,
+                ..none
+            }),
+            "all" => Some(Self::ALL),
+            _ => None,
+        }
+    }
+
+    /// Whether it reads any of the network lane.
+    pub fn network(self) -> bool {
+        self.edges || self.junctions
+    }
+}
+
+/// One part of the static lanes, read natively for a rolling check: of the
+/// objects in part `k` of `n` ([`part_of`]), those of `kinds`: an edge by
+/// the lower of the ends its row names, a junction by its node's place, a
 /// construction by its own, each as its row rounds it.
 pub struct Part {
     pub n: u32,
     pub k: u32,
+    pub kinds: Kinds,
     /// The room's step it was read at, when it was read in one.
     pub step: Option<u64>,
     pub edges: Vec<String>,
@@ -845,15 +966,56 @@ pub struct Part {
     pub timing: String,
 }
 
-/// Part `k` of `n` of the static lanes of the world in `engine`. Every
-/// object is looked at to find its part (and every edge's ends kept, which
-/// the part's junction rows name); only the part's are made rows of.
+/// Reads each of `located` (entity and data index) element of `kind`, its
+/// first `N` bytes, the cache line of the one `AHEAD` places on asked of
+/// the processor first; `each` takes the entity, the element's address and
+/// its bytes.
+fn each_element<const N: usize>(
+    store: &Store,
+    kind: &Kind,
+    located: &[(usize, i32)],
+    mut each: impl FnMut(usize, usize, &[u8; N]) -> Result<(), String>,
+) -> Result<(), String> {
+    const AHEAD: usize = 16;
+    let mut at = Vec::with_capacity(located.len());
+    for (_, index) in located {
+        at.push(kind.pool.element(store.memory, *index)?);
+    }
+    for (i, (entity, _)) in located.iter().enumerate() {
+        if let Some(next) = at.get(i + AHEAD) {
+            prefetch(*next);
+        }
+        let bytes: [u8; N] = read_array(store.memory, at[i], kind.name)?;
+        each(*entity, at[i], &bytes)?;
+    }
+    Ok(())
+}
+
+/// The entities of `kind` among `entities` and their data indices, looked
+/// up in bunches ([`Store::locate`]).
+fn located(store: &Store, kind: &Kind, entities: &[usize]) -> Result<Vec<(usize, i32)>, String> {
+    store
+        .locate(entities, [kind])?
+        .into_iter()
+        .map(|(entity, [index])| {
+            index
+                .map(|i| (entity, i))
+                .ok_or_else(|| format!("entity {entity} has the {0} bit but no {0}", kind.name))
+        })
+        .collect()
+}
+
+/// Part `k` of `n` of the static lanes of the world in `engine`, its
+/// objects of `kinds`. Every object of those kinds is looked at to find
+/// its part (and for junctions every edge's ends kept, which their rows
+/// name); only the part's are made rows of.
 pub fn read_part(
     memory: &dyn Memory,
     engine: usize,
     image: usize,
     n: u32,
     k: u32,
+    kinds: Kinds,
 ) -> Result<Part, String> {
     if n == 0 || n > MAX_PARTS || k >= n {
         return Err(format!("no part {k} of {n}"));
@@ -881,90 +1043,133 @@ pub fn read_part(
         layout::CONSTRUCTION_SIZE,
         "Construction",
     )?;
-    let [edge_ids, config_ids, cons_ids] = store.with_each([&edge_kind, &config_kind, &cons])?;
+    // One pass over the bits for the kinds read.
+    let mut wanted: Vec<&Kind> = Vec::new();
+    if kinds.network() {
+        wanted.push(&edge_kind);
+    }
+    if kinds.junctions {
+        wanted.push(&config_kind);
+    }
+    if kinds.constructions {
+        wanted.push(&cons);
+    }
+    let mut lists = store.with_all(&wanted)?.into_iter();
+    let mut next = |wanted: bool| {
+        if wanted {
+            lists.next().unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+    let edge_ids = next(kinds.network());
+    let config_ids = next(kinds.junctions);
+    let cons_ids = next(kinds.constructions);
     let t1 = std::time::Instant::now();
     let mut memo = Memo::default();
     let mut edges = Vec::new();
-    let mut ends = Ends::with_capacity_and_hasher(edge_ids.len(), Default::default());
-    for entity in edge_ids {
-        let Some(index) = store.index(entity, &edge_kind)? else {
-            continue;
-        };
-        let at = edge_kind.pool.element(memory, index)?;
-        let edge: [u8; layout::BASE_EDGE_SIZE] = read_array(memory, at, "a BaseEdge")?;
-        let (x, y) = edge_anchor(&edge).map_err(|why| format!("entity {entity}: {why}"))?;
-        if part_of(x, y, CELL_TENTHS, n) == k {
-            edges.push(
-                edge_row(memory, &edge, at, &mut memo)
-                    .map_err(|why| format!("entity {entity}: {why}"))?,
-            );
+    let mut ends = Ends::default();
+    if kinds.network() {
+        let found = located(&store, &edge_kind, &edge_ids)?;
+        if kinds.junctions {
+            ends.reserve(found.len());
         }
-        ends.insert(entity, edge_ends(&edge, entity)?);
+        each_element::<{ layout::BASE_EDGE_SIZE }>(
+            &store,
+            &edge_kind,
+            &found,
+            |entity, at, edge| {
+                if kinds.edges {
+                    let (x, y) =
+                        edge_anchor(edge).map_err(|why| format!("entity {entity}: {why}"))?;
+                    if part_of(x, y, CELL_TENTHS, n) == k {
+                        edges.push(
+                            edge_row(memory, edge, at, &mut memo)
+                                .map_err(|why| format!("entity {entity}: {why}"))?,
+                        );
+                    }
+                }
+                if kinds.junctions {
+                    ends.insert(entity, edge_ends(edge, entity)?);
+                }
+                Ok(())
+            },
+        )?;
     }
     let t2 = std::time::Instant::now();
-    let (mut j, configs, street_node) = junction_reader(&store, &ends)?;
     let mut junctions = Vec::new();
     let mut deferred = Vec::new();
     let mut nodes_seen = 0;
-    for node in config_ids {
-        let Some(&street) = street_node.get(&node) else {
-            continue;
-        };
-        // Its configuration's and its place's index from one read of its
-        // list; a removed node's bits can stay set, and read_junction
-        // skips it too.
-        let Some([config, place]) = store.indices(node, [&config_kind, &node_kind])? else {
-            continue;
-        };
-        if config.is_none() {
-            return Err(format!(
-                "entity {node} has the BaseNodeConfig bit but no BaseNodeConfig"
+    if kinds.junctions {
+        let (mut j, configs, street_node) = junction_reader(&store, &ends)?;
+        // Only nodes of the street or track network; their configuration's
+        // and their place's index from one read of their list, in bunches;
+        // a removed node's bits can stay set, and read_junction skips it.
+        let ours: Vec<usize> = config_ids
+            .into_iter()
+            .filter(|node| street_node.contains_key(node))
+            .collect();
+        let mut places = Vec::with_capacity(ours.len());
+        for (node, [config, place]) in store.locate(&ours, [&config_kind, &node_kind])? {
+            if config.is_none() {
+                return Err(format!(
+                    "entity {node} has the BaseNodeConfig bit but no BaseNodeConfig"
+                ));
+            }
+            places.push((
+                node,
+                place.ok_or_else(|| format!("node {node} has no position"))?,
             ));
         }
-        let place = place.ok_or_else(|| format!("node {node} has no position"))?;
-        nodes_seen += 1;
-        let p = j.position_at(node, place)?;
-        if part_of(millimetres(p[0])?, millimetres(p[1])?, CELL_MM, n) != k {
-            continue;
-        }
-        match read_junction(&mut j, &configs, node, street)? {
-            Some(JunctionRead::Row(row)) => junctions.push(row),
-            Some(JunctionRead::Deferred) => deferred.push(node),
-            None => {}
+        nodes_seen = places.len();
+        let mut in_part = Vec::new();
+        each_element::<{ layout::BASE_NODE_SIZE }>(&store, &node_kind, &places, |node, _, raw| {
+            let p = j.keep_position(node, raw)?;
+            if part_of(millimetres(p[0])?, millimetres(p[1])?, CELL_MM, n) == k {
+                in_part.push(node);
+            }
+            Ok(())
+        })?;
+        for node in in_part {
+            let street = street_node[&node];
+            match read_junction(&mut j, &configs, node, street)? {
+                Some(JunctionRead::Row(row)) => junctions.push(row),
+                Some(JunctionRead::Deferred) => deferred.push(node),
+                None => {}
+            }
         }
     }
     let t3 = std::time::Instant::now();
     let mut constructions = Vec::new();
     let mut cons_seen = 0;
-    for entity in cons_ids {
-        let Some(index) = store.index(entity, &cons)? else {
-            continue;
-        };
-        cons_seen += 1;
-        let at = cons.pool.element(memory, index)?;
-        let bytes: [u8; layout::CONSTRUCTION_Y + 4] = read_array(memory, at, "a Construction")?;
-        let (x, y) = (
-            f32_at(&bytes, layout::CONSTRUCTION_X),
-            f32_at(&bytes, layout::CONSTRUCTION_Y),
-        );
-        if part_of(tenths(x)?, tenths(y)?, CELL_TENTHS, n) != k {
-            continue;
-        }
-        let file = memo.name(
-            memory,
-            &bytes,
-            layout::CONSTRUCTION_FILE,
-            at + layout::CONSTRUCTION_FILE,
-            "a construction's file",
-        )?;
-        constructions.push(format!("{file}@{},{}", q01_text(x)?, q01_text(y)?));
+    if kinds.constructions {
+        let found = located(&store, &cons, &cons_ids)?;
+        cons_seen = found.len();
+        each_element::<{ layout::CONSTRUCTION_Y + 4 }>(&store, &cons, &found, |_, at, bytes| {
+            let (x, y) = (
+                f32_at(bytes, layout::CONSTRUCTION_X),
+                f32_at(bytes, layout::CONSTRUCTION_Y),
+            );
+            if part_of(tenths(x)?, tenths(y)?, CELL_TENTHS, n) != k {
+                return Ok(());
+            }
+            let file = memo.name(
+                memory,
+                bytes,
+                layout::CONSTRUCTION_FILE,
+                at + layout::CONSTRUCTION_FILE,
+                "a construction's file",
+            )?;
+            constructions.push(format!("{file}@{},{}", q01_text(x)?, q01_text(y)?));
+            Ok(())
+        })?;
     }
     let t4 = std::time::Instant::now();
     let timing = format!(
         "part {k}/{n}: bits {:.2} ms, {} of {} edges {:.2} ms, {}+{} of {} junctions {:.2} ms, {} of {} constructions {:.2} ms",
         ms(t0, t1),
         edges.len(),
-        ends.len(),
+        edge_ids.len(),
         ms(t1, t2),
         junctions.len(),
         deferred.len(),
@@ -977,6 +1182,7 @@ pub fn read_part(
     Ok(Part {
         n,
         k,
+        kinds,
         step: None,
         edges,
         junctions,
@@ -987,9 +1193,9 @@ pub fn read_part(
 }
 
 /// Part `k` of `n` of the world the game's step is running now.
-pub fn part_now(n: u32, k: u32) -> Result<Part, String> {
+pub fn part_now(n: u32, k: u32, kinds: Kinds) -> Result<Part, String> {
     let (memory, engine, image) = engine_now()?;
-    let mut part = read_part(&memory, engine, image, n, k)?;
+    let mut part = read_part(&memory, engine, image, n, k, kinds)?;
     part.step = crate::seeds::current_step();
     let (checks, queries) = memory.counts();
     part.timing += &format!(", {checks} checks, {queries} regions asked");
@@ -1014,7 +1220,7 @@ pub fn keep_part(part: Option<Part>) {
 /// lane's, each `count:hash` as lanes.lua's `summary` makes it; and with
 /// `rows`, their rows, sorted.
 pub fn part_texts(
-    (n, k): (u32, u32),
+    (n, k, kinds): (u32, u32, Kinds),
     step: Option<u64>,
     preferences: &HashMap<i32, String>,
     lights: &HashMap<i32, String>,
@@ -1025,10 +1231,10 @@ pub fn part_texts(
         .with(|last| last.borrow_mut().take())
         .ok_or("no part was read on this thread")?;
     // Only the part asked for, read in this same update.
-    if (part.n, part.k) != (n, k) || part.step != step {
+    if (part.n, part.k, part.kinds) != (n, k, kinds) || part.step != step {
         return Err(format!(
-            "the part kept is {}/{} of step {:?}, not {k}/{n} of step {step:?}",
-            part.k, part.n, part.step
+            "the part kept is {}/{} ({:?}) of step {:?}, not {k}/{n} ({kinds:?}) of step {step:?}",
+            part.k, part.n, part.kinds, part.step
         ));
     }
     let mut network = network_rows(
@@ -1049,17 +1255,19 @@ pub fn part_texts(
             crate::lanehash::hash(rows.join("\x1e").as_bytes())
         )
     };
+    // Only the lanes it read: an edges part says nothing of junctions'
+    // rows or of constructions, and their lanes are not touched.
     Ok(PartTexts {
-        network: text(&network),
-        constructions: text(&constructions),
+        network: kinds.network().then(|| text(&network)),
+        constructions: kinds.constructions.then(|| text(&constructions)),
         rows: rows.then_some((network, constructions)),
     })
 }
 
 /// [`part_texts`]' answer.
 pub struct PartTexts {
-    pub network: String,
-    pub constructions: String,
+    pub network: Option<String>,
+    pub constructions: Option<String>,
     pub rows: Option<(Vec<String>, Vec<String>)>,
 }
 
@@ -1231,16 +1439,7 @@ impl Junctions<'_, '_> {
         self.keep_position(node, &raw)
     }
 
-    /// `node`'s place, its `BaseNode` at data index `index`.
-    fn position_at(&mut self, node: usize, index: i32) -> Result<[f32; 3], String> {
-        if let Some(p) = self.positions.get(&node) {
-            return Ok(*p);
-        }
-        let at = self.nodes.pool.element(self.store.memory, index)?;
-        let raw: [u8; layout::BASE_NODE_SIZE] = read_array(self.store.memory, at, "a BaseNode")?;
-        self.keep_position(node, &raw)
-    }
-
+    /// Keeps and gives `node`'s place from its `BaseNode` bytes.
     fn keep_position(&mut self, node: usize, raw: &[u8]) -> Result<[f32; 3], String> {
         let p = [
             f32_at(raw, layout::NODE_POSITION),
@@ -2574,8 +2773,23 @@ mod tests {
             let (mut edges, mut heads, mut deferred, mut cons) =
                 (Vec::new(), Vec::new(), Vec::new(), Vec::new());
             for k in 0..n {
-                let part = read_part(&fake, engine, IMAGE, n, k).unwrap();
+                let part = read_part(&fake, engine, IMAGE, n, k, Kinds::ALL).unwrap();
                 assert_eq!((part.n, part.k), (n, k));
+                // Each kind read alone is that kind of the whole part, and
+                // nothing of the others.
+                let alone = |name| {
+                    read_part(&fake, engine, IMAGE, n, k, Kinds::from_name(name).unwrap()).unwrap()
+                };
+                let (e, j, c) = (alone("edges"), alone("junctions"), alone("constructions"));
+                assert_eq!(e.edges, part.edges);
+                assert!(
+                    e.junctions.is_empty() && e.deferred.is_empty() && e.constructions.is_empty()
+                );
+                assert_eq!(j.junctions, part.junctions);
+                assert_eq!(j.deferred, part.deferred);
+                assert!(j.edges.is_empty() && j.constructions.is_empty());
+                assert_eq!(c.constructions, part.constructions);
+                assert!(c.edges.is_empty() && c.junctions.is_empty());
                 for row in &part.edges {
                     assert_eq!(place(0, row, n), k, "{row}");
                 }
@@ -2602,9 +2816,9 @@ mod tests {
             assert_eq!(cons, full_cons, "{n} parts");
         }
         assert!(split, "the world spreads over several parts");
-        assert!(read_part(&fake, engine, IMAGE, 0, 0).is_err());
-        assert!(read_part(&fake, engine, IMAGE, 3, 3).is_err());
-        assert!(read_part(&fake, engine, IMAGE, MAX_PARTS + 1, 0).is_err());
+        assert!(read_part(&fake, engine, IMAGE, 0, 0, Kinds::ALL).is_err());
+        assert!(read_part(&fake, engine, IMAGE, 3, 3, Kinds::ALL).is_err());
+        assert!(read_part(&fake, engine, IMAGE, MAX_PARTS + 1, 0, Kinds::ALL).is_err());
     }
 
     /// A junction is placed by its row's millimetres, an edge starting at

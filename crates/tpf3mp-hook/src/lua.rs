@@ -2144,6 +2144,17 @@ fn native_read_allowed() -> Result<(), String> {
     Ok(())
 }
 
+/// A part's kind of objects ([`crate::netread::Kinds::from_name`]).
+///
+/// # Safety
+///
+/// As [`string_arg`].
+unsafe fn kinds_arg(api: &LuaApi, l: State, index: c_int) -> Result<crate::netread::Kinds, String> {
+    // SAFETY: the caller's.
+    let name = unsafe { string_arg(api, l, index, 32) }.ok_or("a part's kind is missing")?;
+    crate::netread::Kinds::from_name(&name).ok_or_else(|| format!("{name} is no part's kind"))
+}
+
 /// A whole number argument in `0..=max`.
 ///
 /// # Safety
@@ -2158,8 +2169,10 @@ unsafe fn whole_arg(api: &LuaApi, l: State, index: c_int, max: u32) -> Result<u3
     Ok(n as u32)
 }
 
-/// `part(n, k)`: in a game script's `postUpdate` whose world check is due,
-/// part `k` of `n` of the static lanes read natively ([`crate::netread::read_part`]):
+/// `part(n, k, kind)`: in a game script's `postUpdate` whose world check is
+/// due, part `k` of `n` of the static lanes read natively, its `kind` of
+/// objects (`edges`, `junctions`, `constructions` or `all`;
+/// [`crate::netread::read_part`]):
 /// `nil` when [`crate::netread::ENV`] leaves it off; else `{ mode =, ms =,
 /// timing =, lights = { type, ... }, deferred = { node, ... } }`, the part
 /// kept for `partTexts` in place of any kept before, or `{ mode =, ms =,
@@ -2200,14 +2213,19 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
     let started = std::time::Instant::now();
     // SAFETY: Lua calls this with its own state; its arguments are on it.
     let wanted = unsafe {
-        whole_arg(api, l, 1, crate::netread::MAX_PARTS)
-            .and_then(|n| Ok((n, whole_arg(api, l, 2, n.saturating_sub(1))?)))
+        whole_arg(api, l, 1, crate::netread::MAX_PARTS).and_then(|n| {
+            Ok((
+                n,
+                whole_arg(api, l, 2, n.saturating_sub(1))?,
+                kinds_arg(api, l, 3)?,
+            ))
+        })
     };
     // Only where the mod reads its world check: any other state (another
     // mod's, the GUI's) would read the engine while the step changes it.
-    let read = wanted.and_then(|(n, k)| {
+    let read = wanted.and_then(|(n, k, kinds)| {
         native_read_allowed()?;
-        std::panic::catch_unwind(|| crate::netread::part_now(n, k))
+        std::panic::catch_unwind(|| crate::netread::part_now(n, k, kinds))
             .unwrap_or_else(|_| Err("the native read panicked".to_owned()))
     });
     let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -2255,8 +2273,9 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
     1
 }
 
-/// `partTexts(n, k, preferences, lights, deferred, rows)`: in the same
-/// update, after `part(n, k)`: the two static lanes' texts of the part it
+/// `partTexts(n, k, kind, preferences, lights, deferred, rows)`: in the
+/// same update, after `part(n, k, kind)`: the two static lanes' texts
+/// (`nil` for a lane the kind does not read) of the part it
 /// read ([`crate::netread::part_texts`]; none of another part or update),
 /// the junctions' names from the two
 /// tables (`{ [value] = name }`, `{ [type] = name }`, as the game's Lua
@@ -2270,22 +2289,23 @@ unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let mut nodes = 0;
         // SAFETY: Lua calls this with its own state; its arguments are on it.
-        let (n, k, preferences, lights, deferred, rows) = unsafe {
-            if (api.gettop)(l) < 5 {
+        let (n, k, kinds, preferences, lights, deferred, rows) = unsafe {
+            if (api.gettop)(l) < 6 {
                 return Err("no part, names or rows given".to_owned());
             }
             let n = whole_arg(api, l, 1, crate::netread::MAX_PARTS)?;
             (
                 n,
                 whole_arg(api, l, 2, n.saturating_sub(1))?,
-                read(api, l, 3, 0, &mut nodes)?,
+                kinds_arg(api, l, 3)?,
                 read(api, l, 4, 0, &mut nodes)?,
                 read(api, l, 5, 0, &mut nodes)?,
-                (api.gettop)(l) >= 6 && (api.type_of)(l, 6) == 1 && (api.toboolean)(l, 6) != 0,
+                read(api, l, 6, 0, &mut nodes)?,
+                (api.gettop)(l) >= 7 && (api.type_of)(l, 7) == 1 && (api.toboolean)(l, 7) != 0,
             )
         };
         crate::netread::part_texts(
-            (n, k),
+            (n, k, kinds),
             crate::seeds::current_step(),
             &names(&preferences)?,
             &names(&lights)?,
@@ -2299,8 +2319,12 @@ unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
     unsafe {
         match result {
             Ok(texts) => {
-                push_str(api, l, texts.network.as_bytes());
-                push_str(api, l, texts.constructions.as_bytes());
+                for text in [&texts.network, &texts.constructions] {
+                    match text {
+                        Some(text) => push_str(api, l, text.as_bytes()),
+                        None => (api.pushnil)(l),
+                    }
+                }
                 if let Some((network, constructions)) = texts.rows {
                     if (api.checkstack)(l, 6) == 0 {
                         (api.settop)(l, 0);
@@ -3716,6 +3740,7 @@ my_timetables";
         let part = |k, step| crate::netread::Part {
             n: 5,
             k,
+            kinds: crate::netread::Kinds::ALL,
             step,
             edges: vec!["1,2,3>4,5,6:t|lanes:".into()],
             junctions: Vec::new(),
@@ -3723,7 +3748,7 @@ my_timetables";
             constructions: Vec::new(),
             timing: String::new(),
         };
-        let texts = "return tpf3mp_native.partTexts(5, 2, {}, {}, {})";
+        let texts = "return tpf3mp_native.partTexts(5, 2, 'all', {}, {}, {})";
         crate::netread::keep_part(Some(part(2, Some(9))));
         let answered = script.run(texts).unwrap();
         assert!(answered.starts_with("1:"), "{answered}");
@@ -3734,17 +3759,20 @@ my_timetables";
         assert!(script.run(texts).unwrap().contains("not 2/5"));
         assert!(script.run(texts).unwrap().contains("no part was read"));
         crate::netread::keep_part(Some(part(2, Some(8))));
+        assert!(script.run(texts).unwrap().contains("of step Some(9)"));
+        // Another kind of objects: refused too.
+        crate::netread::keep_part(Some(part(2, Some(9))));
         assert!(
             script
-                .run(texts)
+                .run("return tpf3mp_native.partTexts(5, 2, 'edges', {}, {}, {})")
                 .unwrap()
-                .contains("not 2/5 of step Some(9)")
+                .contains("not 2/5")
         );
         // Rows left to the Lua must match those the part left to it.
         crate::netread::keep_part(Some(part(2, Some(9))));
         assert!(
             script
-                .run("return tpf3mp_native.partTexts(5, 2, {}, {}, { 'x' })")
+                .run("return tpf3mp_native.partTexts(5, 2, 'all', {}, {}, { 'x' })")
                 .unwrap()
                 .contains("junctions left")
         );
