@@ -432,6 +432,21 @@ unsafe fn run_step(
     UPDATES.store(OWN_SPEED, Ordering::Release);
 }
 
+/// Closes the per-call timing window after the detour has done its work.
+fn finish_perf(started: Option<Instant>) {
+    if let Some(started) = started {
+        let total = crate::perf::nanos_since(started);
+        let game = STEP_GAME_NANOS.swap(0, Ordering::Relaxed);
+        crate::perf::add(crate::perf::Piece::Gate, total.saturating_sub(game));
+        // Once a window: the timing's established pair and the step line.
+        if let Some(lines) = crate::perf::tick(Instant::now()) {
+            for line in lines {
+                log_line(&line);
+            }
+        }
+    }
+}
+
 /// After a batch of the room's steps `first..first + updates`: at a
 /// checkpoint, and at the first batch after a world was loaded, the game's
 /// two counters go to the log with the room's step, for two games' logs to
@@ -474,9 +489,12 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     if BROKEN.load(Ordering::Acquire) {
         // SAFETY: the game's step on its paused path: the world stands still.
         unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        crate::perf::step_call(false, Some(0), started);
+        finish_perf(started);
         return;
     }
     let mut ran = false;
+    let mut selected: Option<(Updates, bool)> = None;
     // What this call answered, and why, for the step trace.
     let mut answered: Option<(Updates, bool)> = None;
     let mut why: &'static str = "own";
@@ -485,6 +503,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         let Some(driver) = driver.as_mut() else {
             ran = true;
             answered = Some((Updates::Own, false));
+            selected = Some((Updates::Own, false));
             // SAFETY: the game's own step, called as the game called it.
             unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
@@ -494,6 +513,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
             answered = Some((batch.updates, batch.lanes));
+            selected = Some((batch.updates, batch.room));
             let updates = match batch.updates {
                 Updates::Exactly(updates) => updates,
                 Updates::Own => 0,
@@ -507,6 +527,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                     lua::end_batch()
                 }
                 Err(reason) => {
+                    selected = Some((Updates::Exactly(0), batch.room));
                     unsafe { run_step(original, Updates::Exactly(0), batch.room, this, a, b, c) };
                     Err(reason)
                 }
@@ -543,9 +564,17 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         BROKEN.store(true, Ordering::Release);
         UPDATES.store(OWN_SPEED, Ordering::Release);
         if !ran {
+            selected = Some((Updates::Exactly(0), false));
             // SAFETY: as above.
             unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
         }
+    }
+    if let Some((updates, room)) = selected {
+        let updates = match updates {
+            Updates::Own => None,
+            Updates::Exactly(updates) => Some(updates),
+        };
+        crate::perf::step_call(room, updates, started);
     }
     if let (Some(at), Some((updates, lanes))) = (traced_at, answered) {
         let updates = match updates {
@@ -561,18 +590,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             log.lines(&lines);
         }
     }
-    if let Some(started) = started {
-        let total = crate::perf::nanos_since(started);
-        let game = STEP_GAME_NANOS.swap(0, Ordering::Relaxed);
-        crate::perf::add(crate::perf::Piece::Gate, total.saturating_sub(game));
-        // Once a window: the timing's two lines (their own write is the
-        // next window's gate).
-        if let Some(lines) = crate::perf::tick(std::time::Instant::now()) {
-            for line in lines {
-                log_line(&line);
-            }
-        }
-    }
+    finish_perf(started);
 }
 
 /// The main menu's Multiplayer window asks (crate::menu_entry): its actions
