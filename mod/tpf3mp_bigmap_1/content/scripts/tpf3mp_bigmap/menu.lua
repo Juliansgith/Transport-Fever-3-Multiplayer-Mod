@@ -181,17 +181,22 @@ menu.DENSITY_PARAMS = {
 menu.STOCK_DENSITY_LEVELS = 5
 menu.STOCK_DENSITY_MEDIUM = 3
 
--- The density slider's labels: the game's own, then one per ladder row.
-function menu.densityValues(stockValues, ladder)
-	local values = {}
-	for i = 1, #stockValues do
-		values[i] = stockValues[i]
-	end
-	for _, row in ipairs(ladder) do
-		local size = string.gsub(row.label, "^Big ", "")
+-- The density slider's labels and the level each stores, sparsest first:
+-- one per ladder row, the largest size first (its scale is the smallest),
+-- then the game's own five. The levels keep their numbers (the game's
+-- 1 to 5, the rows' 6 on), so the slider's order changes nothing saved.
+function menu.densityChoices(stockValues, ladder)
+	local values, numbers = {}, {}
+	for i = #ladder, 1, -1 do
+		local size = string.gsub(ladder[i].label, "^Big ", "")
 		values[#values + 1] = "Gigantomaniac count at " .. size
+		numbers[#numbers + 1] = menu.STOCK_DENSITY_LEVELS + i
 	end
-	return values
+	for i = 1, #stockValues do
+		values[#values + 1] = stockValues[i]
+		numbers[#numbers + 1] = i
+	end
+	return values, numbers
 end
 
 -- The factor for `param` at `level` (from 1) given the game's own

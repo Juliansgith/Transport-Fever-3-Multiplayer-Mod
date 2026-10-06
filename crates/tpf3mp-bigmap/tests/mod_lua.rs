@@ -437,26 +437,29 @@ fn the_density_sliders_get_one_level_per_ladder_row() {
     let stock = lua
         .create_sequence_from(["Sparse", "Scattered", "Medium", "Dense", "Packed"])
         .unwrap();
-    let values: Table = menu
-        .get::<Function>("densityValues")
+    let (values, numbers): (Table, Table) = menu
+        .get::<Function>("densityChoices")
         .unwrap()
         .call((stock, ladder.clone()))
         .unwrap();
     let values: Vec<String> = values.sequence_values().map(Result::unwrap).collect();
+    let numbers: Vec<i64> = numbers.sequence_values().map(Result::unwrap).collect();
+    // Sparsest first; each level keeps its number.
     assert_eq!(
         values,
         [
+            "Gigantomaniac count at 45.1 km",
+            "Gigantomaniac count at 41.0 km",
+            "Gigantomaniac count at 36.9 km",
+            "Gigantomaniac count at 32.8 km",
             "Sparse",
             "Scattered",
             "Medium",
             "Dense",
             "Packed",
-            "Gigantomaniac count at 32.8 km",
-            "Gigantomaniac count at 36.9 km",
-            "Gigantomaniac count at 41.0 km",
-            "Gigantomaniac count at 45.1 km",
         ]
     );
+    assert_eq!(numbers, [9, 8, 7, 6, 1, 2, 3, 4, 5]);
     // Each level gives its row's square Gigantomaniac 1:1's area times the
     // Medium density: the counts stay Gigantomaniac's.
     let medium = lua
