@@ -278,6 +278,32 @@ local function hubId(number)
 	return id
 end
 
+-- Mod Hub's requests under way, by a key of their own. Each `...Async` call
+-- returns a handle (UniquePendingRequestId) that aborts the request once it
+-- is collected; the game's own pages keep theirs in a ref
+-- (mod_manager_react_util.createAsyncRef). Dropped, a request may never
+-- answer, and its mod waits for it forever: kept here until it answers.
+local requests = {}
+
+-- Calls `start(answered)`, which asks Mod Hub and returns the request's
+-- handle, keeping that handle until `answered` is called.
+local function keep(start, answered)
+	local key, over = {}, false
+	local handle = start(function(...)
+		over = true
+		requests[key] = nil
+		return answered(...)
+	end)
+	if not over then requests[key] = handle end
+end
+
+-- How many Mod Hub requests are kept, waiting for their answer.
+function roommods.waiting()
+	local n = 0
+	for _key in pairs(requests) do n = n + 1 end
+	return n
+end
+
 -- Whether this player can install from Mod Hub here: "ok", or why not:
 -- "offline" (no Mod Hub), "signed_out" (not signed in to it), "busy" (it
 -- takes no downloads now).
@@ -321,19 +347,30 @@ function roommods.lookUp(number, done)
 	local b = backend()
 	if not b then return done(nil, _("Mod Hub is not available")) end
 	local ok, why = pcall(function()
-		api.modhub.getModDetailsAsync(b, api.type.modhub.GetModDetailsRequest.new(hubId(number)), function(result)
-			if not result:isSuccess() then
-				local err = result:getError()
-				return done(nil, err and err.message or _("Mod Hub did not answer"))
+		keep(function(answered)
+			return api.modhub.getModDetailsAsync(b, api.type.modhub.GetModDetailsRequest.new(hubId(number)), answered)
+		end, function(result)
+			-- What Mod Hub answered, read here: an answer this mod cannot read
+			-- fails the lookup instead of leaving it waiting.
+			local read, details, failed = pcall(function()
+				if not result:isSuccess() then
+					local err = result:getError()
+					return nil, err and err.message or _("Mod Hub did not answer")
+				end
+				local data = result:getData()
+				if not data.found then return nil, _("Mod Hub has no such mod") end
+				return {
+					title = tostring(data.modInfo.title or ""),
+					author = tostring(data.author or ""),
+					size = tonumber(data.modInfo.installSize) or 0,
+					url = tostring(data.modInfo.url or ""),
+				}
+			end)
+			if not read then
+				say("Mod Hub's answer for " .. tostring(number) .. " could not be read: " .. tostring(details))
+				return done(nil, _("Mod Hub's answer could not be read"))
 			end
-			local data = result:getData()
-			if not data.found then return done(nil, _("Mod Hub has no such mod")) end
-			done({
-				title = tostring(data.modInfo.title or ""),
-				author = tostring(data.author or ""),
-				size = tonumber(data.modInfo.installSize) or 0,
-				url = tostring(data.modInfo.url or ""),
-			})
+			done(details, failed)
 		end)
 	end)
 	if not ok then done(nil, tostring(why)) end
@@ -345,10 +382,19 @@ function roommods.install(number, done)
 	local b = backend()
 	if not b then return done(_("Mod Hub is not available")) end
 	local ok, why = pcall(function()
-		api.modhub.subscribeModAsync(b, api.type.modhub.SubscribeModRequest.new(hubId(number)), function(result)
-			if result:isSuccess() then return done(nil) end
-			local err = result:getError()
-			done(err and err.message or _("Mod Hub refused it"))
+		keep(function(answered)
+			return api.modhub.subscribeModAsync(b, api.type.modhub.SubscribeModRequest.new(hubId(number)), answered)
+		end, function(result)
+			local read, failed = pcall(function()
+				if result:isSuccess() then return nil end
+				local err = result:getError()
+				return err and err.message or _("Mod Hub refused it")
+			end)
+			if not read then
+				say("Mod Hub's answer to subscribing to " .. tostring(number) .. " could not be read: " .. tostring(failed))
+				return done(_("Mod Hub's answer could not be read"))
+			end
+			done(failed)
 		end)
 	end)
 	if not ok then done(tostring(why)) end

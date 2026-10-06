@@ -1,0 +1,72 @@
+name: announce release
+
+# Posts each release on Discord, mentioning the announcement role, once
+# players can take it: after sign.yml signed it, so launchers offer the
+# update by the time players read the message. Or by hand for a published
+# tag, which posts again even if it was announced before.
+#
+# Settings, Secrets and variables, Actions (docs/OPERATIONS.md, "Releases"):
+# - secret DISCORD_RELEASE_WEBHOOK: the channel's webhook URL. Without it
+#   nothing is posted, as in forks;
+# - variable DISCORD_ANNOUNCE_ROLE_ID: the ID of the role to mention.
+#
+# tools/github/announce_release.py posts only a published, signed release
+# that is not a prerelease, and lets the message mention that role alone.
+# The job checks out the default branch only, never the signed run's code.
+on:
+  workflow_run:
+    workflows: [sign release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published release to announce, such as v1.2.8
+        required: true
+
+# Each run is named after its tag, which is how a release signed again is
+# not announced again.
+run-name: announce ${{ github.event.workflow_run.head_branch || inputs.tag }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  announce:
+    name: announce on Discord
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Announce
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          # sign.yml runs on the release's tag, by publishing or by hand.
+          TAG: ${{ github.event.workflow_run.head_branch || inputs.tag }}
+          DISCORD_RELEASE_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          DISCORD_ANNOUNCE_ROLE_ID: ${{ vars.DISCORD_ANNOUNCE_ROLE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DISCORD_RELEASE_WEBHOOK" ]; then
+            echo "::notice::no DISCORD_RELEASE_WEBHOOK secret: nothing announced"
+            exit 0
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::$TAG is not v<version>"
+            exit 1
+          fi
+          if [ "$EVENT" = workflow_run ]; then
+            announced=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow announce.yml \
+              --status success --limit 200 --json displayTitle \
+              --jq "[.[] | select(.displayTitle == \"announce $TAG\")] | length")
+            if [ "$announced" != 0 ]; then
+              echo "::notice::$TAG was announced before; run this workflow by hand to post again"
+              exit 0
+            fi
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json name,tagName,url,body,isDraft,isPrerelease,assets > "$RUNNER_TEMP/release.json"
+          python3 tools/github/announce_release.py "$RUNNER_TEMP/release.json"

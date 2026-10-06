@@ -1016,6 +1016,106 @@ fn every_mod_hub_answer_counts_however_many_come_at_once() {
         .unwrap();
 }
 
+/// Mod Hub answers later, as the game's does, and aborts a request whose
+/// handle was collected: the lobby keeps each handle until the answer comes,
+/// so the mods looked up do not wait at Looking up... for ever.
+#[test]
+fn mod_hub_answers_after_the_window_drew_again() {
+    let lua = menu();
+    lua.load(
+        r#"
+        HUB.later = true
+        HUB.mods["6414521"] = { title = "Auto Signals", author = "tearded" }
+    "#,
+    )
+    .exec()
+    .unwrap();
+    show(&lua, Some(&lacking_mods()));
+    open(&lua, None);
+    call(&lua, "tab", "The room's mods (3) · 2 missing");
+    click(&lua, "Install all missing (1)");
+    assert!(has_button(&lua, "Looking up..."));
+    call(&lua, "tick", ());
+    let answered: u32 = lua.load("return HUB.answer()").eval().unwrap();
+    assert_eq!(answered, 1, "the lookup's handle was dropped");
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("Subscribe to Auto Signals on Mod Hub?"));
+    click(&lua, "Subscribe & install");
+    let answered: u32 = lua.load("return HUB.answer()").eval().unwrap();
+    assert_eq!(answered, 1, "the subscription's handle was dropped");
+    lua.load(r#"assert(HUB.subscribed[1] == "6414521")"#)
+        .exec()
+        .unwrap();
+    call(&lua, "tick", ());
+    assert!(has_button(&lua, "Installing..."));
+}
+
+/// Mod Hub that never answers: the lookup fails after a while, the mod can
+/// be installed again, and an answer that comes after that changes nothing.
+#[test]
+fn a_lookup_mod_hub_does_not_answer_fails() {
+    let lua = menu();
+    lua.load(
+        r#"
+        HUB.later = true
+        HUB.mods["6414521"] = { title = "Auto Signals", author = "tearded" }
+    "#,
+    )
+    .exec()
+    .unwrap();
+    show(&lua, Some(&lacking_mods()));
+    open(&lua, None);
+    call(&lua, "tab", "The room's mods (3) · 2 missing");
+    click(&lua, "Install all missing (1)");
+    for _ in 0..70 {
+        call(&lua, "tick", ());
+    }
+    assert!(has_button(&lua, "Looking up..."), "waits a while");
+    for _ in 0..10 {
+        call(&lua, "tick", ());
+    }
+    let shown = texts(&lua);
+    assert!(
+        !has_button(&lua, "Looking up...") && shown.contains("Install failed"),
+        "{shown}"
+    );
+    assert!(enabled(&lua, "Install all missing (1)"));
+    // Mod Hub answers late: the player is not asked out of the blue.
+    let answered: u32 = lua.load("return HUB.answer()").eval().unwrap();
+    assert_eq!(answered, 1);
+    call(&lua, "tick", ());
+    assert!(!texts(&lua).contains("Subscribe to"));
+}
+
+/// A subscription Mod Hub never answers, and never takes: it fails after a
+/// while, and the mod can be installed again.
+#[test]
+fn a_subscription_mod_hub_does_not_answer_fails() {
+    let lua = menu();
+    lua.load(r#"HUB.mods["6414521"] = { title = "Auto Signals", author = "tearded" }"#)
+        .exec()
+        .unwrap();
+    show(&lua, Some(&lacking_mods()));
+    open(&lua, None);
+    call(&lua, "tab", "The room's mods (3) · 2 missing");
+    click(&lua, "Install all missing (1)");
+    lua.load("HUB.later = true; HUB.silent = true")
+        .exec()
+        .unwrap();
+    click(&lua, "Subscribe & install");
+    lua.load("HUB.answer()").exec().unwrap();
+    assert!(has_button(&lua, "Installing..."));
+    for _ in 0..80 {
+        call(&lua, "tick", ());
+    }
+    let shown = texts(&lua);
+    assert!(
+        !has_button(&lua, "Installing...") && shown.contains("Install failed"),
+        "{shown}"
+    );
+    assert!(enabled(&lua, "Install all missing (1)"));
+}
+
 /// A tile's Install shows the mod on the game's own Mod Hub page, where the
 /// player sees what it is and subscribes; an install begun there is
 /// followed once the page is closed.

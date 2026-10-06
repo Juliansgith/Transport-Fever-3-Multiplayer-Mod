@@ -415,6 +415,8 @@ unsafe fn run_step(
     crate::image::invalidate();
     let perf = crate::perf::start();
     let started = crate::steptrace::step_timer(perf, crate::steptrace::enabled());
+    // The free-id trace learns which engine this game simulates.
+    crate::persons::freed_ids::trace::note_step(this as u64, room);
     crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
@@ -440,6 +442,11 @@ fn log_counters(first: u64, updates: u32, checkpoint: bool) {
     if checkpoint || before.saturating_add(1) != first {
         let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
         log_line(&crate::ticks::checkpoint_line(last, counters));
+        // The free-id queue's fingerprint (docs/HOOKS.md, "The free-id
+        // trace").
+        if let Some(line) = crate::persons::freed_ids::trace::checkpoint_line(last) {
+            log_line(&line);
+        }
         // The road entry trace's digest of the in-step appends since the
         // last checkpoint (docs/HOOKS.md, "The road entry trace").
         if let Some(line) = crate::roadtrace::take_checkpoint(last) {
@@ -859,6 +866,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     } else {
         format!("perf: timing off ({} says so)", crate::perf::ENV)
     });
+    // Guarded reads (docs/HOOKS.md, "Reading the game's memory"): the
+    // handler goes in before any fix reads.
+    log_line(&crate::image::guarded::configure_from_env());
     if let Some(line) = crate::steptrace::configure_from_env() {
         log_line(&line);
     }
@@ -1226,6 +1236,9 @@ mod tests {
         forget_menu_sight();
         crate::menu::tests::menu51();
         assert!(!crate::menu::available());
+        // Other serialized tests have stepped a world. This scenario models
+        // a fresh process, so its last-step clock must start fresh as well.
+        LAST_STEP.store(0, Ordering::Release);
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
         script.gates.push_back(StepGate::Wait);
@@ -1235,6 +1248,10 @@ mod tests {
             script,
             Box::new(FakeControl::default()),
         )));
+        // No step ran in this game: a test that ran the step's detour
+        // before this one leaves its time behind, and the menu then waits
+        // for the world it thinks is closing.
+        LAST_STEP.store(0, Ordering::Release);
         let mut cmenu = [0usize; 3];
         crate::menu::set_load_field(16);
         let at = cmenu.as_mut_ptr() as usize;
