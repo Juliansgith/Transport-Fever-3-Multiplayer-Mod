@@ -414,8 +414,9 @@ fn type_id(
     Ok((id, pool))
 }
 
-/// Entities a scan reads the component bits of at once.
-const CHUNK: usize = 1 << 16;
+/// Entities a scan reads the component bits of at once: 16 KiB, which
+/// stays in the processor's first cache while it is looked through.
+const CHUNK: usize = 1 << 10;
 
 /// The engine's entities: their table and their component bits.
 struct Store<'m> {
@@ -1069,7 +1070,21 @@ pub fn read_part(
     let mut memo = Memo::default();
     let mut edges = Vec::new();
     let mut ends = Ends::default();
-    if kinds.network() {
+    if kinds.network() && !kinds.edges {
+        // Only the ends junction rows name: an edge's nodes and network,
+        // the front of its BaseEdge.
+        let found = located(&store, &edge_kind, &edge_ids)?;
+        ends.reserve(found.len());
+        each_element::<{ layout::EDGE_ROAD_TYPE + 4 }>(
+            &store,
+            &edge_kind,
+            &found,
+            |entity, _, edge| {
+                ends.insert(entity, edge_ends(edge, entity)?);
+                Ok(())
+            },
+        )?;
+    } else if kinds.network() {
         let found = located(&store, &edge_kind, &edge_ids)?;
         if kinds.junctions {
             ends.reserve(found.len());
