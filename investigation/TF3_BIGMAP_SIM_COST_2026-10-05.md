@@ -344,3 +344,70 @@ worlds past 256 tiles if a fast fix is needed -> 3/4 as the proper fix for the g
 | `0x1425fc630`, `0x1425f0270` | construction_util_engine caller, thunk | CONFIRMED |
 | `0x1409f96e0` | `apply_proposal.cpp` main function | CONFIRMED (file) |
 | `0x140ae7110` | ParcelSystem collect callback | CONFIRMED (file), GUESS (role) |
+
+## 7. Built: the timers (option 0) and the lean lookup (option 5)
+
+Branch `feat/simperf-lookup`. Both change nothing the game computes.
+
+**Timers** (`crates/tpf3mp-hook/src/simperf.rs`; docs/HOOKS.md, "The game's
+own systems: the `perf: sim` line"). Static facts they rest on
+(CONFIRMED-static, checked by `tf3_static_proof.rs`):
+
+| function | signature (args) | reached from |
+|---|---|---|
+| `EmissionGridSystem::Update` `0xaa9230` | `(this, engine, nodes, float dt)`, void | vtable slot `0x1436fcb10` only; no `E8`/`E9` to it in `.text` |
+| `EmissionEmitterSystem::Update2` `0xaa51c0` | `(this, engine, int, float dt)`, void | vtable slot `0x1436fc490` only |
+| `TownSystem` slot 12 `0xb61cc0` | `(this, engine, int)`, void; reads neither `r9` nor `xmm3` | vtable slot `0x143708bb8` only |
+| `UpdateParcelCollision` `0x9312e0` | `(rcx, rdx, boxes, r9)`, void; no stack arguments; boxes `{min x, min y, max x, max y}` | one call, `0x1425fcb9a` |
+
+The margin is `[0x14368c18c]` = 50.0f. The timers wrap the vtable slot (or
+redirect the call), so they chain with any detour of the function itself.
+
+**Lean lookup** (`crates/tpf3mp-hook/src/fastindex.rs`; docs/HOOKS.md, "The
+faster component lookup"). Reversed exactly (CONFIRMED-static):
+
+```
+0xa4b90  mov [rsp+20],rbx; mov [rsp+10],edx; push rdi; sub rsp,0xe0
+         cookie: mov rax,[0x143ce3a38]; xor rax,rsp; mov [rsp+0xd0],rax
+         mov [rsp+40],rcx; mov [rsp+30],r8d; mov dword [rsp+38],0
+         rdx = movsxd(edx)*3; r9 = [rcx+0x90] + rdx*8      // no bounds check
+         rcx = [r9+8]; rax = [r9]
+         while rax != rcx: if [rax] == r8d break; rax += 8
+         if rax == [r9+8]: assert (0xa4c1b .. call 0x14303d3e0; int3)
+         eax = [rax+4]; __security_check_cookie; restore; ret
+```
+
+No writes but its own frame and the caller's home space; no locks, no
+state. The replacement repeats the hit path without the frame and hands a
+miss to the original's trampoline; it changes `rax` and `r9` on a hit (the
+original: `rax`, `rcx`, `rdx`, `r9`). Thread safety: as the original's,
+since it reads the same memory and keeps nothing (whether pool threads
+call it concurrently does not matter for either). Lockstep: none; the
+evidence is the A/B test against the game's own code (320,000 random
+queries, every answer and every miss identical) and the register test.
+
+Measured (release, development PC, the user's game running, so noisy):
+hot lists 10 to 14 ns a lookup, about 1.5 to 2 ns less with the lean
+path (~15%); cold lists (2 M entities) 100 to 240 ns, dominated by two
+dependent cache misses (the 24-byte list header, then the list), with no
+difference above the noise. **The §5 option 5 guess ("a third to a half
+of its 28%") does not hold**: expect at most a few percent of the main
+thread's time. The parcel walk's lookups on a big map are likely cold,
+so the gain there is small; option 6a (fewer lookups per walk) is the
+one that can cut the misses. A SIMD scan was not built: the searched
+lists are short, the time is the misses and the exit branch, and it would
+need registers the original's hit path leaves alone.
+
+**What to read in hook.log** after a minute on the big map at 1x:
+
+- at install: `perf: sim timer emission-grid: in (vtable slot ...)` (and
+  `emission-emitters`, `towns`, `parcel-collision`), and
+  `fast-component-index: installed (...)`;
+- every 10 s: the first `perf:` line's `ms/update`, and the `perf: sim`
+  line: `emission-grid`'s mean µs is its cost per update (§1.5 predicts 30
+  to 60 ms on 100 x 1000), `parcel-collision`'s calls and mean µs, and
+  `union mean` / `max` km² (few huge unions or many small ones: §5 option
+  6);
+- with `TPF3MP_HOOK_PERF=full`: `component-index <n> calls` per window;
+- A/B: the same save with `TPF3MP_HOOK_FAST_COMPONENT_INDEX=0`.
+

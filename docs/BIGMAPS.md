@@ -767,6 +767,21 @@ both ends, no freeze when panning the whole map, the far ends drawing as
 the centre does; save and reload show `octree_root_load ... depth 12`.
 The full list is in the investigation note.
 
+### What the simulation costs on a big map
+
+A 100 x 1000 world's simulation update took about 260 ms where a stock
+one took 70 (investigation/TF3_BIGMAP_SIM_COST_2026-10-05.md). The
+investigation splits it, by static analysis, between the emission grids
+(16 m cells: 25.6 M cells a grid, about 30 to 60 ms an update) and the
+parcel-collision walk of each applied proposal on the main thread. To
+replace those estimates with numbers, the hook times the systems in the
+game: the `perf: sim` line every 10 s ([HOOKS.md](HOOKS.md), "The game's
+own systems: the `perf: sim` line"), with `emission-grid`,
+`emission-emitters`, `towns` and `parcel-collision` and the walks' query
+boxes. It changes nothing the game computes. The faster component lookup
+("The faster component lookup" there) is on by default and exact; it
+trims the lookup's per-call overhead, not its cache misses.
+
 ### The rest of the prototype
 
 `crates/tpf3mp-bigmap` also carries the rest of Big Maps' features, as far
