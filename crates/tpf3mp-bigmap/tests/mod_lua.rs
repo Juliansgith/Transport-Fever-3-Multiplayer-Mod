@@ -675,3 +675,30 @@ fn the_ratio_dropdown_keeps_map_format_a_value_the_game_knows() {
         "a pick no longer offered shows the game's 1:5"
     );
 }
+
+#[test]
+fn with_the_memory_check_off_every_row_is_offered() {
+    let (lua, menu, ladder) = menu();
+    lua.load("resolveutil = { __tpf3mp_ram_mb = 8192, __tpf3mp_memory_gate = false }")
+        .exec()
+        .unwrap();
+    let ram: f64 = menu.get::<Function>("ramMb").unwrap().call(()).unwrap();
+    assert!(ram.is_infinite());
+    let (rows, notes): (Table, Table) = menu
+        .get::<Function>("offered")
+        .unwrap()
+        .call((ladder.clone(), ram))
+        .unwrap();
+    assert_eq!(rows.raw_len(), ladder.raw_len());
+    let notes: Vec<String> = notes.sequence_values().map(Result::unwrap).collect();
+    assert_eq!(
+        notes,
+        ["Memory check off: a size may not fit this computer's memory."]
+    );
+    // On, an 8 GB machine gets none of the big rows.
+    lua.load("resolveutil.__tpf3mp_memory_gate = true")
+        .exec()
+        .unwrap();
+    let ram: f64 = menu.get::<Function>("ramMb").unwrap().call(()).unwrap();
+    assert!((ram - 8192.0).abs() < 0.5);
+}

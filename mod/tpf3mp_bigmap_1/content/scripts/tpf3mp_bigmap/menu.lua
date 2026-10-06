@@ -49,11 +49,17 @@ function menu.tiles(ladder, stockRows, sizeIndex, ratioIndex)
 	return shape[1], shape[2]
 end
 
--- The machine's memory in MB, as the TPF3-MP hook found it, or nil.
+-- The machine's memory in MB, as the TPF3-MP hook found it, or nil; with
+-- the memory check turned off (TPF3MP_BIGMAP_MEMORY_GATE=0, which the hook
+-- passes as __tpf3mp_memory_gate = false), unlimited: every size and ratio
+-- the walls allow is offered, whether it fits or not.
 function menu.ramMb()
 	local ok, ru = pcall(function()
 		return resolveutil
 	end)
+	if ok and type(ru) == "table" and ru.__tpf3mp_memory_gate == false then
+		return math.huge
+	end
 	if ok and type(ru) == "table" and type(ru.__tpf3mp_ram_mb) == "number" and ru.__tpf3mp_ram_mb > 0 then
 		return ru.__tpf3mp_ram_mb
 	end
@@ -68,6 +74,9 @@ function menu.offered(ladder, ramMb)
 	if type(ramMb) ~= "number" or ramMb <= 0 then
 		notes[1] = "Bigger sizes are hidden: this computer's memory is not known."
 		return rows, notes
+	end
+	if ramMb == math.huge then
+		notes[1] = "Memory check off: a size may not fit this computer's memory."
 	end
 	for _, row in ipairs(ladder) do
 		if row.peakMb <= ramMb then

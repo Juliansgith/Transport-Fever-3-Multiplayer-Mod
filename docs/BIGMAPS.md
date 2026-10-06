@@ -505,6 +505,8 @@ Its logic is plain Lua in the mod (`scripts/tpf3mp_bigmap/menu.lua`):
   `memory_gate.rs`) fits the machine's physical
   memory, which the hook reports. A line under the dropdown says which
   rows are hidden and why. With the memory unknown, no row is offered.
+  `TPF3MP_BIGMAP_MEMORY_GATE=0` turns the check off: every size and ratio
+  the walls allow is offered, with a line saying a size may not fit.
 - If the mod's scripts do not load, the page offers the game's sizes only;
   if the copy does not load, the hook serves the game's file.
 

@@ -84,6 +84,7 @@ end
 if ru.__tpf3mp_menu then return end
 ru.__tpf3mp_menu = true
 ru.__tpf3mp_ram_mb = __tpf3mp_ram_mb
+ru.__tpf3mp_memory_gate = __tpf3mp_memory_gate
 local copies = {
 	{ "gui/menu/main_page%.tl$", "tpf3mp_1::/gui/menu/main_page.tl", "main menu" },
 	{ "gui/menu/new_game_or_map_settings_page%.tl$", "tpf3mp_bigmap_1::/gui/menu/new_game_or_map_settings_page.tl", "big maps" },
@@ -127,10 +128,16 @@ end
 pcall(debugPrint, "[tpf3mp] main menu: resolveutil.loadfile is wrapped")
 "#;
 
-/// [`PATCH`] with the machine's memory in MB, if known, in front.
-fn patch(ram_mb: Option<u64>) -> String {
+/// Turns the big-map page's memory check off: `0` (or `off`, `false`,
+/// `no`) offers every size and ratio the walls allow, whether it fits the
+/// machine's memory or not.
+pub const MEMORY_GATE_ENV: &str = "TPF3MP_BIGMAP_MEMORY_GATE";
+
+/// [`PATCH`] with the machine's memory in MB, if known, and whether the
+/// big-map page holds its sizes against it, in front.
+fn patch(ram_mb: Option<u64>, memory_gate: bool) -> String {
     let ram = ram_mb.map_or_else(|| "nil".to_owned(), |mb| mb.to_string());
-    format!("local __tpf3mp_ram_mb = {ram}\n{PATCH}")
+    format!("local __tpf3mp_ram_mb = {ram}\nlocal __tpf3mp_memory_gate = {memory_gate}\n{PATCH}")
 }
 
 /// The machine's physical memory in MB (MiB), or `None` if Windows does not
@@ -484,7 +491,10 @@ fn patch_once(state: *mut c_void) {
             std::mem::transmute::<usize, LuaSettop>(settop),
         )
     };
-    let text = patch(physical_memory_mb());
+    let text = patch(
+        physical_memory_mb(),
+        crate::ticks::wanted(std::env::var(MEMORY_GATE_ENV).ok().as_deref()),
+    );
     let mut chunk = Chunk {
         ptr: text.as_ptr(),
         len: text.len(),
@@ -883,9 +893,9 @@ mod tests {
         )
         .exec()
         .unwrap();
-        lua.load(patch(ram_mb)).exec().unwrap();
+        lua.load(patch(ram_mb, true)).exec().unwrap();
         // A second run in the same state must not wrap twice.
-        lua.load(patch(ram_mb)).exec().unwrap();
+        lua.load(patch(ram_mb, true)).exec().unwrap();
         lua
     }
 
@@ -995,7 +1005,7 @@ mod tests {
         )
         .exec()
         .unwrap();
-        lua.load(patch(None)).exec().unwrap();
+        lua.load(patch(None, true)).exec().unwrap();
         lua.load("du = resolveutil.loadfile('::/base/difficulty_util.tl')()")
             .exec()
             .unwrap();
