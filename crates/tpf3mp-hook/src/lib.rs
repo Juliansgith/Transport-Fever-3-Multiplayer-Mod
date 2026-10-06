@@ -35,6 +35,7 @@ use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 
 pub mod at_menu;
 pub mod autoload;
+pub mod bigmap;
 pub mod build_data;
 pub mod builds;
 pub mod clipboard;

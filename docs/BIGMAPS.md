@@ -358,8 +358,9 @@ per km², and an earlier subarctic log at 49 maps and 10,074 MB, 12.25 MB
 per km²: three to five times TPF2's.
 
 Whether the project ships big maps is the owner's to decide (PLAN.md, "Big
-maps"). Stages 0 and 1 are built so far; neither changes a stock-sized
-game, and the mod is not packaged with TPF3-MP.
+maps"). Stages 0 and 1 are built, and Stage 2's opt-in hook patch;
+none changes a stock-sized game, and the mod is not packaged with
+TPF3-MP.
 
 ### Stage 0: measuring TF3
 
@@ -556,6 +557,63 @@ the world was made at an added density level (above).
   runner (`tools/scenarios/roads.json`, `rail.json`), the checkpoints
   agreeing.
 
+### Stage 2: the octree root at depth 11, up to 512 tiles
+
+Built in the hook, not tested in the game yet
+(investigation/TF3_BIGMAPS_256KM_2026-10-05.md, §1 and §8). With
+`TPF3MP_BIGMAP_OCTREE=11` in the game's environment (the launcher's
+reaches it), the hook splices the instruction after each of the two calls
+of `OctreeSystem::Resize` that set the large-map root, on the new-game
+path (`0x244b8b`) and the load path (`0x20267d`). When an axis of the
+world being allocated is over 256 tiles, it calls the game's own `Resize`
+again with depth 11 and ±65,536 m: tpf2-bigmap's depth-11 root, without
+patching the shared 32768.0f or any game instruction but the splice's
+jump. Depth 11 keeps the 128 m leaves, and its node ids stay inside the
+stock 32-bit scheme and the renderer's level decoder.
+
+- **Derived from the world.** A world of 256 tiles or less is never
+  touched, so on every stock-sized and Stage 1 world a game with the
+  setting and one without run the same code. A world over 512 tiles needs
+  depth 12, which is not built: it keeps the game's root, and `hook.log`
+  says the world will lose entities.
+- **Fails closed.** The three profile targets are optional; each site's
+  27 bytes (the constant load, the owner load, `mov edx,10`, the call of
+  `Resize` and the instruction after it) are checked before either site is
+  spliced, and both are spliced or neither. `hook.log` says `big maps:
+  octree: installed` or `off` with the reason, and one line each time a
+  world gets depth 11.
+- **Every game of a room** on a world over 256 tiles needs the setting.
+  The room does not check it yet: a game without it loads such a world
+  with the stock root and damages it.
+- **Tested** against the game's own code: `Resize` and both sites,
+  relocated from the executable into the test process, run with the
+  splices installed (`crates/tpf3mp-hook/src/bigmap/octree.rs`, with
+  `TPF3MP_TF3_EXE`): 128 to 256 tiles keep depth 10 and ±32,768 m, 258 to
+  512 get depth 11 and ±65,536 m, 1,000 keeps the game's, a site moved by
+  a byte installs nothing, and detached the code is the game's again.
+  `tf3_static_proof.rs` pins the three targets.
+
+The bigmap crate knows the new ceiling: `WorldModel::TF3_BUILD_40408`'s
+`octree_max_depth` is 11 and its patches are derived from the world, so
+`ceilings::check` keeps the stock depth wherever it covers the map and
+blocks anything over 512 tiles whatever `octree_depth` asks.
+`crates/tpf3mp-bigmap/tpf3mp_bigmap.stage2.toml` is Stage 1's rows with
+`max_tiles = 512` and `octree_depth = 11` (its longest shape, 176's 1:5,
+is 390 x 78); the mod's ladder stays Stage 1's until the root is seen
+working in the game.
+
+**Still to test in the game**, by a person, with the setting on in every
+game:
+
+- generate 1:5 at 60 x 300 (77 km long): `hook.log` shows the octree line
+  for the new game, and again after a save and reload; the game log has no
+  `Duplicate base nodes`; towns past 32.8 km from the centre grow streets
+  and population;
+- with the setting off, stock Gigantomaniac and a Stage 1 176² world
+  behave as before, with no octree line;
+- a room of two games (Sandboxie) on the 60 x 300 world through
+  `tools/scenarios/roads.json` and `rail.json`, the checkpoints agreeing.
+
 ### The rest of the prototype
 
 `crates/tpf3mp-bigmap` also carries the rest of Big Maps' features, as far
@@ -566,7 +624,7 @@ investigation):
 |---|---|
 | The added size rows (`add_size_rows`) | `ladder`: the rows and their 1:k shapes; on TF3, the mod's page copy above (`page`, `mod_data`). |
 | The street raster's 32-bit wall past 180 tiles (`street_raster`, `cell_budget_millions`) | `ceilings`: the cell count at the stock cell, and the cell the budget needs. TF3's site: `sub_8cea50`. |
-| The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. TF3's sites: `0x244b8b` and `0x20267d`. |
+| The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. TF3: `octree_max_depth` 11, the hook's root splice at `0x244b8b` and `0x20267d` (Stage 2). |
 | The heightmap's 32-bit pixel count (derived, about 722 tiles) | `ceilings`: refused, since no setting passes it. |
 | The memory law | `ceilings` and `world`: the expected peak for every size, before it is generated; `measure` checks it against a log. |
 | Density levels, placement attempts | `config` and `features`: settings that change the simulation. |

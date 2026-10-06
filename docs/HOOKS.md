@@ -5077,6 +5077,17 @@ nothing the game computes, so one game of a room may run them alone.
 The `road-entry:` digest at every checkpoint needs no switch: it is on
 while `road-entry-order` sorts.
 
+Big maps' native patches ([BIGMAPS.md](BIGMAPS.md), "Stage 2" and on;
+`crates/tpf3mp-hook/src/bigmap/`) are off unless set. Each changes nothing
+for a world that does not need it, so a game with one and a game without
+agree on every stock-sized world; on a world that needs one, every game
+of the room must have it (not checked by the room yet). Each logs a
+`big maps:` line at install, and one each time it acts:
+
+| switch | turns on |
+|---|---|
+| `TPF3MP_BIGMAP_OCTREE=11` | the octree root at depth 11 (±65,536 m) for worlds with an axis over 256 tiles, at the new-game and load sites |
+
 ## Release-day procedure: adding a target for a new build
 
 The first TF3 build's targets are already located (RVAs, RTTI/source

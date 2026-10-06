@@ -1662,3 +1662,42 @@ signature = "4C 8B CB 41 B8 80 00 00 00 48 8D 54 24 30 48 8B C8 E8 F9 B9 FE FF"
 offset = 3
 prologue = "41 B8 80 00 00 00"
 required = false
+
+# Big maps (crates/tpf3mp-hook/src/bigmap/; investigation/
+# TF3_BIGMAPS_256KM_2026-10-05.md). Every big-map patch is opt-in and off by
+# default; each target is optional, and a feature whose targets do not all
+# resolve stays off.
+#
+# OctreeSystem::Resize (TPF2 0xa51b00; here 0xae4c50): stores the root box,
+# -half at +0x10..+0x18 and +half at +0x1c..+0x24, and the depth at +0x28,
+# between two calls of an empty profiling scope (0x55b50, `ret 0`); nothing
+# else. rcx the octree, edx the depth, xmm2 the half extent.
+[[target]]
+name = "bigmap::OctreeSystem::Resize"
+signature = "48 89 5C 24 10 57 48 83 EC 30 C5 F8 29 74 24 20 C5 F8 28 F2"
+offset = 0
+prologue = "48 89 5C 24 10 57 48 83 EC 30 C5 F8 29 74 24 20"
+required = false
+
+# The octree root's two sites (the port note's 0x244b8b and 0x20267d): taken
+# only when either axis is over 128 tiles, each `vmovss xmm2,[32768.0f]; mov
+# rcx,[owner+0x38]; mov edx,10; call Resize`, then the next instruction,
+# which the hook splices to move the root to depth 11 for worlds over 256
+# tiles. The prologue is the block, the call and that instruction (27
+# bytes). init (0x244b00, new game and InitGame): tiles in rbp, owner in
+# rsi; the next instruction, `vmovss xmm2,[rbp+0x20]`, is also the jle's
+# target.
+[[target]]
+name = "bigmap::octree_root_init"
+signature = "81 7D 04 80 00 00 00 7E 16 C5 FA 10 15 ?? ?? ?? ?? 48 8B 4E 38 BA 0A 00 00 00 E8 ?? ?? ?? ?? C5 FA 10 55 20"
+offset = 9
+prologue = "C5 FA 10 15 A5 E4 43 03 48 8B 4E 38 BA 0A 00 00 00 E8 AF 00 8A 00 C5 FA 10 55 20"
+required = false
+
+# load (0x2024a0, GameState::Load's lambda): tiles in rsi, owner in rbp.
+[[target]]
+name = "bigmap::octree_root_load"
+signature = "81 7E 04 80 00 00 00 7E 16 C5 FA 10 15 ?? ?? ?? ?? 48 8B 4D 38 BA 0A 00 00 00 E8 ?? ?? ?? ?? C5 FA 10 56 20"
+offset = 9
+prologue = "C5 FA 10 15 B3 09 48 03 48 8B 4D 38 BA 0A 00 00 00 E8 BD 25 8E 00 C5 FA 10 56 20"
+required = false

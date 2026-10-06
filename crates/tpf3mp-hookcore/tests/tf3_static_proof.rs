@@ -202,6 +202,10 @@ const TARGETS: &[(&str, u64)] = &[
     // Faster saves (crates/tpf3mp-hook/src/savefast.rs).
     ("save: PushCompressor level load", 0x32d464),
     ("save: PushCompressor buffer size", 0x32d5c4),
+    // Big maps (crates/tpf3mp-hook/src/bigmap).
+    ("bigmap::OctreeSystem::Resize", 0xae4c50),
+    ("bigmap::octree_root_init", 0x244b8b),
+    ("bigmap::octree_root_load", 0x20267d),
 ];
 
 #[test]
@@ -383,6 +387,10 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
         &text_bytes[at(0x6a3676)..at(0x6a3676) + 7],
         &[0x48, 0x8B, 0x81, 0xD0, 0x1B, 0x00, 0x00]
     );
+
+    // Big maps: both octree root sites call Resize.
+    assert_eq!(callee(0x244b8b + 17), 0xae4c50);
+    assert_eq!(callee(0x20267d + 17), 0xae4c50);
 
     // A required target's bytes changed: resolution fails closed.
     let mut tampered = text_bytes.to_vec();

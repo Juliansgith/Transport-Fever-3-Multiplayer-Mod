@@ -1,0 +1,28 @@
+# Big maps for Transport Fever 3, stage 2 (investigation/TF3_BIGMAPS_256KM_2026-10-05.md,
+# section 8): stage 1's rows, with the octree root at depth 11 for worlds with
+# an axis over 256 tiles, so a ratio's long side may reach 512 tiles
+# (131 km). The hook moves the root only with TPF3MP_BIGMAP_OCTREE=11 in the
+# game's environment (crates/tpf3mp-hook/src/bigmap/octree.rs), and only for
+# a world that needs it: every world stage 1 makes keeps the game's own root.
+#
+# Not wired to the mod yet: the mod's ladder stays stage 1's until the depth-11
+# root is seen working in the game. `cargo run -p tpf3mp-bigmap -- --config
+# crates/tpf3mp-bigmap/tpf3mp_bigmap.stage2.toml ladder` prints what it would
+# offer.
+#
+# The street raster's one-metre cells still bound the area: no shape here
+# passes 2^31 cells (the stage 3 raster patch lifts that).
+
+[sizes]
+add_rows = true
+max_tiles = 512
+rows = [
+    { label = "Big 32.8 km", tiles = 128 },
+    { label = "Big 36.9 km", tiles = 144 },
+    { label = "Big 41.0 km", tiles = 160 },
+    { label = "Big 45.1 km", tiles = 176 },
+]
+
+[limits]
+octree_depth = 11
+street_raster = false

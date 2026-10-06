@@ -120,11 +120,19 @@ pub fn check(world: &WorldModel, config: &Config, tiles_x: u32, tiles_y: u32) ->
     // The octree root: the map is centred on the origin.
     let half_m = world.edge_m(tiles_x.max(tiles_y)) / 2;
     let stock_depth = world.stock_octree_depth(tiles_x, tiles_y);
-    let octree_depth = match config.limits.octree_depth {
-        0 => stock_depth,
-        depth => depth,
-    };
     let stock_root = world.octree_half_m(stock_depth);
+    // A depth past what the build's patches reach is not there to use.
+    let wanted = match config.limits.octree_depth {
+        0 => stock_depth,
+        depth => depth.min(world.octree_max_depth.value),
+    };
+    // Derived from the world (TF3): the game's own root wherever it covers
+    // the map, so a stock-sized world runs stock code.
+    let octree_depth = if world.patches_from_world && half_m <= stock_root {
+        stock_depth
+    } else {
+        wanted
+    };
     if half_m > stock_root {
         let root_half_m = world.octree_half_m(octree_depth);
         let ceiling = Ceiling::OctreeRoot {
@@ -250,6 +258,81 @@ mod tests {
         let report = check(&TPF2, &Config::default(), 320, 320);
         assert!((report.area_km2 - 6710.9).abs() < 0.1);
         assert!((report.peak_mb - (6710.9 * 2.5 + 4096.0)).abs() < 1.0);
+    }
+
+    const TF3: WorldModel = WorldModel::TF3_BUILD_40408;
+
+    #[test]
+    fn tf3_moves_the_root_only_for_worlds_that_need_it() {
+        let depth11 = config("[limits]\noctree_depth = 11");
+        // Stock and stage 1 sizes keep the game's own root.
+        assert_eq!(check(&TF3, &depth11, 112, 112).octree_depth, 9);
+        assert_eq!(check(&TF3, &depth11, 50, 250).octree_depth, 10);
+        assert_eq!(check(&TF3, &depth11, 176, 176).octree_depth, 10);
+        assert_eq!(check(&TF3, &depth11, 2, 256).octree_depth, 10);
+        // Past 256 tiles: depth 11, up to 512.
+        let long = check(&TF3, &depth11, 60, 300);
+        assert!(long.buildable(), "{long:?}");
+        assert_eq!(long.octree_depth, 11);
+        assert!(matches!(
+            long.handled[..],
+            [Ceiling::OctreeRoot { depth: 10, .. }]
+        ));
+        assert!(check(&TF3, &depth11, 62, 512).buildable());
+        // Without the setting the stock root blocks it.
+        let stock = check(&TF3, &Config::default(), 60, 300);
+        assert!(matches!(
+            stock.blocked[..],
+            [Ceiling::OctreeRoot { depth: 10, .. }]
+        ));
+    }
+
+    #[test]
+    fn tf3_has_no_depth_past_11_yet() {
+        assert_eq!(TF3.octree_max_depth.value, 11);
+        // 1,000 tiles (256 km) needs depth 12: blocked at 11 whatever the
+        // settings ask.
+        for depth in [11, 12, 13] {
+            let settings = config(&format!(
+                "[sizes]\nmax_tiles = 1000\n[limits]\nstreet_raster = true\noctree_depth = {depth}"
+            ));
+            let report = check(&TF3, &settings, 40, 1000);
+            assert!(
+                matches!(
+                    report.blocked[..],
+                    [Ceiling::OctreeRoot {
+                        half_m: 128_000,
+                        root_half_m: 65_536,
+                        depth: 11
+                    }]
+                ),
+                "{depth}: {report:?}"
+            );
+        }
+        // TPF2's Big Maps reached 13.
+        let tpf2 =
+            config("[sizes]\nmax_tiles = 1024\n[limits]\nstreet_raster = true\noctree_depth = 12");
+        assert!(check(&TPF2, &tpf2, 40, 1000).buildable());
+    }
+
+    #[test]
+    fn every_stage2_shape_is_buildable_on_tf3() {
+        let (settings, notes) =
+            Config::from_toml(include_str!("../tpf3mp_bigmap.stage2.toml")).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        let mut longest = 0;
+        for row in settings.rows(&TF3) {
+            for (x, y) in crate::ladder::shapes(&row, settings.sizes.max_tiles) {
+                let report = check(&TF3, &settings, x, y);
+                assert!(report.buildable(), "{} {x}x{y}: {report:?}", row.label);
+                assert_eq!(report.street_cell_m, 1, "no raster patch at stage 2");
+                longest = longest.max(x.max(y));
+            }
+        }
+        assert!(
+            longest > 256,
+            "stage 2 reaches past the stock root: {longest}"
+        );
     }
 
     #[test]

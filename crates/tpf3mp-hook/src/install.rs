@@ -894,6 +894,10 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     for line in crate::streettrace::install(&absolute) {
         log_line(&line);
     }
+    // Big maps (crate::bigmap): each patch opt-in, off by default.
+    for line in crate::bigmap::install(&absolute) {
+        log_line(&line);
+    }
     Ok(step_rva)
 }
 

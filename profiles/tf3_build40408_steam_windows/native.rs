@@ -6,6 +6,7 @@ pub use crate::build_data::{
 pub const STEAM_BUILD_ID: u64 = 25533170;
 pub const GAME_BUILD: u32 = 40408;
 
+pub mod bigmap;
 pub mod builds;
 pub mod drawing;
 pub mod edgewatch;

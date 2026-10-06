@@ -77,6 +77,14 @@ pub struct WorldModel {
     /// `octree_small_tiles` tiles a side, and the smaller depth below it.
     pub octree_stock_depth: u8,
     pub octree_small_tiles: u32,
+    /// The deepest root the build's patches reach.
+    pub octree_max_depth: Fact<u8>,
+    /// Whether the native patches are derived from the world: on, a patch
+    /// changes nothing for a world that does not need it (the octree root
+    /// stays the game's up to its stock reach, the street cell grows only
+    /// where the stock cell overflows). Off, as Big Maps on TPF2, a
+    /// setting applies to every world.
+    pub patches_from_world: bool,
     /// The biggest square the stock engine builds.
     pub stock_max_tiles: Fact<u32>,
     /// Generation's peak memory, per km² of map.
@@ -104,6 +112,11 @@ impl WorldModel {
         octree_base_depth: 9,
         octree_stock_depth: 10,
         octree_small_tiles: 128,
+        octree_max_depth: Fact::measured(
+            13,
+            "tpf2-bigmap docs/octree-depth12.md: depths 12 and 13 played on Steam, 2026-09-23",
+        ),
+        patches_from_world: false,
         stock_max_tiles: Fact::measured(224, "the settings.lua override's clamp"),
         generation_mb_per_km2: Fact::measured(
             2.5,
@@ -137,6 +150,11 @@ impl WorldModel {
         octree_base_depth: 9,
         octree_stock_depth: 10,
         octree_small_tiles: 128,
+        octree_max_depth: Fact::derived(
+            11,
+            "the hook's root splice (crates/tpf3mp-hook/src/bigmap/octree.rs); depth 12 needs the descent 0xae33c0 patched, not built (investigation/TF3_BIGMAPS_256KM_2026-10-05.md)",
+        ),
+        patches_from_world: true,
         stock_max_tiles: Fact::derived(
             112,
             "getNumTiles: Gigantomaniac 1:1 is 112 x 112; its longest axis is 250 (1:5)",

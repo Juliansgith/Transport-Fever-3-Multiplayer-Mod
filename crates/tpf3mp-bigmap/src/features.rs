@@ -55,10 +55,16 @@ pub const FEATURES: [Feature; 6] = [
         wanted: |config| config.limits.street_raster,
     },
     Feature {
-        // TPF2: ecs::OctreeSystem's root box, a two-tier constant.
+        // TPF2: ecs::OctreeSystem's root box, a two-tier constant. TF3:
+        // OctreeSystem::Resize and its two sites, spliced by the hook
+        // (crates/tpf3mp-hook/src/bigmap/octree.rs).
         name: "octree_depth",
         effect: Effect::Simulation,
-        targets: &["bigmap::octree_root"],
+        targets: &[
+            "bigmap::OctreeSystem::Resize",
+            "bigmap::octree_root_init",
+            "bigmap::octree_root_load",
+        ],
         wanted: |config| config.limits.octree_depth != 0,
     },
     Feature {
@@ -238,12 +244,16 @@ mod tests {
         assert_eq!(
             plan.state("octree_depth"),
             Some(&State::Refused {
-                missing: vec!["bigmap::octree_root"]
+                missing: vec![
+                    "bigmap::OctreeSystem::Resize",
+                    "bigmap::octree_root_init",
+                    "bigmap::octree_root_load"
+                ]
             })
         );
         let refusal = plan.refusal().unwrap();
         assert!(
-            refusal.contains("octree_depth (missing bigmap::octree_root)"),
+            refusal.contains("octree_depth (missing bigmap::OctreeSystem::Resize, "),
             "{refusal}"
         );
         assert_eq!(plan_all(&settings).refusal(), None);
@@ -251,6 +261,18 @@ mod tests {
 
     fn plan_all(config: &Config) -> Plan {
         plan(config, |_| true)
+    }
+
+    #[test]
+    fn the_octree_targets_are_the_tf3_profiles() {
+        let profile = include_str!("../../../profiles/tf3_build40408_steam_windows/hooks.toml");
+        let octree = FEATURES.iter().find(|f| f.name == "octree_depth").unwrap();
+        for target in octree.targets {
+            assert!(
+                profile.contains(&format!("name = \"{target}\"")),
+                "{target} is not in the TF3 profile"
+            );
+        }
     }
 
     #[test]
