@@ -5,6 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use tpf3mp_hookcore::pe::PeHeaders;
@@ -21,6 +22,27 @@ const REVIEWED_SITES: &[(&str, u64)] = &[
     ("view: CatchmentAreaHelper/player 4", 0x879343),
 ];
 
+// These signatures were measured only on Release 40408. Keep the Preview
+// candidate's existing target list intact without claiming new
+// Preview addresses that have not been checked against its private archive.
+const RELEASE_ONLY_OPTIONAL_TARGETS: &[&str] = &[
+    "simperf: EmissionGridSystem::Update",
+    "simperf: EmissionEmitterSystem::Update2",
+    "simperf: TownSystem::Update2",
+    "simperf: UpdateParcelCollision",
+    "simperf: UpdateParcelCollision call",
+    "fast-component-index: Engine::GetComponentDataIndex",
+    "emission::EmissionGridSystem::Update",
+];
+
+fn coverage(profile: &Profile) -> BTreeMap<String, bool> {
+    profile
+        .targets
+        .iter()
+        .map(|target| (target.name.clone(), target.required))
+        .collect()
+}
+
 #[test]
 fn preview_pins_its_exact_identity_and_preserves_release_target_coverage() {
     let preview = Profile::from_toml(PREVIEW).unwrap();
@@ -32,16 +54,63 @@ fn preview_pins_its_exact_identity_and_preserves_release_target_coverage() {
     assert_eq!(preview.build.size, Some(69_756_856));
     assert_eq!(preview.build.pe_timestamp, Some(1_790_974_087));
     assert_eq!(preview.targets.len(), 146);
-    let coverage = |profile: &Profile| {
-        profile
-            .targets
-            .iter()
-            .map(|target| (target.name.clone(), target.required))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(coverage(&preview), coverage(&release));
+    assert_eq!(
+        release.build.sha256,
+        "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2"
+    );
+    assert_eq!(release.build.size, Some(69_711_288));
+    assert_eq!(release.build.pe_timestamp, Some(0x6AB6_9FE5));
+    let preview_coverage = coverage(&preview);
+    let release_coverage = coverage(&release);
+    let release_only = release_coverage
+        .keys()
+        .filter(|name| !preview_coverage.contains_key(*name))
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        release_only,
+        RELEASE_ONLY_OPTIONAL_TARGETS.iter().copied().collect(),
+        "only the seven new optional 40408 performance targets may be Release-only"
+    );
+    for (name, required) in &preview_coverage {
+        assert_eq!(release_coverage.get(name), Some(required), "{name}");
+    }
+    for name in RELEASE_ONLY_OPTIONAL_TARGETS {
+        assert_eq!(
+            release_coverage.get(*name),
+            Some(&false),
+            "{name} must stay optional"
+        );
+    }
     assert!(preview.verify_identity(&release.build).is_err());
     assert!(release.verify_identity(&preview.build).is_err());
+}
+
+#[test]
+fn seven_release_only_targets_resolve_as_absent_optional_hooks() {
+    let release = Profile::from_toml(RELEASE).unwrap();
+    let mut performance_only = release.clone();
+    performance_only
+        .targets
+        .retain(|target| RELEASE_ONLY_OPTIONAL_TARGETS.contains(&target.name.as_str()));
+    assert_eq!(
+        performance_only.targets.len(),
+        RELEASE_ONLY_OPTIONAL_TARGETS.len()
+    );
+
+    let resolved = profile::resolve(&performance_only, &[], 0)
+        .expect("missing optional performance targets must not refuse the profile");
+    assert!(resolved.targets.is_empty());
+    assert_eq!(
+        resolved
+            .absent_optional
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        RELEASE_ONLY_OPTIONAL_TARGETS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    );
 }
 
 #[test]

@@ -134,6 +134,19 @@ a TPF3 design: the stall timeout in [PROTOCOL.md](PROTOCOL.md) is sized as
 is an order of magnitude larger and pauses the game for 15-20 s on a fast
 machine, and a snapshot of that world is 1.4 GB on the wire.
 
+### Simulating (TF3)
+
+TF3's noise and pollution grids have 16 m cells, so their cost grows with
+the area: 1,602 x 16,002 floats each on 100 x 1000 tiles, eight times
+Gigantomaniac's, moved one step every update in up to three full-grid
+passes (about 1.75 GB of memory traffic per update; analysis in
+investigation/TF3_SIM_COST_2026-10-05.md). On every map size, the hook
+runs each step as one fused pass that leaves every bit as the game's passes
+would (2.1x faster offline on those grids), looks up components faster, and
+times the costliest systems in the `perf: sim` line; see
+[HOOKS.md](HOOKS.md), "The fast emission grid", "The game's own systems:
+the `perf: sim` line" and "The faster component lookup".
+
 ## What a load actually does
 
 The save holds the 4 m heightmap and every alignment. A load therefore
