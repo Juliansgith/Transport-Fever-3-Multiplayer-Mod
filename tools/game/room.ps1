@@ -145,6 +145,9 @@ for ($i = 1; $i -lt $pids.Count; $i++) {
 }
 # A lone host plays from step 1; with guests the host loads the room's save too.
 $hostReady = if ($Players -eq 1) { "playing the room's world from step 1" } else { "playing the room's world from its save" }
+# The guests can be ready before the host has replaced its own world.
+$deadline = (Get-Date).AddSeconds($GuestWait)
+while ((Get-Date) -lt $deadline -and -not (Hook-Says "p1" $hostReady)) { Start-Sleep -Seconds 3 }
 if (-not (Hook-Says "p1" $hostReady)) {
   throw "Host has not loaded the shared snapshot; test not ready in $runDir"
 }

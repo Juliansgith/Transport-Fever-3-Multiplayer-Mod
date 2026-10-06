@@ -3653,8 +3653,9 @@ acknowledged, and only on the thread running the game's step, inside it:
 there nothing changes the engine beside the step's own work. On build 40408
 the game script's `postUpdate` runs there (thread 3 in the hook's
 numbering, every time); its `update` runs on the game's pool of threads,
-one or another, and so does no reads. A call from anywhere else (the GUI's
-state, another mod's or the console) reads nothing and says so.
+one or another, and so does no reads. A call on any other thread (the
+GUI's state, the console) or outside a due check reads nothing and says
+so. These two guards are what is checked; which Lua state calls is not.
 
 A junction whose phases name its crosswalks in an order that matters is
 left to the mod: one with two crosswalks or more, one of whose phases
