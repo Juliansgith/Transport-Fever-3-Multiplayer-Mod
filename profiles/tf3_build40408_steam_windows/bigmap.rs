@@ -131,3 +131,42 @@ pub const SPACING_SQUARES: [(usize, [u8; 6]); 2] = [
 
 /// The score a candidate closer than the minimum gets (`[0x36bbe18]`).
 pub const SPACING_TOO_CLOSE: f32 = 99_999.0;
+
+/// The octree's descent (`detail::EcsOctreeIterator`), recursive.
+pub const DESCENT: &str = "bigmap::octree descent";
+
+/// The descent's only other caller, which starts it at the root.
+pub const DESCENT_START: &str = "bigmap::octree descent start";
+
+/// The descent's body where the depth-12 ids rely on it, by offset:
+/// where it reads its box (entry `rsp+0x48`) and its node (`+0x50`), the
+/// remaining depth's decrement (`+0x40`) and the leaf stop, and the child
+/// id `8·id + 1 + octant` in 32 bits.
+pub const DESCENT_CHECKS: [(usize, &[u8]); 4] = [
+    (0x85, &[0x4C, 0x8B, 0xAD, 0x60, 0x01, 0x00, 0x00]),
+    (0xa7, &[0x8B, 0x9D, 0x68, 0x01, 0x00, 0x00, 0x83, 0xFB, 0xFF]),
+    (0x37b, &[0x83, 0xAD, 0x58, 0x01, 0x00, 0x00, 0x01, 0x75, 0x27]),
+    (
+        0x4c9,
+        &[0x44, 0x8D, 0x0C, 0xC5, 0x01, 0x00, 0x00, 0x00, 0x45, 0x03, 0xCC],
+    ),
+];
+
+/// The starter's reads of the EcsOctree: `mov eax,[rcx+0x24]` (the root
+/// entity) at +0x5a and `mov edx,[rcx+0x20]` (the depth) at +0x60, and its
+/// call of the descent at +0xf8.
+pub const DESCENT_START_CHECKS: [(usize, &[u8]); 2] = [
+    (0x5a, &[0x8B, 0x41, 0x24]),
+    (0x60, &[0x8B, 0x51, 0x20]),
+];
+pub const DESCENT_START_CALL: usize = 0xf8;
+
+/// The EcsOctree the descent's `rcx` points at: the root box (min x, y, z,
+/// max x, y, z) at +8 and the depth at +0x20.
+pub const ECS_OCTREE_BOX: usize = 0x08;
+pub const ECS_OCTREE_DEPTH: usize = 0x20;
+
+/// The level decoder's splice: `mov r12d,r9d; cmp edx,r8d`, then `jl` past
+/// the loop.
+pub const DECODER: &str = "bigmap::octree level decoder";
+pub const DECODER_STOLEN: [u8; 6] = [0x45, 0x8B, 0xE1, 0x41, 0x3B, 0xD0];

@@ -20,6 +20,7 @@
 //! - [`placement`]: town and industry spacing in 64 bits, saturated,
 //!   [`PLACEMENT_ENV`].
 
+pub mod depth12;
 pub mod octree;
 pub mod placement;
 pub mod raster;

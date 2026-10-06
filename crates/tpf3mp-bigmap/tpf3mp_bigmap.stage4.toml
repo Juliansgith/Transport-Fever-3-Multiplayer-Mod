@@ -1,0 +1,32 @@
+# Big maps for Transport Fever 3, stage 4 (investigation/TF3_BIGMAPS_256KM_2026-10-05.md,
+# "Depth 12"): the 256 km edge. With TPF3MP_BIGMAP_OCTREE=12 the hook gives a
+# world with an axis over 512 tiles the octree root at depth 12 (±131,072 m,
+# 1,024 tiles), numbering its deepest level by cell; the street raster
+# (TPF3MP_BIGMAP_STREET_RASTER=1) and placement spacing
+# (TPF3MP_BIGMAP_PLACEMENT=1) patches must be on too.
+#
+# The rows are squares whose longer ratios reach 1,000 tiles: 316 tiles at
+# 1:10 is 1000 x 100 (256 x 25.6 km), 384 at 1:7 is 1022 x 146, 408 tiles at
+# 1:6 is 996 x 166 (255 x 42.5 km). With ratios up to 1:10 the narrowest 256 km map is 1000 x 100,
+# 6,554 km², which expects about 73 GB at the measured law; 32 and 64 GB
+# machines cannot reach 256 km at these ratios (1000 x 40 would be 1:25).
+#
+# Not wired to the mod: the mod's ladder stays stage 1's until depth 12 is
+# seen working in the game.
+
+[sizes]
+add_rows = true
+max_tiles = 1024
+rows = [
+    { label = "Big 32.8 km", tiles = 128 },
+    { label = "Big 45.1 km", tiles = 176 },
+    { label = "Big 65.5 km", tiles = 256 },
+    { label = "Big 80.9 km", tiles = 316 },
+    { label = "Big 98.3 km", tiles = 384 },
+    { label = "Big 104.4 km", tiles = 408 },
+]
+
+[limits]
+octree_depth = 12
+street_raster = true
+placement_distance = true

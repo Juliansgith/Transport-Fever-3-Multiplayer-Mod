@@ -208,6 +208,9 @@ const TARGETS: &[(&str, u64)] = &[
     ("bigmap::octree_root_load", 0x20267d),
     ("bigmap::Obstacle::Obstacle", 0x8cea50),
     ("bigmap::placement spacing", 0x8d31f0),
+    ("bigmap::octree descent", 0xae33c0),
+    ("bigmap::octree descent start", 0xae3950),
+    ("bigmap::octree level decoder", 0x818b5b),
 ];
 
 #[test]
@@ -400,6 +403,14 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
         assert_eq!(callee(site), 0x8cea50, "{site:#x} builds a raster");
     }
     assert_eq!(callee(0x8d63df), 0x8d31f0);
+    // Depth 12: the descent calls itself, its starter calls it, the two
+    // OctreeSystem functions call the starter, and the skip pass calls the
+    // level decoder.
+    assert_eq!(callee(0xae38cd), 0xae33c0);
+    assert_eq!(callee(0xae3a48), 0xae33c0);
+    assert_eq!(callee(0xae215f), 0xae3950);
+    assert_eq!(callee(0xae2920), 0xae3950);
+    assert_eq!(callee(0x2f345b), 0x818b30);
 
     // A required target's bytes changed: resolution fails closed.
     let mut tampered = text_bytes.to_vec();

@@ -5087,6 +5087,7 @@ of the room must have it (not checked by the room yet). Each logs a
 | switch | turns on |
 |---|---|
 | `TPF3MP_BIGMAP_OCTREE=11` | the octree root at depth 11 (±65,536 m) for worlds with an axis over 256 tiles, at the new-game and load sites |
+| `TPF3MP_BIGMAP_OCTREE=12` | as 11, and depth 12 (±131,072 m) for worlds with an axis over 512 tiles: the descent numbers the deepest level by cell and the renderer's level decoder reads those ids (`bigmap/depth12.rs`) |
 | `TPF3MP_BIGMAP_STREET_RASTER=1` | the street and obstacle raster's cell doubled (2, 4, 8 m) where 1 m would overflow 2^31 cells; every raster that fits is the game's |
 | `TPF3MP_BIGMAP_PLACEMENT=1` | town and industry spacing in 64 bits, saturated at `INT_MAX`; the game's scores to the bit wherever no pair is 185 km apart |
 

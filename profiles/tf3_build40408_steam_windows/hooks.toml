@@ -1730,3 +1730,38 @@ signature = "4C 8B DC 4D 89 4B 20 49 89 4B 08 57 41 55"
 offset = 0
 prologue = "4C 8B DC 4D 89 4B 20 49 89 4B 08 57 41 55"
 required = false
+
+# Depth 12 (crates/tpf3mp-hook/src/bigmap/depth12.rs; investigation/
+# TF3_BIGMAPS_256KM_2026-10-05.md, "Depth 12"). The octree's descent
+# (0xae33c0, detail::EcsOctreeIterator, EcsOctree.h): recursive, ten
+# arguments (rcx the EcsOctree, rdx the iterator returned, r8d the parent
+# node, r9d the node's id, then on the stack the octant, two pointers, the
+# remaining depth at +0x40, the node's box at +0x48, the node's entity or -1
+# at +0x50), child id `lea r9d,[rax*8+1]; add r9d,r12d` at +0x4c9.
+[[target]]
+name = "bigmap::octree descent"
+signature = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 E8 FE FF FF 48 81 EC E0 01 00 00 C5 F8 29 70 B8 C5 F8 29 78 A8 C5 78 29 40 98 C5 78 29 48 88 C5 78 29 90 78 FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 80 00 00 00 45 8B D1"
+offset = 0
+prologue = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55"
+required = false
+
+# Its only other caller (0xae3950), reached from OctreeSystem::vf4 and vf9:
+# starts the descent at the root with id 0, the depth from the EcsOctree's
+# +0x20 (`mov edx,[rcx+0x20]` at +0x60) and the root entity from +0x24.
+[[target]]
+name = "bigmap::octree descent start"
+signature = "4C 8B DC 53 48 81 EC E0 00 00 00 C4 C1 78 29 73 E8"
+offset = 0
+prologue = "4C 8B DC 53 48 81 EC E0 00 00 00 C4 C1 78 29 73 E8"
+required = false
+
+# The renderer's level decoder, `anonymous-namespace'::CalcOctreeLevel
+# (0x818b30, OctreeSkipManager.cpp): the instructions before its loop,
+# `mov r12d,r9d; cmp edx,r8d` (0x818b5b), spliced so an id of depth 12's
+# deepest level answers level 11 instead of looping forever.
+[[target]]
+name = "bigmap::octree level decoder"
+signature = "45 33 C9 4C 89 64 24 38 41 B8 01 00 00 00 4C 89 7C 24 20 45 8B E1 41 3B D0 7C 23"
+offset = 19
+prologue = "45 8B E1 41 3B D0"
+required = false

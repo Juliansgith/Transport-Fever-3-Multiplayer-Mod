@@ -151,8 +151,8 @@ impl WorldModel {
         octree_stock_depth: 10,
         octree_small_tiles: 128,
         octree_max_depth: Fact::derived(
-            11,
-            "the hook's root splice (crates/tpf3mp-hook/src/bigmap/octree.rs); depth 12 needs the descent 0xae33c0 patched, not built (investigation/TF3_BIGMAPS_256KM_2026-10-05.md)",
+            12,
+            "the hook's root splice (crates/tpf3mp-hook/src/bigmap/octree.rs) at 11; at 12 with the descent's deep ids and the decoder's splice (depth12.rs), run offline on the game's own code; depth 11 MEASURED in game 2026-10-05 (320 x 320)",
         ),
         patches_from_world: true,
         stock_max_tiles: Fact::derived(

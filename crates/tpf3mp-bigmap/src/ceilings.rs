@@ -141,9 +141,12 @@ pub fn check(world: &WorldModel, config: &Config, tiles_x: u32, tiles_y: u32) ->
         depth => depth.min(world.octree_max_depth.value),
     };
     // Derived from the world (TF3): the game's own root wherever it covers
-    // the map, so a stock-sized world runs stock code.
-    let octree_depth = if world.patches_from_world && half_m <= stock_root {
-        stock_depth
+    // the map, else the shallowest depth up to the one wanted that does, as
+    // the hook picks it.
+    let octree_depth = if world.patches_from_world {
+        (stock_depth..=wanted.max(stock_depth))
+            .find(|&d| half_m <= world.octree_half_m(d))
+            .unwrap_or(wanted)
     } else {
         wanted
     };
@@ -315,27 +318,42 @@ mod tests {
     }
 
     #[test]
-    fn tf3_has_no_depth_past_11_yet() {
-        assert_eq!(TF3.octree_max_depth.value, 11);
-        // 1,000 tiles (256 km) needs depth 12: blocked at 11 whatever the
-        // settings ask.
-        for depth in [11, 12, 13] {
-            let settings = config(&format!(
-                "[sizes]\nmax_tiles = 1000\n[limits]\nstreet_raster = true\nplacement_distance = true\noctree_depth = {depth}"
-            ));
-            let report = check(&TF3, &settings, 40, 1000);
-            assert!(
-                matches!(
-                    report.blocked[..],
-                    [Ceiling::OctreeRoot {
-                        half_m: 128_000,
-                        root_half_m: 65_536,
-                        depth: 11
-                    }]
-                ),
-                "{depth}: {report:?}"
-            );
+    fn tf3_reaches_1024_tiles_at_depth_12_and_no_further() {
+        assert_eq!(TF3.octree_max_depth.value, 12);
+        let at = |depth: u8| {
+            config(&format!(
+                "[sizes]\nmax_tiles = 2048\n[limits]\nstreet_raster = true\nplacement_distance = true\noctree_depth = {depth}"
+            ))
+        };
+        // 1,000 tiles (256 km): blocked at 11, depth 12 at 12 (and 13,
+        // which TF3 does not have, counts as 12).
+        let eleven = check(&TF3, &at(11), 40, 1000);
+        assert!(
+            matches!(
+                eleven.blocked[..],
+                [Ceiling::OctreeRoot {
+                    half_m: 128_000,
+                    root_half_m: 65_536,
+                    depth: 11
+                }]
+            ),
+            "{eleven:?}"
+        );
+        for depth in [12, 13] {
+            let report = check(&TF3, &at(depth), 40, 1000);
+            assert!(report.buildable(), "{report:?}");
+            assert_eq!(report.octree_depth, 12);
         }
+        // Set to 12, a world the stock root or depth 11 covers keeps it, as
+        // the hook does.
+        assert_eq!(check(&TF3, &at(12), 176, 176).octree_depth, 10);
+        assert_eq!(check(&TF3, &at(12), 60, 300).octree_depth, 11);
+        assert_eq!(check(&TF3, &at(12), 112, 112).octree_depth, 9);
+        // Past 1,024 tiles: blocked at 12.
+        assert!(matches!(
+            check(&TF3, &at(12), 20, 1026).blocked[..],
+            [Ceiling::OctreeRoot { depth: 12, .. }]
+        ));
         // TPF2's Big Maps reached 13.
         let tpf2 =
             config("[sizes]\nmax_tiles = 1024\n[limits]\nstreet_raster = true\noctree_depth = 12");
@@ -396,6 +414,51 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Ceiling::PlacementSpacing { .. }))
         );
+    }
+
+    #[test]
+    fn stage4_reaches_256_km_with_every_patch_covering_it() {
+        let (settings, notes) =
+            Config::from_toml(include_str!("../tpf3mp_bigmap.stage4.toml")).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        let mut longest = Vec::new();
+        for row in settings.rows(&TF3) {
+            let all = crate::ladder::shapes(&row, settings.sizes.max_tiles)
+                .into_iter()
+                .chain(crate::ladder::extra_shapes(row.tiles));
+            for (x, y) in all {
+                let report = check(&TF3, &settings, x, y);
+                if !report.buildable() {
+                    // Only the octree's 1,024 tiles stops a shape here.
+                    assert!(x.max(y) > 1024, "{} {x}x{y}: {report:?}", row.label);
+                    continue;
+                }
+                if x.max(y) > 512 {
+                    assert_eq!(report.octree_depth, 12, "{x}x{y}");
+                }
+                if x.max(y) >= 996 {
+                    longest.push((x, y, report.street_cell_m, report.peak_mb));
+                }
+            }
+        }
+        // 316 at 1:10, 384 at 1:7 and 408 at 1:6: 256 km long or more, the
+        // street raster at 2 or 4 m, placement past 185 km handled.
+        assert_eq!(
+            longest.iter().map(|s| (s.0, s.1, s.2)).collect::<Vec<_>>(),
+            [(1000, 100, 2), (1022, 146, 4), (996, 166, 4)]
+        );
+        let narrow = check(&TF3, &settings, 100, 1000);
+        assert!(
+            narrow
+                .handled
+                .iter()
+                .any(|c| matches!(c, Ceiling::PlacementSpacing { .. }))
+        );
+        assert!((longest[0].3 - (6_553.6 * 10.25 + 5_800.0)).abs() < 1.0);
+        // The memory table's 1000 x 186 too.
+        let wide = check(&TF3, &settings, 186, 1000);
+        assert!(wide.buildable());
+        assert_eq!((wide.octree_depth, wide.street_cell_m), (12, 4));
     }
 
     #[test]

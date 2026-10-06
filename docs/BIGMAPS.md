@@ -637,9 +637,9 @@ stock 32-bit scheme and the renderer's level decoder.
   `tf3_static_proof.rs` pins the three targets.
 
 The bigmap crate knows the new ceiling: `WorldModel::TF3_BUILD_40408`'s
-`octree_max_depth` is 11 and its patches are derived from the world, so
-`ceilings::check` keeps the stock depth wherever it covers the map and
-blocks anything over 512 tiles whatever `octree_depth` asks.
+`octree_max_depth` was 11 (12 since Stage 4) and its patches are derived
+from the world, so `ceilings::check` keeps the shallowest depth that covers
+the map, up to the one `octree_depth` asks, and blocks anything past it.
 `crates/tpf3mp-bigmap/tpf3mp_bigmap.stage2.toml` is Stage 1's rows with
 `max_tiles = 512` and `octree_depth = 11` (its longest shape, 176's 1:5,
 is 390 x 78); the mod's ladder stays Stage 1's until the root is seen
@@ -716,6 +716,55 @@ game:
 - placement: nothing to see until a map is longer than 724 tiles, which
   needs depth 12.
 
+### Stage 4: depth 12, the 256 km edge
+
+Built in the hook, not tested in the game yet
+(investigation/TF3_BIGMAPS_256KM_2026-10-05.md, "Depth 12, built"). With
+`TPF3MP_BIGMAP_OCTREE=12` a world with an axis over 512 tiles gets the
+octree root at depth 12, ±131,072 m (1,024 tiles, 262 km); 257 to 512
+tiles keep depth 11 and 256 or less the game's root.
+
+- **Why more than a root.** Depth 12's deepest level, 11, cannot be
+  numbered by the game's `8·id + 1 + octant` in 32 bits, and the
+  renderer's level decoder would loop forever on such ids. The hook
+  numbers level 11 by its 128 m cell, `0x50000000 + zslot·2²² + y·2¹¹ + x`
+  (128 height slots, ±8,192 m), in a detour of the descent, and splices
+  the decoder so these ids read as level 11. tpf2-bigmap drew deep ids from
+  counters; a counter's ids depend on the process's history, so in a room
+  two games would number differently. A cell id is the same in every game.
+- **Derived from the world.** The descent reads the depth from its own
+  tree: on any tree shallower than 12 both pieces pass everything through.
+- **Fails closed.** Three more optional targets (the descent, its
+  starter, the decoder site), the descent's body checked where the ids
+  depend on it, the starter checked to call it; the decoder and descent go
+  in first and the roots last, and any failure installs nothing.
+- **Tested against the game's own code**: the descent, its starter and the
+  decoder relocated from the executable, with the ECS calls answered by a
+  model of the component store, build a depth-12 tree from 3,000 objects
+  over a 1000 x 186 map: ids unique and positive, levels 0 to 11, 128 m
+  cells, every node's level read back by the decoder, the same ids when
+  the objects come in reverse order, and depth 11 unchanged.
+- **Shapes.** `crates/tpf3mp-bigmap/tpf3mp_bigmap.stage4.toml` (not wired
+  to the mod): "Big 80.9 km" (316 tiles) at 1:10 is 1000 x 100, 256 x 25.6
+  km, about 73 GB; "Big 104.4 km" at 1:6 is 996 x 166, about 118 GB. At
+  ratios up to 1:10 no 256 km map fits 32 or 64 GB.
+
+**The in-game test**, by a person, on a machine with 80 GB or more: the
+three switches on (`TPF3MP_BIGMAP_OCTREE=12`,
+`TPF3MP_BIGMAP_STREET_RASTER=1`, `TPF3MP_BIGMAP_PLACEMENT=1`), the ladder
+generated locally from stage 4 (`cargo run -p tpf3mp-bigmap -- --config
+crates/tpf3mp-bigmap/tpf3mp_bigmap.stage4.toml lua >
+mod/tpf3mp_bigmap_1/content/scripts/tpf3mp_bigmap/ladder.lua`, not
+committed), then New Game, "Big 80.9 km", ratio 1:10 (100 x 1000).
+`hook.log` shows the octree's `installed (... depth 12 (±131,072 m, deep
+ids by cell) over 512 ...)`, then `bigmap::octree_root_init: a world of
+100 x 1000 tiles; root at depth 12, ±131072 m`, `octree depth 12: first
+level-11 node numbered 0x5…` or `0x6…`, the street raster at 2 m and
+placement's first scores. No `Duplicate base nodes`, towns with streets at
+both ends, no freeze when panning the whole map, the far ends drawing as
+the centre does; save and reload show `octree_root_load ... depth 12`.
+The full list is in the investigation note.
+
 ### The rest of the prototype
 
 `crates/tpf3mp-bigmap` also carries the rest of Big Maps' features, as far
@@ -726,7 +775,7 @@ investigation):
 |---|---|
 | The added size rows (`add_size_rows`) | `ladder`: the rows and their 1:k shapes; on TF3, the mod's page copy above (`page`, `mod_data`). |
 | The street raster's 32-bit wall past 180 tiles (`street_raster`, `cell_budget_millions`) | `ceilings`: the cell count at the stock cell, and the cell the budget needs. TF3: the hook's detour of `0x8cea50`, only past the wall, in powers of two (Stage 3). |
-| The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. TF3: `octree_max_depth` 11, the hook's root splice at `0x244b8b` and `0x20267d` (Stage 2). |
+| The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. TF3: `octree_max_depth` 12, the hook's root splice at `0x244b8b` and `0x20267d` (Stage 2) and the deep ids and decoder splice (Stage 4). |
 | The heightmap's 32-bit pixel count (derived, about 722 tiles) | `ceilings`: refused, since no setting passes it. |
 | The memory law | `ceilings` and `world`: the expected peak for every size, before it is generated; `measure` checks it against a log. |
 | Density levels, placement attempts | `config` and `features`: settings that change the simulation. |

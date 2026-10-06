@@ -26,7 +26,7 @@
 
 #![allow(unsafe_code)]
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
 use tpf3mp_hookcore::detour::{SavedRegs, Splice};
 use tpf3mp_hookcore::profile::ResolvedProfile;
@@ -52,6 +52,10 @@ pub const STOCK_ROOT_TILES: i32 = 256;
 pub const DEPTH11_TILES: i32 = 512;
 /// Depth 11's depth and half extent.
 pub const DEPTH11: (i32, f32) = (11, 65_536.0);
+/// The longest axis depth 12 covers: ±131,072 m.
+pub const DEPTH12_TILES: i32 = 1024;
+/// Depth 12's depth and half extent.
+pub const DEPTH12: (i32, f32) = (12, 131_072.0);
 
 /// What the setting asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +64,9 @@ pub enum Setting {
     Off,
     /// Depth 11 for worlds with an axis over 256 tiles.
     Depth11,
+    /// Depth 11 over 256 tiles and depth 12 (crate::bigmap::depth12) over
+    /// 512.
+    Depth12,
 }
 
 /// The setting from [`OCTREE_ENV`]'s value; anything but `11`, `0` or
@@ -68,11 +75,9 @@ pub fn setting(value: Option<&str>) -> Result<Setting, String> {
     match value.map(str::trim) {
         None | Some("" | "0") => Ok(Setting::Off),
         Some("11") => Ok(Setting::Depth11),
-        Some("12" | "13") => Err(format!(
-            "{OCTREE_ENV}={} is not built on TF3 (only 11)",
-            value.unwrap_or_default().trim()
-        )),
-        Some(other) => Err(format!("{OCTREE_ENV}={other:?} is not 11 or 0")),
+        Some("12") => Ok(Setting::Depth12),
+        Some("13") => Err(format!("{OCTREE_ENV}=13 is not built on TF3 (11 or 12)")),
+        Some(other) => Err(format!("{OCTREE_ENV}={other:?} is not 12, 11 or 0")),
     }
 }
 
@@ -83,20 +88,24 @@ pub enum Root {
     Stock,
     /// Depth 11, ±65,536 m.
     Depth11,
-    /// Longer than depth 11 covers: left at the game's own, which damages
+    /// Depth 12, ±131,072 m.
+    Depth12,
+    /// Longer than the setting covers: left at the game's own, which damages
     /// the world.
     Beyond { tiles: i32 },
 }
 
-/// The root a world of `x` by `y` tiles gets with the patch on: the
-/// game's own up to 256 tiles, depth 11 up to 512, and past that nothing
-/// this hook can give.
-pub fn root_for(x: i32, y: i32) -> Root {
+/// The root a world of `x` by `y` tiles gets with the patch set to
+/// `setting`: the game's own up to 256 tiles, depth 11 up to 512, depth 12
+/// up to 1,024 when set to 12, and past that nothing this hook can give.
+pub fn root_for(x: i32, y: i32, setting: Setting) -> Root {
     let longest = x.max(y);
-    if longest <= STOCK_ROOT_TILES {
+    if setting == Setting::Off || longest <= STOCK_ROOT_TILES {
         Root::Stock
     } else if longest <= DEPTH11_TILES {
         Root::Depth11
+    } else if longest <= DEPTH12_TILES && setting == Setting::Depth12 {
+        Root::Depth12
     } else {
         Root::Beyond { tiles: longest }
     }
@@ -107,6 +116,8 @@ type ResizeFn = unsafe extern "system" fn(usize, i32, f32);
 
 /// `Resize`'s address while the patch is on; 0 otherwise.
 static RESIZE_AT: AtomicUsize = AtomicUsize::new(0);
+/// The setting the splices act on: 0 off, 11 or 12.
+static INSTALLED: AtomicI32 = AtomicI32::new(0);
 /// Set when the hook panicked: it does nothing more.
 static BROKEN: AtomicBool = AtomicBool::new(false);
 
@@ -138,13 +149,24 @@ fn after_resize(regs: &SavedRegs, site: &RootSite) {
         ));
         return;
     };
-    match root_for(x, y) {
+    let setting = match INSTALLED.load(Ordering::Acquire) {
+        12 => Setting::Depth12,
+        11 => Setting::Depth11,
+        _ => Setting::Off,
+    };
+    let root = root_for(x, y, setting);
+    let (depth, half) = if root == Root::Depth12 {
+        DEPTH12
+    } else {
+        DEPTH11
+    };
+    match root {
         Root::Stock => {}
         Root::Beyond { .. } => log::line(&format!(
-            "{FIX}: {}: a world of {x} x {y} tiles needs depth 12, which is not built; the game's root (±32,768 m) stays and entities past it will be lost",
+            "{FIX}: {}: a world of {x} x {y} tiles is past what {OCTREE_ENV} reaches; the game's root (±32,768 m) stays and entities past it will be lost",
             site.target
         )),
-        Root::Depth11 => {
+        Root::Depth11 | Root::Depth12 => {
             let owner = reg(regs, site.owner);
             let octree = read::<usize>(owner.wrapping_add(OCTREE_FIELD as u64)).unwrap_or(0);
             let resize = RESIZE_AT.load(Ordering::Acquire);
@@ -155,7 +177,6 @@ fn after_resize(regs: &SavedRegs, site: &RootSite) {
                 ));
                 return;
             }
-            let (depth, half) = DEPTH11;
             // SAFETY: the game's own Resize (the profile resolved it, and
             // install checked each site calls it), on the octree the site
             // just resized, on the game's thread, before anything is in it:
@@ -261,19 +282,45 @@ pub fn install(resolved: &ResolvedProfile) -> String {
 /// [`install`] with the setting given. The splices are kept for the life
 /// of the game.
 pub fn install_with(resolved: &ResolvedProfile, wanted: Setting) -> String {
+    // Depth 12's ids and decoder go in first; the roots that use them last.
+    let deep = if wanted == Setting::Depth12 {
+        match super::depth12::install(resolved) {
+            Ok(deep) => Some(deep),
+            Err(why) => return outcome_line(false, &format!("depth 12: {why}")),
+        }
+    } else {
+        None
+    };
     match install_splices(resolved, wanted) {
         Ok(splices) => {
+            let reach = if deep.is_some() {
+                format!(
+                    "depth 11 (±65,536 m) for worlds with an axis over {STOCK_ROOT_TILES} tiles and depth 12 (±131,072 m, deep ids by cell) over {DEPTH11_TILES}"
+                )
+            } else {
+                format!(
+                    "depth 11, ±65,536 m, for worlds with an axis over {STOCK_ROOT_TILES} tiles"
+                )
+            };
+            let setting = if deep.is_some() { 12 } else { 11 };
             let line = outcome_line(
                 true,
                 &format!(
-                    "depth 11, ±65,536 m, for worlds with an axis over {STOCK_ROOT_TILES} tiles, at {} sites; every game of a room on such a world needs {OCTREE_ENV}=11",
+                    "{reach}, at {} sites; every game of a room on such a world needs {OCTREE_ENV}={setting}",
                     splices.len()
                 ),
             );
-            let _kept = std::mem::ManuallyDrop::new(splices);
+            let _kept = std::mem::ManuallyDrop::new((splices, deep));
             line
         }
-        Err(why) => outcome_line(false, &why),
+        Err(why) => {
+            if let Some(deep) = deep {
+                // SAFETY: nothing runs the game's code yet.
+                let _ = unsafe { deep.descent.detach() };
+                let _ = unsafe { deep.decoder.detach() };
+            }
+            outcome_line(false, &why)
+        }
     }
 }
 
@@ -284,7 +331,7 @@ pub(crate) fn install_splices(
 ) -> Result<Vec<Splice>, String> {
     if wanted == Setting::Off {
         return Err(format!(
-            "{OCTREE_ENV} is not set to 11; the game's own root"
+            "{OCTREE_ENV} is not set to 11 or 12; the game's own root"
         ));
     }
     let resize = resolved
@@ -315,6 +362,10 @@ pub(crate) fn install_splices(
         found.push((address + ROOT_NEXT_OFFSET, site, hook));
     }
     RESIZE_AT.store(resize as usize, Ordering::Release);
+    INSTALLED.store(
+        if wanted == Setting::Depth12 { 12 } else { 11 },
+        Ordering::Release,
+    );
     let mut splices = Vec::new();
     for (next, site, hook) in found {
         // SAFETY: the instruction after the site's call, checked to be the
@@ -329,6 +380,7 @@ pub(crate) fn install_splices(
                     let _ = unsafe { splice.detach() };
                 }
                 RESIZE_AT.store(0, Ordering::Release);
+                INSTALLED.store(0, Ordering::Release);
                 return Err(format!("{} at {next:#x}: {error}", site.target));
             }
         }
@@ -339,6 +391,7 @@ pub(crate) fn install_splices(
 #[cfg(test)]
 pub(crate) fn reset() {
     RESIZE_AT.store(0, Ordering::Release);
+    INSTALLED.store(0, Ordering::Release);
     BROKEN.store(false, Ordering::Release);
 }
 
@@ -352,21 +405,57 @@ mod tests {
         assert_eq!(setting(Some("")), Ok(Setting::Off));
         assert_eq!(setting(Some("0")), Ok(Setting::Off));
         assert_eq!(setting(Some(" 11 ")), Ok(Setting::Depth11));
-        assert!(setting(Some("12")).unwrap_err().contains("not built"));
+        assert_eq!(setting(Some("12")), Ok(Setting::Depth12));
+        assert!(setting(Some("13")).unwrap_err().contains("not built"));
         assert!(setting(Some("on")).is_err());
     }
 
     #[test]
     fn only_worlds_past_256_tiles_move_the_root() {
-        assert_eq!(root_for(112, 112), Root::Stock, "Gigantomaniac");
-        assert_eq!(root_for(50, 250), Root::Stock, "Gigantomaniac 1:5");
-        assert_eq!(root_for(176, 176), Root::Stock, "Stage 1's largest");
-        assert_eq!(root_for(256, 2), Root::Stock, "exactly the stock root");
-        assert_eq!(root_for(258, 2), Root::Depth11);
-        assert_eq!(root_for(60, 300), Root::Depth11);
-        assert_eq!(root_for(512, 512), Root::Depth11);
-        assert_eq!(root_for(186, 1000), Root::Beyond { tiles: 1000 });
-        assert_eq!(root_for(514, 2), Root::Beyond { tiles: 514 });
+        assert_eq!(
+            root_for(112, 112, Setting::Depth11),
+            Root::Stock,
+            "Gigantomaniac"
+        );
+        assert_eq!(
+            root_for(50, 250, Setting::Depth11),
+            Root::Stock,
+            "Gigantomaniac 1:5"
+        );
+        assert_eq!(
+            root_for(176, 176, Setting::Depth11),
+            Root::Stock,
+            "Stage 1's largest"
+        );
+        assert_eq!(
+            root_for(256, 2, Setting::Depth11),
+            Root::Stock,
+            "exactly the stock root"
+        );
+        assert_eq!(root_for(258, 2, Setting::Depth11), Root::Depth11);
+        assert_eq!(root_for(60, 300, Setting::Depth11), Root::Depth11);
+        assert_eq!(root_for(512, 512, Setting::Depth11), Root::Depth11);
+        assert_eq!(
+            root_for(186, 1000, Setting::Depth11),
+            Root::Beyond { tiles: 1000 }
+        );
+        assert_eq!(
+            root_for(514, 2, Setting::Depth11),
+            Root::Beyond { tiles: 514 }
+        );
+        // Set to 12: the same up to 512, depth 12 up to 1,024.
+        for (x, y, root) in [
+            (176, 176, Root::Stock),
+            (60, 300, Root::Depth11),
+            (512, 512, Root::Depth11),
+            (186, 1000, Root::Depth12),
+            (2, 1024, Root::Depth12),
+            (2, 1026, Root::Beyond { tiles: 1026 }),
+        ] {
+            assert_eq!(root_for(x, y, Setting::Depth12), root, "{x} x {y}");
+        }
+        assert_eq!(root_for(186, 1000, Setting::Off), Root::Stock);
+        assert_eq!(f64::from(DEPTH12.1), f64::from(DEPTH12_TILES) * 128.0);
     }
 
     #[test]
@@ -612,6 +701,28 @@ mod original_tests {
         // Detached: the game's own code again.
         for (site, run) in &rig.runs {
             assert_eq!(root(*run, site, 300, 60), (10, 32_768.0, -32_768.0));
+        }
+        reset();
+    }
+
+    #[test]
+    fn set_to_12_the_games_sites_get_depth_12_past_512_tiles() {
+        let Some(exe) = Exe::load() else { return };
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        reset();
+        let rig = rig(&exe);
+        let splices = install_splices(&rig.resolved, Setting::Depth12).unwrap();
+        for (site, run) in &rig.runs {
+            assert_eq!(root(*run, site, 176, 176), (10, 32_768.0, -32_768.0));
+            assert_eq!(root(*run, site, 60, 300), (11, 65_536.0, -65_536.0));
+            assert_eq!(root(*run, site, 512, 62), (11, 65_536.0, -65_536.0));
+            assert_eq!(root(*run, site, 1000, 186), (12, 131_072.0, -131_072.0));
+            assert_eq!(root(*run, site, 2, 1024), (12, 131_072.0, -131_072.0));
+            assert_eq!(root(*run, site, 2, 1026), (10, 32_768.0, -32_768.0));
+        }
+        for splice in splices {
+            // SAFETY: nothing runs the relocated sites now.
+            unsafe { splice.detach() }.unwrap();
         }
         reset();
     }
