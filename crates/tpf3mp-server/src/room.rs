@@ -2879,7 +2879,10 @@ impl Room {
         if !feeds.is_empty()
             && let Some((step, event, world)) = handed
         {
-            game.forget_reports_after(step, event, world, now);
+            let forgotten = game.forget_reports_after(step, event, world, now);
+            if forgotten > 0 {
+                info!(room = %self.id, step, forgotten, "forgot reports past the world handed out from games that did not play it");
+            }
         }
         let mut slow = Vec::new();
         for (index, (feed, stream_from)) in feeds {
@@ -3778,9 +3781,17 @@ impl Game {
     /// A round that loses reports is decided again from the ones it keeps,
     /// with a fresh deadline; one that loses all of them is dropped, and a
     /// report opens it again unless a later round closed since (then that
-    /// step goes unchecked, as any closed round's).
-    fn forget_reports_after(&mut self, step: u64, event: u64, world: SnapshotId, now: Instant) {
+    /// step goes unchecked, as any closed round's). Returns how many
+    /// reports it forgot.
+    fn forget_reports_after(
+        &mut self,
+        step: u64,
+        event: u64,
+        world: SnapshotId,
+        now: Instant,
+    ) -> usize {
         let current = Some(world);
+        let mut forgotten = 0;
         let mut emptied = Vec::new();
         for (&at, round) in self.rounds.range_mut(step.saturating_add(1)..) {
             let before = round.reports.len();
@@ -3788,6 +3799,7 @@ impl Game {
             if round.reports.len() == before {
                 continue;
             }
+            forgotten += before - round.reports.len();
             if round.reports.is_empty() {
                 emptied.push(at);
             } else {
@@ -3799,8 +3811,11 @@ impl Game {
             self.rounds.remove(&at);
         }
         for (_, round) in self.saves.rounds.range_mut(event.saturating_add(1)..) {
+            let before = round.reports.len();
             round.reports.retain(|save| save.report.loaded == current);
+            forgotten += before - round.reports.len();
         }
+        forgotten
     }
 
     fn close_round(&mut self, step: u64) {
@@ -4775,7 +4790,7 @@ mod tests {
             },
         );
 
-        game.forget_reports_after(8208, 556, world, now);
+        assert_eq!(game.forget_reports_after(8208, 556, world, now), 7);
 
         let steps: Vec<u64> = game.rounds.keys().copied().collect();
         assert_eq!(
