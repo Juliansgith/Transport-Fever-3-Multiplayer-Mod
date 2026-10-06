@@ -211,6 +211,12 @@ const TARGETS: &[(&str, u64)] = &[
     ("bigmap::octree descent", 0xae33c0),
     ("bigmap::octree descent start", 0xae3950),
     ("bigmap::octree level decoder", 0x818b5b),
+    // The emission throttle (crates/tpf3mp-hook/src/bigmap/emission.rs).
+    ("bigmap::EmissionGridSystem::Update", 0xaa9230),
+    ("bigmap::EmissionGridSystem vtable load", 0xaa7ea9),
+    ("bigmap::EmissionEmitterSystem::Update2", 0xaa51c0),
+    ("bigmap::EmissionEmitterSystem vtable load", 0xaa402f),
+    ("bigmap::CreateEmissionGrid", 0xba0170),
 ];
 
 #[test]
@@ -411,6 +417,52 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     assert_eq!(callee(0xae215f), 0xae3950);
     assert_eq!(callee(0xae2920), 0xae3950);
     assert_eq!(callee(0x2f345b), 0x818b30);
+    // The emission throttle: each constructor's lea names the vtable whose
+    // slot holds the function the profile pins (EmissionGridSystem slot 11,
+    // EmissionEmitterSystem slot 12), and Engine::Update calls slot 11.
+    let rdata = pe.section(".rdata").expect("an .rdata section");
+    let rdata_bytes = rdata.raw(&image).expect(".rdata raw bytes");
+    let slot_holds = |lea: u64, slot: u64| {
+        let i = at(lea);
+        assert_eq!(
+            &text_bytes[i..i + 3],
+            &[0x48, 0x8D, 0x05],
+            "a lea at {lea:#x}"
+        );
+        let disp = i32::from_le_bytes(text_bytes[i + 3..i + 7].try_into().unwrap());
+        let vtable = (lea as i64 + 7 + i64::from(disp)) as u64;
+        let at = usize::try_from(vtable + slot * 8 - u64::from(rdata.virtual_address)).unwrap();
+        u64::from_le_bytes(rdata_bytes[at..at + 8].try_into().unwrap()) - 0x1_4000_0000
+    };
+    assert_eq!(slot_holds(0xaa7ea9, 11), 0xaa9230);
+    assert_eq!(slot_holds(0xaa402f, 12), 0xaa51c0);
+    assert_eq!(
+        &text_bytes[at(0x2bb8ae8)..at(0x2bb8ae8) + 4],
+        &[0x41, 0xFF, 0x51, 0x58],
+        "Engine::Update: call [r9+0x58]"
+    );
+    assert_eq!(
+        &text_bytes[at(0xaa59c1)..at(0xaa59c1) + 4],
+        &[0x41, 0xFF, 0x51, 0x60],
+        "EmissionEmitterSystem's slot 11: call [r9+0x60]"
+    );
+    // The emission cells: the new-game path creates both grids, the factor
+    // load reads 0.0625 and the coarse constant holds 0.125.
+    assert_eq!(callee(0x1559ef), 0xba0170);
+    assert_eq!(callee(0x155a4f), 0xba0170);
+    let rdata_f32 = |rva: u64| {
+        let at = usize::try_from(rva - u64::from(rdata.virtual_address)).unwrap();
+        f32::from_le_bytes(rdata_bytes[at..at + 4].try_into().unwrap())
+    };
+    assert_eq!(rdata_f32(0x36a3a64), 0.0625);
+    assert_eq!(rdata_f32(0x36b2fa4), 0.125);
+    for shift in [0xba0201, 0xba0212, 0xba021b] {
+        assert_eq!(&text_bytes[at(shift)..at(shift) + 3], &[0xC1, 0xE0, 0x04]);
+    }
+    assert_eq!(
+        &text_bytes[at(0xba0225)..at(0xba0225) + 3],
+        &[0xC1, 0xE1, 0x04]
+    );
 
     // A required target's bytes changed: resolution fails closed.
     let mut tampered = text_bytes.to_vec();

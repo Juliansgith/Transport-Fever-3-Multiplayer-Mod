@@ -30,6 +30,10 @@ pub struct Terms {
     pub placement_attempts: u32,
     /// Whether the added town and industry levels are in use.
     pub density_levels: bool,
+    /// The emission throttle's N (1: the game's own). A proposal that
+    /// changes the simulation (docs/BIGMAPS.md, "Simulation switches
+    /// (proposal)").
+    pub emission_every: u32,
 }
 
 impl Terms {
@@ -41,13 +45,16 @@ impl Terms {
             street_cell_m: report.street_cell_m,
             placement_attempts: config.generation.placement_attempts,
             density_levels: config.generation.density_levels,
+            emission_every: config.simulation.emission_every,
         }
     }
 
     /// A fingerprint of the terms, the same on every platform: SHA-256 of a
     /// fixed text form, versioned so a future field changes every print.
+    /// The simulation switches add a line only when they are not the
+    /// game's own, so a room that does not use them keeps its print.
     pub fn fingerprint(&self) -> [u8; 32] {
-        let text = format!(
+        let mut text = format!(
             "tpf3mp-bigmap-terms/1\ntiles={}x{}\noctree_depth={}\nstreet_cell_m={}\nplacement_attempts={}\ndensity_levels={}\n",
             self.tiles.0,
             self.tiles.1,
@@ -56,6 +63,9 @@ impl Terms {
             self.placement_attempts,
             u8::from(self.density_levels),
         );
+        if self.emission_every != 1 {
+            text.push_str(&format!("emission_every={}\n", self.emission_every));
+        }
         Sha256::digest(text.as_bytes()).into()
     }
 
@@ -77,6 +87,9 @@ impl Terms {
         }
         if self.density_levels != room.density_levels {
             differ.push("density levels");
+        }
+        if self.emission_every != room.emission_every {
+            differ.push("emission throttle");
         }
         differ
     }
@@ -119,6 +132,20 @@ mod tests {
             320,
         );
         assert_eq!(fewer.differences(&room), ["placement attempts"]);
+    }
+
+    #[test]
+    fn the_emission_throttle_is_a_term() {
+        let room = terms("[simulation]\nemission_every = 4", 320);
+        let stock = terms("", 320);
+        assert_ne!(room.fingerprint(), stock.fingerprint());
+        assert_eq!(stock.differences(&room), ["emission throttle"]);
+        let other = terms("[simulation]\nemission_every = 2", 320);
+        assert_eq!(other.differences(&room), ["emission throttle"]);
+        assert_eq!(
+            terms("[simulation]\nemission_every = 4", 320).fingerprint(),
+            room.fingerprint()
+        );
     }
 
     #[test]

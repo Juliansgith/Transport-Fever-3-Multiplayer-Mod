@@ -36,7 +36,7 @@ pub struct Feature {
 }
 
 /// Big Maps' features, as TF3 would carry them.
-pub const FEATURES: [Feature; 7] = [
+pub const FEATURES: [Feature; 8] = [
     Feature {
         // TPF2: UI::GetNumTilesNew (MenuUI.cpp:264) and the size dropdown's
         // fill. TF3's New Game page is a script: the mod's copy of it
@@ -99,6 +99,21 @@ pub const FEATURES: [Feature; 7] = [
         effect: Effect::Ui,
         targets: &[],
         wanted: |config| config.ui.minimap,
+    },
+    Feature {
+        // A proposal with no TPF2 counterpart: the emission grid's update
+        // and the emitters' splat on every Nth update, by the saved update
+        // counter. TF3: two vtable slots (crates/tpf3mp-hook/src/bigmap/
+        // emission.rs).
+        name: "emission_every",
+        effect: Effect::Simulation,
+        targets: &[
+            "bigmap::EmissionGridSystem::Update",
+            "bigmap::EmissionGridSystem vtable load",
+            "bigmap::EmissionEmitterSystem::Update2",
+            "bigmap::EmissionEmitterSystem vtable load",
+        ],
+        wanted: |config| config.simulation.emission_every != 1,
     },
 ];
 
@@ -266,6 +281,12 @@ mod tests {
             "{refusal}"
         );
         assert_eq!(plan_all(&settings).refusal(), None);
+        let throttled = config("[simulation]\nemission_every = 4");
+        let throttled = super::plan(&throttled, |target| !target.contains("Emitter"));
+        assert!(matches!(
+            throttled.state("emission_every"),
+            Some(State::Refused { missing }) if missing.len() == 2
+        ));
     }
 
     fn plan_all(config: &Config) -> Plan {
@@ -280,7 +301,7 @@ mod tests {
             .filter(|f| {
                 matches!(
                     f.name,
-                    "octree_depth" | "street_raster" | "placement_distance"
+                    "octree_depth" | "street_raster" | "placement_distance" | "emission_every"
                 )
             })
             .flat_map(|f| f.targets)
