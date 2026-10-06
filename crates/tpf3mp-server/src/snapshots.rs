@@ -466,6 +466,7 @@ mod tests {
                     lane: 0,
                     digest: FixedBytes([lane; 32]),
                 }],
+                loaded: None,
             },
             world: world.map(|id| SavedWorld {
                 snapshot: SnapshotId(FixedBytes([id; 32])),

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tpf3mp_proto::{FixedBytes, LaneDigest, Platform, PlayerId};
+use tpf3mp_proto::{FixedBytes, LaneDigest, Platform, PlayerId, SnapshotId};
 
 /// One member's digests at a checkpoint.
 #[derive(Debug, Clone)]
@@ -14,6 +14,11 @@ pub(crate) struct Report {
     pub(crate) order: usize,
     /// Sorted by lane, one entry per lane.
     pub(crate) lanes: Vec<LaneDigest>,
+    /// The world the reporter's game played, as the room knew when the
+    /// report came: the snapshot it last loaded, `None` if unknown. Verdicts
+    /// ignore it; the room uses it to forget reports from worlds nobody
+    /// plays any more.
+    pub(crate) loaded: Option<SnapshotId>,
 }
 
 /// The agreed digest of every lane. A lane the verdict lacks is one the
@@ -122,6 +127,7 @@ mod tests {
                     digest: digest(value),
                 })
                 .collect(),
+            loaded: None,
         }
     }
 
