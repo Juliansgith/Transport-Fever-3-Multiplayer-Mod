@@ -490,3 +490,31 @@ fn the_density_sliders_get_one_level_per_ladder_row() {
         assert!(answer.is_nil(), "{param} {level}");
     }
 }
+
+#[test]
+fn no_string_in_the_copys_blocks_runs_past_its_line() {
+    // Teal, like Lua, ends a "..." string at the line: one that runs on
+    // makes the whole page fail to load (the hook then serves the game's).
+    let copy = content(page::COPY_PATH);
+    let mut inside = false;
+    for (number, line) in copy.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("-- TPF3-MP begin:") {
+            inside = true;
+            continue;
+        }
+        if trimmed.starts_with("-- TPF3-MP was:") || trimmed.starts_with("-- TPF3-MP end") {
+            inside = false;
+            continue;
+        }
+        if !inside || trimmed.starts_with("--") {
+            continue;
+        }
+        let quotes = line
+            .replace("\\\\", "")
+            .replace("\\\"", "")
+            .matches('"')
+            .count();
+        assert!(quotes % 2 == 0, "line {}: {line}", number + 1);
+    }
+}
