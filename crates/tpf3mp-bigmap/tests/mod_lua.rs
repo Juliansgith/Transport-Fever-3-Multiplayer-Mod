@@ -518,3 +518,157 @@ fn no_string_in_the_copys_blocks_runs_past_its_line() {
         assert!(quotes % 2 == 0, "line {}: {line}", number + 1);
     }
 }
+
+/// The ratios `menu.extraRatios` offers (1 is 1:6) and its note.
+fn extra(
+    menu: &Table,
+    shapes: Value,
+    peak_mb: f64,
+    ram_mb: Option<u32>,
+) -> (Vec<i64>, Option<String>) {
+    let values = call(menu, "extraRatios", (shapes, peak_mb, ram_mb, "Huge"));
+    let offered = match &values[0] {
+        Value::Table(t) => t
+            .sequence_values::<Value>()
+            .map(|v| int(&v.unwrap()))
+            .collect(),
+        other => panic!("{other:?}"),
+    };
+    let note = match values.get(1) {
+        Some(Value::String(s)) => Some(s.to_str().unwrap().to_string()),
+        _ => None,
+    };
+    (offered, note)
+}
+
+#[test]
+fn every_size_has_its_longer_ratios_or_false() {
+    let (_lua, _menu, ladder) = menu();
+    for row in ladder.clone().sequence_values::<Table>() {
+        let shapes: Table = row.unwrap().get("shapes").unwrap();
+        assert_eq!(shapes.raw_len(), 10, "1:1 to 1:10");
+    }
+    let stock: Table = ladder.get("stock").unwrap();
+    for size in TF3_BUILD_40408 {
+        let square = size.shapes[0].0;
+        let entry: Table = stock.get(square).unwrap();
+        let shapes: Table = entry.get("shapes").unwrap();
+        assert_eq!(shapes.raw_len(), 5, "{}: 1:6 to 1:10", size.name);
+        for (k, shape) in (6..).zip(shapes.sequence_values::<Value>()) {
+            if let Value::Table(shape) = shape.unwrap() {
+                let (x, y): (u32, u32) = (shape.get(1).unwrap(), shape.get(2).unwrap());
+                // Stage 1: inside every wall stock TF3 keeps, and 1:k long.
+                assert!(stock::inside_stock_walls(&TF3, x, y), "{} 1:{k}", size.name);
+                assert_eq!(x, y * k, "{} 1:{k}", size.name);
+            }
+        }
+    }
+    // Megalomaniac reaches 1:6 (40 x 240); Gigantomaniac, already 250 long at
+    // 1:5, reaches nothing longer at stage 1.
+    let mega: Table = stock.get(96).unwrap();
+    let mega: Table = mega.get("shapes").unwrap();
+    assert!(matches!(mega.get::<Value>(1).unwrap(), Value::Table(_)));
+    assert!(matches!(
+        mega.get::<Value>(2).unwrap(),
+        Value::Boolean(false)
+    ));
+    let gig: Table = stock.get(112).unwrap();
+    let gig: Table = gig.get("shapes").unwrap();
+    assert!(
+        gig.sequence_values::<Value>()
+            .all(|v| matches!(v.unwrap(), Value::Boolean(false)))
+    );
+}
+
+#[test]
+fn a_longer_ratio_is_offered_only_where_it_can_be_built_and_fits() {
+    let (_lua, menu, ladder) = menu();
+    let huge = call(&menu, "stockShapes", (ladder.clone(), 80));
+    let (shapes, peak) = (
+        huge[0].clone(),
+        match &huge[1] {
+            v @ (Value::Integer(_) | Value::Number(_)) => int(v) as f64,
+            other => panic!("{other:?}"),
+        },
+    );
+    // Huge (80 tiles): 1:6 to 1:9 inside the walls, 1:10 (260 x 26) past
+    // stage 1's 250.
+    let (offered, note) = extra(&menu, shapes.clone(), peak, Some(32 * 1024));
+    assert_eq!(offered, [1, 2, 3, 4]);
+    assert_eq!(
+        note.as_deref(),
+        Some("1:10 of Huge is past what these settings can build.")
+    );
+    // Not enough memory, or not known: none, and why.
+    let (offered, note) = extra(&menu, shapes.clone(), peak, Some(4 * 1024));
+    assert!(offered.is_empty());
+    assert!(note.unwrap().contains("needs about 10 GB"));
+    let (offered, note) = extra(&menu, shapes.clone(), peak, None);
+    assert!(offered.is_empty());
+    assert!(note.unwrap().contains("memory is not known"));
+    // The tiles of 1:8, the short side first.
+    let tiles = call(&menu, "extraTiles", (shapes.clone(), 3));
+    assert_eq!(tiles.iter().map(int).collect::<Vec<_>>(), [28, 224]);
+    assert!(matches!(
+        call(&menu, "extraTiles", (shapes, 5))[..],
+        [Value::Nil, ..]
+    ));
+    // An added row at stage 1 has no longer ratio: none, with the reason.
+    let row: Table = ladder.get(1).unwrap();
+    let shapes: Value = row.get("shapes").unwrap();
+    let (offered, note) = extra(&menu, shapes, 16_836.0, Some(32 * 1024));
+    assert!(offered.is_empty());
+    assert!(
+        note.unwrap()
+            .starts_with("1:6, 1:7, 1:8, 1:9, 1:10 of Huge are past")
+    );
+    // No size known: nothing offered, nothing said.
+    let (offered, note) = extra(&menu, Value::Nil, 0.0, Some(32 * 1024));
+    assert!(offered.is_empty() && note.is_none());
+}
+
+#[test]
+fn the_ratio_dropdown_keeps_map_format_a_value_the_game_knows() {
+    let (lua, menu, _ladder) = menu();
+    let numbers: Table = lua.create_table().unwrap();
+    let offered: Table = lua.load("{ 1, 2, 4 }").eval().unwrap();
+    let values: Table = lua
+        .load("{ '1:1', '1:2', '1:3', '1:4', '1:5' }")
+        .eval()
+        .unwrap();
+    let labels: Vec<String> = {
+        let f: Function = menu.get("formatValues").unwrap();
+        f.call((values, offered.clone())).unwrap()
+    };
+    assert_eq!(
+        labels,
+        ["1:1", "1:2", "1:3", "1:4", "1:5", "1:6", "1:7", "1:9"]
+    );
+    let choose = |index: i64| -> (i64, i64) {
+        let v = call(
+            &menu,
+            "formatChoose",
+            (index, 5, numbers.clone(), offered.clone()),
+        );
+        (int(&v[0]), int(&v[1]))
+    };
+    // The game's own ratios set themselves; an added one sets 1:5 and its pick.
+    assert_eq!(choose(2), (2, 0));
+    assert_eq!(choose(6), (5, 1));
+    assert_eq!(choose(8), (5, 4), "the third added entry is 1:9");
+    assert_eq!(choose(9), (5, 0), "past the list: the game's last, no pick");
+    let index_of = |value: i64, pick: i64| -> i64 {
+        int(&call(
+            &menu,
+            "formatIndexOf",
+            (value, pick, 5, numbers.clone(), offered.clone()),
+        )[0])
+    };
+    assert_eq!(index_of(3, 0), 3);
+    assert_eq!(index_of(5, 4), 8);
+    assert_eq!(
+        index_of(5, 3),
+        5,
+        "a pick no longer offered shows the game's 1:5"
+    );
+}

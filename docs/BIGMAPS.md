@@ -557,6 +557,49 @@ the world was made at an added density level (above).
   runner (`tools/scenarios/roads.json`, `rail.json`), the checkpoints
   agreeing.
 
+### Longer ratios: 1:6 to 1:10
+
+The New Game page's ratio dropdown gets 1:6, 1:7, 1:8, 1:9 and 1:10 after
+the game's own 1:1 to 1:5, for the game's sizes and the added rows alike:
+long edges are reached by ratio, not by squares nobody's memory holds
+(investigation/TF3_BIGMAPS_256KM_2026-10-05.md §6). Not tested in the game
+yet.
+
+- **Shapes.** A ratio 1:k keeps about the 1:1 square's area: the short
+  side is the square's edge over √k, rounded to an even count, and the
+  long side k times that, never capped (`ladder::long_shape`). Gigantomaniac
+  (112) gives 46 x 276 at 1:6 up to 36 x 360 at 1:10; Megalomaniac (96)
+  40 x 240 at 1:6.
+- **Gated as the rows are.** `ladder.lua` holds each added row's ten
+  shapes and, under `stock`, each game size's five added ones (keyed by its
+  1:1 edge, which the page asks the game's `getNumTiles` for), `false`
+  where the settings cannot build one; `peakMb` covers the largest
+  buildable one. The dropdown lists only the ratios the picked size can be
+  built at on this machine, and a line under it says why the others are
+  missing. At Stage 1's walls (no axis past 250 tiles) that is 1:6 to 1:10
+  for Tiny to Large and Very Large, 1:6 to 1:9 for Huge, 1:6 for
+  Megalomaniac, and none for Gigantomaniac or the added rows; with the
+  Stage 2 and 3 patches the same ratios open further (the settings files
+  there are not wired to the mod yet).
+- **The game's `map.format` stays 1:5** when an added ratio is picked, as
+  `map.size` stays Gigantomaniac for an added row: the save and every
+  reader of `map.format` see a value the game knows (`getNumTiles` clamps
+  the index to the game's list). The pick is the page's state. A save at
+  1:7 shows as 1:5 in the load page; its real size is its terrain's.
+- **Without the game's five ratios** (no experimental sizes: 1:1 to 1:3),
+  or without the mod's scripts, the dropdown is the game's own.
+- **The preview** (`builtin.MapPreviewComp`) generates the whole map at the
+  shape picked, so the memory gate covers it too.
+
+**Still to test in the game**, by a person: with experimental sizes, pick
+Huge and see 1:6 to 1:9 offered with the 1:10 line; pick 1:8 and see the
+preview regenerate at 28 x 224; start the game and check the log's
+`area=` and the world's size; save and load, and see the load page show
+1:5; pick Gigantomaniac and see no added ratio, with the reason; switch
+from 1:8 on Huge to Gigantomaniac and see the dropdown fall back to 1:5.
+The page copy is Teal checked only by the game itself: if it does not
+load, the hook serves the game's page and the log says why.
+
 ### Stage 2: the octree root at depth 11, up to 512 tiles
 
 Built in the hook, not tested in the game yet

@@ -16,10 +16,17 @@
 //! km², so it is the area ratio, `(stock max tiles / row tiles)²`. The page
 //! offers one density level per row in the ladder (every row, offered or
 //! not, so a level means the same on every machine).
+//!
+//! Each row has ten shapes: the game's ratios 1:1 to 1:5, then the ratios
+//! the page adds, 1:6 to 1:10 ([`crate::ladder::EXTRA_RATIOS`]), which keep
+//! the square's area and are never capped: a long side past the settings'
+//! walls is `false`. `stock` gives the game's own sizes the same added
+//! ratios, keyed by their 1:1 edge in tiles, with the peak of the largest
+//! buildable one.
 
 use crate::ceilings::check;
 use crate::config::Config;
-use crate::ladder::shapes;
+use crate::ladder::{extra_shapes, shapes};
 use crate::world::WorldModel;
 
 /// The mod's data file for `config`, on `world`. Rows none of whose shapes
@@ -41,28 +48,14 @@ pub fn lua(world: &WorldModel, config: &Config) -> String {
     for row in config.rows(world) {
         let reports: Vec<_> = shapes(&row, config.sizes.max_tiles)
             .into_iter()
+            .chain(extra_shapes(row.tiles))
             .map(|(x, y)| check(world, config, x, y))
             .collect();
-        let built: Vec<Option<(u32, u32)>> = reports
-            .iter()
-            .map(|report| report.buildable().then_some(report.tiles))
-            .collect();
-        if built.iter().all(Option::is_none) {
+        if !reports.iter().any(crate::ceilings::SizeReport::buildable) {
             continue;
         }
-        let peak_mb = reports
-            .iter()
-            .filter(|report| report.buildable())
-            .map(|report| report.peak_mb)
-            .fold(0.0, f64::max)
-            .ceil();
-        let cells: Vec<String> = built
-            .into_iter()
-            .map(|shape| match shape {
-                Some((x, y)) => format!("{{ {x}, {y} }}"),
-                None => "false".to_owned(),
-            })
-            .collect();
+        let peak_mb = peak(&reports);
+        let cells = cells(&reports);
         let stock_tiles = f64::from(world.stock_max_tiles.value);
         let density_scale = (stock_tiles / f64::from(row.tiles)).powi(2);
         out.push_str(&format!(
@@ -72,8 +65,48 @@ pub fn lua(world: &WorldModel, config: &Config) -> String {
             cells.join(", ")
         ));
     }
-    out.push_str("}\n");
+    // The game's own sizes at the added ratios, by the 1:1 square's edge in
+    // tiles (the page asks the game's getNumTiles for it).
+    out.push_str("\tstock = {\n");
+    for size in crate::stock::TF3_BUILD_40408 {
+        let square = size.shapes[0].0;
+        let reports: Vec<_> = extra_shapes(square)
+            .into_iter()
+            .map(|(x, y)| check(world, config, x, y))
+            .collect();
+        out.push_str(&format!(
+            "\t\t[{square}] = {{ peakMb = {}, shapes = {{ {} }} }},\n",
+            peak(&reports),
+            cells(&reports).join(", ")
+        ));
+    }
+    out.push_str("\t},\n}\n");
     out
+}
+
+/// Generation's expected peak for the largest buildable shape, in MB; 0
+/// when none is.
+fn peak(reports: &[crate::ceilings::SizeReport]) -> f64 {
+    reports
+        .iter()
+        .filter(|report| report.buildable())
+        .map(|report| report.peak_mb)
+        .fold(0.0, f64::max)
+        .ceil()
+}
+
+/// Each shape as Lua: `{ x, y }`, or `false` where it cannot be built.
+fn cells(reports: &[crate::ceilings::SizeReport]) -> Vec<String> {
+    reports
+        .iter()
+        .map(|report| {
+            if report.buildable() {
+                format!("{{ {}, {} }}", report.tiles.0, report.tiles.1)
+            } else {
+                "false".to_owned()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -103,7 +136,9 @@ mod tests {
             .find(|line| line.contains("\"40 x 40 km\""))
             .unwrap();
         assert!(
-            row.ends_with("{ 160, 160 }, { 228, 114 }, false, false, false } },"),
+            row.ends_with(
+                "{ 160, 160 }, { 228, 114 }, false, false, false, false, false, false, false, false } },"
+            ),
             "{row}"
         );
     }

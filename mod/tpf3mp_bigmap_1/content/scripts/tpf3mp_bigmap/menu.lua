@@ -155,6 +155,114 @@ function menu.gameTiles(rows, pick, ratioIndex)
 	return math.min(x, y), math.max(x, y)
 end
 
+-- Longer ratios. The ratio dropdown gets 1:6 to 1:10 after the game's own
+-- 1:1 to 1:5: what makes long edges reachable. Each keeps about the 1:1
+-- square's area (ladder.lua has the shapes, false where the settings
+-- cannot build one). The game's "map.format" stays its own last ratio,
+-- 1:5, so the save and every other reader see a value the game knows; the
+-- added ratio picked is the page's (1 is 1:6), as the added row picked is.
+menu.STOCK_RATIOS = 5
+menu.EXTRA_RATIOS = { 6, 7, 8, 9, 10 }
+
+-- The added ratios offered for one size: `shapes` its ten shapes (an added
+-- row's, or a stock entry's five added ones placed after five nils),
+-- `peakMb` the largest one's expected peak, `label` its name. Returns the
+-- picks offered (1 is 1:6), and a line saying why any other is missing.
+function menu.extraRatios(shapes, peakMb, ramMb, label)
+	local offered, missing = {}, {}
+	if type(shapes) ~= "table" then
+		return offered, nil
+	end
+	for i, k in ipairs(menu.EXTRA_RATIOS) do
+		if shapes[menu.STOCK_RATIOS + i] then
+			offered[#offered + 1] = i
+		else
+			missing[#missing + 1] = "1:" .. k
+		end
+	end
+	if #offered > 0 and (type(ramMb) ~= "number" or ramMb <= 0) then
+		return {}, "Longer ratios are hidden: this computer's memory is not known."
+	end
+	if #offered > 0 and type(peakMb) == "number" and peakMb > ramMb then
+		return {}, string.format(
+			"Longer ratios of %s are hidden: generating them needs about %d GB of memory, and this computer has %d GB.",
+			label,
+			math.ceil(peakMb / 1024),
+			math.floor(ramMb / 1024)
+		)
+	end
+	if #missing == 0 then
+		return offered, nil
+	end
+	return offered, string.format(
+		"%s of %s %s past what these settings can build.",
+		table.concat(missing, ", "),
+		label,
+		#missing == 1 and "is" or "are"
+	)
+end
+
+-- The ten shapes of the game's own size whose 1:1 square is `squareTiles`
+-- (the five added ones after five nils), its peak, and its label; or nil.
+function menu.stockShapes(ladder, squareTiles)
+	local stock = type(ladder) == "table" and ladder.stock or nil
+	local entry = stock and stock[squareTiles] or nil
+	if entry == nil then
+		return nil
+	end
+	local shapes = {}
+	for i, shape in ipairs(entry.shapes) do
+		shapes[menu.STOCK_RATIOS + i] = shape
+	end
+	return shapes, entry.peakMb, string.format("%d x %d tiles", squareTiles, squareTiles)
+end
+
+-- The ratio dropdown's entries: the game's own, then the added ratios
+-- offered.
+function menu.formatValues(stockValues, offered)
+	local values = {}
+	for i = 1, #stockValues do
+		values[i] = stockValues[i]
+	end
+	for _, pick in ipairs(offered) do
+		values[#values + 1] = "1:" .. menu.EXTRA_RATIOS[pick]
+	end
+	return values
+end
+
+-- The dropdown's entry (from 1) for the game's "map.format" `value` and the
+-- added ratio picked (0 for none).
+function menu.formatIndexOf(value, ratioPick, stockCount, stockNumbers, offered)
+	for position, pick in ipairs(offered) do
+		if pick == ratioPick then
+			return stockCount + position
+		end
+	end
+	return menu.indexOf(value, 0, stockCount, stockNumbers, 0)
+end
+
+-- What picking the ratio dropdown's entry `index` (from 1) sets: the game's
+-- "map.format" value (its last ratio for an added one) and the added ratio
+-- picked (0 for one of the game's own).
+function menu.formatChoose(index, stockCount, stockNumbers, offered)
+	if index > stockCount and offered[index - stockCount] ~= nil then
+		local value = menu.choose(stockCount, stockCount, stockNumbers)
+		return value, offered[index - stockCount]
+	end
+	local value = menu.choose(math.min(index, stockCount), stockCount, stockNumbers)
+	return value, 0
+end
+
+-- The tiles of `shapes` at the added ratio `ratioPick` (from 1), the short
+-- side first; or nil and the reason.
+function menu.extraTiles(shapes, ratioPick)
+	local shape = type(shapes) == "table" and shapes[menu.STOCK_RATIOS + ratioPick] or nil
+	if not shape then
+		return nil, "no shape at 1:" .. tostring(menu.EXTRA_RATIOS[ratioPick])
+	end
+	return math.min(shape[1], shape[2]), math.max(shape[1], shape[2])
+end
+
 -- Density levels. Town and industry counts are a density per km², so a big
 -- map at the stock sliders has many more towns and industries than any
 -- stock map. The Town Density and Industry Density sliders get one more

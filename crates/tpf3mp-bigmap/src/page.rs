@@ -88,7 +88,8 @@ local ModSelectorPage = ug_require "mod_selector_page.tl" as Recipe<IMenuPagePar
 "#;
 
 const REQUIRES_COPY: &str = r#"-- TPF3-MP: the game's gui/menu/new_game_or_map_settings_page.tl with big
--- maps' size rows added to the size dropdown (docs/BIGMAPS.md, "Stage 1").
+-- maps' size rows added to the size dropdown and its ratios 1:6 to 1:10 to
+-- the ratio dropdown (docs/BIGMAPS.md, "Stage 1" and "Longer ratios").
 -- The hook serves this copy in place of the game's file and falls back to
 -- the game's own page if it does not load. Each change is a marked block,
 -- the game's lines it replaces kept under "was" as comments: re-apply them
@@ -120,6 +121,7 @@ local record BigmapRow
 	label : string
 	tiles : integer
 	peakMb : number
+	shapes : any
 end
 
 local record BigmapMenu
@@ -131,6 +133,13 @@ local record BigmapMenu
 	gameTiles : function(rows : {BigmapRow}, pick : integer, ratioIndex : integer) : any, any
 	densityValues : function(stockValues : {string}, ladder : {BigmapRow}) : {string}
 	STOCK_DENSITY_LEVELS : integer
+	STOCK_RATIOS : integer
+	extraRatios : function(shapes : any, peakMb : any, ramMb : number, label : any) : {integer}, string
+	stockShapes : function(ladder : {BigmapRow}, squareTiles : integer) : any, any, any
+	formatValues : function(stockValues : {string}, offered : {integer}) : {string}
+	formatIndexOf : function(value : number, ratioPick : integer, stockCount : integer, stockNumbers : {number}, offered : {integer}) : integer
+	formatChoose : function(index : integer, stockCount : integer, stockNumbers : {number}, offered : {integer}) : number, integer
+	extraTiles : function(shapes : any, ratioPick : integer) : any, any
 end
 
 local bigmapMenuLoaded, bigmapMenuValue = pcall(ug_require, "tpf3mp_bigmap_1::/scripts/tpf3mp_bigmap/menu.lua")
@@ -172,15 +181,40 @@ local function bigmapRefresh()
 	end
 end
 
--- The tiles of the added row picked at the ratio `format` (0-based, as
--- getNumTiles has it), or nil for one of the game's own rows.
-local function bigmapNumTiles(format : integer) : Vec2i
-	if bigmap == nil or bigmapPick < 1 then
+-- The added ratio picked (1 is 1:6), 0 for one of the game's own; page
+-- state as the row picked is.
+local bigmapRatio = 0
+local bigmapRatioState : ReactStateT<integer> = nil
+-- Set while the game's own 1:1 square is asked for, so the answer is the
+-- game's.
+local bigmapInSquare = false
+
+-- The tiles of the added row picked, or of the added ratio picked, at the
+-- ratio `format` (0-based, as getNumTiles has it); nil for the game's own.
+-- `square` asks the game for the size's 1:1 square.
+local function bigmapNumTiles(format : integer, square : function() : Vec2i) : Vec2i
+	if bigmap == nil or bigmapInSquare or (bigmapPick < 1 and bigmapRatio < 1) then
 		return nil
 	end
-	local ok, x, y = pcall(bigmap.gameTiles, bigmapRows, bigmapPick, format)
+	local ok, x, y : boolean, any, any = false, nil, nil
+	if bigmapPick >= 1 then
+		local ratioIndex = format
+		if bigmapRatio >= 1 then
+			ratioIndex = bigmap.STOCK_RATIOS - 1 + bigmapRatio
+		end
+		ok, x, y = pcall(bigmap.gameTiles, bigmapRows, bigmapPick, ratioIndex)
+	else
+		bigmapInSquare = true
+		local got, size = pcall(square)
+		bigmapInSquare = false
+		if not got or size == nil then
+			return nil
+		end
+		local shapes = bigmap.stockShapes(bigmapLadder, (size as Vec2i).x)
+		ok, x, y = pcall(bigmap.extraTiles, shapes, bigmapRatio)
+	end
 	if not ok or type(x) ~= "number" or type(y) ~= "number" then
-		pcall(debugPrint, "[tpf3mp] big maps: no shape for row " .. tostring(bigmapPick) .. " at ratio " .. tostring(format) .. " (" .. tostring(y or x) .. "); the game's own size is used")
+		pcall(debugPrint, "[tpf3mp] big maps: no shape for row " .. tostring(bigmapPick) .. " at ratio " .. tostring(format) .. "/" .. tostring(bigmapRatio) .. " (" .. tostring(y or x) .. "); the game's own size is used")
 		return nil
 	end
 	return api.type.Vec2i.new(x as integer, y as integer)
@@ -319,13 +353,113 @@ const INDUSTRY_DENSITY: &str = r#"		new_game_react_util.searchBuildAndAddScriptP
 		)
 "#;
 
-const NUM_TILES: &str = r#"	local bigmapSize = bigmapNumTiles(format)
+const NUM_TILES: &str = r#"	local bigmapSize = bigmapNumTiles(format, function() : Vec2i
+		return getNumTiles(size + 1, 1)
+	end)
 	if bigmapSize ~= nil then
 		return bigmapSize
 	end
 "#;
 
+const FORMAT: &str = r#"-- The ratio dropdown: the game's ratios, then 1:6 to 1:10 where the size
+-- picked can be built at them on this machine (scripts/tpf3mp_bigmap/
+-- menu.lua). An added ratio sets "map.format" to the game's last ratio, so
+-- the save and every other reader see a value the game knows, and keeps
+-- its own pick here. A line under the dropdown says why a ratio is missing.
+-- Without the mod's scripts, or a ratio list other than the game's five,
+-- the game's own dropdown.
+local function bigmapAddMapFormatSettingsEntry(settings : {NewGameReactUtil.SettingsEntry}, activeModsParamsState : ReactStateT<{string : {string : integer}}>, filterTags : {string})
+	local scriptParam = script_param_util.getScriptParam("map.format", filterTags)
+	if bigmap == nil or scriptParam == nil or bigmapRatioState == nil or #scriptParam.values ~= bigmap.STOCK_RATIOS then
+		bigmapRatio = 0
+		new_game_react_util.addMapFormatSettingsEntry(settings, activeModsParamsState, filterTags)
+		return
+	end
+	local shapes, peakMb, label : any, any, any = nil, nil, nil
+	if bigmapPick >= 1 and bigmapRows[bigmapPick] ~= nil then
+		local row = bigmapRows[bigmapPick]
+		shapes, peakMb, label = row.shapes, row.peakMb, row.label
+	else
+		bigmapInSquare = true
+		local got, square = pcall(getNumTiles, activeModsParamsState:old()[""]["map.size"], 1)
+		bigmapInSquare = false
+		if got and square ~= nil then
+			shapes, peakMb, label = bigmap.stockShapes(bigmapLadder, (square as Vec2i).x)
+		end
+	end
+	local ok, offered, note = pcall(bigmap.extraRatios, shapes, peakMb, bigmap.ramMb(), label)
+	if not ok then
+		pcall(debugPrint, "[tpf3mp] big maps: " .. tostring(offered) .. "; the game's own ratios")
+		bigmapRatio = 0
+		new_game_react_util.addMapFormatSettingsEntry(settings, activeModsParamsState, filterTags)
+		return
+	end
+	local ratios = offered as {integer}
+	local still = false
+	for __, pick in ipairs(ratios) do
+		if pick == bigmapRatio then
+			still = true
+		end
+	end
+	if not still then
+		bigmapRatio = 0
+	end
+	local stockCount = #scriptParam.values
+	local stockNumbers = scriptParam.numbers
+	local paramForUi : ScriptParamUtil.ParamForUi = {
+		uiType = scriptParam.uiType,
+		defaultIndex = scriptParam.defaultIndex,
+		name = scriptParam.name,
+		values = bigmap.formatValues(scriptParam.values, ratios),
+		numbers = nil,
+		tooltips = nil,
+		allowCoalesce = true,
+	}
+	local element = script_param_util.buildScriptParamCompSimple({
+		scriptParam = paramForUi,
+		currentValue = bigmap.formatIndexOf(activeModsParamsState:old()[""]["map.format"], bigmapRatio, stockCount, stockNumbers, ratios),
+		onValueChange = function(value : number)
+			local mapFormat, pick = bigmap.formatChoose(math.floor(value), stockCount, stockNumbers, ratios)
+			bigmapRatio = pick
+			bigmapRatioState:set(pick)
+			local copy = table_util.copy(activeModsParamsState:old())
+			copy[""]["map.format"] = mapFormat as integer
+			if not table_util.deepEquals(copy, activeModsParamsState:old()) then
+				activeModsParamsState:set(copy)
+			end
+		end,
+		toggleButtonsFlowLayout = false,
+		vertical = false,
+		addSpacer = true,
+	})
+	table.insert(settings, {
+		title = scriptParam.name,
+		description = scriptParam.tooltip,
+		hintIdKey = "hintIdKey" .. scriptParam.name,
+		element = element,
+	})
+	if note ~= nil then
+		table.insert(settings, {
+			title = "",
+			description = "",
+			element = script_param_util.wrap(
+				_("Big maps"),
+				false,
+				builtin.TextView{
+					meta = { class = "right-parameters, font-scale-body" },
+					text = tostring(note),
+				},
+				true
+			),
+		})
+	end
+end
+
+"#;
+
 const RENDER: &str = r#"	bigmapRefresh()
+	bigmapRatioState = react.useState(bigmapRatio) as ReactStateT<integer>
+	bigmapRatio = bigmapRatioState:old()
 	bigmapPickState = react.useState(bigmapPick) as ReactStateT<integer>
 	bigmapPick = bigmapPickState:old()
 	if bigmapPick > #bigmapRows then
@@ -333,7 +467,7 @@ const RENDER: &str = r#"	bigmapRefresh()
 	end
 "#;
 
-const EDITS: [Edit; 8] = [
+const EDITS: [Edit; 10] = [
     Edit {
         why: "the game's files by absolute path",
         anchor: REQUIRES,
@@ -385,6 +519,20 @@ const EDITS: [Edit; 8] = [
         lines: "		bigmapAddDensitySettingsEntry(settingsCiv, activeModsParamsState, \"locations.industry.initialIndustryDensity\", filterTags, {\"locations.industry.targetIndustryDensity\"})
 ",
         count: 1,
+    },
+    Edit {
+        why: "big maps' longer ratios, 1:6 to 1:10",
+        anchor: "local createMap = function(baseModParams : {string:integer}, configDict : {{string, string}}) : GameMap\n",
+        place: Place::Before,
+        lines: FORMAT,
+        count: 1,
+    },
+    Edit {
+        why: "the ratio dropdown with the longer ratios",
+        anchor: "\t\tnew_game_react_util.addMapFormatSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n",
+        place: Place::Replace,
+        lines: "\t\tbigmapAddMapFormatSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n",
+        count: 2,
     },
     Edit {
         why: "the added row picked is page state, so a pick redraws the page and its preview",
@@ -536,8 +684,12 @@ mod tests {
             "{REQUIRES}{TOWN_DENSITY}{INDUSTRY_DENSITY}\n-- zero-based getter -.-\nlocal function getNumTiles(size : integer, format : integer) : Vec2i\n\
              \tformat = script_param_util.clampScriptParamValueIndex(format, mapFormatParam) - 1\n\
              \treturn api.type.Vec2i.new(16, 16)\nend\n\
+             local createMap = function(baseModParams : {{string:integer}}, configDict : {{{{string, string}}}}) : GameMap\n\
+             end\n\
              \t\tnew_game_react_util.addMapSizeSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n\
+             \t\tnew_game_react_util.addMapFormatSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n\
              \t\tnew_game_react_util.addMapSizeSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n\
+             \t\tnew_game_react_util.addMapFormatSettingsEntry(settingsWorld, activeModsParamsState, filterTags)\n\
              local NewGameOrMapSettingsPage = react.RegisterRecipe(\"NewGameOrMapSettingsPage\", function(createNewMapPageParams : MenuPageParam<CreateNewMapParam>) : TreeNodeId\n\
              end)\n"
         )
@@ -549,8 +701,9 @@ mod tests {
         let copy = build(&game).unwrap();
         assert_ne!(copy, game);
         assert_eq!(original(&copy).unwrap(), game);
-        assert_eq!(copy.matches(BEGIN).count(), 9, "eight edits, one twice");
+        assert_eq!(copy.matches(BEGIN).count(), 12, "ten edits, two twice");
         assert!(copy.contains("\t\tbigmapAddMapSizeSettingsEntry("));
+        assert!(copy.contains("\t\tbigmapAddMapFormatSettingsEntry("));
         assert!(copy.contains(
             "\t\tbigmapAddDensitySettingsEntry(settingsCiv, activeModsParamsState, \"locations.towns.frequency\""
         ));

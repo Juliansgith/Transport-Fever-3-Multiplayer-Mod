@@ -69,6 +69,25 @@ pub fn shapes(row: &SizeRow, max_tiles: u32) -> [(u32, u32); 5] {
     RATIOS.map(|k| shape(row.tiles, k, max_tiles))
 }
 
+/// The ratios the New Game page adds after the game's own five: what makes
+/// long edges reachable. Only the mod's page offers them; the game's
+/// `map.format` stays its own last ratio, 1:5.
+pub const EXTRA_RATIOS: [u32; 5] = [6, 7, 8, 9, 10];
+
+/// The shape 1:`k` gives a square of `tiles`, as (long side, short side):
+/// the square's area kept, the short side even, never capped. A shape
+/// longer than the settings allow is not built at all, rather than
+/// squeezed into another ratio.
+pub fn long_shape(tiles: u32, k: u32) -> (u32, u32) {
+    let short = even(f64::from(tiles) / f64::from(k.max(1)).sqrt());
+    (short.saturating_mul(k), short)
+}
+
+/// A square's shapes at the added ratios.
+pub fn extra_shapes(tiles: u32) -> [(u32, u32); 5] {
+    EXTRA_RATIOS.map(|k| long_shape(tiles, k))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +130,25 @@ mod tests {
                     (area / square - 1.0).abs() < 0.05,
                     "1:{k} of {tiles}: {long}x{short}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn the_added_ratios_keep_the_squares_area_uncapped() {
+        // Gigantomaniac's 112: 1:5 is the game's own 50 x 250.
+        assert_eq!(long_shape(112, 5), (250, 50));
+        assert_eq!(
+            extra_shapes(112),
+            [(276, 46), (294, 42), (320, 40), (342, 38), (360, 36)]
+        );
+        // Megalomaniac's 96 at 1:6 stays inside the stock root.
+        assert_eq!(long_shape(96, 6), (240, 40));
+        for tiles in [32, 96, 176, 384] {
+            for (long, short) in extra_shapes(tiles) {
+                assert_eq!(short % 2, 0);
+                let area = f64::from(long * short) / f64::from(tiles * tiles);
+                assert!((area - 1.0).abs() < 0.25, "{tiles}: {long}x{short}");
             }
         }
     }
