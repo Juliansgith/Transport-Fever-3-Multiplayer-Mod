@@ -2192,10 +2192,17 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     // SAFETY: as above.
     unsafe {
-        (api.createtable)(l, 0, 5);
+        (api.createtable)(l, 0, 7);
         let table = (api.gettop)(l);
         push_str(api, l, b"mode");
         push_str(api, l, mode.name().as_bytes());
+        (api.rawset)(l, table);
+        let (parts, stride) = crate::netread::plan();
+        push_str(api, l, b"parts");
+        (api.pushnumber)(l, f64::from(parts));
+        (api.rawset)(l, table);
+        push_str(api, l, b"stride");
+        (api.pushnumber)(l, f64::from(stride));
         (api.rawset)(l, table);
         push_str(api, l, b"ms");
         (api.pushnumber)(l, ms);

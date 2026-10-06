@@ -426,6 +426,22 @@ impl<'m> Store<'m> {
     /// The data index of `kind` in `entity`'s component list: `None` for a
     /// removed entity, `Err` when the list lacks it or lists it twice.
     fn index(&self, entity: usize, kind: &Kind) -> Result<Option<i32>, String> {
+        let Some([index]) = self.indices(entity, [kind])? else {
+            return Ok(None);
+        };
+        index
+            .map(Some)
+            .ok_or_else(|| format!("entity {entity} has the {0} bit but no {0}", kind.name))
+    }
+
+    /// The data index of each of `kinds` in `entity`'s component list, from
+    /// one read of it: `None` for a removed entity, each `None` where the
+    /// list lacks that kind, `Err` when it lists one twice.
+    fn indices<const N: usize>(
+        &self,
+        entity: usize,
+        kinds: [&Kind; N],
+    ) -> Result<Option<[Option<i32>; N]>, String> {
         let record: [u8; layout::ENTITY_RECORD] = read_array(
             self.memory,
             self.records + entity * layout::ENTITY_RECORD,
@@ -448,19 +464,19 @@ impl<'m> Store<'m> {
         if count == 1 && i32_at(list, 0) < 0 {
             return Ok(None);
         }
-        let mut index = None;
+        let mut found = [None; N];
         for p in 0..count {
             let id = i32_at(list, p * layout::COMPONENT_PAIR);
-            if usize::try_from(id).ok() == Some(kind.id) {
-                if index.is_some() {
-                    return Err(format!("entity {entity} lists {} twice", kind.name));
+            for (kind, index) in kinds.iter().zip(found.iter_mut()) {
+                if usize::try_from(id).ok() == Some(kind.id) {
+                    if index.is_some() {
+                        return Err(format!("entity {entity} lists {} twice", kind.name));
+                    }
+                    *index = Some(i32_at(list, p * layout::COMPONENT_PAIR + 4));
                 }
-                index = Some(i32_at(list, p * layout::COMPONENT_PAIR + 4));
             }
         }
-        index
-            .map(Some)
-            .ok_or_else(|| format!("entity {entity} has the {0} bit but no {0}", kind.name))
+        Ok(Some(found))
     }
 
     /// Whether `entity`'s component bits hold `kind`.
@@ -497,21 +513,32 @@ impl<'m> Store<'m> {
 
     /// Every entity whose component bits hold `kind`, in id order.
     fn with(&self, kind: &Kind) -> Result<Vec<usize>, String> {
-        let word = (kind.id / 64) * 8;
-        let bit = kind.id % 64;
-        let mut out = Vec::new();
+        let [out] = self.with_each([kind])?;
+        Ok(out)
+    }
+
+    /// For each of `kinds`, every entity whose component bits hold it, in
+    /// id order: one pass over the bits for all.
+    fn with_each<const N: usize>(&self, kinds: [&Kind; N]) -> Result<[Vec<usize>; N], String> {
+        let at: [(usize, usize); N] = kinds.map(|kind| ((kind.id / 64) * 8, kind.id % 64));
+        let mut out: [Vec<usize>; N] = std::array::from_fn(|_| Vec::new());
+        let mut bits = vec![0u8; CHUNK * layout::BITS_PER_ENTITY];
         let mut first = 0;
         while first < self.entities {
             let n = CHUNK.min(self.entities - first);
-            let bits = read(
-                self.memory,
-                self.bits + first * layout::BITS_PER_ENTITY,
-                n * layout::BITS_PER_ENTITY,
-                "the component bits",
-            )?;
+            let chunk = &mut bits[..n * layout::BITS_PER_ENTITY];
+            if !self
+                .memory
+                .read_into(self.bits + first * layout::BITS_PER_ENTITY, chunk)
+            {
+                return Err("the component bits does not read".into());
+            }
             for i in 0..n {
-                if u64_at(&bits, i * layout::BITS_PER_ENTITY + word) >> bit & 1 == 1 {
-                    out.push(first + i);
+                let entity = &chunk[i * layout::BITS_PER_ENTITY..(i + 1) * layout::BITS_PER_ENTITY];
+                for ((word, bit), list) in at.iter().zip(out.iter_mut()) {
+                    if u64_at(entity, *word) >> bit & 1 == 1 {
+                        list.push(first + i);
+                    }
                 }
             }
             first += n;
@@ -676,6 +703,25 @@ pub fn construction_rows(
     Ok(rows)
 }
 
+/// PROTOTYPE: how many parts a room's history takes and every how many
+/// updates one is read, `NxS` (default `10x1`), for measuring; a room
+/// keeps what its first update found.
+pub const PLAN_ENV: &str = "TPF3MP_HOOK_PARTS";
+
+/// [`PLAN_ENV`]'s parts and stride, read once.
+pub fn plan() -> (u32, u32) {
+    static PLAN: OnceLock<(u32, u32)> = OnceLock::new();
+    *PLAN.get_or_init(|| {
+        let value = std::env::var(PLAN_ENV).unwrap_or_default();
+        let parsed = value.trim().split_once(['x', 'X']).and_then(|(n, s)| {
+            let (n, s) = (n.parse::<u32>().ok()?, s.parse::<u32>().ok()?);
+            (1..=MAX_PARTS).contains(&n).then_some(())?;
+            (1..=1000).contains(&s).then_some((n, s))
+        });
+        parsed.unwrap_or((10, 1))
+    })
+}
+
 /// The side of a part's cell (lanes.lua, `lanes.rowPart`): 256 m, in the
 /// whole tenths of a metre edge and construction rows place their objects
 /// at, and in the millimetres of a junction row's node key.
@@ -714,33 +760,25 @@ fn millimetres(v: f32) -> Result<i64, String> {
     Ok(t as i64)
 }
 
-/// The place an edge row starts at (its first end, `a`, the one whose text
-/// sorts first) in whole tenths.
+/// The place an edge's row puts it at in whole tenths: of its two ends (to
+/// 0.1 m, as the row gives them), the lower by x, then y, then z.
 fn edge_anchor(edge: &[u8]) -> Result<(i64, i64), String> {
-    let text = |offset: usize| -> Result<String, String> {
-        let mut parts = Vec::with_capacity(3);
-        for k in 0..3 {
-            parts.push(q01_text(f32_at(edge, offset + 4 * k))?);
-        }
-        Ok(parts.join(","))
+    let end = |offset: usize| -> Result<(i64, i64, i64), String> {
+        Ok((
+            tenths(f32_at(edge, offset))?,
+            tenths(f32_at(edge, offset + 4))?,
+            tenths(f32_at(edge, offset + 8))?,
+        ))
     };
-    let first =
-        if text(layout::EDGE_POSITION0)?.as_bytes() > text(layout::EDGE_POSITION1)?.as_bytes() {
-            layout::EDGE_POSITION1
-        } else {
-            layout::EDGE_POSITION0
-        };
-    Ok((
-        tenths(f32_at(edge, first))?,
-        tenths(f32_at(edge, first + 4))?,
-    ))
+    let (x, y, _) = end(layout::EDGE_POSITION0)?.min(end(layout::EDGE_POSITION1)?);
+    Ok((x, y))
 }
 
 /// One part of the static lanes, read natively for a rolling check: the
 /// network lane's edge rows and junction rows and the constructions lane's
 /// rows of the objects in part `k` of `n` ([`part_of`]): an edge by the
-/// place its row starts at, a junction by its node's, a construction by
-/// its own, each as its row rounds it.
+/// lower of the ends its row names, a junction by its node's place, a
+/// construction by its own, each as its row rounds it.
 pub struct Part {
     pub n: u32,
     pub k: u32,
@@ -767,7 +805,7 @@ pub fn read_part(
     if n == 0 || n > MAX_PARTS || k >= n {
         return Err(format!("no part {k} of {n}"));
     }
-    let ms = |a: std::time::Instant| a.elapsed().as_secs_f64() * 1000.0;
+    let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0;
     let t0 = std::time::Instant::now();
     let store = Store::new(memory, engine, image)?;
     let edge_kind = store.kind(
@@ -775,11 +813,27 @@ pub fn read_part(
         layout::BASE_EDGE_SIZE,
         "BaseEdge",
     )?;
+    let node_kind = store.kind(
+        layout::BASE_NODE_POOL_VTABLE,
+        layout::BASE_NODE_SIZE,
+        "BaseNode",
+    )?;
+    let config_kind = store.kind(
+        layout::BASE_NODE_CONFIG_POOL_VTABLE,
+        layout::BASE_NODE_CONFIG_SIZE,
+        "BaseNodeConfig",
+    )?;
+    let cons = store.kind(
+        layout::CONSTRUCTION_POOL_VTABLE,
+        layout::CONSTRUCTION_SIZE,
+        "Construction",
+    )?;
+    let [edge_ids, config_ids, cons_ids] = store.with_each([&edge_kind, &config_kind, &cons])?;
+    let t1 = std::time::Instant::now();
     let mut memo = Memo::default();
     let mut edges = Vec::new();
-    let mut ends = HashMap::new();
-    let mut seen = [0usize; 3];
-    for entity in store.with(&edge_kind)? {
+    let mut ends = HashMap::with_capacity(edge_ids.len());
+    for entity in edge_ids {
         let Some(index) = store.index(entity, &edge_kind)? else {
             continue;
         };
@@ -793,22 +847,28 @@ pub fn read_part(
             );
         }
         ends.insert(entity, edge_ends(&edge, entity)?);
-        seen[0] += 1;
     }
-    let t1 = std::time::Instant::now();
+    let t2 = std::time::Instant::now();
     let (mut j, configs, street_node) = junction_reader(&store, &ends)?;
     let mut junctions = Vec::new();
     let mut deferred = Vec::new();
-    for node in store.with(&configs)? {
+    let mut nodes_seen = 0;
+    for node in config_ids {
         let Some(&street) = street_node.get(&node) else {
             continue;
         };
-        // A removed node's bits can stay set; read_junction skips it too.
-        if store.index(node, &configs)?.is_none() {
+        // Its configuration's and its place's index from one read of its
+        // list; a removed node's bits can stay set, and read_junction
+        // skips it too.
+        let Some([config, place]) = store.indices(node, [&config_kind, &node_kind])? else {
             continue;
+        };
+        if config.is_none() {
+            return Err(format!("entity {node} has the BaseNodeConfig bit but no BaseNodeConfig"));
         }
-        seen[1] += 1;
-        let p = j.position(node)?;
+        let place = place.ok_or_else(|| format!("node {node} has no position"))?;
+        nodes_seen += 1;
+        let p = j.position_at(node, place)?;
         if part_of(millimetres(p[0])?, millimetres(p[1])?, CELL_MM, n) != k {
             continue;
         }
@@ -818,20 +878,16 @@ pub fn read_part(
             None => {}
         }
     }
-    let t2 = std::time::Instant::now();
-    let cons = store.kind(
-        layout::CONSTRUCTION_POOL_VTABLE,
-        layout::CONSTRUCTION_SIZE,
-        "Construction",
-    )?;
+    let t3 = std::time::Instant::now();
     let mut constructions = Vec::new();
-    for entity in store.with(&cons)? {
+    let mut cons_seen = 0;
+    for entity in cons_ids {
         let Some(index) = store.index(entity, &cons)? else {
             continue;
         };
-        seen[2] += 1;
+        cons_seen += 1;
         let at = cons.pool.element(memory, index)?;
-        let bytes = read(memory, at, layout::CONSTRUCTION_Y + 4, "a Construction")?;
+        let bytes: [u8; layout::CONSTRUCTION_Y + 4] = read_array(memory, at, "a Construction")?;
         let (x, y) = (
             f32_at(&bytes, layout::CONSTRUCTION_X),
             f32_at(&bytes, layout::CONSTRUCTION_Y),
@@ -848,18 +904,20 @@ pub fn read_part(
         )?;
         constructions.push(format!("{file}@{},{}", q01_text(x)?, q01_text(y)?));
     }
+    let t4 = std::time::Instant::now();
     let timing = format!(
-        "part {k}/{n}: {} of {} edges {:.2} ms, {}+{} of {} junctions {:.2} ms, {} of {} constructions {:.2} ms",
+        "part {k}/{n}: bits {:.2} ms, {} of {} edges {:.2} ms, {}+{} of {} junctions {:.2} ms, {} of {} constructions {:.2} ms",
+        ms(t0, t1),
         edges.len(),
-        seen[0],
-        (t1 - t0).as_secs_f64() * 1000.0,
+        ends.len(),
+        ms(t1, t2),
         junctions.len(),
         deferred.len(),
-        seen[1],
-        (t2 - t1).as_secs_f64() * 1000.0,
+        nodes_seen,
+        ms(t2, t3),
         constructions.len(),
-        seen[2],
-        ms(t2),
+        cons_seen,
+        ms(t3, t4),
     );
     Ok(Part {
         n,
@@ -1101,6 +1159,20 @@ impl Junctions<'_, '_> {
         if !self.store.component_into(node, &self.nodes, &mut raw)? {
             return Err(format!("node {node} has no position"));
         }
+        self.keep_position(node, &raw)
+    }
+
+    /// `node`'s place, its `BaseNode` at data index `index`.
+    fn position_at(&mut self, node: usize, index: i32) -> Result<[f32; 3], String> {
+        if let Some(p) = self.positions.get(&node) {
+            return Ok(*p);
+        }
+        let at = self.nodes.pool.element(self.store.memory, index)?;
+        let raw: [u8; layout::BASE_NODE_SIZE] = read_array(self.store.memory, at, "a BaseNode")?;
+        self.keep_position(node, &raw)
+    }
+
+    fn keep_position(&mut self, node: usize, raw: &[u8]) -> Result<[f32; 3], String> {
         let p = [
             f32_at(&raw, layout::NODE_POSITION),
             f32_at(&raw, layout::NODE_POSITION + 4),

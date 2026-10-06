@@ -1924,6 +1924,98 @@ fn rolling_checks_resume_from_saved_history_and_refuse_gaps_and_read_failures() 
     );
 }
 
+/// A hook that reads parts (`tpf3mp_native.part`), faked: it records what
+/// it was asked, answers with `NATIVE_TEXT`, fails with `PART_FAIL`, and
+/// compares with `PART_MODE = 'compare'`.
+const FAKE_PARTS: &str = r#"
+api.type.enum = api.type.enum or {}
+api.type.enum.TrafficLightPreference = api.type.enum.TrafficLightPreference or { AUTO = 0, YES = 1, NO = 2 }
+PART_CALLS = {}
+NATIVE_TEXT = 'native'
+tpf3mp_native.part = function(n, k)
+    if n == nil then return { mode = PART_MODE or 'on', why = 'a part number is missing', parts = PLAN_PARTS, stride = PLAN_STRIDE } end
+    PART_CALLS[#PART_CALLS + 1] = n .. '/' .. k
+    if PART_FAIL then return { mode = 'on', why = PART_FAIL } end
+    return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} }
+end
+tpf3mp_native.partTexts = function(preferences, lights, deferred, rows)
+    if rows then return '1:' .. NATIVE_TEXT, '1:cons', { 'row' }, { 'con@0,0' } end
+    return '1:' .. NATIVE_TEXT, '1:cons'
+end
+REPORTS = {}
+ROLL_STEP = function(step, checkpoint)
+    local out, report
+    SCAN, out, report = ROLL.rolling(api, SCAN, step, checkpoint)
+    if report then REPORTS[#REPORTS + 1] = report end
+    return out
+end
+"#;
+
+/// Where the hook reads parts, a room's rolling history starts in parts:
+/// one part an update, in turn; the hook's texts count, compared ones give
+/// way to this Lua's own and a difference is said; a part that did not
+/// read, or a game no longer reading parts, holds the game; a saved
+/// history resumes in a fresh state; without parts it stays version 1.
+#[test]
+fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
+    let game = |setup: &str| {
+        let lua = rolling_game();
+        lua.load(FAKE_PARTS).exec().unwrap();
+        lua.load(setup).exec().unwrap();
+        lua
+    };
+    let read = |lua: &Lua, from: u32, to: u32| -> Vec<String> {
+        lua.load(format!(
+            "for s={from},{} do ROLL_STEP(s,false) end local r=ROLL_STEP({to},true) \
+             local out={{}} for n=0,6 do out[#out+1]=r[n] end return out",
+            to - 1
+        ))
+        .eval()
+        .unwrap()
+    };
+    let a = game("");
+    let first = read(&a, 1, 12);
+    assert!(first[0].starts_with("rolling-v2:1-12:12:"), "{first:?}");
+    let calls: Vec<String> = a.load("return PART_CALLS").eval().unwrap();
+    let turns: Vec<String> = (0..12).map(|s| format!("10/{}", s % 10)).collect();
+    assert_eq!(calls, turns);
+    // The hook's text counts: another text, another history.
+    let other = read(&game("NATIVE_TEXT='other'"), 1, 12);
+    assert_ne!(other[0], first[0]);
+    assert_eq!(other[2..], first[2..], "the dynamic lanes are this Lua's");
+    // Compared, this Lua's own text counts whatever the hook says.
+    let c = game("PART_MODE='compare'");
+    let d = game("PART_MODE='compare' NATIVE_TEXT='other'");
+    let (rc, rd) = (read(&c, 1, 12), read(&d, 1, 12));
+    assert_eq!(rc[..2], rd[..2]);
+    assert_ne!(rc[0], first[0]);
+    let reports: Vec<String> = d.load("return REPORTS").eval().unwrap();
+    assert!(
+        reports.iter().any(|r| r.contains("differs")),
+        "{reports:?}"
+    );
+    // A save in the middle of a window resumes in a fresh state.
+    let e = game("for s=1,7 do ROLL_STEP(s,false) end");
+    let f = game("");
+    let saved: mlua::Value = e.globals().get("SCAN").unwrap();
+    f.globals()
+        .set("SCAN", lua_value(&f, &common::tree(&saved)))
+        .unwrap();
+    assert_eq!(read(&e, 8, 12), read(&f, 8, 12));
+    // Fail closed: a part that did not read, a game that reads no parts.
+    assert!(f.load("PART_FAIL='no pool' ROLL_STEP(13,false)").exec().is_err());
+    let g = game("for s=1,3 do ROLL_STEP(s,false) end tpf3mp_native.part=nil");
+    assert!(g.load("ROLL_STEP(4,false)").exec().is_err());
+    // Every `stride` updates one part: 3 of 4 parts in 12 updates.
+    let h = game("PLAN_PARTS=4 PLAN_STRIDE=5");
+    let strided = read(&h, 1, 12);
+    assert!(strided[0].starts_with("rolling-v2:1-12:3:"), "{strided:?}");
+    let calls: Vec<String> = h.load("return PART_CALLS").eval().unwrap();
+    assert_eq!(calls, ["4/0", "4/1", "4/2"]);
+    // Without parts, the rolling history of version 1.
+    assert!(read(&rolling_game(), 1, 12)[0].starts_with("rolling-v1:"));
+}
+
 #[test]
 fn rolling_checks_detect_builds_deletions_geometry_and_dynamic_changes() {
     for change in [
