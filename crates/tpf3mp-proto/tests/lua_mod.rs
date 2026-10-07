@@ -13357,8 +13357,6 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         local actions = {
             { Preserve = { building = { file = 'b.con', at = { x = 0, y = 0, z = 0 } }, index = 0, preserved = true } },
             { Subsidy = { Decline = { uid = 1, kind = 'x' } } },
-            { Rename = { what = { Vehicle = 1 }, name = 'x' } },
-            { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
             { Perk = { Greenify = { industry = 0 } } },
@@ -13371,6 +13369,19 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
         end
         assert(#HOOK.commands == 0)
+        -- Renaming and recolouring passed two-player game acceptance
+        -- (investigation/TPF3_RENAME_2026-10-07.md): neither port refuses
+        -- them for it any more, whatever else it finds wrong.
+        local accepted = {
+            { Rename = { what = { Vehicle = 1 }, name = 'x' } },
+            { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
+        }
+        for _, action in ipairs(accepted) do
+            local sent, reason = link:command(action)
+            assert(sent or not tostring(reason):find('awaits two%-player game acceptance'), tostring(reason))
+            local applied, why = apply.run(action, {})
+            assert(applied or not tostring(why):find('awaits two%-player game acceptance'), tostring(why))
+        end
     "#).exec().unwrap();
 }
 

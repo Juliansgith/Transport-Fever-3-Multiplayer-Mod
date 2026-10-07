@@ -436,8 +436,11 @@ protected folder such as Program Files.
   loans, up to four loans at once. An offer you take goes on a four-to-eight
   month cooldown before that slot gets a new offer; the interest and
   repayments are your company's alone.
-- **Subsidies, entity renaming, vehicle recolouring, line waypoints, bridge/tunnel
-  window type changes, Industry Greenification marketing campaigns and Historic Preservation.**
+- **Renaming and recolouring.** Rename a station, a vehicle, a town or a
+  depot from its window or the line manager, and recolour a vehicle from
+  its window, as usual: every player's game applies it.
+- **Subsidies, line waypoints, bridge/tunnel window type changes, Industry
+  Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
