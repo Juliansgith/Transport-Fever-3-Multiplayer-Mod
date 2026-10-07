@@ -606,6 +606,9 @@ pub struct StepDriver<G> {
     handed_at: Option<Instant>,
     /// The batch interval times each call ([`crate::interval`]).
     batch_interval: bool,
+    /// The driver ran the room's game after the last call: leaving it (an
+    /// end, the menu, playing alone) starts a new epoch for the interval.
+    was_running: bool,
     /// How the last call's count was chosen, when it ran the room's steps.
     choice: Option<Choice>,
     /// Lines for the hook's log.
@@ -642,6 +645,7 @@ impl<G: RoomGate> StepDriver<G> {
             cadence: Cadence::new(false),
             handed_at: None,
             batch_interval: false,
+            was_running: false,
             choice: None,
             log: Vec::new(),
             lobby_fault: None,
@@ -652,6 +656,16 @@ impl<G: RoomGate> StepDriver<G> {
     /// ([`crate::cadence`]) or, off, all of them it may.
     pub fn set_even_steps(&mut self, on: bool) {
         self.cadence.set_on(on);
+    }
+
+    /// After a call or a menu frame: leaving the room's running game starts
+    /// a new epoch, so nothing published in it times anything after.
+    fn note_phase(&mut self) {
+        let running = self.phase == Phase::Running;
+        if self.was_running && !running {
+            crate::interval::SLOTS.next_epoch();
+        }
+        self.was_running = running;
     }
 
     /// Whether the batch interval times each call ([`crate::interval`]):
@@ -680,6 +694,7 @@ impl<G: RoomGate> StepDriver<G> {
             steady: self
                 .choice
                 .is_some_and(|choice| choice.pick == Pick::Nominal),
+            waiting: self.why == "wait",
         }
     }
 
@@ -918,6 +933,7 @@ impl<G: RoomGate> StepDriver<G> {
                                     Updates::Own => 0,
                                 })).saturating_sub(1)
                             ));
+                            self.note_phase();
                             return Outcome { updates };
                         }
                     }
@@ -937,6 +953,7 @@ impl<G: RoomGate> StepDriver<G> {
             // A failed update batch is not reported; the world holds.
             Err(reason) => self.hold(format!("the game did not follow the room's step: {reason}")),
         }
+        self.note_phase();
         Outcome { updates }
     }
 
@@ -1552,6 +1569,7 @@ impl<G: RoomGate> StepDriver<G> {
             }
             self.control.room_notice(&notice);
         }
+        self.note_phase();
     }
 
     /// Logs what the menu cannot do, once until it changes.

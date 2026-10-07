@@ -903,14 +903,20 @@ The step detour publishes each batch, keyed by the `GameSim` it stepped
 them; the game adds its own pending debug steps to the answer, and such a
 batch is not timed), into one of two slots; the wrapper reads the slot of
 `gameSims[1 - simIdx]` after Sync flipped it. The next batch runs on the
-other `GameSim`, so the slot read is not being rewritten, and the two
-threads never wait for each other. A begin, every load and a hold start a
+other `GameSim`, so the slot read is not being rewritten, and the main
+thread never waits for the simulation thread (a log line that meets the
+lock held is dropped). The wrapper is `extern "C-unwind"`: an exception
+Sync throws reaches the game's own handlers as without it. A begin, every load and a hold start a
 new epoch: nothing published before times anything after.
 
 Fail closed: only on the profile whose layout was verified (40408), only
-with both targets and even steps on; before writing, the wrapper checks
+with both targets, even steps on and the per-update detour installed
+(without it no batch's real count is known, and even steps measure
+again); before writing, the wrapper checks
 `m_data` (non-null, 8-aligned), `simIdx` (0 or 1), the value Sync wrote
-(20 ms..2 s), `totalTime >= lastSyncTime`, and that the field is committed
+(20 ms..2 s), `totalTime >= lastSyncTime`, that the batch's epoch is still
+the current one (a hold, a load, an end or leaving the room start a new
+one), and that the field is committed
 writable memory (`VirtualQuery`, once per `m_data` and epoch). Anything else
 turns the interval off for the process (logged); the step driver then sees
 it off and even steps measure the call period again. Outside a running

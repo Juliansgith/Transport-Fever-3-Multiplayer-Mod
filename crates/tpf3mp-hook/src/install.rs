@@ -46,13 +46,15 @@ pub const SYNC_CALL_TARGET: &str = "CGame::Step/Sync call";
 static SYNC: AtomicUsize = AtomicUsize::new(0);
 
 /// `bool CGame::Sync(CGame*, std::function<...>&)`: the bool in `al`.
-type SyncFn = unsafe extern "C" fn(usize, usize) -> u8;
+/// `C-unwind`: a C++ exception Sync throws passes through the wrapper to
+/// the game's own handlers, as it would without it.
+type SyncFn = unsafe extern "C-unwind" fn(usize, usize) -> u8;
 
 /// Where `CGame::Step`'s call of `CGame::Sync` goes: the real Sync, then,
 /// after a successful one, the batch interval for the batch it exposed
 /// (crate::interval). The main thread's; it never waits for the step
 /// driver's lock.
-unsafe extern "C" fn sync_wrap(cgame: usize, function: usize) -> u8 {
+unsafe extern "C-unwind" fn sync_wrap(cgame: usize, function: usize) -> u8 {
     let sync = SYNC.load(Ordering::Acquire);
     // SAFETY: SYNC holds CGame::Sync's address, which the profile resolved
     // and the redirect checked the call targets; the arguments are the

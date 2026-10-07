@@ -113,7 +113,14 @@ pub fn shown(count: u32, nominal: u32) -> u32 {
 
 /// The interval for a running room's batch of `count` updates, with
 /// `step_us` the room's time per step and `trim` the throughput correction.
-pub fn interval_us(count: u32, nominal: u32, step_us: u32, trim: f64) -> u32 {
+/// `waiting`: no step was released (the room waits for a member, or the
+/// next turn is late), so the game keeps calling at its nominal period
+/// rather than every 50 ms.
+pub fn interval_us(count: u32, nominal: u32, step_us: u32, trim: f64, waiting: bool) -> u32 {
+    if count == 0 && waiting {
+        let us = u64::from(nominal.max(1)) * u64::from(step_us);
+        return u32::try_from(us).unwrap_or(MAX_US).clamp(MIN_US, MAX_US);
+    }
     if count == 0 {
         return ZERO_US;
     }
@@ -175,6 +182,7 @@ pub struct BatchInfo {
     pub nominal: u32,
     pub backlog: u32,
     pub steady: bool,
+    pub waiting: bool,
 }
 
 impl BatchInfo {
@@ -189,6 +197,7 @@ impl BatchInfo {
             nominal: self.nominal,
             backlog: self.backlog,
             steady: self.steady,
+            waiting: self.waiting,
         }
     }
 }
@@ -216,6 +225,8 @@ pub struct Record {
     /// player's own command, a pause or a catch-up it is emptied or filled
     /// on purpose, and the trim holds.
     pub steady: bool,
+    /// No step was released for the batch: the room waits.
+    pub waiting: bool,
 }
 
 impl Slot {
@@ -230,6 +241,7 @@ impl Slot {
             nominal: AtomicU32::new(0),
             backlog: AtomicU32::new(0),
             steady: AtomicBool::new(false),
+            waiting: AtomicBool::new(false),
         }
     }
 }
@@ -246,6 +258,7 @@ struct Slot {
     nominal: AtomicU32,
     backlog: AtomicU32,
     steady: AtomicBool,
+    waiting: AtomicBool,
 }
 
 /// Two published batches, one per `GameSim` (the game double-buffers its
@@ -300,6 +313,7 @@ impl Slots {
         slot.nominal.store(record.nominal, Ordering::Relaxed);
         slot.backlog.store(record.backlog, Ordering::Relaxed);
         slot.steady.store(record.steady, Ordering::Relaxed);
+        slot.waiting.store(record.waiting, Ordering::Relaxed);
         slot.seq.store(begin + 1, Ordering::Release);
     }
 
@@ -327,6 +341,7 @@ impl Slots {
             nominal: slot.nominal.load(Ordering::Relaxed),
             backlog: slot.backlog.load(Ordering::Relaxed),
             steady: slot.steady.load(Ordering::Relaxed),
+            waiting: slot.waiting.load(Ordering::Relaxed),
         };
         std::sync::atomic::fence(Ordering::Acquire);
         let after = slot.seq.load(Ordering::Relaxed);
@@ -433,6 +448,7 @@ impl Interval {
             record.nominal,
             record.step_us,
             self.trim.value(),
+            record.waiting,
         );
         self.last = Some(us);
         Ok(Ok(us))
@@ -465,9 +481,11 @@ pub fn arm(layout: Layout) {
     OFF.store(false, Ordering::Release);
 }
 
-/// Whether the wrapper may write.
+/// Whether the interval is in effect: armed, not off after a fault, and
+/// the per-update detour there to count what each call really ran (without
+/// it no batch can be timed, and even steps must measure again).
 pub fn armed() -> bool {
-    !OFF.load(Ordering::Acquire)
+    !OFF.load(Ordering::Acquire) && crate::seeds::update_hooked()
 }
 
 /// The lines the wrapper left for the hook's log.
@@ -500,8 +518,10 @@ pub fn note_mismatch(answered: u32, ran: u32) {
     }
 }
 
+/// Leaves a line for the hook's log; never waits (the main thread calls
+/// it): a line that meets the lock held is dropped.
 fn say(line: String) {
-    if let Ok(mut lines) = LINES.lock()
+    if let Ok(mut lines) = LINES.try_lock()
         && lines.len() < 1000
     {
         lines.push(line);
@@ -577,6 +597,11 @@ pub fn sync_in(
                 return Done::Off("guiFrameTime's address overflows".into());
             };
             let epoch = slots.epoch();
+            // The world may have changed since the record was read (a hold
+            // on the simulation thread): never time another world's batch.
+            if record.is_none_or(|record| record.epoch != epoch) {
+                return Done::Skipped(Skip::NoRecord);
+            }
             if state.writable_for != Some((m_data, epoch)) {
                 if !writable(at, 4) {
                     return Done::Off("guiFrameTime is not writable memory".into());
@@ -709,18 +734,21 @@ mod tests {
     #[test]
     fn every_batch_moves_at_the_rooms_speed_up_to_half_again_its_count() {
         // 4x: 50 ms a step. 3, 4, 5 and 6 updates are shown proportionally.
-        assert_eq!(interval_us(3, 4, 50_000, 1.0), 150_000);
-        assert_eq!(interval_us(4, 4, 50_000, 1.0), 200_000);
-        assert_eq!(interval_us(6, 4, 50_000, 1.0), 300_000);
+        assert_eq!(interval_us(3, 4, 50_000, 1.0, false), 150_000);
+        assert_eq!(interval_us(4, 4, 50_000, 1.0, false), 200_000);
+        assert_eq!(interval_us(6, 4, 50_000, 1.0, false), 300_000);
         // A catch-up of 16 is shown as 6: faster motion, not a slow one.
-        assert_eq!(interval_us(16, 4, 50_000, 1.0), 300_000);
+        assert_eq!(interval_us(16, 4, 50_000, 1.0, false), 300_000);
         // 1x: 2 at most (ceil 1.5).
-        assert_eq!(interval_us(16, 1, 200_000, 1.0), 400_000);
+        assert_eq!(interval_us(16, 1, 200_000, 1.0, false), 400_000);
         // No updates: a short stand.
-        assert_eq!(interval_us(0, 4, 50_000, 1.0), ZERO_US);
+        assert_eq!(interval_us(0, 4, 50_000, 1.0, false), ZERO_US);
+        // Nothing released: the nominal period, not a 50 ms poll.
+        assert_eq!(interval_us(0, 4, 50_000, 1.0, true), 200_000);
+        assert_eq!(interval_us(0, 1, 200_000, 1.0, true), 200_000);
         // Bounds.
-        assert_eq!(interval_us(1, 16, 1_000, 0.8), MIN_US);
-        assert_eq!(interval_us(16, 16, 200_000, 1.25), MAX_US);
+        assert_eq!(interval_us(1, 16, 1_000, 0.8, false), MIN_US);
+        assert_eq!(interval_us(16, 16, 200_000, 1.25, false), MAX_US);
     }
 
     #[test]
@@ -750,6 +778,7 @@ mod tests {
             nominal: 4,
             backlog: 2,
             steady: true,
+            waiting: false,
         }
     }
 
@@ -815,7 +844,7 @@ mod tests {
                 // The batch Sync exposes starts showing; the hook times it.
                 self.before += f64::from(self.shown_batch);
                 self.shown_batch = self.finished.pop_front().unwrap_or(0);
-                self.gft = i64::from(interval_us(self.shown_batch, 4, step_us, 1.0));
+                self.gft = i64::from(interval_us(self.shown_batch, 4, step_us, 1.0, false));
             }
             self.total = self.total.min(self.last_sync + self.gft - 1);
             assert!(self.last_sync <= self.total && self.total < self.last_sync + self.gft);
@@ -998,6 +1027,7 @@ mod native {
             nominal: 4,
             backlog: 2,
             steady: true,
+            waiting: false,
         });
     }
 
@@ -1240,7 +1270,11 @@ mod coupled {
                     max_backlog = max_backlog.max(backlog);
                 }
                 running = Some(Record {
-                    sim: if calls.is_multiple_of(2) { 0xA000 } else { 0xB000 },
+                    sim: if calls.is_multiple_of(2) {
+                        0xA000
+                    } else {
+                        0xB000
+                    },
                     epoch,
                     count,
                     eligible: true,
@@ -1248,6 +1282,7 @@ mod coupled {
                     nominal,
                     backlog: backlog as u32,
                     steady,
+                    waiting: count == 0 && released < next,
                 });
             }
             total = total.min(last_sync + gft - 1);
