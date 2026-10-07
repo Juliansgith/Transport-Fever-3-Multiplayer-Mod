@@ -10,7 +10,7 @@ use std::{fmt, sync::Arc};
 use thiserror::Error;
 use tpf3mp_proto::{
     Event, EventBody, Payload, PlayerId,
-    action::{Action, ActionError, CompanyId, LineId},
+    action::{Action, ActionError, CompanyId, LineId, StationId, Tint, VehicleId},
 };
 
 use super::model::{ModelWorld, Observation};
@@ -41,6 +41,19 @@ pub enum Check {
     },
     LineName {
         line: LineId,
+        name: String,
+    },
+    VehicleName {
+        vehicle: VehicleId,
+        name: String,
+    },
+    /// The colour the vehicle's window gave it, or none.
+    VehicleColor {
+        vehicle: VehicleId,
+        color: Option<Tint>,
+    },
+    StationName {
+        station: StationId,
         name: String,
     },
     Vehicles(usize),
@@ -99,6 +112,28 @@ impl Check {
                 Some(view) if view.name != *name => Some(format!("{line} is named {}", view.name)),
                 Some(_) => None,
             },
+            Self::VehicleName { vehicle, name } => match seen.vehicle_views.get(vehicle) {
+                None => Some(format!("no vehicle-{}", vehicle.0)),
+                Some(view) if view.name != *name => {
+                    Some(format!("vehicle-{} is named {}", vehicle.0, view.name))
+                }
+                Some(_) => None,
+            },
+            Self::VehicleColor { vehicle, color } => match seen.vehicle_views.get(vehicle) {
+                None => Some(format!("no vehicle-{}", vehicle.0)),
+                Some(view) if view.color != *color => Some(format!(
+                    "vehicle-{} is coloured {:?}",
+                    vehicle.0, view.color
+                )),
+                Some(_) => None,
+            },
+            Self::StationName { station, name } => match seen.station_names.get(station) {
+                None => Some(format!("no station-{}", station.0)),
+                Some(found) if found != name => {
+                    Some(format!("station-{} is named {found}", station.0))
+                }
+                Some(_) => None,
+            },
             Self::Vehicles(n) => count("vehicles", *n, seen.vehicles),
             Self::Idle(n) => count("idle vehicles", *n, seen.idle),
             Self::Ignored(n) => {
@@ -148,6 +183,20 @@ impl fmt::Display for Check {
                 vehicles,
             } => write!(f, "{line} with {stops} stops and {vehicles} vehicles"),
             Self::LineName { line, name } => write!(f, "{line} named {name:?}"),
+            Self::VehicleName { vehicle, name } => {
+                write!(f, "vehicle-{} named {name:?}", vehicle.0)
+            }
+            Self::VehicleColor {
+                vehicle,
+                color: Some(color),
+            } => write!(f, "vehicle-{} coloured {color:?}", vehicle.0),
+            Self::VehicleColor {
+                vehicle,
+                color: None,
+            } => write!(f, "vehicle-{} in its own colours", vehicle.0),
+            Self::StationName { station, name } => {
+                write!(f, "station-{} named {name:?}", station.0)
+            }
             Self::Vehicles(n) => write!(f, "{n} vehicles"),
             Self::Idle(n) => write!(f, "{n} idle vehicles"),
             Self::Ignored(n) => write!(f, "{n} actions ignored"),
