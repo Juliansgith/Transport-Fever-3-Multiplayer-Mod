@@ -37,6 +37,10 @@ const RELEASE_ONLY_OPTIONAL_TARGETS: &[&str] = &[
     // signatures only in the Release 40408 executable.
     "save: PushCompressor level load",
     "save: PushCompressor buffer size",
+    // The batch interval's (crates/tpf3mp-hook/src/interval.rs): its field
+    // layout is verified for the Release builds only.
+    "CGame::Sync",
+    "CGame::Step/Sync call",
 ];
 
 fn coverage(profile: &Profile) -> BTreeMap<String, bool> {
@@ -74,7 +78,7 @@ fn preview_pins_its_exact_identity_and_preserves_release_target_coverage() {
     assert_eq!(
         release_only,
         RELEASE_ONLY_OPTIONAL_TARGETS.iter().copied().collect(),
-        "only the explicitly allowlisted optional 40408 performance targets may be Release-only"
+        "only the explicitly allowlisted optional 40408 performance and batch-interval targets may be Release-only"
     );
     for (name, required) in &preview_coverage {
         assert_eq!(release_coverage.get(name), Some(required), "{name}");

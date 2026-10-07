@@ -20,6 +20,9 @@ const PROFILE: &str = include_str!("../../../profiles/tf3_build40408_steam_windo
 const TARGETS: &[(&str, u64)] = &[
     ("GameSim::Step", 0x159390),
     ("CGame::Step", 0x11f3b0),
+    // The batch interval (crates/tpf3mp-hook/src/interval.rs).
+    ("CGame::Sync", 0x11f650),
+    ("CGame::Step/Sync call", 0x11f406),
     ("CGameTime::GetSpeed", 0x2a95a0),
     ("GameSim::Step/GetSpeed call", 0x1593ee),
     ("UI::CMenuUI::StartSavegame", 0x6a2880),

@@ -181,6 +181,9 @@ impl Choice {
 #[derive(Debug, Clone)]
 pub struct Cadence {
     on: bool,
+    /// The batch interval times each call ([`crate::interval`]): a fixed
+    /// nominal count, no repaying with extra updates.
+    fixed: bool,
     steps_per_second: u16,
     /// The room's speed in percent; the last one before a pause while
     /// paused, which steps released before the pause still play at.
@@ -202,6 +205,7 @@ impl Cadence {
     pub fn new(on: bool) -> Self {
         Self {
             on,
+            fixed: false,
             steps_per_second: 5,
             speed: Speed::NORMAL.0,
             paused: false,
@@ -216,6 +220,44 @@ impl Cadence {
 
     pub fn on(&self) -> bool {
         self.on
+    }
+
+    /// With the batch interval on: a fixed nominal count. Leaving it
+    /// forgets the periods measured meanwhile: they were the interval's.
+    pub fn set_fixed(&mut self, fixed: bool) {
+        if self.fixed && !fixed {
+            self.gaps.clear();
+            self.period = DEFAULT_PERIOD.as_secs_f64();
+            self.credit = 0.0;
+        }
+        self.fixed = fixed;
+    }
+
+    /// Whether the nominal count is fixed (the batch interval is on).
+    pub fn fixed(&self) -> bool {
+        self.fixed
+    }
+
+    /// Whether the room is paused, as last told.
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    /// The room's time per step, µs (at the pre-pause pace while paused).
+    pub fn step_us(&self) -> u32 {
+        let pace = self.pace();
+        if pace > 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let us = (1_000_000.0 / pace).round().min(f64::from(u32::MAX)) as u32;
+            us
+        } else {
+            0
+        }
+    }
+
+    /// The nominal count with the batch interval.
+    pub fn fixed_nominal(&self) -> u32 {
+        crate::interval::nominal(self.pace())
     }
 
     pub fn set_on(&mut self, on: bool) {
@@ -332,7 +374,12 @@ impl Cadence {
         // the band repays what a slightly wrong period leaves. A rate truly
         // between (7 steps a second) carries its fraction to an even mix.
         let rate = self.pace() * self.period;
-        let nominal = if (rate - rate.round()).abs() <= WHOLE_RATE {
+        let nominal = if self.fixed {
+            // The batch interval times each call (crate::interval): the
+            // count is the pace over the game's own 200 ms batch, never a
+            // measured period the interval itself sets.
+            f64::from(crate::interval::nominal(self.pace()))
+        } else if (rate - rate.round()).abs() <= WHOLE_RATE {
             self.credit = 0.0;
             rate.round().max(0.0)
         } else {
@@ -382,7 +429,9 @@ impl Cadence {
             // band is fine, so a release a little early or late (+-1 a
             // call) changes nothing; above it, repay towards its middle.
             let left = available - nominal;
-            if left <= RESERVE + BAND || planned {
+            // With the batch interval, a repaid step would only be shown
+            // longer: the interval's trim repays instead.
+            if left <= RESERVE + BAND || planned || self.fixed {
                 (nominal, Pick::Nominal)
             } else {
                 let repay = (left - RESERVE - BAND / 2)
@@ -639,6 +688,29 @@ mod tests {
         assert!(behind <= 4, "{behind} behind: {counts:?}");
         let (counts, behind) = paced(400, 7, &[200.0], 300);
         assert!(behind <= 12, "{behind} behind: {counts:?}");
+    }
+
+    #[test]
+    fn with_the_batch_interval_the_count_is_fixed_and_never_repays() {
+        let mut cadence = Cadence::new(true);
+        cadence.begin(5);
+        cadence.speed(Speed(400));
+        cadence.set_fixed(true);
+        let start = Instant::now();
+        cadence.reset(0, start);
+        // Calls 300 ms apart (the interval set them): still 4, not 6.
+        for i in 0..20u64 {
+            cadence.call(start + Duration::from_millis(300 * i));
+        }
+        let t = start + Duration::from_secs(6);
+        let choice = cadence.choose(1, 5, 16, 50, false, false, t);
+        assert_eq!((choice.steps, choice.nominal), (4, 4));
+        // A backlog of 10 is not repaid with updates (the trim does it).
+        let choice = cadence.choose(5, 14, 16, 46, false, false, t);
+        assert_eq!((choice.steps, choice.pick), (4, Pick::Nominal));
+        // Off again: the measured periods are forgotten.
+        cadence.set_fixed(false);
+        assert_eq!(cadence.period(), DEFAULT_PERIOD);
     }
 
     #[test]

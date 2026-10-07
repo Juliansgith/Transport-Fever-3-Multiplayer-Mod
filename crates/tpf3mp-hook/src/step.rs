@@ -440,6 +440,10 @@ pub trait StepHandler: Send {
     fn cadence_note(&self) -> Option<String> {
         None
     }
+    /// See [`StepDriver::batch_info`].
+    fn batch_info(&self) -> crate::interval::BatchInfo {
+        crate::interval::BatchInfo::default()
+    }
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
@@ -448,6 +452,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn cadence_note(&self) -> Option<String> {
         StepDriver::cadence_note(self)
+    }
+    fn batch_info(&self) -> crate::interval::BatchInfo {
+        StepDriver::batch_info(self)
     }
     fn why(&self) -> &'static str {
         StepDriver::why(self)
@@ -597,6 +604,8 @@ pub struct StepDriver<G> {
     cadence: Cadence,
     /// When the player last handed the room an action.
     handed_at: Option<Instant>,
+    /// The batch interval times each call ([`crate::interval`]).
+    batch_interval: bool,
     /// How the last call's count was chosen, when it ran the room's steps.
     choice: Option<Choice>,
     /// Lines for the hook's log.
@@ -632,6 +641,7 @@ impl<G: RoomGate> StepDriver<G> {
             room_world: None,
             cadence: Cadence::new(false),
             handed_at: None,
+            batch_interval: false,
             choice: None,
             log: Vec::new(),
             lobby_fault: None,
@@ -642,6 +652,35 @@ impl<G: RoomGate> StepDriver<G> {
     /// ([`crate::cadence`]) or, off, all of them it may.
     pub fn set_even_steps(&mut self, on: bool) {
         self.cadence.set_on(on);
+    }
+
+    /// Whether the batch interval times each call ([`crate::interval`]):
+    /// the cadence then keeps a fixed nominal count.
+    pub fn set_batch_interval(&mut self, on: bool) {
+        self.batch_interval = on;
+        self.cadence.set_fixed(on);
+    }
+
+    /// For the batch interval, after a call: whether its batch may be timed,
+    /// the room's time per step, the nominal count, the steps released and
+    /// not run, and whether the count was the steady one.
+    pub fn batch_info(&self) -> crate::interval::BatchInfo {
+        let next = self.gate.next_step();
+        let released = self.gate.released();
+        crate::interval::BatchInfo {
+            eligible: self.batch_interval
+                && self.cadence.fixed()
+                && self.cadence.on()
+                && self.phase == Phase::Running
+                && !self.cadence.paused(),
+            step_us: self.cadence.step_us(),
+            nominal: self.cadence.fixed_nominal(),
+            backlog: u32::try_from(released.saturating_add(1).saturating_sub(next))
+                .unwrap_or(u32::MAX),
+            steady: self
+                .choice
+                .is_some_and(|choice| choice.pick == Pick::Nominal),
+        }
     }
 
     /// Whether the player's own action is on its way through the room: one
@@ -800,6 +839,18 @@ impl<G: RoomGate> StepDriver<G> {
         // to it.
         self.at_menu = false;
         self.menu_said = None;
+        // The batch interval may have turned itself off (a fault in the
+        // main thread's wrapper): the cadence then measures again.
+        let fixed = self.batch_interval && crate::interval::armed();
+        if self.cadence.fixed() != fixed {
+            self.cadence.set_fixed(fixed);
+            if !fixed {
+                self.log.push(
+                    "the batch interval is off: even steps measure the game's call period again"
+                        .into(),
+                );
+            }
+        }
         self.cadence.call(Instant::now());
         let mut updates = self.updates();
         if let Some(fault) = self.game.fault.take() {
@@ -1201,6 +1252,7 @@ impl<G: RoomGate> StepDriver<G> {
         ));
         self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
         self.cadence.begin(begin.steps_per_second);
+        crate::interval::SLOTS.next_epoch();
         self.game.me = Some(begin.player);
         self.control.set_me(begin.player);
         match &begin.mods {
@@ -1343,9 +1395,11 @@ impl<G: RoomGate> StepDriver<G> {
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
         self.next_step = Some(next_step);
-        // The released counter starts again here, whatever world ran before.
+        // The released counter starts again here, whatever world ran before;
+        // so do the batches the interval times (new GameSims).
         self.cadence
             .reset(next_step.saturating_sub(1), Instant::now());
+        crate::interval::SLOTS.next_epoch();
         self.room_world = Some(self.control.world_mark());
         crate::order::measure::room_step(next_step);
     }
@@ -1528,6 +1582,7 @@ impl<G: RoomGate> StepDriver<G> {
         self.log
             .push(format!("holding the world (fail closed): {reason}"));
         self.phase = Phase::Holding(reason);
+        crate::interval::SLOTS.next_epoch();
     }
 }
 
@@ -2773,6 +2828,21 @@ pub(crate) mod tests {
         assert_eq!(d.gate.menus_up, vec![1]);
         assert!(!d.menu_departing);
         assert_eq!(d.gate.lobby_acts, vec![LobbyAction::Leave]);
+    }
+
+    #[test]
+    fn a_batch_interval_that_is_not_armed_leaves_even_steps_measuring() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend((0..4).map(|_| StepGate::Run));
+        let (mut d, mut calls) = driver(script);
+        d.set_even_steps(true);
+        d.set_batch_interval(true);
+        call(&mut d, &mut calls);
+        // The wrapper never armed (no layout, a fault): no fixed count, and
+        // no batch may be timed.
+        assert!(!crate::interval::armed());
+        assert!(!d.batch_info().eligible);
     }
 
     #[test]

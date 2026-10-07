@@ -56,6 +56,9 @@ struct StepWindow {
     /// Room calls by the rule that chose their count, in
     /// [`crate::cadence::Pick::ALL`]'s order.
     picks: [u64; PICKS],
+    /// The batch interval: intervals written, Syncs with nothing to write,
+    /// Syncs that returned false ([`crate::interval::take_counts`]).
+    interval: (u64, u64, u64),
 }
 
 /// Allocation-free counters for the selected answer to each GameSim::Step
@@ -485,7 +488,7 @@ fn step_line(window: &StepWindow, seconds: f64) -> String {
         .map(|(pick, count)| format!("{}:{count}", pick.name()))
         .collect();
     format!(
-        "perf-step: {:.1}s: room updates/call 0:{} 1:{} 2:{} 3:{} 4+:{}; outside-room exact calls 0:{} 1:{} 2:{} 3:{} 4+:{}; own-speed calls {} (updates unknown); max consecutive zero-update room calls {}; max call-start gap {}; even steps {}",
+        "perf-step: {:.1}s: room updates/call 0:{} 1:{} 2:{} 3:{} 4+:{}; outside-room exact calls 0:{} 1:{} 2:{} 3:{} 4+:{}; own-speed calls {} (updates unknown); max consecutive zero-update room calls {}; max call-start gap {}; even steps {}; batch interval written {} skipped {} false syncs {}",
         seconds.max(1e-9),
         room[0],
         room[1],
@@ -501,6 +504,9 @@ fn step_line(window: &StepWindow, seconds: f64) -> String {
         window.max_zero_run,
         gap,
         picks.join(" "),
+        window.interval.0,
+        window.interval.1,
+        window.interval.2,
     )
 }
 
@@ -549,7 +555,9 @@ pub fn tick(now: Instant) -> Option<Vec<String>> {
     drop(start);
     let window = take(elapsed.as_secs_f64());
     let mut out = lines(&window).to_vec();
-    out.push(step_line(&STEP_COUNTERS.take(), elapsed.as_secs_f64()));
+    let mut steps = STEP_COUNTERS.take();
+    steps.interval = crate::interval::take_counts();
+    out.push(step_line(&steps, elapsed.as_secs_f64()));
     out.extend(crate::simperf::line(
         &crate::simperf::take(),
         window.updates,
@@ -673,10 +681,11 @@ mod tests {
             max_zero_run: 6,
             max_call_start_gap_ns: 1_250_000_000,
             picks: [0, 40, 1, 0, 2, 3, 1, 0, 0, 1],
+            interval: (48, 3, 0),
         };
         assert_eq!(
             step_line(&window, 10.0),
-            "perf-step: 10.0s: room updates/call 0:1 1:2 2:3 3:4 4+:5; outside-room exact calls 0:5 1:4 2:3 3:2 4+:1; own-speed calls 7 (updates unknown); max consecutive zero-update room calls 6; max call-start gap 1250.0 ms; even steps off:0 nominal:40 reserve:1 underrun:0 repay:2 barrier:3 command:1 paused:0 stale:0 far:1"
+            "perf-step: 10.0s: room updates/call 0:1 1:2 2:3 3:4 4+:5; outside-room exact calls 0:5 1:4 2:3 3:2 4+:1; own-speed calls 7 (updates unknown); max consecutive zero-update room calls 6; max call-start gap 1250.0 ms; even steps off:0 nominal:40 reserve:1 underrun:0 repay:2 barrier:3 command:1 paused:0 stale:0 far:1; batch interval written 48 skipped 3 false syncs 0"
         );
     }
 

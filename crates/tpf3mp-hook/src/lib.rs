@@ -47,6 +47,7 @@ pub mod guiplayer;
 pub mod image;
 pub mod industries;
 mod install;
+pub mod interval;
 pub mod junctions;
 pub mod lanedump;
 pub mod lanehash;

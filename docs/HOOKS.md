@@ -853,6 +853,73 @@ released step a call may, as before (hook.log says which at install). The
 step trace notes each choice (`avail`, `cap`, `nom`, `pick`), and
 `perf-step:` counts the room calls by rule (`even steps`).
 
+#### The batch interval
+
+Even steps leave unevenness the count cannot remove: a checkpoint every 50
+steps cuts a call at 4x (12.5 calls), an action needs a call without
+updates, a late turn or a save leaves a backlog. TPF2MP never had it: its
+count per call was constant and it paced by the engine's batch interval
+(`tpf2-multiplayer/native/src/speedhook.cpp`; its first version varied the
+count instead, and vehicles juddered).
+
+TF3 build 40408 does what TPF2 does, every field 0x78 higher (verified in
+its disassembly, 2026-10-08). `CGame::Step` (0x11f3b0, main thread, every
+frame), `m_data = [CGame+0x1f0]`:
+
+```
+totalTime (i64, m_data+0x1a0) += dt
+while totalTime >= lastSyncTime (i64, +0x1a8) + guiFrameTime (i32 µs, +0x218):
+    next = lastSyncTime + guiFrameTime
+    if !CGame::Sync(cgame, fn): break        ; the call at 0x11f406 -> 0x11f650
+    lastSyncTime = next
+totalTime = min(totalTime, lastSyncTime + guiFrameTime - 1)
+alpha = (totalTime - lastSyncTime) / guiFrameTime   -> CGame+0x1f8
+```
+
+`CGame::RunGameSimLoop` (0x11e210) runs `GameSim::Step` on
+`gameSims[simIdx]` (`m_data+0x88`, `+0x98`) with a fixed 200 ms time step
+and waits; a successful Sync publishes that finished state, flips `simIdx`,
+hands the other `GameSim` the next batch and sets `guiFrameTime` from
+`CalcGuiFrameTime` (0x11d240, 200-400 ms). The renderer interpolates by
+`alpha` across the batch Sync exposed. So right after a true Sync the
+batch on screen until the next one is known and finished.
+
+`crate::interval` redirects that call (profile targets `CGame::Sync` and
+`CGame::Step/Sync call`, both optional) and, after a true Sync, writes
+`guiFrameTime = shown × T × trim`: `T` the room's time per step, `shown` the
+batch's updates up to half again the nominal count (a catch-up above that
+shows as faster motion rather than slowing it), 50 ms for a running room's
+batch without updates. A batch of 3 at 4x is shown over 150 ms, one of 5
+over 250 ms: vehicles move at the room's speed whatever the count. With it
+on, even steps keep a fixed nominal count (the pace over the game's 200 ms)
+and do not repay with extra updates; `trim` (0.8..1.25, at most 0.05 a
+batch, only after steady batches, outside even steps' 1..3-step band) does.
+Writing anywhere but right after a true Sync moved TPF2's render clock back
+(a ShipFoamRenderer assertion); there Step's own clamp keeps `alpha` in
+[0, 1) for any interval in bounds (20 ms..2 s).
+
+The step detour publishes each batch, keyed by the `GameSim` it stepped
+(`this`), with the updates it really ran (the per-update detour counts
+them; the game adds its own pending debug steps to the answer, and such a
+batch is not timed), into one of two slots; the wrapper reads the slot of
+`gameSims[1 - simIdx]` after Sync flipped it. The next batch runs on the
+other `GameSim`, so the slot read is not being rewritten, and the two
+threads never wait for each other. A begin, every load and a hold start a
+new epoch: nothing published before times anything after.
+
+Fail closed: only on the profile whose layout was verified (40408), only
+with both targets and even steps on; before writing, the wrapper checks
+`m_data` (non-null, 8-aligned), `simIdx` (0 or 1), the value Sync wrote
+(20 ms..2 s), `totalTime >= lastSyncTime`, and that the field is committed
+writable memory (`VirtualQuery`, once per `m_data` and epoch). Anything else
+turns the interval off for the process (logged); the step driver then sees
+it off and even steps measure the call period again. Outside a running
+room's game, paused, or for a batch it cannot match, nothing is written:
+the game's own interval stands. `TPF3MP_HOOK_BATCH_INTERVAL=0` turns it off.
+`perf-step:` counts intervals written, Syncs skipped and Syncs that
+returned false; with the step trace on, each write logs `interval: n=..
+us=.. trim=.. backlog=..`.
+
 ### The Lua side
 
 The mod runs in two kinds of Lua state: the game's GUI state, started by a
@@ -5443,7 +5510,7 @@ below). A `perf-step:` line reports the selected update count for each
 ```
 perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 0 hits, 0 misses; guarded reads 90000, 3 faults
 perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, person-order 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
-perf-step: 10.0s: room updates/call 0:0 1:600 2:0 3:0 4+:0; outside-room exact calls 0:0 1:0 2:0 3:0 4+:0; own-speed calls 0 (updates unknown); max consecutive zero-update room calls 0; max call-start gap 50.0 ms; even steps off:0 nominal:600 reserve:0 underrun:0 repay:0 barrier:0 command:0 paused:0 stale:0 far:0
+perf-step: 10.0s: room updates/call 0:0 1:600 2:0 3:0 4+:0; outside-room exact calls 0:0 1:0 2:0 3:0 4+:0; own-speed calls 0 (updates unknown); max consecutive zero-update room calls 0; max call-start gap 50.0 ms; even steps off:0 nominal:600 reserve:0 underrun:0 repay:0 barrier:0 command:0 paused:0 stale:0 far:0; batch interval written 50 skipped 0 false syncs 0
 ```
 
 The `perf-step:` buckets count the selected `Updates::Exactly(n)` answer,
@@ -5530,6 +5597,7 @@ nothing the game computes, so one game of a room may run them alone.
 | `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (with `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to`) | the network lane (0) dumped at every checkpoint of those steps, only its edges with an end in the box, even with lane dumps off ("Lane dumps") |
 | `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump at every checkpoint ("The town trace") |
 | `TPF3MP_HOOK_STEP_TRACE` (`1` or `on`) | a `step-trace:` line for every call of the game's step ("What the lanes cost") |
+| `TPF3MP_HOOK_BATCH_INTERVAL` (`0` or `off`) | the hook never writes the game's batch interval ("The batch interval") |
 | `TPF3MP_HOOK_EVEN_STEPS` (`0` or `off`) | each call of the game's step runs every released step it may, instead of an even share ("Even steps") |
 | `TPF3MP_HOOK_EDGE_WATCH=<e>,...` (with `TPF3MP_HOOK_EDGE_WATCH_STEPS=from-to`) | the `edge watch:` lines for those entities and an `apply:` line for every command applied ("The edge watch") |
 | `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
