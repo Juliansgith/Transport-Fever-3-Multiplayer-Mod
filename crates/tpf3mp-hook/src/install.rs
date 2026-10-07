@@ -498,6 +498,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // What this call answered, and why, for the step trace.
     let mut answered: Option<(Updates, bool)> = None;
     let mut why: &'static str = "own";
+    let mut note: Option<String> = None;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
@@ -534,6 +535,9 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             }
         });
         why = driver.why();
+        if traced_at.is_some() {
+            note = driver.cadence_note();
+        }
         for (ticket, why) in driver.take_refused() {
             lua::refused(ticket, &why);
         }
@@ -583,7 +587,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         };
         let game = STEP_GAME_NANOS.load(Ordering::Relaxed);
         let call = u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let lines = crate::steptrace::call(at, updates, why, lanes, game, call);
+        let lines = crate::steptrace::call(at, updates, why, lanes, game, call, note.as_deref());
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
@@ -759,6 +763,20 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         ));
     }
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
+    let even = crate::cadence::wanted(std::env::var(crate::cadence::ENV).ok().as_deref());
+    driver.set_even_steps(even);
+    log_line(&if even {
+        format!(
+            "even steps: each call of the game's step runs the room's pace over the game's call period, keeping {} released step(s) in reserve ({}=0 runs all released, as before)",
+            crate::cadence::RESERVE,
+            crate::cadence::ENV
+        )
+    } else {
+        format!(
+            "even steps off ({} says so): each call runs every step released",
+            crate::cadence::ENV
+        )
+    });
     *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(driver));
 
     // SAFETY: both targets are functions the profile resolved, exactly once,

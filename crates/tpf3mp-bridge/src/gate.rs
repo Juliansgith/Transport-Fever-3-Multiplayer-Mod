@@ -113,6 +113,11 @@ impl Gate {
         self.next_step
     }
 
+    /// The last step released: the step before the next while none is.
+    pub fn released(&self) -> u64 {
+        self.released
+    }
+
     /// The steps from the next that are released: 0 when the next is not.
     pub fn released_ahead(&self) -> u64 {
         if self.may_run() {

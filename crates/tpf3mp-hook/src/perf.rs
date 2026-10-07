@@ -40,6 +40,9 @@ pub const WINDOW: Duration = Duration::from_secs(10);
 
 const STEP_BUCKETS: usize = 5;
 
+/// The rules [`crate::cadence`] chose room calls' counts by.
+const PICKS: usize = crate::cadence::Pick::ALL.len();
+
 /// A window of selected step counts. `room` is the room's actual
 /// `Updates::Exactly` answer; `outside` is an exact answer on a non-room
 /// call; `own_speed` is a call whose update count comes from the game.
@@ -50,6 +53,9 @@ struct StepWindow {
     own_speed: u64,
     max_zero_run: u64,
     max_call_start_gap_ns: u64,
+    /// Room calls by the rule that chose their count, in
+    /// [`crate::cadence::Pick::ALL`]'s order.
+    picks: [u64; PICKS],
 }
 
 /// Allocation-free counters for the selected answer to each GameSim::Step
@@ -64,6 +70,7 @@ struct StepCounters {
     max_zero_run: AtomicU64,
     previous_start_ns: AtomicU64,
     max_call_start_gap_ns: AtomicU64,
+    picks: [AtomicU64; PICKS],
 }
 
 impl StepCounters {
@@ -77,6 +84,7 @@ impl StepCounters {
             max_zero_run: AtomicU64::new(0),
             previous_start_ns: AtomicU64::new(0),
             max_call_start_gap_ns: AtomicU64::new(0),
+            picks: [const { AtomicU64::new(0) }; PICKS],
         }
     }
 
@@ -123,6 +131,9 @@ impl StepCounters {
         window.own_speed = self.own_speed.swap(0, Ordering::Relaxed);
         window.max_zero_run = self.max_zero_run.swap(0, Ordering::Relaxed);
         window.max_call_start_gap_ns = self.max_call_start_gap_ns.swap(0, Ordering::Relaxed);
+        for (count, pick) in window.picks.iter_mut().zip(self.picks.iter()) {
+            *count = pick.swap(0, Ordering::Relaxed);
+        }
         self.zero_run_at_window_start
             .store(self.zero_run.load(Ordering::Relaxed), Ordering::Relaxed);
         window
@@ -362,6 +373,13 @@ pub fn step_call(room: bool, updates: Option<u32>, started: Option<Instant>) {
     STEP_COUNTERS.record(room, updates, Some(start_ns));
 }
 
+/// A room call's count was chosen by `pick` ([`crate::cadence`]).
+pub fn cadence_pick(pick: crate::cadence::Pick) {
+    if enabled() {
+        STEP_COUNTERS.picks[pick.index()].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// One simulation update began.
 pub fn update() {
     if enabled() {
@@ -461,8 +479,13 @@ fn step_line(window: &StepWindow, seconds: f64) -> String {
     } else {
         format!("{:.1} ms", window.max_call_start_gap_ns as f64 / 1e6)
     };
+    let picks: Vec<String> = crate::cadence::Pick::ALL
+        .iter()
+        .zip(window.picks.iter())
+        .map(|(pick, count)| format!("{}:{count}", pick.name()))
+        .collect();
     format!(
-        "perf-step: {:.1}s: room updates/call 0:{} 1:{} 2:{} 3:{} 4+:{}; outside-room exact calls 0:{} 1:{} 2:{} 3:{} 4+:{}; own-speed calls {} (updates unknown); max consecutive zero-update room calls {}; max call-start gap {}",
+        "perf-step: {:.1}s: room updates/call 0:{} 1:{} 2:{} 3:{} 4+:{}; outside-room exact calls 0:{} 1:{} 2:{} 3:{} 4+:{}; own-speed calls {} (updates unknown); max consecutive zero-update room calls {}; max call-start gap {}; even steps {}",
         seconds.max(1e-9),
         room[0],
         room[1],
@@ -477,6 +500,7 @@ fn step_line(window: &StepWindow, seconds: f64) -> String {
         window.own_speed,
         window.max_zero_run,
         gap,
+        picks.join(" "),
     )
 }
 
@@ -648,10 +672,11 @@ mod tests {
             own_speed: 7,
             max_zero_run: 6,
             max_call_start_gap_ns: 1_250_000_000,
+            picks: [0, 40, 1, 0, 2, 3, 1, 0, 0, 1],
         };
         assert_eq!(
             step_line(&window, 10.0),
-            "perf-step: 10.0s: room updates/call 0:1 1:2 2:3 3:4 4+:5; outside-room exact calls 0:5 1:4 2:3 3:2 4+:1; own-speed calls 7 (updates unknown); max consecutive zero-update room calls 6; max call-start gap 1250.0 ms"
+            "perf-step: 10.0s: room updates/call 0:1 1:2 2:3 3:4 4+:5; outside-room exact calls 0:5 1:4 2:3 3:2 4+:1; own-speed calls 7 (updates unknown); max consecutive zero-update room calls 6; max call-start gap 1250.0 ms; even steps off:0 nominal:40 reserve:1 underrun:0 repay:2 barrier:3 command:1 paused:0 stale:0 far:1"
         );
     }
 

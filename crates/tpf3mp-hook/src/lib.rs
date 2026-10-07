@@ -37,6 +37,7 @@ pub mod at_menu;
 pub mod autoload;
 pub mod build_data;
 pub mod builds;
+pub mod cadence;
 pub mod clipboard;
 pub mod drawing;
 pub mod edgewatch;

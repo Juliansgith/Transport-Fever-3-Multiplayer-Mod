@@ -552,9 +552,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   this: an event for another step, an event after its step's release, or a
   release that goes back. The hook must then stop following and say so.
 - **Pacing.** The agent releases steps on its jitter-buffered schedule
-  (`Playout`). The game runs a released step at its own speed and waits at
-  the gate for the next one. It reports each step it ran; the agent reports
-  progress to the server from that, at most every 20 ms.
+  (`Playout`). The game runs released steps at its own call pace, an even
+  share of them each call ("Even steps" below), and waits at the gate for
+  the next one. It reports each step it ran; the agent reports progress to
+  the server from that, at most every 20 ms.
 - **Liveness.** The hook must beat its heartbeat from a thread of its own,
   since the game thread blocks while loading. The agent gives up on a hook
   whose heartbeat stands still for 60 s, or 10 minutes while the world
@@ -731,11 +732,12 @@ call of the speed getter, as TPF2MP's speed hook
 
 - **Before the room begins a game**, and **after it ends**, the game's own
   speed.
-- **In the room's game**, the steps the room has released
+- **In the room's game**, of the steps the room has released
   (`Session::poll_step`, never blocking the game's thread, then
-  `Session::batch`, which reads on through the agent's one-step releases),
-  at most 16 a call and never past a checkpoint step, whose lanes must be
-  the world's right after it; the call then reports each (`after_step`).
+  `Session::read_ahead` and `Session::batch`, which read on through the
+  agent's one-step releases), at most 16 a call and never past a
+  checkpoint step, whose lanes must be the world's right after it, an even
+  share ("Even steps" below); the call then reports each (`after_step`).
   A room faster than the game's own pace catches up that way, up to 16x.
   When the room withholds the next step (paused, or a player behind), 0:
   the game's paused path, and the world stands still.
@@ -796,6 +798,60 @@ to hold. Tests: `step::tests` drive the driver against a scripted room;
 runs exactly once per call with the count chosen and its arguments
 untouched; `session::tests` read releases ahead over a real link;
 `detour::x86_64::tests` redirect one call in hand-written code.
+
+#### Even steps
+
+The game calls its step on its own clock, about every 200 ms at every
+speed, and the agent releases the room's steps on another, its playout's:
+one every 200 ms at 1x (5 steps a second), every 50 ms at 4x. Running all
+that was released at a call made the count alias against the call clock's
+jitter of 10 to 15 ms. Measured on build 40408 with the step trace
+(2026-10-07, one player on the deployed server): 0.4 % of the calls ran
+another count than speed/100 at 1x, 15 % at 2x, 45 % at 4x (`4 3 5 4`,
+`1 7`, `0 9`); in a two-player room 11 %, 19 % and 17 %. The renderer
+interpolates from each call, so vehicles moved 75 % and then 125 % of a
+normal call, or stood and jumped: they wobbled.
+
+`crate::cadence` instead runs, of the steps released, the room's pace
+(steps a second from the room's `Begin`, times its speed from
+`ToHook::Speed`) times the game's call period (the mean of the latest 16
+call gaps without their two shortest and two longest, so a save's freeze
+does not move it and uneven calls average to what they are), with these
+rules in order:
+
+- **an event, save, load or end waits** behind the released steps
+  (`Session::read_ahead` reads every release up to the first such message
+  and never past it, `Session::barrier_waiting`): all of them, so the
+  message is read on the next call as before;
+- **the player's own action is on its way** through the room (handed over
+  in the last 3 s and not yet ordered back): all of them, so it comes back
+  as soon as before (another player's action may show a call, about
+  200 ms, later);
+- **far behind** (more than 1.5 s of the room's pace, at least 16 steps:
+  a reconnect, a load; below the server's pacing window, so a game that
+  falls behind catches up before it holds the room back): all of them, at
+  most 16 a call, as before;
+- **the room is paused**, or **nothing new was released for 400 ms** (the
+  room waits for a member): all of them, so every game stops at the
+  frontier;
+- otherwise **the nominal count**, with one released step kept in
+  reserve: a call that finds fewer rebuilds the reserve with one update
+  less (at 1x one call of 0), a backlog of more than 3 is repaid by a
+  quarter a call, at most half the nominal count more, and near a
+  checkpoint the steps to it are spread evenly over the calls they take
+  (`4 3 3`, not `4 4 2`), over fewer calls while a backlog waits (`5 5`),
+  so rooms with checkpoints only a few steps apart keep their pace.
+
+A rate of steps per call within 0.15 of a whole number is taken as that
+number; a rate between (7 steps a second against 5 calls) carries its
+fraction to an even mix. Which steps run, in which order and with which
+actions between them, and every checkpoint's cut, are as before: only the
+split of released steps into calls changes. Released steps wait at most
+about the band (1 to 3 steps: 200 to 600 ms of simulation at 1x, 50 to
+150 ms at 4x) before they run. `TPF3MP_HOOK_EVEN_STEPS=0` runs every
+released step a call may, as before (hook.log says which at install). The
+step trace notes each choice (`avail`, `cap`, `nom`, `pick`), and
+`perf-step:` counts the room calls by rule (`even steps`).
 
 ### The Lua side
 
@@ -3674,11 +3730,16 @@ startup timeout cleanup; production readiness checks are unchanged.
 `TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
 `step-trace:` line for every call of the game's step
 (`crates/tpf3mp-hook/src/steptrace.rs`): when it came, how many updates it
-ran and why (`run`; `wait` for the room's next step, `actions`/`replaying`
-for the room's actions, `save`, `load` for the room's world, `hold`; `own`
-outside the room's game), the game's step and the whole call in
-milliseconds (timed for the trace even with `TPF3MP_HOOK_PERF=0`), and
-`lanes` on a checkpoint's batch.
+ran and why (`run`; `wait` for the room's next step, `reserve` for
+released steps kept back ("Even steps"), `actions`/`replaying` for the
+room's actions, `save`, `load` for the room's world, `hold`; `own` outside
+the room's game), the game's step and the whole call in milliseconds (timed
+for the trace even with `TPF3MP_HOOK_PERF=0`), `lanes` on a checkpoint's
+batch, and, on a call that could run the room's steps, how its count was
+chosen: the steps released and not run (`avail`), the batch's cap (`cap`),
+the nominal count (`nom`) and the rule (`pick`: `nominal`, `reserve`,
+`underrun`, `repay`, `barrier`, `command`, `paused`, `stale`, `far`, or
+`off`).
 
 Vehicles are compared by their place on their paths, not in the world. On
 build 40408, with a bus running a line in two games in one room, the bus's
@@ -5382,7 +5443,7 @@ below). A `perf-step:` line reports the selected update count for each
 ```
 perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 0 hits, 0 misses; guarded reads 90000, 3 faults
 perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, person-order 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
-perf-step: 10.0s: room updates/call 0:0 1:600 2:0 3:0 4+:0; outside-room exact calls 0:0 1:0 2:0 3:0 4+:0; own-speed calls 0 (updates unknown); max consecutive zero-update room calls 0; max call-start gap 50.0 ms
+perf-step: 10.0s: room updates/call 0:0 1:600 2:0 3:0 4+:0; outside-room exact calls 0:0 1:0 2:0 3:0 4+:0; own-speed calls 0 (updates unknown); max consecutive zero-update room calls 0; max call-start gap 50.0 ms; even steps off:0 nominal:600 reserve:0 underrun:0 repay:0 barrier:0 command:0 paused:0 stale:0 far:0
 ```
 
 The `perf-step:` buckets count the selected `Updates::Exactly(n)` answer,
@@ -5396,8 +5457,10 @@ timestamps, with each gap recorded after its later step returns, using the
 `Instant` already read for `perf:` timing. Window reporting occurs after a
 step returns, so a call that spans the 10-second boundary is included in the
 window it closes. The gap is `n/a` until two calls have been observed.
-These are simulation-call cadence and timing measurements, not render-frame
-timings or evidence of vehicle motion or visual stutter.
+`even steps` counts the room calls by the rule that chose their count
+("Even steps"): in a steady room nearly all are `nominal`. These are
+simulation-call cadence and timing measurements, not render-frame timings
+or evidence of vehicle motion or visual stutter.
 
 The first line: the window's length; the game's step, its total time,
 that time per second of wall time, its calls (batches) and the
@@ -5467,6 +5530,7 @@ nothing the game computes, so one game of a room may run them alone.
 | `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (with `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to`) | the network lane (0) dumped at every checkpoint of those steps, only its edges with an end in the box, even with lane dumps off ("Lane dumps") |
 | `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump at every checkpoint ("The town trace") |
 | `TPF3MP_HOOK_STEP_TRACE` (`1` or `on`) | a `step-trace:` line for every call of the game's step ("What the lanes cost") |
+| `TPF3MP_HOOK_EVEN_STEPS` (`0` or `off`) | each call of the game's step runs every released step it may, instead of an even share ("Even steps") |
 | `TPF3MP_HOOK_EDGE_WATCH=<e>,...` (with `TPF3MP_HOOK_EDGE_WATCH_STEPS=from-to`) | the `edge watch:` lines for those entities and an `apply:` line for every command applied ("The edge watch") |
 | `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
 | `TPF3MP_HOOK_ROAD_ENTRY_TRACE=from-to` | a `road:` line for every in-step road edge append in those steps ("The road entry trace") |

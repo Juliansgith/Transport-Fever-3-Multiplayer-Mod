@@ -26,6 +26,27 @@ use crate::{
 
 /// How long to sleep between polls while waiting for the agent.
 const POLL: Duration = Duration::from_micros(200);
+
+/// Most messages [`Session::read_ahead`] reads in one call: a backlog of
+/// releases is read over a few calls rather than holding the game's step.
+const READ_AHEAD_MAX: usize = 1024;
+
+/// Whether a message read after the next released step may be handled at
+/// once: a release, or something to show the player. Anything else (an
+/// event, a load, the end) waits until the released steps ran.
+fn reads_on(message: &ToHook) -> bool {
+    matches!(
+        message,
+        ToHook::Release { .. }
+            | ToHook::Speed(_)
+            | ToHook::Chat { .. }
+            | ToHook::Room(_)
+            | ToHook::Lobby(_)
+            | ToHook::Preview { .. }
+            | ToHook::Refused { .. }
+            | ToHook::Diverged { .. }
+    )
+}
 /// How often a session whose room ended before its game began looks for
 /// the launcher's next room session on the link.
 const PROBE: Duration = Duration::from_millis(100);
@@ -517,21 +538,51 @@ impl Session {
             let Some(message) = self.try_recv()? else {
                 return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
             };
-            match message {
-                ToHook::Release { .. }
-                | ToHook::Speed(_)
-                | ToHook::Chat { .. }
-                | ToHook::Room(_)
-                | ToHook::Lobby(_)
-                | ToHook::Preview { .. }
-                | ToHook::Refused { .. }
-                | ToHook::Diverged { .. } => self.handle(message, game)?,
-                other => {
-                    self.peeked = Some(other);
-                    return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
-                }
+            if reads_on(&message) {
+                self.handle(message, game)?;
+            } else {
+                self.peeked = Some(message);
+                return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
             }
         }
+    }
+
+    /// After [`Session::poll_step`] said [`StepGate::Run`]: reads every
+    /// release waiting (and what [`Session::batch`] reads on through),
+    /// whatever the batch's cap or the next checkpoint, and stops at the
+    /// first message that must wait for the released steps (an event, a
+    /// load, the end), which stays for the next [`Session::poll_step`]:
+    /// never past it, so a release after an event is not seen before the
+    /// event applies. For a game that runs fewer of the released steps in
+    /// a call than it could: [`Session::released`] then says how many
+    /// wait, and [`Session::barrier_waiting`] whether something waits
+    /// behind them.
+    pub fn read_ahead(&mut self, game: &mut impl Game) -> Result<(), SessionError> {
+        for _ in 0..READ_AHEAD_MAX {
+            if self.peeked.is_some() {
+                return Ok(());
+            }
+            let Some(message) = self.try_recv()? else {
+                return Ok(());
+            };
+            if reads_on(&message) {
+                self.handle(message, game)?;
+            } else {
+                self.peeked = Some(message);
+            }
+        }
+        Ok(())
+    }
+
+    /// The last step released, as far as the link was read.
+    pub fn released(&self) -> u64 {
+        self.gate.released()
+    }
+
+    /// Whether a message read ahead waits for the released steps to run
+    /// first: an event, a load, the end.
+    pub fn barrier_waiting(&self) -> bool {
+        self.peeked.is_some()
     }
 
     /// Records that the game ran its next step and reports it, with the
@@ -1319,6 +1370,39 @@ mod tests {
         }
         assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
         assert_eq!(session.batch(&mut world, 16).unwrap(), 2, "11 and 12");
+    }
+
+    #[test]
+    fn reading_ahead_sees_every_release_up_to_an_event_and_never_past_it() {
+        let (mut session, agent, mut world) = playing("ahead", 5);
+        for through in 1..=8 {
+            say(&agent, &ToHook::Release { through });
+        }
+        say(&agent, &ToHook::Speed(Speed(400)));
+        say(&agent, &ToHook::Apply(event(9)));
+        say(&agent, &ToHook::Release { through: 9 });
+
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(
+            session.batch(&mut world, 2).unwrap(),
+            2,
+            "the cap still holds"
+        );
+        session.read_ahead(&mut world).unwrap();
+        assert_eq!(session.released(), 8, "past the cap and checkpoint 5");
+        assert!(session.barrier_waiting(), "step 9's event waits");
+        assert_eq!(world.notices, vec![Notice::Speed(Speed(400))]);
+        assert!(world.applied.is_empty(), "the event waits for step 9");
+        session.read_ahead(&mut world).unwrap();
+        assert_eq!(session.released(), 8, "never past the event");
+        assert_eq!(session.batch(&mut world, 16).unwrap(), 5, "to checkpoint 5");
+        for step in 1..=8 {
+            assert_eq!(session.after_step(&mut world).unwrap(), step);
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(world.applied, vec![9], "applied before step 9");
+        assert!(!session.barrier_waiting());
+        assert_eq!(session.released(), 9);
     }
 
     /// The next message the hook sent, past the hellos and loads.

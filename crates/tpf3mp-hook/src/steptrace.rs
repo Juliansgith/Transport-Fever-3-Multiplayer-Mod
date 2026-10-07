@@ -6,14 +6,17 @@
 //! [`FLUSH_EVERY`] calls:
 //!
 //! ```text
-//! step-trace: t=81234.5 gap=200.3 u=1 why=run game=27.4 call=28.9 lanes
+//! step-trace: t=81234.5 gap=200.3 u=1 why=run game=27.4 call=28.9 lanes avail=3 cap=3 nom=1 pick=nominal
 //! ```
 //!
 //! `t` is milliseconds since the first traced call, `gap` since the call
 //! before; `u` the updates answered (`own` for the game's own speed); `why`
 //! the step driver's reason for that answer; `game` the game's own step and
 //! `call` the whole detour, in milliseconds; `lanes` marks a checkpoint
-//! batch, whose step also read the world's lanes.
+//! batch, whose step also read the world's lanes. A call that could run the
+//! room's steps ends with how [`crate::cadence`] chose its count: the steps
+//! released and not run (`avail`), the batch's cap (`cap`), the nominal
+//! count (`nom`) and the rule (`pick`).
 
 use std::sync::{
     Mutex,
@@ -70,7 +73,9 @@ pub fn step_timer(perf: Option<Instant>, trace: bool) -> Option<Instant> {
 /// One call of the step: begun at `started`, `updates` answered (`None`
 /// for the game's own speed) and why (the step driver's
 /// [`crate::step::StepDriver::why`]), the game's step and the whole call in
-/// nanoseconds. Returns the lines to write once enough have gathered.
+/// nanoseconds, and the even steps' `note`
+/// ([`crate::step::StepDriver::cadence_note`]). Returns the lines to write
+/// once enough have gathered.
 pub fn call(
     started: Instant,
     updates: Option<u32>,
@@ -78,6 +83,7 @@ pub fn call(
     lanes: bool,
     game_nanos: u64,
     call_nanos: u64,
+    note: Option<&str>,
 ) -> Vec<String> {
     let mut state = STATE.lock().unwrap_or_else(|p| p.into_inner());
     let first = *state.first.get_or_insert(started);
@@ -86,13 +92,14 @@ pub fn call(
         .map_or(0.0, |last| millis(started.saturating_duration_since(last)));
     state.last = Some(started);
     let line = format!(
-        "step-trace: t={:.1} gap={gap:.1} u={} why={} game={:.1} call={:.1}{}",
+        "step-trace: t={:.1} gap={gap:.1} u={} why={} game={:.1} call={:.1}{}{}",
         millis(started.saturating_duration_since(first)),
         updates.map_or_else(|| "own".to_owned(), |u| u.to_string()),
         if why.is_empty() { "-" } else { why },
         nanos_ms(game_nanos),
         nanos_ms(call_nanos),
         if lanes { " lanes" } else { "" },
+        note.map(|note| format!(" {note}")).unwrap_or_default(),
     );
     state.lines.push(line);
     if state.lines.len() >= FLUSH_EVERY {
