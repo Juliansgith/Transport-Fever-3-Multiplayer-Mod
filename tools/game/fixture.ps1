@@ -1,11 +1,16 @@
 # Makes the plain fixture save that room.ps1 starts rooms from
-# (docs/GAME_TESTING.md, "Fixture saves"): starts one game without the hook,
-# has its console start a new world (16 by 16 tiles, seed "tpf3mp", the
-# tutorial off, as docs/DEVELOPMENT.md describes), saves it under -Name,
-# and quits the game. Nothing is clicked: the console does it all, so the
-# window's size does not matter.
+# (docs/GAME_TESTING.md, "Fixture saves"): installs the repository's mod
+# into the game's staging area as room.ps1 does, starts one game without
+# the hook, has its console start a new world (16 by 16 tiles, seed
+# "tpf3mp", the tutorial off, as docs/DEVELOPMENT.md describes) with the
+# mod in its mod list, saves it under -Name, and quits the game. Nothing is
+# clicked: the console does it all, so the window's size does not matter.
 #
-#   fixture.ps1 [-Name tpf3mp_fixture] [-Seed tpf3mp] [-Tiles 16]
+# The mod has to be in the save: the hook saves the room's world through
+# the mod's GUI, so a world whose save does not list the mod leaves the
+# host's save for the room unanswered, and the guests never join.
+#
+#   fixture.ps1 [-Name tpf3mp_fixture] [-Seed tpf3mp] [-Tiles 16] [-NoInstall]
 #
 # Needs the game's console (debugMode = true in settings.lua) and Steam
 # running. Refuses while any game runs, never stops one, and never
@@ -18,7 +23,8 @@ param(
   [int]$MenuWait = 180,
   [int]$WorldWait = 300,
   [int]$SaveWait = 120,
-  [int]$QuitWait = 60
+  [int]$QuitWait = 60,
+  [switch]$NoInstall
 )
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\env.ps1"
@@ -34,6 +40,21 @@ if (-not (Get-Process steam -ErrorAction SilentlyContinue)) { throw "Steam is no
 if (@(Get-Process TransportFever3 -ErrorAction SilentlyContinue).Count -gt 0) {
   throw "A game is already running; quit it first. This helper never stops one"
 }
+
+# The mod the new world starts with, installed as room.ps1 installs it.
+if (-not $NoInstall) {
+  $parent = [IO.Path]::GetFullPath((Join-Path $GameLocal 'staging_area'))
+  $target = [IO.Path]::GetFullPath($ModStaging)
+  if ($target -ne (Join-Path $parent 'tpf3mp_1')) { throw 'Unexpected staging target' }
+  foreach ($path in @($GameLocal, $parent, $target)) {
+    if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Refusing linked staging path: $path" }
+  }
+  if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop }
+  New-Item -ItemType Directory -Force $parent | Out-Null
+  Copy-Item -Recurse "$Repo\mod\tpf3mp_1" $ModStaging
+  "installed the mod into $ModStaging"
+}
+if (-not (Test-Path -LiteralPath $ModStaging)) { throw "the mod is not installed at $ModStaging; run without -NoInstall" }
 
 # The game's log as it stands, read shared because the game keeps it open.
 # A marker counts only after a "Starting up" line this game wrote: one
@@ -75,7 +96,7 @@ Start-Sleep -Seconds 8
 
 $g = "$PSScriptRoot\gamewin.ps1"
 $start = 'local p = api.type.StartGameParams.new() p.numTiles = api.type.Vec2i.new(' + $Tiles + ', ' + $Tiles + ') ' +
-  'p.seed = "' + $Seed + '" p.modParams = { [""] = { ["guideSystemConfig.tutorial"] = 1 } } ' +
+  'p.seed = "' + $Seed + '" p.mods = { "tpf3mp_1" } p.modParams = { [""] = { ["guideSystemConfig.tutorial"] = 1 } } ' +
   'print("@@fixture starting") app.startGame(p)'
 & $g console $start -GamePid $proc.Id -Open | Out-Null
 Wait-For "@@fixture starting" 20 "the console's echo of the start"
