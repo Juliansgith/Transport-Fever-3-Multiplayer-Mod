@@ -26,7 +26,8 @@ use tpf3mp_proto::{
     action::{
         Action, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef, EdgeEnds,
         JunctionChange, JunctionConfig, LineChange, LineId, LoanOp, Network, Polyline, Pos,
-        Prospect, ReplaceVehicle, Resolve, Structure, Terraform, VehicleChange,
+        Prospect, Renamed, ReplaceVehicle, Resolve, StationId, Structure, Terraform, Tint,
+        VehicleChange, VehicleId,
     },
 };
 
@@ -247,6 +248,8 @@ struct Construction {
 struct Station {
     at: P,
     waiting: u32,
+    /// As its window names it: the construction's name, until renamed.
+    name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +268,10 @@ struct Vehicle {
     next_stop: u16,
     progress: u32,
     load: u32,
+    /// As its window names it: the game's default, until renamed.
+    name: String,
+    /// The tint its window gave it, if any.
+    color: Option<[i32; 3]>,
 }
 
 /// A prospection under way: TF3's company script keeps these
@@ -472,6 +479,8 @@ impl State {
                         next_stop: 0,
                         progress: 0,
                         load: 0,
+                        name: format!("Vehicle {id}"),
+                        color: None,
                     },
                 );
                 Ok(())
@@ -559,15 +568,25 @@ impl State {
                 }
                 Ok(())
             }
-            // The model keeps no vehicle state beyond its line: a vehicle
-            // sent to its depot leaves its line. One sold on arrival never
-            // gets here: `Action::validate` refuses it (the game crashes).
+            // The model keeps no vehicle state beyond its line and its
+            // window's colour: a vehicle sent to its depot leaves its line.
+            // One sold on arrival never gets here: `Action::validate`
+            // refuses it (the game crashes).
             Action::VehicleOp(op) => {
                 let ids = self.own_vehicles(std::iter::once(op.vehicle.0), company)?;
-                if let VehicleChange::ToDepot { .. } = op.change {
-                    for id in ids {
-                        self.vehicles.get_mut(&id).expect("checked above").line = None;
+                match op.change {
+                    VehicleChange::ToDepot { .. } => {
+                        for id in ids {
+                            self.vehicles.get_mut(&id).expect("checked above").line = None;
+                        }
                     }
+                    VehicleChange::Recolor(tint) => {
+                        for id in ids {
+                            self.vehicles.get_mut(&id).expect("checked above").color =
+                                Some([tint.r, tint.g, tint.b]);
+                        }
+                    }
+                    _ => {}
                 }
                 Ok(())
             }
@@ -586,7 +605,14 @@ impl State {
                 let station = model.contains("stop").then(|| {
                     let id = self.next_station;
                     self.next_station += 1;
-                    self.stations.insert(id, Station { at, waiting: 0 });
+                    self.stations.insert(
+                        id,
+                        Station {
+                            at,
+                            waiting: 0,
+                            name: format!("Stop {id}"),
+                        },
+                    );
                     id
                 });
                 self.charge(company, CONSTRUCTION_COST)?;
@@ -624,8 +650,7 @@ impl State {
             // The game's subsidy script decides offers and their money; the
             // model has no subsidies.
             Action::Subsidy(_) => Ok(()),
-            // A name: the model keeps no names.
-            Action::Rename { .. } => Ok(()),
+            Action::Rename { what, name } => self.rename(what, name.as_str(), company),
             // A company perk: the model keeps no permits, towns' reputations
             // or emissions.
             Action::Perk(_) => Ok(()),
@@ -1164,6 +1189,7 @@ impl State {
                 Station {
                     at: origin,
                     waiting: 0,
+                    name: build.name.as_str().to_owned(),
                 },
             );
             kind = Kind::Station(id);
@@ -1324,6 +1350,43 @@ impl State {
                 refuse!("{line} is company-{}'s", found.owner)
             }
             Some(_) => Ok(line.0),
+        }
+    }
+
+    /// A name given from an entity's window or the line manager, as the
+    /// mod replays it (`tpf3mp/apply.lua`, `HANDLERS.Rename`): the
+    /// company's own vehicle, a station or construction no other company
+    /// owns, any town. The model has no towns to name.
+    fn rename(&mut self, what: &Renamed, name: &str, company: u32) -> Result<(), Refusal> {
+        match what {
+            Renamed::Vehicle(vehicle) => {
+                let [id] = self.own_vehicles(std::iter::once(vehicle.0), company)?[..] else {
+                    unreachable!("one vehicle named, one checked")
+                };
+                self.vehicles.get_mut(&id).expect("checked above").name = name.to_owned();
+                Ok(())
+            }
+            Renamed::Station(station) => {
+                let id = station.0;
+                if !self.stations.contains_key(&id) {
+                    refuse!("no station-{id}");
+                }
+                if let Some(owner) = self.station_owner(id).filter(|owner| *owner != company) {
+                    refuse!("station-{id} is company-{owner}'s");
+                }
+                self.stations.get_mut(&id).expect("checked above").name = name.to_owned();
+                Ok(())
+            }
+            Renamed::Town(_) => Ok(()),
+            Renamed::Construction(reference) => {
+                let key = self.find_construction(reference)?;
+                let owner = self.constructions[&key].owner;
+                if owner != company {
+                    refuse!("the construction is company-{owner}'s");
+                }
+                self.constructions.get_mut(&key).expect("found above").name = name.to_owned();
+                Ok(())
+            }
         }
     }
 
@@ -1501,6 +1564,14 @@ pub struct LineView {
     pub vehicles: usize,
 }
 
+/// A vehicle as a check sees it: its name, and its colour if its window
+/// gave it one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VehicleView {
+    pub name: String,
+    pub color: Option<Tint>,
+}
+
 /// What a replica shows of its world, for the harness's checks. The real
 /// game's hook answers the same questions from the game's own state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1520,6 +1591,10 @@ pub struct Observation {
     /// Stops, signals and waypoints on edges.
     pub edge_objects: usize,
     pub lines: BTreeMap<LineId, LineView>,
+    /// Each vehicle's name and colour.
+    pub vehicle_views: BTreeMap<VehicleId, VehicleView>,
+    /// Each station's name.
+    pub station_names: BTreeMap<StationId, String>,
     pub vehicles: usize,
     /// Vehicles on no line.
     pub idle: usize,
@@ -1629,7 +1704,11 @@ impl ModelWorld {
             .iter()
             .map(|(id, st)| (*id, st.waiting))
             .collect();
-        let stations: Vec<(u32, P)> = s.stations.iter().map(|(id, st)| (*id, st.at)).collect();
+        let stations: Vec<(u32, P, &str)> = s
+            .stations
+            .iter()
+            .map(|(id, st)| (*id, st.at, st.name.as_str()))
+            .collect();
         vec![
             lane_digest(lane::NETWORK, &(&s.edges, &s.terrain, &s.junctions)),
             lane_digest(
@@ -1707,6 +1786,24 @@ impl ModelWorld {
                 .sum(),
             edge_objects: s.objects.len(),
             lines,
+            vehicle_views: s
+                .vehicles
+                .iter()
+                .map(|(id, vehicle)| {
+                    (
+                        VehicleId(*id),
+                        VehicleView {
+                            name: vehicle.name.clone(),
+                            color: vehicle.color.map(|[r, g, b]| Tint { r, g, b }),
+                        },
+                    )
+                })
+                .collect(),
+            station_names: s
+                .stations
+                .iter()
+                .map(|(id, station)| (StationId(*id), station.name.clone()))
+                .collect(),
             vehicles: s.vehicles.len(),
             idle: s.vehicles.values().filter(|v| v.line.is_none()).count(),
             delivered: s.delivered,
@@ -1840,6 +1937,7 @@ mod tests {
                 Station {
                     at: [i32::try_from(id).unwrap() * 1_000_000, 0, 0],
                     waiting: 0,
+                    name: format!("Station {id}"),
                 },
             );
         }
