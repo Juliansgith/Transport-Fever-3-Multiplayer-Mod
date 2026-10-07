@@ -4918,6 +4918,91 @@ fn a_construction_whose_own_track_the_tool_snapped_is_built_alone_then_snapped()
     );
 }
 
+/// A rail station snapped to a track end, whose tool also configured the
+/// switches of its own platform tracks (2026-10-07, live: refused in every
+/// game, "the junction no longer exists"). The platform track -10 > -11 >
+/// -12 reaches nothing that exists, so the room leaves it to the station;
+/// the setting at its switch -11, whose turns name its edges, goes with it.
+/// The setting at the snapped track's node -2 travels.
+#[test]
+fn a_rail_station_leaves_its_own_tracks_junction_settings_to_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let joined = RAIL_STATION_OPEN.replace(
+        "{JOIN}",
+        ", { entity = -6, type = 1, comp = { node0 = -3, node1 = 8, type = 0, typeIndex = -1, \
+           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+           roadTemplate = '::/track/standard.track_template', roadStyle = '' } }, \
+         { entity = -13, type = 1, comp = { node0 = -10, node1 = -11, type = 0, typeIndex = -1, \
+           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+           roadTemplate = '::/track/standard.track_template', roadStyle = '' } }, \
+         { entity = -14, type = 1, comp = { node0 = -11, node1 = -12, type = 0, typeIndex = -1, \
+           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+           roadTemplate = '::/track/standard.track_template', roadStyle = '' } }",
+    );
+    lua.load(format!(
+        "local function config(turns) \
+             local t = {{}} \
+             for i, p in ipairs(turns) do t[i] = {{ segment0 = p[1], lane0 = 0, segment1 = p[2], lane1 = 0, \
+                 withRoad = true, withTram = false }} end \
+             return {{ trafficLightPreference = 0, doubleSlipSwitch = false, userModifiedTrafficLightStates = false, \
+                 laneConnections = t, crosswalks = {{}}, trafficLightConfig = {{ trafficLightType = -1, states = {{}} }} }} \
+         end \
+         PROPOSAL = {joined} \
+         local s = PROPOSAL.proposal \
+         for _, n in ipairs({{ {{ -10, 250 }}, {{ -11, 300 }}, {{ -12, 350 }} }}) do \
+             s.addedNodes[#s.addedNodes + 1] = {{ entity = n[1], comp = {{ position = {{ x = n[2], y = 20, z = 0 }} }} }} \
+         end \
+         s.nodeConfigsToAdd = {{ \
+             {{ entity = -2, comp = config({{}}) }}, \
+             {{ entity = -11, comp = config({{ {{ -13, -14 }}, {{ -14, -13 }} }}) }} }} \
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = assert(capture.construction(PROPOSAL)) \
+         assert(schema_check(ACTION))"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    // Every game builds it, as the station and its refresh.
+    lua.load(
+        "api.engine.system.streetSystem.getNode2TrackEdgeMap = function() return { [8] = { 100 } } end \
+         local find, get = api.res.streetTemplateRep.find, api.res.streetTemplateRep.get \
+         api.res.streetTemplateRep.find = function(n) \
+             if n == '::/track/standard.track_template' then return 6 end return find(n) end \
+         api.res.streetTemplateRep.get = function(id) \
+             if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '' } end return get(id) end",
+    )
+    .exec()
+    .unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (ok, file): (bool, String) = lua
+        .load(
+            "return HOOK.applied[1].ok == true, \
+                 tostring(SENT[1] and SENT[1].proposal.constructionsToAdd[1].fileName)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "the station is built: {}", hook_log(&lua));
+    assert_eq!(file, "::/stations/rail/rail_station.con");
+    // What travels: the snapped track and the setting on it.
+    let carried: String = lua
+        .load(
+            "local c = ACTION.BuildConstruction.connection \
+             local out = { #c.links } \
+             for _, j in ipairs(c.junctions) do out[#out + 1] = j.node.network .. '(' .. j.node.at.x .. ',' \
+                 .. j.node.at.y .. ')' end \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        carried, "3|Track(300,0)",
+        "the snapped track and its setting; nothing of the platform track the station builds"
+    );
+}
+
 #[test]
 fn a_depot_placed_on_existing_track_leaves_all_its_internal_branches_to_the_construction() {
     for refuse_snap in [false, true] {

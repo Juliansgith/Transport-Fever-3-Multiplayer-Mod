@@ -321,6 +321,18 @@ junctions the game's own settings, the same in every game. Configurations
 at existing nodes that name only the rebuilt street still travel as the
 tool made them.
 
+The originator already leaves out the construction's own tracks and
+streets that reach nothing existing (`joinedOnly` in `capture.lua`); the
+configurations on them go too (2026-10-07: a rail station snapped to a
+track end was refused in every game, "the junction no longer exists",
+because the tool had configured the switches of its other platform
+tracks, whose nodes no game's build has). A configuration whose node is
+one of those left-out nodes, or whose turns or crosswalks name one of
+those edges, does not travel. The station builds those tracks and their
+switches itself. It also carries fewer configurations: counted with its
+own switches, a large station's preview had 99, over the 64 an action
+holds.
+
 `lua_mod.rs` reproduces the recorded depot topology: before the fix its
 first build contains four duplicate nodes and edges; afterwards it contains
 none, and the stand-in engine accepts the refresh. A longer station
