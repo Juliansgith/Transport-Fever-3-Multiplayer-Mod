@@ -5,7 +5,7 @@
 -- See investigation/STATION_TERRAIN_2026-10-02.md for evidence and limits.
 -- Bridge/tunnel window rebuilds use ordinary road/track actions and are
 -- gated at capture.windowBuild until their own two-game acceptance.
-local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false }
+local acceptance = { subsidies = false, rename = true, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false }
 
 function acceptance.check(action)
     local feature
