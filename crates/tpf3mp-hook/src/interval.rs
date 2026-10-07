@@ -228,7 +228,7 @@ pub struct Record {
     /// The count was the steady one (crate::cadence's `Nominal`): only then
     /// does the backlog say anything about the pace; before an action, the
     /// player's own command, a pause or a catch-up it is emptied or filled
-    /// on purpose, and the trim holds.
+    /// on purpose, and the trim only eases back towards 1.
     pub steady: bool,
     /// No step was released for the batch: the room waits.
     pub waiting: bool,
@@ -942,8 +942,8 @@ mod tests {
             interval.after_sync(&seen(), 0, None),
             Ok(Err(Skip::NoRecord))
         );
-        // Before an action the backlog is emptied on purpose: the trim
-        // holds whatever it reads.
+        // Before an action the backlog is emptied on purpose: the trim does
+        // not read it (at 1 it stays 1).
         let before = interval.trim();
         let mut drained = record(0x1000, 1, 6);
         drained.backlog = 0;
