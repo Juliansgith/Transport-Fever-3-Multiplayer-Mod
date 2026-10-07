@@ -895,8 +895,9 @@ stand briefly), or the nominal period when nothing was released at all
 game's own interval. A batch of 3 at 4x is shown over 150 ms, one of 5
 over 250 ms: vehicles move at the room's speed whatever the count. With it
 on, even steps keep a fixed nominal count (the pace over the game's 200 ms)
-and do not repay with extra updates; `trim` (0.8..1.25, at most 0.05 a
-batch) does: after a steady batch it moves against a backlog outside even
+and do not repay with extra updates; `trim` (0.8..1.25, down to 0.5 —
+twice the room's pace — when the backlog is more than twice the band plus
+a call behind, as after a load; at most 0.05 a batch) does: after a steady batch it moves against a backlog outside even
 steps' 1..3-step band; after a drain, a catch-up or a reserve being
 rebuilt (whose backlog says nothing about the pace) it eases back to 1.
 Writing anywhere but right after a true Sync moved TPF2's render clock back

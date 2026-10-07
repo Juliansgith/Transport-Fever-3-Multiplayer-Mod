@@ -43,6 +43,8 @@ pub const BASE: Duration = Duration::from_millis(200);
 /// pace, far inside the server's pacing window.
 pub const TRIM_MIN: f64 = 0.8;
 pub const TRIM_MAX: f64 = 1.25;
+/// The trim's floor far behind the band: twice the room's pace.
+pub const TRIM_DEEP: f64 = 0.5;
 /// The most the trim moves per batch.
 pub const TRIM_SLEW: f64 = 0.05;
 /// The trim's gain, per step outside the band per nominal count.
@@ -172,9 +174,17 @@ impl Trim {
         } else {
             0.0
         };
-        let want = (1.0 - TRIM_GAIN * error / f64::from(nominal.max(1))).clamp(TRIM_MIN, TRIM_MAX);
+        // Far behind the band (a load's or a reconnect's last stretch,
+        // just under the far-behind catch-up): up to twice the room's pace
+        // rather than 1.25 times, so it is caught up in seconds, not ten.
+        let floor = if backlog > 2 * high + u64::from(nominal) {
+            TRIM_DEEP
+        } else {
+            TRIM_MIN
+        };
+        let want = (1.0 - TRIM_GAIN * error / f64::from(nominal.max(1))).clamp(floor, TRIM_MAX);
         let step = (want - self.value).clamp(-TRIM_SLEW, TRIM_SLEW);
-        self.value = (self.value + step).clamp(TRIM_MIN, TRIM_MAX);
+        self.value = (self.value + step).clamp(TRIM_DEEP, TRIM_MAX);
     }
 }
 
@@ -763,14 +773,29 @@ mod tests {
     }
 
     #[test]
+    fn far_behind_the_band_the_trim_goes_down_to_twice_the_pace() {
+        let mut trim = Trim::default();
+        // 1x after a load: 15 steps behind, the band ends at 3.
+        for _ in 0..20 {
+            trim.update(15, 1);
+        }
+        assert!((trim.value() - TRIM_DEEP).abs() < 1e-9);
+        // Back near the band: no deeper than the usual floor's want.
+        for _ in 0..20 {
+            trim.update(5, 1);
+        }
+        assert!((trim.value() - TRIM_MIN).abs() < 1e-9, "{}", trim.value());
+    }
+
+    #[test]
     fn the_trim_moves_slowly_only_outside_the_band_and_stays_bounded() {
         let mut trim = Trim::default();
         trim.update(2, 4);
         assert_eq!(trim.value(), 1.0, "in the band");
-        trim.update(13, 4); // 10 over: want 1 - 0.25*10/4 = 0.375 -> 0.8
+        trim.update(8, 4); // 5 over: want 1 - 0.25*5/4 = 0.69 -> 0.8
         assert!((trim.value() - 0.95).abs() < 1e-9, "slewed");
         for _ in 0..20 {
-            trim.update(13, 4);
+            trim.update(8, 4);
         }
         assert!((trim.value() - TRIM_MIN).abs() < 1e-9);
         for _ in 0..40 {
@@ -957,14 +982,14 @@ mod tests {
         // rather than keep it.
         let mut behind = record(0x1000, 1, 4);
         behind.backlog = 20;
-        for _ in 0..10 {
+        for _ in 0..20 {
             let _ = interval.after_sync(&seen(), 0, Some(behind));
         }
-        assert!((interval.trim() - TRIM_MIN).abs() < 1e-9);
+        assert!((interval.trim() - TRIM_DEEP).abs() < 1e-9);
         let mut rebuilding = record(0x1000, 1, 3);
         rebuilding.backlog = 0;
         rebuilding.steady = false;
-        for _ in 0..4 {
+        for _ in 0..10 {
             let _ = interval.after_sync(&seen(), 0, Some(rebuilding));
         }
         assert!((interval.trim() - 1.0).abs() < 1e-9, "{}", interval.trim());
