@@ -89,11 +89,16 @@ reinstalled by every `room.ps1` (without `-NoInstall`).
 
 Rooms start from a save in the game's `save` folder:
 
-- `tpf3mp_fixture`: a plain map.
+- `tpf3mp_fixture`: a plain map, 16 by 16 tiles, seed `tpf3mp`, the
+  tutorial off. `tools\game\fixture.ps1` makes it: it starts one game
+  without the hook, has the console start that world and save it, and
+  quits the game. It needs the console (`debugMode = true`), refuses
+  while a game runs, and never overwrites a save; `-Name` saves under
+  another name.
 - `tpf3mp_fixture3`: a loan, a road depot, two bus stations, Line 1, and
   no bus yet (the default).
 
-To make another: set the world up by hand, then run this in its console:
+To make one by hand: set the world up, then run this in its console:
 
 ```lua
 app.saveGame("tpf3mp_fixture4", function() print("@@saved") end, false, true)
@@ -174,6 +179,10 @@ conversion.
 
 Things learned the hard way:
 
+- **A loaded world takes the keyboard from the console.** The console
+  stays open through a load, but what is typed afterwards no longer
+  reaches its input line. Close it and open it again (its key) first;
+  `fixture.ps1` does.
 - **Hover before clicking a build tool.** The game places at the last
   position it saw the cursor move to, so `move`, wait about a second, then
   `click`. `tools/game/tool.ps1` does this.
