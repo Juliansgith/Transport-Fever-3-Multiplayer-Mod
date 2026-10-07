@@ -439,7 +439,15 @@ protected folder such as Program Files.
 - **Renaming and recolouring.** Rename a station, a vehicle, a town or a
   depot from its window or the line manager, and recolour a vehicle from
   its window, as usual: every player's game applies it.
-- **Subsidies, line waypoints, bridge/tunnel window type changes, Industry
+- **Subsidies.** Accept or decline a subsidy offer from its card as
+  usual. An offer is everyone's until a company takes it: the first to
+  accept gets it, and it leaves every player's list. A subsidy you took is
+  your company's alone: the money up front, the reward and the penalty are
+  booked to it, and only your company's lines count towards it. The
+  game's subsidy cards show every taken subsidy as accepted, another
+  company's too. A "Transport Workers" subsidy still completes by anyone's
+  commuters.
+- **Line waypoints, bridge/tunnel window type changes, Industry
   Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
