@@ -308,8 +308,11 @@ the hook):
   order, not by entity ID. Selling, replacing, cloning (joining the
   original's line on the same step).
 - [ ] Lines: create, edit stops and platforms, delete; assign a vehicle.
-- [ ] Vehicle colour and name, with no echo between games (TPF2 froze on
-  100,000 colour commands).
+- [x] Vehicle colour and name, with no echo between games (TPF2 froze on
+  100,000 colour commands). *Done (2026-10-07):* a vehicle, a station, a
+  town and a depot renamed and the vehicle recoloured in a two-game room
+  on build 40408, applied alike in both, no echo; the `rename` gate is on.
+  See `investigation/TPF3_RENAME_2026-10-07.md`.
 
 Dev B:
 

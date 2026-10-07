@@ -1,9 +1,11 @@
 # The native hook
 
-Acceptance status: subsidy, entity rename/recolour and waypoint mechanics
-described below are implemented but disabled by `tpf3mp/acceptance.lua`.
-They are refused on submission and replay until ordinary two-player game
-acceptance. See [COVERAGE.md](COVERAGE.md) for the selected integration.
+Acceptance status: subsidy and waypoint mechanics described below are
+implemented but disabled by `tpf3mp/acceptance.lua`. They are refused on
+submission and replay until ordinary two-player game acceptance. Entity
+rename/recolour passed it on 2026-10-07
+([investigation/TPF3_RENAME_2026-10-07.md](../investigation/TPF3_RENAME_2026-10-07.md)).
+See [COVERAGE.md](COVERAGE.md) for the selected integration.
 
 The native hook is the small library that runs *inside* the game process. It
 captures and cancels player commands, gates the simulation step, controls speed
@@ -5325,15 +5327,31 @@ tenths of a millisecond a second, so the timing is **on by default**.
 lines off; hook.log says which at install (`perf: timing the hook's
 work, ...` or `perf: timing off (...)`).
 
-Every 10 seconds of wall time, after a call of the step, two lines go to
-hook.log (nothing while no step runs, at the main menu), and a third,
-`perf: sim`, with the game's own costliest systems ("The game's own
-systems: the `perf: sim` line" below):
+Every 10 seconds of wall time, after a call of the step, the two existing
+`perf:` lines go to hook.log with the game's own costliest systems in a
+separate `perf: sim` line ("The game's own systems: the `perf: sim` line"
+below). A `perf-step:` line reports the selected update count for each
+`GameSim::Step` call in the same window:
 
 ```
 perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 0 hits, 0 misses; guarded reads 90000, 3 faults
 perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, person-order 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
+perf-step: 10.0s: room updates/call 0:0 1:600 2:0 3:0 4+:0; outside-room exact calls 0:0 1:0 2:0 3:0 4+:0; own-speed calls 0 (updates unknown); max consecutive zero-update room calls 0; max call-start gap 50.0 ms
 ```
+
+The `perf-step:` buckets count the selected `Updates::Exactly(n)` answer,
+not a guess from elapsed time or the update timer: `room` calls are the
+room's cadence, exact calls outside a room are listed separately, and
+`Updates::Own` calls have an unknown update count. The zero-update maximum
+counts adjacent room calls selected as `Exactly(0)` and is clipped to each
+10-second window; any non-room or nonzero/unknown call breaks the run. The
+call-start gap is the largest interval between consecutive detour-entry
+timestamps, with each gap recorded after its later step returns, using the
+`Instant` already read for `perf:` timing. Window reporting occurs after a
+step returns, so a call that spans the 10-second boundary is included in the
+window it closes. The gap is `n/a` until two calls have been observed.
+These are simulation-call cadence and timing measurements, not render-frame
+timings or evidence of vehicle motion or visual stutter.
 
 The first line: the window's length; the game's step, its total time,
 that time per second of wall time, its calls (batches) and the

@@ -8,7 +8,7 @@
 -- Signals a script places along tracks (PlaceSignals: Auto Signals) passed
 -- local two-game acceptance on build 40408, 2026-10-06 (runs
 -- run-1006-225251 and run-1006-230635; docs/MODS.md).
-local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false, signals = true }
+local acceptance = { subsidies = false, rename = true, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false, signals = true }
 
 function acceptance.check(action)
     local feature

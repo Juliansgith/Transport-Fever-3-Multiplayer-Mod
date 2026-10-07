@@ -10,10 +10,10 @@ use tpf3mp_proto::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
         ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds, EdgeKind,
         EdgeObjectKind, EdgeRef, EditLine, Lane, LineChange, LineData, LineId, LineStop, Link,
-        LoadMode, Network, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect,
+        LoadMode, Network, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, Renamed,
         ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
         Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir,
-        VehicleId, Vertex,
+        VehicleChange, VehicleId, VehicleOp, Vertex,
     },
 };
 
@@ -208,6 +208,29 @@ pub fn replace(vehicle: u32, consist: &[(&str, Option<u8>)]) -> Action {
         ),
         groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
         multiple_units: list(vec![text("")]),
+    })
+}
+
+/// The colour the scenarios paint a vehicle.
+const RED: Tint = Tint {
+    r: 900_000,
+    g: 100_000,
+    b: 100_000,
+};
+
+/// A name given from an entity's window or the line manager.
+pub fn rename(what: Renamed, name: &str) -> Action {
+    Action::Rename {
+        what,
+        name: text(name),
+    }
+}
+
+/// A vehicle's colour from its window.
+pub fn recolor(vehicle: u32, tint: Tint) -> Action {
+    Action::VehicleOp(VehicleOp {
+        vehicle: VehicleId(vehicle),
+        change: VehicleChange::Recolor(tint),
     })
 }
 
@@ -630,7 +653,27 @@ fn two_companies_scenario() -> Scenario {
         )
         .expect_all([Check::Ignored(2), Check::StreetEdges(1)])
         .act(1, buy(BUS_DEPOT, at(700, 20), &[BUS]))
-        .expect_all([Check::Ignored(3), Check::Vehicles(1)]);
+        .expect_all([Check::Ignored(3), Check::Vehicles(1)])
+        // Nor renames or recolours it: the bus and the station keep their
+        // names and the bus its own colours.
+        .act(1, rename(Renamed::Vehicle(VehicleId(0)), "Mine"))
+        .act(1, rename(Renamed::Station(StationId(0)), "Mine"))
+        .act(1, recolor(0, RED))
+        .expect_all([
+            Check::Ignored(6),
+            Check::VehicleName {
+                vehicle: VehicleId(0),
+                name: "Vehicle 0".into(),
+            },
+            Check::VehicleColor {
+                vehicle: VehicleId(0),
+                color: None,
+            },
+            Check::StationName {
+                station: StationId(0),
+                name: "West".into(),
+            },
+        ]);
     bus_line(script, 1, 3000, 2, (2, 1, 1))
         .expect_all([
             Check::Lines(2),
@@ -649,11 +692,17 @@ fn two_companies_scenario() -> Scenario {
                 money: START_MONEY,
             },
         ])
+        // Its own it may name.
+        .act(1, rename(Renamed::Station(StationId(2)), "Far West"))
+        .expect(Check::StationName {
+            station: StationId(2),
+            name: "Far West".into(),
+        })
         .run(1_500)
-        .expect_all([Check::DeliveredAtLeast(1), Check::Ignored(3)])
+        .expect_all([Check::DeliveredAtLeast(1), Check::Ignored(6)])
         .scenario(
             "two-companies",
-            "two players build lines side by side; neither can touch what the other owns",
+            "two players build lines side by side; neither can touch, rename or recolour what the other owns",
             true,
             2,
         )
@@ -762,20 +811,41 @@ fn line_editing_scenario() -> Scenario {
                 }),
             ),
         )
-        .act(0, set_stops(0, &[0, 9]))
+        // A bus and a station renamed from their windows, the bus
+        // recoloured; a vehicle that does not exist is refused.
+        .act(0, rename(Renamed::Vehicle(VehicleId(0)), "Ring One"))
+        .act(0, recolor(0, RED))
+        .act(0, rename(Renamed::Station(StationId(0)), "Ring West"))
+        .expect_all([
+            Check::VehicleName {
+                vehicle: VehicleId(0),
+                name: "Ring One".into(),
+            },
+            Check::VehicleColor {
+                vehicle: VehicleId(0),
+                color: Some(RED),
+            },
+            Check::StationName {
+                station: StationId(0),
+                name: "Ring West".into(),
+            },
+        ])
+        .act(0, rename(Renamed::Vehicle(VehicleId(9)), "Nobody"))
         .expect(Check::Ignored(1))
-        .act(0, set_stops(0, &[0]))
+        .act(0, set_stops(0, &[0, 9]))
         .expect(Check::Ignored(2))
+        .act(0, set_stops(0, &[0]))
+        .expect(Check::Ignored(3))
         .run(500)
         .act(0, edit(0, LineChange::Delete))
         .expect_all([Check::Lines(0), Check::Idle(2)])
         .act(0, sell(&[0, 1]))
         .expect(Check::Vehicles(0))
         .act(0, sell(&[0]))
-        .expect(Check::Ignored(3))
+        .expect(Check::Ignored(4))
         .scenario(
             "line-editing",
-            "change a line's stops, name and colour, refuse bad edits, delete it, sell its vehicles",
+            "change a line's stops, name and colour, rename and recolour a bus and a station, refuse bad edits, delete it, sell its vehicles",
             false,
             1,
         )
