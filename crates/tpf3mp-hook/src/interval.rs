@@ -154,6 +154,11 @@ impl Trim {
         self.value = 1.0;
     }
 
+    /// One slew step towards 1.
+    pub fn relax(&mut self) {
+        self.value += (1.0 - self.value).clamp(-TRIM_SLEW, TRIM_SLEW);
+    }
+
     /// After a batch with updates: `backlog` steps released and not run,
     /// `nominal` updates a call.
     pub fn update(&mut self, backlog: u64, nominal: u32) {
@@ -442,6 +447,12 @@ impl Interval {
         }
         if record.count > 0 && record.steady {
             self.trim.update(u64::from(record.backlog), record.nominal);
+        } else if record.count > 0 {
+            // A drain, a catch-up or a reserve being rebuilt says nothing
+            // about the pace: the trim eases back towards 1 rather than
+            // staying where a backlog left it (measured after a room save:
+            // 0.8 kept for 13 calls, vehicles 25 % too fast).
+            self.trim.relax();
         }
         let us = interval_us(
             record.count,
@@ -942,6 +953,21 @@ mod tests {
             Ok(Ok(300_000))
         );
         assert!((interval.trim() - before).abs() < 1e-12);
+        // After a backlog drove the trim down, unsteady batches ease it back
+        // rather than keep it.
+        let mut behind = record(0x1000, 1, 4);
+        behind.backlog = 20;
+        for _ in 0..10 {
+            let _ = interval.after_sync(&seen(), 0, Some(behind));
+        }
+        assert!((interval.trim() - TRIM_MIN).abs() < 1e-9);
+        let mut rebuilding = record(0x1000, 1, 3);
+        rebuilding.backlog = 0;
+        rebuilding.steady = false;
+        for _ in 0..4 {
+            let _ = interval.after_sync(&seen(), 0, Some(rebuilding));
+        }
+        assert!((interval.trim() - 1.0).abs() < 1e-9, "{}", interval.trim());
         let mut paused = rec;
         paused.eligible = false;
         assert_eq!(

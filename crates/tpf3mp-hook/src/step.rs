@@ -2864,6 +2864,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_call_with_nothing_released_is_a_wait_for_the_interval() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([StepGate::Wait, StepGate::Run]);
+        let (mut d, mut calls) = driver(script);
+        d.set_even_steps(true);
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(0));
+        assert!(d.batch_info().waiting, "nothing released: the room waits");
+        call(&mut d, &mut calls);
+        assert!(!d.batch_info().waiting);
+    }
+
+    #[test]
     fn a_speed_heard_at_the_menu_paces_the_world_loaded_after() {
         // Joining a 4x room from the main menu: its speed comes before the
         // world, and only once.
