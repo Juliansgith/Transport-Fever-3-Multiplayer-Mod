@@ -87,7 +87,10 @@ jobs:
     name: verify selected game build
     if: ${{ !inputs.fast_track }}
     needs: version
-    runs-on: [self-hosted, Windows, X64, tpf3mp-game-builds]
+    # This one update branch has a private one-job verifier. Give it a unique
+    # label so it cannot consume older release checks queued for the shared
+    # runner; all long-lived branches keep their existing runner selection.
+    runs-on: ${{ github.ref == 'refs/heads/feat/game-update-40420' && 'tpf3mp-40420-validation' || fromJSON('["self-hosted","Windows","X64","tpf3mp-game-builds"]') }}
     timeout-minutes: 30
     env:
       TPF3MP_GAME_ARCHIVE: ${{ vars.TPF3MP_GAME_ARCHIVE }}

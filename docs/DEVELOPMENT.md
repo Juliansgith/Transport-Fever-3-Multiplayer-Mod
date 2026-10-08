@@ -211,6 +211,10 @@ Steam build ID 25754343 archive on the same private runner before verifying a
 `profiles/native-build.txt`; `tpfre verify-build` then checks the selected
 bundle's SHA-256, size, PE timestamp and every target. An unknown bundle or
 missing archive stops verification, while the old release stays verifiable.
+The `feat/game-update-40420` branch alone may use a one-job private runner
+labelled `tpf3mp-40420-validation` to avoid taking unrelated queued release
+checks. The `dev`, `acceptance` and `main` jobs continue to require the normal
+`tpf3mp-game-builds` runner.
 
 Set up the runner and repository variable in each repository before merging
 these release-workflow changes there. A runner registered to a fork and the
