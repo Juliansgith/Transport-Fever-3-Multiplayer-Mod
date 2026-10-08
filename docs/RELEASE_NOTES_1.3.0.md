@@ -25,6 +25,7 @@ Version 1.3 adds support for Transport Fever 3 Windows Steam build **40420**. It
 
 ## Packaging and future features
 
+- [#131](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/131) sets the 1.3.0 package version and prepares these release notes. [#132](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/132) validates server upgrades with the published launcher workflow, saved turn history, and the expected old-client protocol result.
 - [#117](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/117) adds a fail-closed framework for signed native-mod indexes and local package storage. No native-mod signing key, index, player installation page, or native-mod room terms ship in this release.
 - [#119](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/119) prepares signed-release announcements on Discord when a release is published. [#124](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/124) scripts the plain fixture save for repeatable tests.
 
