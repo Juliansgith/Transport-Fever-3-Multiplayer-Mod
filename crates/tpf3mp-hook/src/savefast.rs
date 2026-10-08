@@ -67,14 +67,18 @@ unsafe fn install_with_setting(
     let buffer = rewrite(BUFFER_SIZE, &BUFFER_BYTES, &BUFFER_64K_BYTES);
     let level = match level {
         Ok(patch) => {
-            std::mem::forget(patch);
+            // Keep it for the process lifetime. ManuallyDrop works on
+            // unsupported architectures too, where Rewrite has no Drop.
+            let _kept = std::mem::ManuallyDrop::new(patch);
             "zstd level 1".to_owned()
         }
         Err(why) => format!("the game's zstd level ({why})"),
     };
     let buffer = match buffer {
         Ok(patch) => {
-            std::mem::forget(patch);
+            // Keep it for the process lifetime. ManuallyDrop works on
+            // unsupported architectures too, where Rewrite has no Drop.
+            let _kept = std::mem::ManuallyDrop::new(patch);
             "a 64 KiB buffer".to_owned()
         }
         Err(why) => format!("the game's 128-byte buffer ({why})"),
