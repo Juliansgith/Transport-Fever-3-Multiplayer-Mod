@@ -62,7 +62,7 @@ const ADVISORY_BYTES_BURST: u32 = 64 * 1024;
 /// client makes a handful per game.
 const REQUESTS_PER_SECOND: u32 = 10;
 const REQUEST_BURST: u32 = 20;
-/// Of those, attempts to join a room.
+/// Of those, room joins and invite-resolution attempts.
 const JOINS_PER_SECOND: u32 = 1;
 /// Pages of the room list a connection may ask for: one a second, with a
 /// burst of five, so a browser can page ahead without scraping the server.
@@ -479,7 +479,10 @@ impl Client {
             match message {
                 ClientMessage::Hello(_) => return Err(Violation::SecondHello),
                 ClientMessage::Request { id, request } => {
-                    let joining = matches!(request, Request::JoinRoom(_));
+                    let joining = matches!(
+                        request,
+                        Request::JoinRoom(_) | Request::ResolveInvite { .. }
+                    );
                     let listing = matches!(request, Request::ListRooms { .. });
                     let diagnostics =
                         matches!(request, Request::Diagnostics(_) | Request::Telemetry(_));
@@ -587,6 +590,22 @@ impl Client {
                     admission.wrong_invite(self.origin, std::time::Instant::now());
                 }
                 joined.map(Response::RoomJoined)
+            }
+            Request::ResolveInvite { invite, password } => {
+                let admission = Arc::clone(&self.shared.admission);
+                let now = std::time::Instant::now();
+                if !admission.may_join(self.origin, now) {
+                    return Err(RequestError::RateLimited);
+                }
+                let result = self
+                    .shared
+                    .directory
+                    .resolve_invite(self.player, invite, password)
+                    .await;
+                if result == Err(RequestError::BadInvite) {
+                    admission.wrong_invite(self.origin, std::time::Instant::now());
+                }
+                result.map(|()| Response::InviteMatch)
             }
             Request::LeaveRoom => {
                 let handle = self.set_room(None).ok_or(RequestError::NotInRoom)?;

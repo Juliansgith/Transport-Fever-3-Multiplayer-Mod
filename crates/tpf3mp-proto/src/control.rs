@@ -218,6 +218,12 @@ pub enum Request {
     /// (`InvalidContent`). An owner's plain `DeclareContent` leaves the room
     /// without a list of mods.
     DeclareRoom(Box<RoomDeclaration>),
+    /// Checks whether this server can admit the invite and password, without
+    /// joining the room. The response intentionally carries no room details.
+    ResolveInvite {
+        invite: Invite,
+        password: Option<Text<64>>,
+    },
 }
 
 /// A player's picture: one of [`BANNERS`] or [`PORTRAITS`], by id. Long
@@ -407,10 +413,15 @@ pub struct Resume {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
-    RoomCreated { invite: Invite, room: RoomView },
+    RoomCreated {
+        invite: Invite,
+        room: RoomView,
+    },
     RoomJoined(RoomView),
     Done,
     Rooms(RoomPage),
+    /// The invite and optional password match an open room on this server.
+    InviteMatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

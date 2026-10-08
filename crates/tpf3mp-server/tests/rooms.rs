@@ -4,12 +4,13 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use common::{FAST, RunningServer, content, join, modded, room, room_of};
 use tpf3mp_agent::{ClientError, ClientEvent};
 use tpf3mp_proto::{
-    Code, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase, RoomSettings, Text,
+    Code, CreateRoom, Invite, JoinRoom, Request, RequestError, Response, RoomPhase, RoomSettings,
+    Text,
 };
 use tpf3mp_server::{AcceptAll, RulesChoice, RulesMenu};
 
@@ -59,17 +60,38 @@ async fn an_address_trying_codes_is_stopped_before_it_finds_a_room() {
     while tried < WRONG_INVITES {
         let guesser = server.client("guesser").await;
         for _ in 0..5.min(WRONG_INVITES - tried) {
-            let error = guesser
-                .client
-                .join_room(join(&other_than(&invite)))
-                .await
-                .unwrap_err();
-            assert_eq!(error, ClientError::Refused(RequestError::BadInvite));
+            let wrong = other_than(&invite);
+            let attempt = if tried.is_multiple_of(2) {
+                guesser
+                    .client
+                    .join_room(join(&wrong))
+                    .await
+                    .map(Response::RoomJoined)
+            } else {
+                guesser
+                    .client
+                    .request(Request::ResolveInvite {
+                        invite: wrong,
+                        password: None,
+                    })
+                    .await
+            };
+            assert_eq!(attempt, Err(ClientError::Refused(RequestError::BadInvite)));
             tried += 1;
         }
     }
     // Now even the right code is refused from that address, and says so.
     let guesser = server.client("guesser").await;
+    assert_eq!(
+        guesser
+            .client
+            .request(Request::ResolveInvite {
+                invite,
+                password: None,
+            })
+            .await,
+        Err(ClientError::Refused(RequestError::RateLimited))
+    );
     let error = guesser.client.join_room(join(&invite)).await.unwrap_err();
     assert_eq!(error, ClientError::Refused(RequestError::RateLimited));
     server.shut_down().await;
@@ -114,6 +136,142 @@ async fn every_bad_invite_fails_the_same_way() {
         .await
         .unwrap();
     server.shut_down().await;
+}
+
+#[tokio::test]
+async fn invite_resolution_checks_passwords_without_telling_why_a_code_failed() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let bob = server.client("bob").await;
+    let (open_invite, _) = ann.client.create_room(room("open", FAST)).await.unwrap();
+    assert_eq!(
+        bob.client
+            .request(Request::ResolveInvite {
+                invite: open_invite,
+                password: None,
+            })
+            .await,
+        Ok(Response::InviteMatch)
+    );
+    let joined = bob.client.join_room(join(&open_invite)).await.unwrap();
+    assert_eq!(joined.members.len(), 2, "resolution did not take a seat");
+    ann.client.leave_room().await.unwrap();
+    bob.client.leave_room().await.unwrap();
+    server.wait_for_rooms(0).await;
+
+    let mut protected = room("protected", FAST);
+    protected.password = Some(Text::new("right-password").unwrap());
+    let (invite, _) = ann.client.create_room(protected).await.unwrap();
+    let carol = server.client("carol").await;
+    let unknown = other_than(&invite);
+    let attempts = [
+        (unknown, Some("right-password")),
+        (unknown, None),
+        (invite, Some("wrong-password")),
+        (invite, None),
+    ];
+    for (invite, password) in attempts {
+        assert_eq!(
+            carol
+                .client
+                .request(Request::ResolveInvite {
+                    invite,
+                    password: password.map(|value| Text::new(value).unwrap()),
+                })
+                .await,
+            Err(ClientError::Refused(RequestError::BadInvite))
+        );
+    }
+    let dave = server.client("dave").await;
+    assert_eq!(
+        carol
+            .client
+            .request(Request::ResolveInvite {
+                invite,
+                password: Some(Text::new("right-password").unwrap()),
+            })
+            .await,
+        Ok(Response::InviteMatch)
+    );
+    assert_eq!(
+        dave.client
+            .join_room(JoinRoom {
+                invite,
+                password: Some(Text::new("right-password").unwrap()),
+                resume: None,
+            })
+            .await
+            .unwrap()
+            .members
+            .len(),
+        2,
+        "the authoritative join still seats the player"
+    );
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn invite_resolution_leaves_capacity_to_join_room() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let bob = server.client("bob").await;
+    let mut only_one = room("full", FAST);
+    only_one.max_players = 1;
+    let (invite, _) = ann.client.create_room(only_one).await.unwrap();
+
+    assert_eq!(
+        bob.client
+            .request(Request::ResolveInvite {
+                invite,
+                password: None,
+            })
+            .await,
+        Ok(Response::InviteMatch),
+        "valid credentials resolve even when the room has no free seat"
+    );
+    assert_eq!(
+        bob.client.join_room(join(&invite)).await.unwrap_err(),
+        ClientError::Refused(RequestError::RoomFull)
+    );
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn resolving_a_running_room_changes_neither_its_members_nor_its_log() {
+    let dir = std::env::temp_dir().join(format!("tpf3mp-resolve-invite-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = RunningServer::start(|config| {
+        config.data_dir = Some(dir.clone());
+        config.tick = Duration::from_secs(60);
+    })
+    .await;
+    let ann = server.client("ann").await;
+    let bob = server.client("bob").await;
+    let (invite, room) = ann.client.create_room(room("logged", FAST)).await.unwrap();
+    ann.client
+        .declare_content(common::content(1))
+        .await
+        .unwrap();
+    ann.client.set_ready(true).await.unwrap();
+    ann.client.start_game().await.unwrap();
+    let path = dir.join(format!("{}.log", room.id));
+    let before = std::fs::read(&path).unwrap();
+
+    let resolved = bob
+        .client
+        .request(Request::ResolveInvite {
+            invite,
+            password: None,
+        })
+        .await;
+    let join = bob.client.join_room(join(&invite)).await;
+    let after = std::fs::read(&path).unwrap();
+    server.shut_down().await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(resolved, Ok(Response::InviteMatch));
+    assert_eq!(join, Err(ClientError::Refused(RequestError::GameRunning)));
+    assert_eq!(before, after, "lookup must not append to the room log");
 }
 
 #[tokio::test]
@@ -329,6 +487,16 @@ async fn the_owner_can_kick_a_player_for_good() {
     assert_eq!(
         bob.client.join_room(join(&invite)).await.unwrap_err(),
         ClientError::Refused(RequestError::BadInvite)
+    );
+    assert_eq!(
+        bob.client
+            .request(Request::ResolveInvite {
+                invite,
+                password: None,
+            })
+            .await,
+        Err(ClientError::Refused(RequestError::BadInvite)),
+        "a kicked player cannot use resolution to distinguish their invite"
     );
     // He is free to make a room of his own.
     bob.client.create_room(room("mine", FAST)).await.unwrap();
