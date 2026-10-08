@@ -134,7 +134,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-buildinfo` | The build scripts' helper: the commit, build time and build number built into the binaries, and their Windows version resource ("Which build is this"). |
 | `mod/tpf3mp_1` | The game-side Lua mod, in Transport Fever 3's layout: captures builds as actions for the hook, linked to it by `tpf3mp/bridge.lua`. |
 | `mod/tpf3mp_bigmap_1` | Big maps' New Game side, prototype: the added size rows. Registers nothing with the game yet. |
-| `profiles/` | The hook's per-build signature profiles, built into the hook (Transport Fever 3 Steam build 40408, Windows). |
+| `profiles/` | Exact-build signature profiles and native bundles for Windows Steam builds; `native-build.txt` selects the one compiled into this checkout. |
 | `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
 | `deploy/` | Container image and compose file. |
@@ -422,11 +422,11 @@ tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file in
 tpf3mp-launcher --server 127.0.0.1:29470 --name cat --auto-join --invite-file invite.txt --auto-play
 ```
 
-With Transport Fever 3 itself (build 40408), two games run on one PC like
+With Transport Fever 3 itself (build 40420), two games run on one PC like
 this:
 
 ```sh
-tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40408
+tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40420
 ```
 
 - `--stagger 75` starts each game 75 s after the one before: two started at

@@ -346,7 +346,8 @@ game with the hook in it as the launcher does.
 ### Reviewing the native data for a game update
 
 The compiled Windows native data is grouped with its signature profile in
-`profiles/tf3_build40408_steam_windows/`: `hooks.toml` records the executable
+`profiles/tf3_build40420_steam_windows/` (the original 40408 bundle remains
+for historical verification): `hooks.toml` records the executable
 SHA-256, size and PE timestamp; `native.rs` records the game/Steam build and
 exports each subsystem's data file. Those files hold splice bytes, frame and
 field offsets, structure layouts and GUI register/site descriptions. The
@@ -361,17 +362,17 @@ Bootstrap checks its complete executable identity before
 installing the menu or step gate. A TOML profile for another executable is
 insufficient: it cannot enable that build with the previous build's native
 layouts. Custom profiles for the supported executable keep their priority.
-This release still supports only the existing Windows Steam build 40408;
-moving data does not approve the Preview or add another supported platform.
+This feature selects Windows Steam build 40420. The released main branch still
+selects 40408 until the normal acceptance and promotion gates are passed;
+this change does not approve Preview or another platform.
 
 A static signature candidate for Steam Preview 40418 is in
 `profiles/tf3_build40418_steam_windows/hooks.toml`. Its original 145 targets matched
 the private archive. The additional optional `lua_touserdata` signature awaits
-an archive recheck. Release has since gained seven optional performance
-targets measured only on 40408; they remain Release-only until a verified
-Preview archive supplies signatures. The candidate directory deliberately has
-no `native.rs` and is not selected. The Release bundle and release archive
-remain active. The changed splice bytes, script review and remaining ABI work
+an archive recheck. The 40408 bundle has seven optional performance targets
+added after that candidate was prepared. They remain unverified on Preview
+while its private archive is unavailable. The candidate directory deliberately
+has no `native.rs` and is not selected. Its changed splice bytes and ABI work
 are recorded in [the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
 
 For a new build, create a separate bundle directory, investigate the audit's

@@ -21,7 +21,7 @@ param(
   [ValidateRange(2,8)][int]$Players = 2,
   [ValidatePattern("^[A-Za-z0-9_-]+$")][string]$Run = ("run-" + (Get-Date -Format "MMdd-HHmmss")),
   [ValidatePattern("^[A-Za-z0-9_-]+$")][string]$Fixture = "tpf3mp_fixture3",
-  [string]$GameBuild = "40408",
+  [string]$GameBuild = "40420",
   [int]$Stagger = 25,
   [int]$MenuWait = 180,
   [int]$MenuSettle = 5,
