@@ -31,12 +31,19 @@ Version 1.3 adds support for Transport Fever 3 Windows Steam build **40420**. It
 
 ## Contributor provenance
 
-PR #116 records silver2127's request for regional servers. The save-fast
-prior-art cited by #108 is [silver2127's TPF2 Big Maps](https://github.com/silver2127/tpf2-bigmap);
-the TPF3 implementation authors are recorded separately. The initial Auto
-Signals integration commits in #122 record Max (tearded) and Claude Opus 5.5
-as co-authors, with Julian Cooper's final safety and integration commits. See
-[Contribution provenance](CONTRIBUTION_PROVENANCE.md) for the commit-level
-record, including the roles for #117, #129 and #130.
+PR #116 records silver2127's request for regional servers, and silver2127
+opened #117. The initial implementation commits in #116 and #117 record
+Julian Cooper and Claude Opus 5.5 as co-authors; their follow-up commits
+record Julian Cooper. The save-fast work carried from #108 into #128 cites
+[silver2127's TPF2 Big Maps](https://github.com/silver2127/tpf2-bigmap) as
+prior art; the TPF3 implementation commit records Julian Cooper and Claude
+Opus 5.5 as co-authors. In #122, Max (tearded) and Claude Opus 5.5 are
+recorded on the initial Auto Signals implementation, test, and game-evidence
+commits; Julian Cooper authored the final safety and integration commits.
+The 40420 work in #129 and #130 records Julian Cooper as implementation
+author. These are distinct roles: PR authorship or a request does not by
+itself establish commit authorship. See
+[Contribution provenance](CONTRIBUTION_PROVENANCE.md) for the linked
+commit-level record.
 
 When this release is published, close the game and restart the launcher to update, or download **TPF3-MP.exe** for Windows. The draft includes Windows, Linux and macOS packages; it is not itself a live server deployment.

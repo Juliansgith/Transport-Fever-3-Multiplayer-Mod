@@ -44,7 +44,9 @@ role, this page leaves it unstated.
   [f1a679c](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/commit/f1a679cd4114e15ec2e218cad2799dc0ed4ecdd6)
   record Julian as author. They make the unmeasured optimization opt-in,
   reject unrecognized settings, and fix cross-architecture retention and
-  linting.
+  linting. The PR description says it carries the save-fast work from #108;
+  an attribution comment on #128 points back to #108's explicit TPF2 prior-art
+  citation.
 - [#130](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/130)
   adds the selected-native-profile gate so build 40420 does not compile or
   enable unverified save-fast sites. Its commit
@@ -69,7 +71,8 @@ role, this page leaves it unstated.
   record Julian as author. The first commit explicitly says the proposal was
   asked for by silver2127, who runs a second server. This attributes the
   request to silver2127 and the implementation commits to their recorded
-  authors.
+  authors. A comment on #116 repeats the distinction because its PR body did
+  not spell out the request origin.
 - [#117](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/117)
   was also opened by **silver2127**. The two main commits
   [eb99e81](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/commit/eb99e8131f1fd3d6c9e95a7c8d8458d5edbde900)
@@ -83,7 +86,9 @@ role, this page leaves it unstated.
   and
   [94ec669](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/commit/94ec6698bd5c884ec48a060001ec81329f14dd9d),
   record Julian as author. The PR and commit records reviewed here do not
-  attribute implementation commits in #116 or #117 to **tearded**.
+  attribute implementation commits in #116 or #117 to **tearded**. A comment
+  on #117 states the opener/implementation distinction and leaves design
+  origin unstated where the records do not identify it.
 
 ### Auto Signals: #122
 
@@ -111,7 +116,9 @@ and integration commits
 and
 [21269d6](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/commit/21269d6559ee52fdd2638d96483da510402026c6)
 record Julian as author. Those commits refuse mixed track edits, test track
-ownership, and integrate the approved signal gate with the subsidy gate.
+ownership, and integrate the approved signal gate with the subsidy gate. A
+comment on #122 makes this split between the initial feature/evidence commits
+and the later safety/integration commits explicit.
 
 ### Game build 40420: #129
 
@@ -130,6 +137,15 @@ They add the 40420 native profile and its verification, preserve the in-game
 lobby integration, update game-test helpers, and pin earlier native proofs to
 build 40408. No other implementation author is listed in the PR's commit
 metadata.
+
+## Retroactive attribution notes
+
+Targeted comments were added to merged PRs #116, #117, #122, and #128 to make
+the request, PR-opener, implementation, and prior-art roles clear on GitHub.
+PR #108 already explicitly credits silver2127's TPF2 work; #129 and #130
+already have accurate Julian-only implementation commit records, so their
+bodies and author metadata were left unchanged. No commit author, co-author
+trailer, or shared history was changed.
 
 ## Workflow for future credits
 
