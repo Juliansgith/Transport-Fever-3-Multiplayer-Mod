@@ -3034,7 +3034,9 @@ follow-ups`. In the room's game:
   or removed, and nothing else (Auto Signals after its player's signal,
   `modbuild.isSignals`), is read by `engine.placeSignals` instead: each
   added segment pairs with the one removed edge between the same nodes,
-  its tangents, type and template unchanged; each object it keeps is the
+  its tangents, type, template, owner, style, lock, decorations and lane
+  configurations unchanged; a mixed signal-and-track modification is
+  refused rather than replayed as signals alone. Each object it keeps is the
   removed edge's own, each it drops is in `edgeObjectsToRemove` and a
   signal, and each new one a signal whose record is the
   `edgeObjectsToAdd` entry its entity names (-400000000, then down,

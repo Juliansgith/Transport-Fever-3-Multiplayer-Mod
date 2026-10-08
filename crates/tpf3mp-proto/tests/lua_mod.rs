@@ -14225,9 +14225,11 @@ NODES[20] = { x = 0, y = 200, z = 0 }
 NODES[21] = { x = 100, y = 200, z = 0 }
 NODES[22] = { x = 200, y = 200, z = 0 }
 EDGES[200] = { node0 = 20, node1 = 21, tangent0 = { x = 100, y = 0, z = 0 }, tangent1 = { x = 100, y = 0, z = 0 },
-               type = 0, typeIndex = -1, objects = { { 300, 2 }, { 301, 2 } }, laneConfigs = { 'track' } }
+               type = 0, typeIndex = -1, objects = { { 300, 2 }, { 301, 2 } },
+               laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } }
 EDGES[201] = { node0 = 22, node1 = 21, tangent0 = { x = -100, y = 0, z = 0 }, tangent1 = { x = -100, y = 0, z = 0 },
-               type = 0, typeIndex = -1, objects = {}, laneConfigs = { 'track' } }
+               type = 0, typeIndex = -1, objects = {},
+               laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } }
 TRACKS = { [20] = { 200 }, [21] = { 200, 201 }, [22] = { 201 } }
 -- Node 21's turn from track 200 into 201, which the player set by hand.
 CONFIGS[21] = api.type.BaseNodeConfig.new()
@@ -14255,10 +14257,12 @@ const SIGNALS_BUILD: &str = "{ constructionsToAdd = {}, constructionsToRemove = 
     edgesToAdd = { \
       { entity = -1, type = 1, comp = { node0 = 20, node1 = 21, type = 0, typeIndex = -1, \
           tangent0 = { x = 100, y = 0, z = 0 }, tangent1 = { x = 100, y = 0, z = 0 }, \
-          objects = { { 300, 2 }, { -400000000, 2 } } } }, \
+          objects = { { 300, 2 }, { -400000000, 2 } }, \
+          laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } } }, \
       { entity = -2, type = 1, comp = { node0 = 22, node1 = 21, type = 0, typeIndex = -1, \
           tangent0 = { x = -100, y = 0, z = 0 }, tangent1 = { x = -100, y = 0, z = 0 }, \
-          objects = { { -400000001, 2 }, { -400000002, 2 } } } } }, \
+          objects = { { -400000001, 2 }, { -400000002, 2 } }, \
+          laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } } } }, \
     edgeObjectsToAdd = { \
       { edgeEntity = -1, param = 0.75, left = true, oneWay = false, \
         model = '::/infrastructure/signal/signal_path_c.con' }, \
@@ -14542,6 +14546,26 @@ fn a_signal_build_the_room_cannot_carry_says_why() {
     };
     assert_eq!(why(""), "true");
     let cases = [
+        (
+            "s.edgesToAdd[1].comp.roadStyle = '::/style/fast.track_style'",
+            "a signal build that changes its track",
+        ),
+        (
+            "s.edgesToAdd[1].comp.roadDevelopmentLocked = true",
+            "a signal build that changes its track",
+        ),
+        (
+            "s.edgesToAdd[1].playerOwned = { player = 7 }",
+            "a signal build that changes its track owner",
+        ),
+        (
+            "s.edgesToAdd[1].comp.edgeDecorations = { { 42, true } }",
+            "a signal build that changes its track",
+        ),
+        (
+            "s.edgesToAdd[1].comp.laneConfigs = { { speed = 31, width = 1, height = 0, offset = 0, forward = true } }",
+            "a signal build that changes its track",
+        ),
         (
             "s.edgesToAdd[2].comp.tangent0 = { x = -90, y = 0, z = 0 }",
             "a signal build that changes its track",

@@ -1138,10 +1138,19 @@ of them, in every game alike: the mod does nothing in a room.
   game only (the hook lets builds that are not player-initiated through,
   as towns' growth).
 - **What the build tools' capture does not carry stays stopped**:
-  constructions, removals, stops and signals, for now. Auto Signals needs
-  more: the room's signal (`PlaceStop`) does not carry the signal's
-  parameters, and its spacing removes and re-adds edges with signals on
-  them.
+  constructions, removals, stops and signals, for now. The narrow
+  signal-only exception approved below carries a signal's parameters and
+  the signals added or removed by an in-place track rebuild. It does not
+  permit other removals or a mixed track modification.
+
+*Amendment approved by the owner on 2026-10-08:* a shared mod may rebuild
+an existing track, including one used by a line, **only to add or remove
+signals**. The capture must pair every rebuilt track with its original and
+verify that its nodes, geometry, type, template, owner, style, lock,
+decorations and lanes are unchanged. It sends only the signal changes to
+the room. A change it cannot prove signal-only is refused in every game;
+other script removals and roadside stops remain stopped. This exception
+allows Auto Signals without permitting a general rebuild of a lined edge.
 
 Two players whose builds apply within one window may both hand a mod's
 follow-up: the room orders both and every game applies both alike, a

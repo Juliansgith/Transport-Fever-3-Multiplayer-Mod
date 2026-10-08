@@ -1267,6 +1267,37 @@ local function sameVec(a, b)
 	return true
 end
 
+-- PlaceSignals replays only signal objects. Refuse a script proposal that
+-- changes any other track property, or the replicas would silently keep
+-- their old values while the sending game applied the whole proposal.
+local function sameTrackApartFromSignals(was, new)
+	local function readTrackField(c, name)
+		local ok, value = pcall(function() return c[name] end)
+		if not ok then error("a signal build whose track fields it cannot read", 0) end
+		return value
+	end
+	for _, field in ipairs({ "roadStyle", "roadDevelopmentLocked" }) do
+		if readTrackField(was, field) ~= readTrackField(new, field) then return false end
+	end
+	local oldDecorations, newDecorations = list(readTrackField(was, "edgeDecorations")), list(readTrackField(new, "edgeDecorations"))
+	if #oldDecorations ~= #newDecorations then return false end
+	for i, old in ipairs(oldDecorations) do
+		local fresh = newDecorations[i]
+		if get(old, 1) ~= get(fresh, 1) or get(old, 2) ~= get(fresh, 2) then return false end
+	end
+	readTrackField(was, "laneConfigs")
+	readTrackField(new, "laneConfigs")
+	local oldLanes, newLanes = lanesOf(was), lanesOf(new)
+	if #oldLanes ~= #newLanes then return false end
+	for i, old in ipairs(oldLanes) do
+		local fresh = newLanes[i]
+		for _, field in ipairs({ "speed", "width", "height", "offset", "forward", "modes" }) do
+			if old[field] ~= fresh[field] then return false end
+		end
+	end
+	return true
+end
+
 -- A script's build that rebuilds existing tracks in place with signals
 -- added to them or removed from them, and nothing else, as Auto Signals
 -- sends one after its player's signal (a SimpleProposal: the edges by
@@ -1340,9 +1371,14 @@ function engine.placeSignals(simple)
 			if match == nil then error("a signal build that moves an edge", 0) end
 			paired[match] = true
 			local was = old[match]
+			local oldOwner = api.engine.getComponent(match, C.PLAYER_OWNED)
+			if get(oldOwner, "player") ~= get(get(seg, "playerOwned"), "player") then
+				error("a signal build that changes its track owner", 0)
+			end
 			if not sameVec(get(was, "tangent0"), get(new, "tangent0")) or not sameVec(get(was, "tangent1"), get(new, "tangent1"))
 				or get(was, "type") ~= get(new, "type") or get(was, "typeIndex") ~= get(new, "typeIndex")
-				or get(was, "roadTemplate") ~= get(new, "roadTemplate") then
+				or get(was, "roadTemplate") ~= get(new, "roadTemplate")
+				or not sameTrackApartFromSignals(was, new) then
 				error("a signal build that changes its track", 0)
 			end
 			local wasDistance, newDistance = get(was, "distance"), get(new, "distance")
