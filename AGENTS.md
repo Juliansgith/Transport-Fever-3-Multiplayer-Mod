@@ -185,6 +185,13 @@ starting any task, check it against that page and
 - **Commit messages** say what changed for players or operators, in the
   imperative ("Let each room's host choose its rules"), with the details in
   the body.
+- **Preserve contributor provenance.** Keep original commit authors and
+  `Co-authored-by` metadata accurate; do not rewrite shared history to alter
+  credit. In PRs and release notes, distinguish the PR opener, request or
+  design origin, implementation authors, reviewers, and prior-art sources.
+  Use the [PR template](.github/PULL_REQUEST_TEMPLATE.md), verify GitHub's
+  commit author list, and follow [docs/CONTRIBUTION_PROVENANCE.md](docs/CONTRIBUTION_PROVENANCE.md).
+  Never infer a person's role or preferred name from an account alone.
 - **Other repositories are read-only.** The sibling TPF2 projects (`tf2mod`,
   `tf2mp-relay`, `tpf2-multiplayer`) and the game install are inputs; never
   modify them. Credit code or test vectors taken from them in the file that
