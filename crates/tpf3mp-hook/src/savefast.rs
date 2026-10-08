@@ -18,8 +18,10 @@
 
 #![allow(unsafe_code)]
 
+#[cfg(tpf3mp_native_savefast)]
 use tpf3mp_hookcore::detour::Rewrite;
 
+#[cfg(tpf3mp_native_savefast)]
 pub use crate::build_data::native::savefast::{
     BUFFER_64K_BYTES, BUFFER_BYTES, BUFFER_SIZE, LEVEL_LOAD, LEVEL_LOAD_BYTES, LEVEL_ONE_BYTES,
 };
@@ -56,34 +58,45 @@ unsafe fn install_with_setting(
     if !enabled(setting) {
         return format!("faster saves: off (set {ENV}=1 to enable)");
     }
-    let rewrite = |name: &str, expected: &[u8], replacement: &[u8]| {
-        at(name).and_then(|address| {
-            // SAFETY: the caller's; Rewrite checks the bytes before writing.
-            unsafe { Rewrite::install(address as *mut u8, expected, replacement) }
-                .map_err(|error| error.to_string())
-        })
-    };
-    let level = rewrite(LEVEL_LOAD, &LEVEL_LOAD_BYTES, &LEVEL_ONE_BYTES);
-    let buffer = rewrite(BUFFER_SIZE, &BUFFER_BYTES, &BUFFER_64K_BYTES);
-    let level = match level {
-        Ok(patch) => {
-            // Keep it for the process lifetime. ManuallyDrop works on
-            // unsupported architectures too, where Rewrite has no Drop.
-            let _kept = std::mem::ManuallyDrop::new(patch);
-            "zstd level 1".to_owned()
-        }
-        Err(why) => format!("the game's zstd level ({why})"),
-    };
-    let buffer = match buffer {
-        Ok(patch) => {
-            // Keep it for the process lifetime. ManuallyDrop works on
-            // unsupported architectures too, where Rewrite has no Drop.
-            let _kept = std::mem::ManuallyDrop::new(patch);
-            "a 64 KiB buffer".to_owned()
-        }
-        Err(why) => format!("the game's 128-byte buffer ({why})"),
-    };
-    format!("faster saves: {level}, {buffer} (opt-in via {ENV}=1)")
+
+    #[cfg(not(tpf3mp_native_savefast))]
+    {
+        let _ = at;
+        "faster saves: unavailable for this build (no verified save targets; opt-in ignored)"
+            .to_owned()
+    }
+
+    #[cfg(tpf3mp_native_savefast)]
+    {
+        let rewrite = |name: &str, expected: &[u8], replacement: &[u8]| {
+            at(name).and_then(|address| {
+                // SAFETY: the caller's; Rewrite checks the bytes before writing.
+                unsafe { Rewrite::install(address as *mut u8, expected, replacement) }
+                    .map_err(|error| error.to_string())
+            })
+        };
+        let level = rewrite(LEVEL_LOAD, &LEVEL_LOAD_BYTES, &LEVEL_ONE_BYTES);
+        let buffer = rewrite(BUFFER_SIZE, &BUFFER_BYTES, &BUFFER_64K_BYTES);
+        let level = match level {
+            Ok(patch) => {
+                // Keep it for the process lifetime. ManuallyDrop works on
+                // unsupported architectures too, where Rewrite has no Drop.
+                let _kept = std::mem::ManuallyDrop::new(patch);
+                "zstd level 1".to_owned()
+            }
+            Err(why) => format!("the game's zstd level ({why})"),
+        };
+        let buffer = match buffer {
+            Ok(patch) => {
+                // Keep it for the process lifetime. ManuallyDrop works on
+                // unsupported architectures too, where Rewrite has no Drop.
+                let _kept = std::mem::ManuallyDrop::new(patch);
+                "a 64 KiB buffer".to_owned()
+            }
+            Err(why) => format!("the game's 128-byte buffer ({why})"),
+        };
+        format!("faster saves: {level}, {buffer} (opt-in via {ENV}=1)")
+    }
 }
 
 #[cfg(test)]
@@ -120,6 +133,7 @@ mod tests {
         );
     }
 
+    #[cfg(tpf3mp_native_savefast)]
     #[test]
     fn the_rewrites_keep_each_instruction_whole() {
         // mov eax,imm32; nop in place of mov eax,[rip+disp32].
@@ -137,6 +151,7 @@ mod tests {
         );
     }
 
+    #[cfg(tpf3mp_native_savefast)]
     #[test]
     fn missing_sites_leave_the_game_its_own() {
         // SAFETY: both lookups fail, so no address is written.
@@ -149,6 +164,20 @@ mod tests {
         assert!(line.contains("the game's 128-byte buffer"), "{line}");
     }
 
+    #[cfg(not(tpf3mp_native_savefast))]
+    #[test]
+    fn unsupported_build_reports_unavailable_without_resolving_sites() {
+        // SAFETY: the unsupported build path must return before looking up
+        // either site, so this resolver panics if the guard regresses.
+        let line =
+            unsafe { install_with_setting(Some("1"), &|name| panic!("unexpected lookup: {name}")) };
+        assert_eq!(
+            line,
+            "faster saves: unavailable for this build (no verified save targets; opt-in ignored)"
+        );
+    }
+
+    #[cfg(tpf3mp_native_savefast)]
     #[test]
     fn the_profile_names_both_sites_with_the_bytes_rewritten() {
         let profile =

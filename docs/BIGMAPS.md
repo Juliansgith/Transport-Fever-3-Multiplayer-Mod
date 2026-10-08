@@ -149,10 +149,12 @@ not save files, so games with and without it agree. Off by default;
 whitespace trimmed); unset or any other value keeps the game's own settings.
 hook.log says what was applied
 (`faster saves: zstd level 1, a 64 KiB buffer`) or that the feature is off.
-The TF3 speed-up is not measured yet. Only the Release 40408 profile has
-these verified targets; the Preview 40418 candidate omits them because its
-signatures have not been checked. A missing or byte-mismatched site keeps
-that part of the game's original save settings.
+The TF3 speed-up is not measured yet. Only the Steam Windows 40408 profile
+has these verified targets. The 40420 bundle has no save targets, so opting
+in logs that faster saves are unavailable for the build without resolving or
+rewriting any site. The Preview 40418 candidate also omits them because its
+signatures have not been checked. On a supported profile, a missing or
+byte-mismatched site keeps that part of the game's original save settings.
 
 ### Simulating (TF3)
 
