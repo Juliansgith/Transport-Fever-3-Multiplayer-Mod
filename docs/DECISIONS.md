@@ -1221,17 +1221,19 @@ this builds it. Not covered yet: the new world path (a room started from a
 new world keeps the mods the game's New Game page picks), and the game's
 experimental economy settings (`configDict`), which do not travel.
 
-## D29 (2026-10-06, *proposed*): native mods come from a signed index, and the hook enables only what is built into it
+## D29 (2026-10-06, owner-approved 2026-10-08): native mods come from a signed index, and the hook enables only what is built into it
 
-*Proposed, for the owner (Juliansgith) to approve or refuse. Nothing here is
-decided until then.* The user asked on 2026-10-06 for CKAN-style management
-of **native mods**: mods that are more than Lua and so cannot live on Mod
-Hub or mod.io. Big Maps is the first (hook patches behind switches, targets
-in the build's profile, a New Game page the hook serves, a Lua mod folder,
-[BIGMAPS.md](BIGMAPS.md)). Today such a mod is switched on by hand with
-environment variables on its own branches. The design is in
-[NATIVE_MODS.md](NATIVE_MODS.md); `crates/tpf3mp-nativemods` builds the parts
-that work without Big Maps.
+The owner approved this policy on 2026-10-08. It covers CKAN-style
+management of **native mods**: mods that are more than Lua and so cannot
+live on Mod Hub or mod.io. Big Maps is the first (hook patches behind
+switches, targets in the build's profile, a New Game page the hook serves, a
+Lua mod folder, [BIGMAPS.md](BIGMAPS.md)). Today such a mod is switched on
+by hand with environment variables on its own branches. The design is in
+[NATIVE_MODS.md](NATIVE_MODS.md). PR #117 and this follow-up implement the
+framework only; they do not provide a trusted production key or index, a
+player-facing installer, Big Maps as a package, or native-mod room terms on
+the protocol. Approval of the policy does not mark those implementation
+items complete.
 
 - **One signed index.** The launcher installs a native mod only when it is
   listed in `native-mods.json`, signed with a **native-mods key** of the

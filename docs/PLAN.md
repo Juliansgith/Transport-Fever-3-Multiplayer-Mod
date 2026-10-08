@@ -388,13 +388,17 @@ Dev B:
   room's world loaded with the room's mods and the player's own, and the
   personal mods' guard for game-script mods. Tick once the two-player test
   in MODS.md passes in the real game, and its measurements are made.
-- [ ] *Added (D29, proposed, for the owner):* native mods (more than Lua,
+- [ ] *Added (D29, owner-approved 2026-10-08):* native mods (more than Lua,
   such as Big Maps) installed by the launcher from the project's signed
   index, enabled in the hook only for their pinned build, and in a room
-  part of its terms ([NATIVE_MODS.md](NATIVE_MODS.md)). Built on
-  `feat/native-mod-index`: the index, the installer and its registry, the
-  hook's plan. Open: the key and signing workflow, the launcher's page,
-  the room's terms on the wire.
+  part of its terms ([NATIVE_MODS.md](NATIVE_MODS.md)). PR #117 and its
+  hardening implement framework only: index validation and signature
+  primitives, the store and registry APIs, the enabled-list handoff, and
+  the hook's fail-closed plan. No production key or index, player-facing
+  installer, built-in native feature, or room terms on the wire exists, so
+  players cannot install or use a native mod yet. Open: the key and signing
+  workflow, the launcher's page, Big Maps as the first package, and the
+  room's terms on the wire.
 
 Dev C:
 

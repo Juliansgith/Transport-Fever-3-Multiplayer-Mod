@@ -10,11 +10,7 @@
 
 use std::path::Path;
 
-use tpf3mp_nativemods::{
-    FOLDER, enabled,
-    fetch::sha256_of_file,
-    store::{REGISTRY, Store},
-};
+use tpf3mp_nativemods::{FOLDER, enabled, fetch::sha256_of_file, store::Store};
 use tracing::{info, warn};
 
 /// The variable for the game's environment naming the native mods enabled
@@ -23,9 +19,6 @@ use tracing::{info, warn};
 /// cannot be told (fail closed).
 pub fn game_env(data_dir: &Path, exe: &Path) -> Result<Option<(String, String)>, String> {
     let root = data_dir.join(FOLDER);
-    if !root.join(REGISTRY).exists() {
-        return Ok(None);
-    }
     let store = Store::open(&root).map_err(|error| format!("native mods: {error}"))?;
     if !store.registry().packages.values().any(|i| i.enabled) {
         return Ok(None);
@@ -50,6 +43,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use tpf3mp_nativemods::store::REGISTRY;
 
     #[test]
     fn nothing_installed_or_enabled_passes_nothing() {
@@ -76,7 +70,7 @@ mod tests {
             description: String::new(),
             simulation: false,
             builds: vec![sha256_of_file(&exe).unwrap()],
-            features: vec!["bigmap.page".into()],
+            features: Vec::new(),
             settings: Default::default(),
             depends: Vec::new(),
             conflicts: Vec::new(),
@@ -86,6 +80,7 @@ mod tests {
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
             serial: 3,
+            index_sha256: None,
             packages: [(
                 "pages".to_owned(),
                 tpf3mp_nativemods::store::Installed {
@@ -112,5 +107,48 @@ mod tests {
         // A registry that cannot be read stops the start.
         fs::write(root.join(REGISTRY), b"{ broken").unwrap();
         assert!(game_env(dir.path(), &exe).is_err());
+    }
+
+    #[test]
+    fn an_enabled_simulation_mod_for_another_build_stops_the_game_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the new build").unwrap();
+        let root = dir.path().join(FOLDER);
+        fs::create_dir_all(&root).unwrap();
+        let package = tpf3mp_nativemods::index::Package {
+            id: "bigmap".into(),
+            version: "1.0.0".into(),
+            name: "Big Maps".into(),
+            description: String::new(),
+            simulation: true,
+            builds: vec!["0".repeat(64)],
+            features: Vec::new(),
+            settings: Default::default(),
+            depends: Vec::new(),
+            conflicts: Vec::new(),
+            files: Vec::new(),
+            plugins: Vec::new(),
+        };
+        let registry = tpf3mp_nativemods::store::Registry {
+            format: 1,
+            serial: 3,
+            index_sha256: None,
+            packages: [(
+                "bigmap".to_owned(),
+                tpf3mp_nativemods::store::Installed {
+                    current: "1.0.0".into(),
+                    previous: None,
+                    enabled: true,
+                    settings: Default::default(),
+                    versions: [("1.0.0".to_owned(), package)].into(),
+                },
+            )]
+            .into(),
+        };
+        fs::write(root.join(REGISTRY), serde_json::to_vec(&registry).unwrap()).unwrap();
+
+        assert!(game_env(dir.path(), &exe).is_err());
+        assert!(!root.join(enabled::FILE).exists());
     }
 }

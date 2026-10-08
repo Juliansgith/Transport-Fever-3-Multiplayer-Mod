@@ -1,9 +1,10 @@
 # Native mods: a signed index, installed by the launcher
 
-*Proposed* ([DECISIONS.md](DECISIONS.md), D29): nothing here is decided until
-the owner approves it. `crates/tpf3mp-nativemods` builds the parts that work
-without any native mod existing yet; what is built and what is not is listed
-at the end.
+*Owner-approved policy* ([DECISIONS.md](DECISIONS.md), D29, approved
+2026-10-08). The code currently provides framework only; there is no
+production trust key or index, player-facing installer, built-in native
+feature, or native-mod room term on the protocol. Players cannot install or
+use a native mod yet. The implemented and open parts are listed at the end.
 
 A **native mod** is a mod that is more than Lua: it needs code in the game.
 Big Maps ([BIGMAPS.md](BIGMAPS.md)) is the first: hook patches behind
@@ -52,7 +53,7 @@ assets of the `native-mods` release of the repository
 | field | meaning |
 |---|---|
 | `format` | 1. Another format is refused whole: a launcher that does not know a format does not guess. |
-| `serial` | Grows with every index published. The launcher remembers the highest it accepted and refuses an older one, so a withdrawn package cannot come back by replaying an old signed index. |
+| `serial` | Grows with every index published. The launcher remembers the highest it accepted and refuses an older one, so a withdrawn package cannot come back by replaying an old signed index. The registry also binds an accepted serial to the SHA-256 of the exact index bytes; a crash after writing a complete cache pair recovers that serial floor, and different contents cannot reuse it. |
 | `id` | 1 to 40 lowercase letters, digits and `_`. |
 | `version` | Semantic version, at most 20 characters (it travels in the room's terms). |
 | `simulation` | Whether it changes how the world runs. A feature the hook knows to change the simulation makes the package count as changing it too, whatever this says. |
@@ -127,6 +128,9 @@ The launcher keeps native mods in its own data folder, never the game's:
   refuses (`Occupied`) otherwise.
 - A registry that cannot be read is an error, never replaced by an empty
   one.
+- Registry package paths are validated before use. Traversal paths and paths
+  that cross a symlink, including a symlink above the store root, are refused
+  before reads, writes, or deletes.
 - **Installing is not enabling.** The player switches a package on, and sets
   its settings, separately.
 
@@ -137,9 +141,12 @@ mod, it hashes the game's executable, writes the enabled packages for that
 build to `enabled.json` with their settings (the defaults with the player's
 choices over them) and their folders, and names that file in the game's
 environment as `TPF3MP_NATIVE_MODS` (`tpf3mp-agent`'s `native_mods`). A
-package enabled but not pinned to that build is left out, with a line in the
-launcher's log. Nothing enabled, nothing installed: no variable, and the
-executable is not hashed. A registry that cannot be read stops the start.
+package that changes only what one player sees and is not pinned to that
+build is left out with a log message. An enabled simulation-changing
+package that is not pinned to that build stops the start instead of
+producing an empty list. Nothing enabled, nothing installed: no variable,
+and the executable is not hashed. A registry that cannot be read stops the
+start.
 
 The hook makes its plan once, at bootstrap, after matching the build's
 profile and before installing anything (`tpf3mp-hook`'s `native_mods`,
@@ -220,22 +227,28 @@ with a simulation-changing package enabled
 (`enabled::ROOM_TERMS_CARRIED` is false), so no room can run two different
 worlds.
 
-## Built, and not yet
+## Framework built, player feature still open
 
-Built (`crates/tpf3mp-nativemods`, with its tests):
+Framework implemented (`crates/tpf3mp-nativemods`, with tests):
 
-- the index format, its signature and validation, the serial floor;
+- the index format, signature verification primitives and validation, a
+  serial floor bound to exact index bytes, and recovery from a complete
+  cache written before a crash;
 - resolution: builds, dependencies, conflicts, cycles, features, plugins;
 - the store: checked downloads, the registry, upgrade, rollback, uninstall,
   enabling and settings, `enabled.json`;
 - the hook's plan and its fail-closed refusal (`tpf3mp-hook`), and the
   launcher passing `TPF3MP_NATIVE_MODS` to the game it starts
   (`tpf3mp-agent`);
-- the room's terms, their comparison, and finding a missing package in the
-  signed index;
+- helpers for room-term comparison and finding a missing package in a
+  signed index; the room does not yet carry those terms;
 - the launcher's updater uses the same signature and download code.
 
-Not built:
+This is not a player-ready native-mod feature: the production trusted-key
+list is empty, `features::BUILT_IN` has no native features, and the launcher
+has no native-mod page. The framework tests use temporary test keys.
+
+Still open:
 
 - the native-mods key, its signing workflow and the first index;
 - the launcher's page for native mods: a **Native mods** group in Settings,

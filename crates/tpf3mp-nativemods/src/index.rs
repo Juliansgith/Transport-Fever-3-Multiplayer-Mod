@@ -184,7 +184,7 @@ impl Index {
         Ok(index)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         for package in &self.packages {
             package
@@ -227,7 +227,7 @@ impl Package {
         self.builds.iter().any(|pinned| pinned == build)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if !is_id(&self.id) {
             return Err("the id is not lowercase letters, digits and _".into());
         }
