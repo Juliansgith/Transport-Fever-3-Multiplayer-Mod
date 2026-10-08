@@ -45,8 +45,8 @@ role, this page leaves it unstated.
   record Julian as author. They make the unmeasured optimization opt-in,
   reject unrecognized settings, and fix cross-architecture retention and
   linting. The PR description says it carries the save-fast work from #108;
-  an attribution comment on #128 points back to #108's explicit TPF2 prior-art
-  citation.
+  an [attribution comment on #128](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/128#issuecomment-6070615927)
+  points back to #108's explicit TPF2 prior-art citation.
 - [#130](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/130)
   adds the selected-native-profile gate so build 40420 does not compile or
   enable unverified save-fast sites. Its commit
@@ -71,8 +71,9 @@ role, this page leaves it unstated.
   record Julian as author. The first commit explicitly says the proposal was
   asked for by silver2127, who runs a second server. This attributes the
   request to silver2127 and the implementation commits to their recorded
-  authors. A comment on #116 repeats the distinction because its PR body did
-  not spell out the request origin.
+  authors. A [comment on #116](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/116#issuecomment-6070614641)
+  repeats the distinction because its PR body did not spell out the request
+  origin.
 - [#117](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/117)
   was also opened by **silver2127**. The two main commits
   [eb99e81](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/commit/eb99e8131f1fd3d6c9e95a7c8d8458d5edbde900)
@@ -86,9 +87,10 @@ role, this page leaves it unstated.
   and
   [94ec669](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/commit/94ec6698bd5c884ec48a060001ec81329f14dd9d),
   record Julian as author. The PR and commit records reviewed here do not
-  attribute implementation commits in #116 or #117 to **tearded**. A comment
-  on #117 states the opener/implementation distinction and leaves design
-  origin unstated where the records do not identify it.
+  attribute implementation commits in #116 or #117 to **tearded**. A
+  [comment on #117](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/117#issuecomment-6070614980)
+  states the opener/implementation distinction and leaves design origin
+  unstated where the records do not identify it.
 
 ### Auto Signals: #122
 
@@ -117,8 +119,9 @@ and
 [21269d6](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/commit/21269d6559ee52fdd2638d96483da510402026c6)
 record Julian as author. Those commits refuse mixed track edits, test track
 ownership, and integrate the approved signal gate with the subsidy gate. A
-comment on #122 makes this split between the initial feature/evidence commits
-and the later safety/integration commits explicit.
+[comment on #122](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/122#issuecomment-6070615399)
+makes this split between the initial feature/evidence commits and the later
+safety/integration commits explicit.
 
 ### Game build 40420: #129
 

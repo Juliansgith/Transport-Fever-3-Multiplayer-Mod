@@ -46,4 +46,4 @@ itself establish commit authorship. See
 [Contribution provenance](CONTRIBUTION_PROVENANCE.md) for the linked
 commit-level record.
 
-When this release is published, close the game and restart the launcher to update, or download **TPF3-MP.exe** for Windows. The draft includes Windows, Linux and macOS packages; it is not itself a live server deployment.
+To update, close the game and restart the launcher, or download **TPF3-MP.exe** for Windows. Released packages are available for Windows, Linux and macOS; a matching protocol 19 server is required.
