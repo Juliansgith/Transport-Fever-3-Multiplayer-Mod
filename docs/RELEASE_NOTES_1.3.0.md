@@ -29,4 +29,14 @@ Version 1.3 adds support for Transport Fever 3 Windows Steam build **40420**. It
 - [#117](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/117) adds a fail-closed framework for signed native-mod indexes and local package storage. No native-mod signing key, index, player installation page, or native-mod room terms ship in this release.
 - [#119](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/119) prepares signed-release announcements on Discord when a release is published. [#124](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/124) scripts the plain fixture save for repeatable tests.
 
+## Contributor provenance
+
+PR #116 records silver2127's request for regional servers. The save-fast
+prior-art cited by #108 is [silver2127's TPF2 Big Maps](https://github.com/silver2127/tpf2-bigmap);
+the TPF3 implementation authors are recorded separately. The initial Auto
+Signals integration commits in #122 record Max (tearded) and Claude Opus 5.5
+as co-authors, with Julian Cooper's final safety and integration commits. See
+[Contribution provenance](CONTRIBUTION_PROVENANCE.md) for the commit-level
+record, including the roles for #117, #129 and #130.
+
 When this release is published, close the game and restart the launcher to update, or download **TPF3-MP.exe** for Windows. The draft includes Windows, Linux and macOS packages; it is not itself a live server deployment.

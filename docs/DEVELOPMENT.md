@@ -158,6 +158,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 To test in the real game, with several games in one room on one PC, see
 [GAME_TESTING.md](GAME_TESTING.md).
 
+### Contributor credits
+
+Use the [pull request template](../.github/PULL_REQUEST_TEMPLATE.md) to
+record request origin, implementation authors, and upstream sources separately.
+Check commit author and Co-authored-by metadata rather than treating the PR
+opener as the implementation author. Before publishing, review the generated
+release notes and add only credits supported by the PR, commit, or project
+records. The audit and correction method are in
+[CONTRIBUTION_PROVENANCE.md](CONTRIBUTION_PROVENANCE.md).
+
 ### Game update builds
 
 `profiles/native-build.txt` selects the reviewed native build directory. The

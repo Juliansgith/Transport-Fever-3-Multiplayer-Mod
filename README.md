@@ -84,6 +84,9 @@ the package and mod if files are missing or damaged.
   logo is Transport Fever 3's, both © Urban Games, used under their
   fan-content terms.
 
+- PR-level authorship, request origins, and prior-art sources are recorded
+  in [Contribution provenance](docs/CONTRIBUTION_PROVENANCE.md).
+
 TPF3-MP is an unofficial fan project, not made or endorsed by Urban Games
 or Paradox Interactive. It does not redistribute any part of Transport
 Fever 3.
