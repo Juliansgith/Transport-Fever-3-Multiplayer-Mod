@@ -12,8 +12,13 @@
 //! assert's stub, a copy of a constant from `.rdata`. A reference the test
 //! did not map is refused, so nothing runs that the test did not name.
 //!
-//! The tests skip when the executable is absent (CI) or is another build.
-//! `TPF3MP_TF3_EXE` points them at the game.
+//! The original-body harness is pinned to Steam build 40408: the code RVAs,
+//! stubs and data map below were verified against that archived executable.
+//! The three 40420 emission kernels and `GetComponentDataIndex` have
+//! normalized-function equality in a static `tpfre audit`, but these tests do
+//! not execute them; exact 40420 equivalence remains unproven until its full
+//! relocation map and ABI inputs are checked. The tests skip when the pinned
+//! executable is absent or another build. `TPF3MP_TF3_EXE` points them at it.
 
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
 
@@ -29,6 +34,9 @@ const DEFAULT_EXES: [&str; 2] = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Transport Fever 3\TransportFever3.exe",
     r"F:\SteamLibrary\steamapps\common\Transport Fever 3\TransportFever3.exe",
 ];
+
+const ORIGINAL_TEST_PROFILE: &str =
+    include_str!("../../../profiles/tf3_build40408_steam_windows/hooks.toml");
 
 /// The release executable, read once.
 pub struct Exe {
@@ -52,10 +60,13 @@ impl Exe {
             eprintln!("skipping: the game's executable is not present (expected in CI)");
             return None;
         };
-        let profile = Profile::from_toml(crate::BUILT_IN_PROFILES[0].1).unwrap();
+        let profile = Profile::from_toml(ORIGINAL_TEST_PROFILE).unwrap();
         let identity = BuildIdentity::of_file(&path).unwrap();
         if profile.verify_identity(&identity).is_err() {
-            eprintln!("skipping: {} is another build", path.display());
+            eprintln!(
+                "skipping original-body proof: {} is not the pinned Steam 40408 executable; 40420 kernels have only a static normalized-function comparison",
+                path.display()
+            );
             return None;
         }
         let image = std::fs::read(&path).unwrap();
