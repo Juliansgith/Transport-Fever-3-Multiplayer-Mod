@@ -224,6 +224,20 @@ reach the server: late joiners then wait.
 
 ## Upgrades
 
+Before promoting a release that changes the protocol or persistence, run
+the check with the published player/server binaries and the candidate binaries:
+
+```sh
+TPF3MP_CHECK_OLD_CLIENT_EXPECTED=update \
+  tools/acceptance/upgrade-check.sh <old bin dir> <new bin dir>
+```
+
+Use `connect` instead of `update` when the protocol is unchanged. The check uses
+two local launcher APIs and fake games to start a room on the old version,
+save it, restart the server, and verify both players resume the same world.
+It needs the loopback admin port and two consecutive launcher HTTP ports;
+`TPF3MP_CHECK_UI_PORT` changes the first launcher port from its default 47471.
+
 Every player must run the server's protocol version. The handshake tells
 players on another version which side to update, and their launchers
 update themselves. Upgrade the server when a release is published, which
