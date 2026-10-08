@@ -12804,6 +12804,11 @@ fn the_run_script_points_the_base_subsidies_at_the_mods_wrapper() {
         .eval()
         .unwrap()
     };
+    // Subsidies passed two-game acceptance: the mod as shipped points them.
+    assert_eq!(run(&lua), ["loadGameRes"]);
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').subsidies = false")
+        .exec()
+        .unwrap();
     assert!(
         run(&lua).is_empty(),
         "subsidies are refused in a room: the game's own scripts stay"
@@ -13356,7 +13361,6 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         local link = assert(bridge.attach(bridge.find()))
         local actions = {
             { Preserve = { building = { file = 'b.con', at = { x = 0, y = 0, z = 0 } }, index = 0, preserved = true } },
-            { Subsidy = { Decline = { uid = 1, kind = 'x' } } },
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
             { Perk = { Greenify = { industry = 0 } } },
@@ -13369,12 +13373,15 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
         end
         assert(#HOOK.commands == 0)
-        -- Renaming and recolouring passed two-player game acceptance
-        -- (investigation/TPF3_RENAME_2026-10-07.md): neither port refuses
-        -- them for it any more, whatever else it finds wrong.
+        -- Renaming and recolouring (investigation/TPF3_RENAME_2026-10-07.md)
+        -- and subsidies (investigation/TPF3_SUBSIDIES_2026-10-07.md) passed
+        -- two-player game acceptance: neither port refuses them for it any
+        -- more, whatever else it finds wrong.
         local accepted = {
             { Rename = { what = { Vehicle = 1 }, name = 'x' } },
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
+            { Subsidy = { Accept = { uid = 1, kind = 'x' } } },
+            { Subsidy = { Decline = { uid = 1, kind = 'x' } } },
         }
         for _, action in ipairs(accepted) do
             local sent, reason = link:command(action)
