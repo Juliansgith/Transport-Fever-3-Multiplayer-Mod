@@ -22,10 +22,10 @@ Version 1.3 adds support for Transport Fever 3 Windows Steam build **40420**. It
 - [#107](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/107) keeps a solo game running if its launcher connection drops. [#120](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/120) keeps the game link and room session alive after a launcher renderer failure, with browser fallback.
 - [#115](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/115) avoids comparing reloaded games against world-check verdicts from an abandoned world.
 - [#118](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/118) traces free-ID queue divergence, [#121](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/121) adds opt-in local industry-spawn tracing, and [#123](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/123) reports simulation batch cadence. These diagnostics do not by themselves fix a later industry divergence or every brief vehicle pause.
-- [#132](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/132) validates server upgrades with the published launcher workflow, saved turn history, and the expected old-client protocol result.
 
 ## Packaging and future features
 
+- [#131](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/131) sets the 1.3.0 package version and prepares these release notes. [#132](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/132) validates server upgrades with the published launcher workflow, saved turn history, and the expected old-client protocol result.
 - [#117](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/117) adds a fail-closed framework for signed native-mod indexes and local package storage. No native-mod signing key, index, player installation page, or native-mod room terms ship in this release.
 - [#119](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/119) prepares signed-release announcements on Discord when a release is published. [#124](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/124) scripts the plain fixture save for repeatable tests.
 
