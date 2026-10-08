@@ -1,10 +1,12 @@
 # The native hook
 
-Acceptance status: subsidy and waypoint mechanics described below are
-implemented but disabled by `tpf3mp/acceptance.lua`. They are refused on
-submission and replay until ordinary two-player game acceptance. Entity
-rename/recolour passed it on 2026-10-07
-([investigation/TPF3_RENAME_2026-10-07.md](../investigation/TPF3_RENAME_2026-10-07.md)).
+Acceptance status: waypoint mechanics described below are implemented but
+disabled by `tpf3mp/acceptance.lua`. They are refused on submission and
+replay until ordinary two-player game acceptance. Entity rename/recolour
+([investigation/TPF3_RENAME_2026-10-07.md](../investigation/TPF3_RENAME_2026-10-07.md))
+and subsidies
+([investigation/TPF3_SUBSIDIES_2026-10-07.md](../investigation/TPF3_SUBSIDIES_2026-10-07.md))
+passed it on 2026-10-07.
 See [COVERAGE.md](COVERAGE.md) for the selected integration.
 
 The native hook is the small library that runs *inside* the game process. It
@@ -1636,8 +1638,10 @@ state, which the game saves with the world:
   taker=` line each), so two games' logs show where they part. A world
   stepped from different room steps is the step gate's to hold, not the
   subsidy script's. A world loaded from the room's save starts every game
-  at the same step and game time; that its offers agree there is INFERRED,
-  and these lines check it in the next two-game test with subsidies on.
+  at the same step and game time, and its offers agreed there: two games
+  that loaded a room's save listed the same offers, and drew the same new
+  ones afterwards, at every checkpoint of a run
+  ([investigation/TPF3_SUBSIDIES_2026-10-07.md](../investigation/TPF3_SUBSIDIES_2026-10-07.md)).
   Offers belong to no company. Accepting one (`Subsidy::Accept`) is
   checked by every game against its script's state first: the offer under
   that number must still be offered, of the kind the action names, and the
@@ -1685,11 +1689,14 @@ state, which the game saves with the world:
   runs the same wrapper. A subsidy with no taker kept (single player, a
   save from before) counts everyone's, as the game does. Only while
   `acceptance.subsidies` is on. The modifier's name is read from the
-  binary (`loadGameRes`, beside `loadConstruction` and `loadGameScript`):
-  INFERRED to be the one for generic resources until a game shows
-  `taker=` on a taken subsidy and only the taker's deliveries in
-  `delivered=`. Not carried: `deliver_workers` completes when the
-  industry's workers are boosted (`industry_util.isPersonCapacityBoosted`),
+  binary (`loadGameRes`, beside `loadConstruction` and `loadGameScript`),
+  and seen working in a two-game run: a passenger subsidy another company
+  took stayed open while the first company's line between its two towns
+  completed the first company's own subsidy for the same towns, in both
+  games ([investigation/TPF3_SUBSIDIES_2026-10-07.md](../investigation/TPF3_SUBSIDIES_2026-10-07.md)).
+  The base game's subsidy cards know no companies: every player sees every
+  taken subsidy as accepted, another company's too. Not carried:
+  `deliver_workers` completes when the industry's workers are boosted (`industry_util.isPersonCapacityBoosted`),
   a state of the industry the engine keeps for no company, so anyone's
   commuters complete it; the reputation and town growth bonuses are the
   towns', as the game has them; the pace of new offers follows the first

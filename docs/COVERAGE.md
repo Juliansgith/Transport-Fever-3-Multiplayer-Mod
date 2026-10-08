@@ -34,12 +34,14 @@ load gating and save setup. This is not a fresh two-player game playthrough.
 
 ## Implemented, refused pending game acceptance
 
-Subsidies and line waypoints have capture, schema and replay code, but
+Line waypoints have capture, schema and replay code, but
 `content/scripts/tpf3mp/acceptance.lua` disables them. Both command
-submission and replay refuse these channels; subsidy settlement is disabled
-too. Entity renaming and vehicle recolouring passed two-player acceptance on
-2026-10-07 and are enabled
-([the validation record](../investigation/TPF3_RENAME_2026-10-07.md)). Bridge/tunnel window rebuilds remain gated at
+submission and replay refuse this channel. Entity renaming and vehicle
+recolouring
+([the validation record](../investigation/TPF3_RENAME_2026-10-07.md)) and
+subsidies, with their settlement between companies
+([the validation record](../investigation/TPF3_SUBSIDIES_2026-10-07.md)),
+passed two-player acceptance on 2026-10-07 and are enabled. Bridge/tunnel window rebuilds remain gated at
 capture behind `bridges`. Industry Greenification and marketing campaigns
 remain gated at both submission and replay behind `perks`. Historic Preservation is likewise gated behind `preservation`. Mechanics fixtures explicitly enable a channel
 only in their own Lua state. Enable a channel only after ordinary two-player
