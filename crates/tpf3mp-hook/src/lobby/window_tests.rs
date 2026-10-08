@@ -2414,6 +2414,40 @@ fn friend_join_connects_with_typed_name_then_joins_exactly_once() {
 }
 
 #[test]
+fn friend_join_sends_the_selected_trusted_region() {
+    let lua = menu();
+    let mut view = online();
+    view.servers = BoundedVec::new(vec![
+        tpf3mp_bridge::LobbyServer {
+            name: Text::new("EU").unwrap(),
+            ping_ms: 24,
+            here: true,
+            reachable: true,
+        },
+        tpf3mp_bridge::LobbyServer {
+            name: Text::new("US").unwrap(),
+            ping_ms: 110,
+            here: false,
+            reachable: true,
+        },
+    ])
+    .unwrap();
+    show(&lua, Some(&view));
+    open(&lua, Some("friend"));
+    call(&lua, "choose", ("Region (optional)", "US"));
+    call(&lua, "type_into", ("K7QM2X", "K7QM2X"));
+    click(&lua, "Join room");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Join {
+            invite: Text::new("K7QM2X").unwrap(),
+            server: Some(Text::new("US").unwrap()),
+            password: None,
+        }]
+    );
+}
+
+#[test]
 fn friend_connection_failure_cancels_the_join_and_allows_retry() {
     let lua = menu();
     let mut view = LobbyView {

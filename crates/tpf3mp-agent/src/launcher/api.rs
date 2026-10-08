@@ -306,6 +306,9 @@ pub struct State {
     /// the release's compiled regional list). An invite's pasted address
     /// does not override either route.
     pub server_fixed: bool,
+    /// Whether this release has a compiled list of multiple trusted
+    /// servers, including while this launcher is pinned to one of them.
+    pub regional: bool,
     /// The launcher's default server, `host:port`: the package's, or the
     /// project's relay. "Reset to default" goes back to it.
     pub server_default: Option<String>,
@@ -735,6 +738,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         player: you.map(|player| player.to_string()),
         server: view.server.clone(),
         server_fixed: view.server_fixed,
+        regional: view.listed.len() > 1,
         server_default: view.server_default.clone(),
         // The name is the default server's, or another listed server's:
         // any other shows its address.

@@ -196,30 +196,29 @@ menu instead** puts it back.
 
 ### Changing the server
 
-TPF3-MP plays on the project's relay (**EU**) unless you choose another
-server. *This follows a proposed change to the project's decisions (D12),
-which the owner has yet to approve.*
+In a one-server playtest, the launcher can connect to a server you type. A
+multi-region release routes only to the trusted servers it was built with.
 
-1. Open **Settings** (top right). The **Server** card says which server you
-   play on, and whether it is the default.
-2. Type the other server's address as `host:port`, such as
-   `tpf3mp.example.org:29470`, and press **Use this server** (or Enter).
-   Anything else is refused and the card says why.
-3. If you were connected, the launcher disconnects and connects to the new
-   server under the same name. It remembers the server for next time.
-4. **Reset to default** goes back to the relay.
+1. Open **Settings** (top right). The **Server** card says where you play.
+2. In a one-server playtest, type a server address as `host:port` and press
+   **Use this server**. If you were connected, the launcher reconnects under
+   the same name and remembers the choice.
+3. In a multi-region release, Settings lists the trusted regions and their
+   pings. A saved trusted-region pin can be cleared with **Reset to default**;
+   the launcher then routes automatically again.
 
-You cannot change the server while in a room: leave it first. A region in
-the release's trusted list can also be chosen on the invite form; without
-that choice, a six-character invite is resolved across every listed
-region. An address pasted beside an invite is ignored. The browser page
-(`--browser`) has the same setting, under **Settings: server**.
+You cannot change a server while in a room: leave it first. On a
+multi-region release, a region in the trusted list can be chosen on the
+invite form; without that choice, a six-character invite is resolved across
+every listed region. An address pasted beside an invite is ignored. The
+browser page (`--browser`) follows the same trusted-region rules under
+**Settings: server**.
 
 ### When TPF3-MP has several servers
 
 Under D12 (approved 2026-10-08), a release may come with more than one
-server, such as **EU** and **US**. Then, as long as you have
-not typed a server of your own in Settings:
+server, such as **EU** and **US**. Then, unless you have pinned one of those
+listed regions:
 
 - the launcher connects to the server closest to you, the one with the
   lowest ping, and Settings lists every server with its ping;
@@ -239,8 +238,8 @@ not typed a server of your own in Settings:
   to retry. A public-room card and an explicit region choice go directly
   to that listed region.
 
-A server you type in Settings is played on alone, as before; **Reset to
-default** brings back all of them.
+A multi-region release accepts only its compiled trusted servers;
+**Reset to default** returns a pinned launcher to automatic regional play.
 
 ## Playing from the game's Multiplayer button
 

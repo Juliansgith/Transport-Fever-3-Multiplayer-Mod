@@ -1824,9 +1824,11 @@ fn begin_session(
     });
     {
         let mut view = shared.view();
-        // Invites are always the six-character code (D13). In a regional
-        // release the receiver resolves it against the compiled server list.
-        view.invite = Some(invite.to_string());
+        view.invite = Some(invite_for_copy(
+            &invite,
+            view.server.as_deref(),
+            config.servers.len() >= 2,
+        ));
         view.in_room = true;
         view.error = None;
     }
@@ -1837,6 +1839,18 @@ fn begin_session(
         game_closed: false,
     });
     Ok(())
+}
+
+/// A regional launcher resolves a bare invite across its trusted list. A
+/// one-server playtest names its server so another launcher can connect too.
+fn invite_for_copy(invite: &Invite, server: Option<&str>, regional: bool) -> String {
+    if regional {
+        invite.to_string()
+    } else if let Some(server) = server.filter(|server| !server.is_empty()) {
+        format!("{server} {invite}")
+    } else {
+        invite.to_string()
+    }
 }
 
 async fn forward(session: &Option<Session>, control: Control) -> Result<(), String> {
@@ -2396,12 +2410,7 @@ async fn set_server(
         return Err("leave the room first: the server changes between rooms".into());
     }
     let default = config.default_server.clone();
-    // The default typed out is the default: the setting then follows it.
-    let chosen = match typed.trim() {
-        "" => None,
-        typed => Some(server_address(typed)?)
-            .filter(|chosen| !default.as_deref().is_some_and(|d| same_server(d, chosen))),
-    };
+    let chosen = server_setting_choice(config, typed)?;
     let server = chosen
         .clone()
         .or(default)
@@ -2442,6 +2451,28 @@ async fn set_server(
         }
     }
     Ok(())
+}
+
+/// Resolves a settings value before any remembered or connection state is
+/// changed. A release with multiple trusted regions accepts only addresses
+/// from that compiled list; a developer's `--server` build has no such list.
+fn server_setting_choice(config: &LauncherConfig, typed: &str) -> Result<Option<String>, String> {
+    let default = config.default_server.as_deref();
+    let chosen = match typed.trim() {
+        "" => None,
+        typed => Some(server_address(typed)?)
+            .filter(|chosen| !default.is_some_and(|server| same_server(server, chosen))),
+    };
+    if config.servers.len() < 2 {
+        return Ok(chosen);
+    }
+    chosen
+        .map(|address| {
+            servers::find(&config.servers, &address)
+                .map(|server| server.address.clone())
+                .ok_or_else(|| "this release can use only its trusted servers".to_owned())
+        })
+        .transpose()
 }
 
 /// A server as the player typed it for the setting, as `host:port`: the
@@ -2917,6 +2948,103 @@ mod tests {
             game_env: Vec::new(),
             start_save: None,
         }
+    }
+
+    #[tokio::test]
+    async fn a_regional_server_setting_refuses_unlisted_hosts_before_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let remember = root.path().join("launcher.json");
+        Remembered::default().save(&remember).unwrap();
+        let eu = "eu.example.org:29470";
+        let us = "us.example.org:29470";
+        let mut config = local_config(root.path());
+        config.remember = Some(remember.clone());
+        config.server = Some(eu.into());
+        config.server_fixed = true;
+        config.default_server = Some(eu.into());
+        config.server_name = Some("EU".into());
+        config.servers = vec![
+            ListedServer {
+                name: "EU".into(),
+                address: eu.into(),
+            },
+            ListedServer {
+                name: "US".into(),
+                address: us.into(),
+            },
+        ];
+        let (shared, _, _) = Shared::new(&config);
+        let mut connected = None;
+        let session = None;
+        let error = set_server(
+            &shared,
+            &config,
+            "outside.example.org:29470",
+            &mut connected,
+            &session,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("trusted servers"), "{error}");
+        assert!(connected.is_none(), "no connection was promoted or closed");
+        assert_eq!(shared.view().server.as_deref(), Some(eu));
+        assert!(shared.view().on_list, "the regional route is unchanged");
+        assert_eq!(
+            Remembered::load(&remember).chosen_server,
+            None,
+            "the refused choice is not remembered"
+        );
+
+        set_server(&shared, &config, us, &mut connected, &session)
+            .await
+            .unwrap();
+        assert_eq!(shared.view().server.as_deref(), Some(us));
+        assert!(!shared.view().on_list, "a listed region may be pinned");
+        assert_eq!(
+            Remembered::load(&remember).chosen_server.as_deref(),
+            Some(us),
+            "trusted listed choices remain supported by the backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_server_development_launcher_keeps_its_override() {
+        let root = tempfile::tempdir().unwrap();
+        let remember = root.path().join("launcher.json");
+        let mut config = local_config(root.path());
+        config.remember = Some(remember);
+        config.server = Some("127.0.0.1:29470".into());
+        config.server_fixed = true;
+        config.default_server = Some("eu.example.org:29470".into());
+        let (shared, _, _) = Shared::new(&config);
+        let mut connected = None;
+        let session = None;
+        set_server(
+            &shared,
+            &config,
+            "other.example.org:29470",
+            &mut connected,
+            &session,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            shared.view().server.as_deref(),
+            Some("other.example.org:29470")
+        );
+    }
+
+    #[test]
+    fn copied_invites_name_a_server_only_for_single_server_playtests() {
+        let invite = Invite("K7QM2X".parse().unwrap());
+        assert_eq!(
+            invite_for_copy(&invite, Some("play.example:29470"), true),
+            "K7QM2X"
+        );
+        assert_eq!(
+            invite_for_copy(&invite, Some("play.example:29470"), false),
+            "play.example:29470 K7QM2X"
+        );
     }
 
     #[tokio::test]

@@ -288,6 +288,21 @@ pub fn plays_on(
         .or_else(|| named(default))
 }
 
+/// An old setting may name an arbitrary server, from before a release had a
+/// compiled regional list. Keep a remembered pin only when that release
+/// vouches for it; `--server` builds have an empty list and keep their old
+/// development behavior.
+fn remembered_server<'a>(
+    chosen: Option<&'a str>,
+    listed: &[super::ListedServer],
+) -> Option<&'a str> {
+    if listed.len() >= 2 {
+        chosen.filter(|server| super::servers::find(listed, server).is_some())
+    } else {
+        chosen
+    }
+}
+
 /// The servers a launcher plays on (D12's approved regional amendment):
 /// none with a server `given` on its command line, which it
 /// plays on alone; else its `default`, named `name`, then the `more` a
@@ -373,7 +388,7 @@ impl LauncherArgs {
         )?;
         let server = plays_on(
             self.server.as_deref(),
-            remembered.chosen_server.as_deref(),
+            remembered_server(remembered.chosen_server.as_deref(), &servers),
             default_server.as_deref(),
         );
         Ok(LauncherConfig {
@@ -452,6 +467,58 @@ mod tests {
             "nothing given, and a setting that is no host:port"
         );
         assert_eq!(plays_on(None, None, None), None);
+    }
+
+    #[test]
+    fn a_regional_release_ignores_a_remembered_server_outside_its_list() {
+        let listed = listed_servers(
+            None,
+            Some(RELAY),
+            Some(RELAY_NAME),
+            Some("US=us.example.org:29470"),
+        )
+        .unwrap();
+        assert_eq!(
+            remembered_server(Some("old.example.org:29470"), &listed),
+            None,
+            "a pre-region arbitrary server is ignored at startup"
+        );
+        assert_eq!(
+            plays_on(
+                None,
+                remembered_server(Some("old.example.org:29470"), &listed),
+                Some(RELAY),
+            )
+            .as_deref(),
+            Some(RELAY),
+            "the regional release starts on its trusted default"
+        );
+        assert_eq!(
+            remembered_server(Some("US.EXAMPLE.ORG:29470"), &listed),
+            Some("US.EXAMPLE.ORG:29470"),
+            "a trusted explicit region pin remains available"
+        );
+
+        let dev_servers = listed_servers(
+            Some("127.0.0.1:29470"),
+            Some(RELAY),
+            Some(RELAY_NAME),
+            Some("US=us.example.org:29470"),
+        )
+        .unwrap();
+        assert!(
+            dev_servers.is_empty(),
+            "--server remains a single-server override"
+        );
+        assert_eq!(
+            plays_on(
+                Some("127.0.0.1:29470"),
+                remembered_server(Some("old.example.org:29470"), &dev_servers),
+                Some(RELAY),
+            )
+            .as_deref(),
+            Some("127.0.0.1:29470")
+        );
     }
 
     #[test]

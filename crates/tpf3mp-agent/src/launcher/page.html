@@ -180,6 +180,7 @@ let shownChat = -1;
 let shownNotices = -1;
 // The server the setting's field was last filled from.
 let serverSettingFor;
+let joinRegionContext;
 
 // What the launcher takes as a server: host:port, the host a name or an
 // IPv4 address, or an IPv6 address in brackets (the launcher checks again).
@@ -200,37 +201,45 @@ function sameServer(a, b) {
   return (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
 }
 
-// The server setting (D12, as amended): the server played on, a field to
-// change it, and the way back to the default. Invites stay on it.
+// The server setting (D12, as amended): regional releases expose only their
+// trusted routes; a one-server build keeps its host:port setting.
 function renderServerSetting(s) {
   show("server-settings", s.server_fixed || !!s.server_default);
+  const listed = s.servers || [];
+  const regional = !!s.regional || listed.length > 1;
   if (serverSettingFor !== s.server) {
     serverSettingFor = s.server;
     $("server-setting").value = s.server || "";
   }
   $("server-setting").placeholder = s.server_default || "host:port";
-  // On the release's several servers (D12's approved regional amendment)
-  // the launcher is on its default wherever it plays.
-  const listed = s.servers || [];
   const onDefault = listed.length > 0 || (!!s.server && sameServer(s.server, s.server_default));
   text($("server-setting-line"), listed.length > 0
     ? "You play on TPF3-MP's servers: " + serversLine(listed) + ". Rooms you host go to the"
       + " closest, and the room list shows the rooms of all of them."
+    : regional && s.server
+    ? "You play on trusted server " + (s.server_name ? s.server_name + " (" + s.server + ")" : s.server)
+      + ". Reset to default for automatic regional play."
+    : regional
+    ? "You play across TPF3-MP's trusted servers automatically."
     : !s.server ? "No server is set: type one below."
     : onDefault ? "You play on " + (s.server_name ? s.server_name + " (" + s.server + ")" : s.server)
       + ", the default server."
     : "You play on " + s.server + ".");
+  show("server-setting", !regional);
+  show("server-apply", !regional);
   const typed = $("server-setting").value.trim();
   const problem = typed ? serverProblem(typed) : null;
   text($("server-setting-problem"), problem || "");
-  show("server-setting-problem", !!problem);
+  show("server-setting-problem", !regional && !!problem);
   const free = !s.room;
-  $("server-apply").disabled = !free || !typed || !!problem || sameServer(typed, s.server);
+  $("server-apply").disabled = regional || !free || !typed || !!problem || sameServer(typed, s.server);
   $("server-reset").disabled = !free || !s.server_default || onDefault;
   text($("server-setting-note"), !free ? "Leave the room to change the server."
+    : regional && listed.length === 0
+    ? "This release routes only to its trusted servers. Reset to default returns to automatic regional play."
     : listed.length > 0
-    ? "Invites join rooms on any of TPF3-MP's servers. A server typed here is played on alone, and"
-      + " only its rooms are joined; Reset to default comes back to all of them."
+    ? "Rooms go to the closest listed server. Invites are checked across these trusted regions;"
+      + " choose one on the join form if a code is ambiguous."
     : "Changing the server disconnects you and connects to the new one. Invites join rooms on your"
       + " server only: to play with friends on another server, all of you set the same one here.");
 }
@@ -344,6 +353,9 @@ function render(s) {
   const regionPicker = $("join-server");
   const selectedRegion = regionPicker.value;
   const regions = s.servers || [];
+  const context = JSON.stringify([s.server || null, !!s.room]);
+  const keepRegion = joinRegionContext === context;
+  joinRegionContext = context;
   regionPicker.replaceChildren();
   const automatic = document.createElement("option");
   automatic.value = "";
@@ -355,7 +367,7 @@ function render(s) {
     option.textContent = region.reachable ? region.name : region.name + " (unavailable)";
     regionPicker.appendChild(option);
   }
-  regionPicker.value = regions.some((region) => region.name === selectedRegion) ? selectedRegion : "";
+  regionPicker.value = keepRegion && regions.some((region) => region.name === selectedRegion) ? selectedRegion : "";
   show("join-server", regions.length > 1);
   const badge = $("connection");
   text(badge, s.tunneled ? s.connection + " via tunnel" : s.connection);
