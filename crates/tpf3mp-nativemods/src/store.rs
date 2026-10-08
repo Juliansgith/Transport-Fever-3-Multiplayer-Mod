@@ -897,15 +897,19 @@ fn ensure_no_symlink_path(root: &Path, path: &Path) -> Result<(), StoreError> {
         return Err(StoreError::UnsafePath(path));
     }
 
-    // Inspect every existing ancestor, including ancestors of the store
-    // root. A symlink above the root would redirect otherwise-safe package
-    // paths to an external directory.
-    let mut ancestors: Vec<_> = path.ancestors().collect();
-    ancestors.reverse();
+    // The caller owns the store root, not its parents. System data paths can
+    // contain symlinked ancestors (macOS /var -> /private/var); reject links
+    // at the root and below, where registry-controlled paths are managed.
+    let mut ancestors = vec![root.clone()];
+    let mut ancestor = root.clone();
+    for component in relative.components() {
+        ancestor.push(component);
+        ancestors.push(ancestor.clone());
+    }
     for ancestor in ancestors {
-        match fs::symlink_metadata(ancestor) {
+        match fs::symlink_metadata(&ancestor) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(StoreError::UnsafePath(ancestor.to_owned()));
+                return Err(StoreError::UnsafePath(ancestor));
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -1562,7 +1566,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn store_open_refuses_a_symlinked_ancestor_before_reading_the_registry() {
+    fn store_open_allows_a_symlinked_parent_but_refuses_a_linked_root() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -1576,8 +1580,14 @@ mod tests {
         let link = dir.path().join("store-link");
         symlink(&outside, &link).unwrap();
 
+        // macOS legitimately reaches temporary data through /var, a link to
+        // /private/var. The managed root remains confined under that parent.
+        assert!(Store::open(link.join("native-mods")).is_ok());
+
+        let root_link = dir.path().join("linked-native-mods");
+        symlink(outside.join("native-mods"), &root_link).unwrap();
         assert!(matches!(
-            Store::open(link.join("native-mods")),
+            Store::open(root_link),
             Err(StoreError::UnsafePath(_))
         ));
     }
