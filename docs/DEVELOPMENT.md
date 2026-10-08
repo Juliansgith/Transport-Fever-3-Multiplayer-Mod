@@ -204,6 +204,14 @@ Other feature branches can run it manually with `verify_only` enabled. Set up:
 - the repository variable `TPF3MP_GAME_ARCHIVE`, an absolute path to the
   complete source archive readable by that runner, outside its checkout.
 
+During the 40408-to-40420 transition, keep `TPF3MP_GAME_ARCHIVE` on the 40408
+archive. Set `TPF3MP_UPDATED_GAME_ARCHIVE` to the separate complete public
+Steam build ID 25754343 archive on the same private runner before verifying a
+40420-selected branch. The workflow chooses the archive from
+`profiles/native-build.txt`; `tpfre verify-build` then checks the selected
+bundle's SHA-256, size, PE timestamp and every target. An unknown bundle or
+missing archive stops verification, while the old release stays verifiable.
+
 Set up the runner and repository variable in each repository before merging
 these release-workflow changes there. A runner registered to a fork and the
 fork's variables do not configure upstream. Without the variable the workflow

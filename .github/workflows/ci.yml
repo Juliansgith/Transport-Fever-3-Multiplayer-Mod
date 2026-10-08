@@ -36,6 +36,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tools/game/test-tools.ps1
+      - name: Private game archive selection (no game required)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tools/github/test-select-game-archive.ps1
       # rustup installs the toolchain pinned in rust-toolchain.toml on first use.
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
