@@ -33,6 +33,10 @@ const RELEASE_ONLY_OPTIONAL_TARGETS: &[&str] = &[
     "simperf: UpdateParcelCollision call",
     "fast-component-index: Engine::GetComponentDataIndex",
     "emission::EmissionGridSystem::Update",
+    // Faster saves (crates/tpf3mp-hook/src/savefast.rs) have verified
+    // signatures only in the Release 40408 executable.
+    "save: PushCompressor level load",
+    "save: PushCompressor buffer size",
 ];
 
 fn coverage(profile: &Profile) -> BTreeMap<String, bool> {
@@ -70,7 +74,7 @@ fn preview_pins_its_exact_identity_and_preserves_release_target_coverage() {
     assert_eq!(
         release_only,
         RELEASE_ONLY_OPTIONAL_TARGETS.iter().copied().collect(),
-        "only the seven new optional 40408 performance targets may be Release-only"
+        "only the explicitly allowlisted optional 40408 performance targets may be Release-only"
     );
     for (name, required) in &preview_coverage {
         assert_eq!(release_coverage.get(name), Some(required), "{name}");
@@ -87,7 +91,7 @@ fn preview_pins_its_exact_identity_and_preserves_release_target_coverage() {
 }
 
 #[test]
-fn seven_release_only_targets_resolve_as_absent_optional_hooks() {
+fn release_only_targets_resolve_as_absent_optional_hooks() {
     let release = Profile::from_toml(RELEASE).unwrap();
     let mut performance_only = release.clone();
     performance_only
