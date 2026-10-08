@@ -28,7 +28,12 @@ pub use crate::build_data::native::savefast::{
 pub const ENV: &str = "TPF3MP_HOOK_SAVE_FAST";
 
 fn enabled(value: Option<&str>) -> bool {
-    value.is_some_and(|value| crate::ticks::wanted(Some(value)))
+    matches!(
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "on" | "true" | "yes")
+    )
 }
 
 /// Rewrites both sites the profile resolved, where their bytes are the
@@ -87,12 +92,16 @@ mod tests {
             !enabled(None),
             "unset must preserve the native save settings"
         );
-        for value in ["0", "off", "false", "no"] {
+        for value in ["0", "off", "false", "no", "", "unknown", "2", "  "] {
             assert!(!enabled(Some(value)), "{value} must disable the rewrite");
         }
         for value in ["1", "on", "true", "yes"] {
             assert!(enabled(Some(value)), "{value} must explicitly enable it");
         }
+        assert!(
+            enabled(Some(" YES ")),
+            "explicit values are trimmed and folded"
+        );
     }
 
     #[test]
