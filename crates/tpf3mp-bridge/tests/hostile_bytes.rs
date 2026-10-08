@@ -124,6 +124,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             server: Text::new("EU").unwrap(),
             server_address: Text::new("tpf3mp.example.org:29470").unwrap(),
             server_default: Text::new("tpf3mp.example.org:29470").unwrap(),
+            servers: BoundedVec::empty(),
             banner: Some(Text::new("freiherr_von_schlitzwiesen").unwrap()),
             portraits: BoundedVec::new(vec![Text::new("andrew").unwrap()]).unwrap(),
             name: Text::new("Ann").unwrap(),

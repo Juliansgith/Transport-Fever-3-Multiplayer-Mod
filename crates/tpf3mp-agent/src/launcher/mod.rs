@@ -32,14 +32,14 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, watch},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::MissedTickBehavior,
 };
 use tpf3mp_bridge::{LobbyAction, LobbyView};
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{
-    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomPage, RoomPhase,
-    RoomSettings, StartSave, Text,
+    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, Request, RequestError, Response,
+    RoomPage, RoomPhase, RoomSettings, StartSave, Text,
 };
 use tracing::{info, warn};
 
@@ -79,6 +79,8 @@ const SAVES_TICK: Duration = Duration::from_secs(5);
 /// How long the launcher watches a game link it finds already made for
 /// another launcher's heartbeat, before taking it.
 const LINK_HELD_WAIT: Duration = Duration::from_millis(350);
+/// How long each trusted region has to answer a non-mutating invite lookup.
+const INVITE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the hook of a game this launcher did not start may fall silent
 /// before the game counts as closed, once its process is gone too: a game
 /// that followed the link from a launcher that closed ([`instance`]), which
@@ -116,8 +118,8 @@ pub struct LauncherConfig {
     /// The servers the release vouches for, the default first
     /// ([`servers::release_list`]). With two or more, a launcher playing
     /// on its default plays on all of them: it lists every one's rooms and
-    /// creates rooms on the closest (D12's PROPOSED amendment of
-    /// 2026-10-06). Empty or one: the one server alone, as before; so with
+    /// creates rooms on the closest (D12's approved regional amendment).
+    /// Empty or one: the one server alone, as before; so with
     /// `--server`.
     pub servers: Vec<ListedServer>,
     /// How to trust servers.
@@ -423,8 +425,10 @@ impl Shared {
                 view.home_ping,
             )
         };
-        // While connected or in a room: unconnected, nothing is looked at.
-        if on_list && home.is_some() {
+        // Keep the trusted region names available to the launcher's and
+        // game's explicit invite selectors even before connecting. A row
+        // without a live connection is marked unreachable.
+        if on_list {
             state.servers = self.lookouts.rows(&listed, home.as_deref(), ping);
         }
         state
@@ -902,19 +906,26 @@ async fn act(
 ) -> Result<(), String> {
     match action {
         Action::Connect { server, name } => {
-            // A whole invite, as "Copy invite" gives it, connects and joins;
-            // one to another server is refused, in a room or not.
+            // A whole invite, as "Copy invite" gives it, connects and joins.
             let passed = passed_invite(&server);
             let on_list = shared.on_list();
-            // On the release's servers: one of them the text names, or the
-            // closest (`None`).
             let target = if on_list {
-                servers::connect_target(
-                    &config.servers,
-                    &server,
-                    passed.as_ref().and_then(|passed| passed.server.as_deref()),
-                    passed.is_some(),
-                )?
+                // On a multi-region release, the server text in a pasted
+                // message is not routing authority. A bare code is resolved
+                // across every trusted region after connecting, and a
+                // non-invite server address is not a region selector.
+                if passed.is_some()
+                    || server.trim().is_empty()
+                    // The game's Connect action echoes the launcher state,
+                    // which includes its current trusted address. Accept it
+                    // as context only; `connect_closest` still picks the
+                    // primary and an arbitrary address is never accepted.
+                    || servers::find(&config.servers, &server).is_some()
+                {
+                    None
+                } else {
+                    return Err("that is not an invite".into());
+                }
             } else {
                 Some(server_for(
                     fixed_server(shared).as_deref(),
@@ -929,16 +940,19 @@ async fn act(
             if name.as_str().is_empty() {
                 return Err("choose a name".into());
             }
-            let named = target.is_some();
-            match target {
-                Some(server) => connect_to(shared, config, connected, &server, name).await?,
-                None => connect_closest(shared, config, connected, name).await?,
+            // Keep the current primary in place until a typed invite has a
+            // unique positive lookup. When starting disconnected, the
+            // closest trusted region is only the temporary connection used
+            // to issue the read-only probes.
+            if !(on_list && passed.is_some() && connected.is_some()) {
+                match target {
+                    Some(server) => connect_to(shared, config, connected, &server, name).await?,
+                    None => connect_closest(shared, config, connected, name).await?,
+                }
             }
             match passed {
                 Some(passed) => {
-                    renew_unused_link(&config.link, game, idle)?;
                     if on_list {
-                        // An invite naming its server joins there alone.
                         join_on_list(
                             shared,
                             config,
@@ -947,10 +961,12 @@ async fn act(
                             idle,
                             passed.invite,
                             None,
-                            named,
+                            None,
+                            game,
                         )
                         .await
                     } else {
+                        renew_unused_link(&config.link, game, idle)?;
                         join(
                             shared,
                             config,
@@ -1113,41 +1129,14 @@ async fn act(
         } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
             if shared.on_list() {
-                // A room card carries its listed server through this action,
-                // so duplicate six-character codes still join the clicked
-                // room. Bare codes shown on several servers are ambiguous.
-                let room_servers = shared.view().room_servers.clone();
-                let from_list = servers::room_target(
-                    &config.servers,
-                    &room_servers,
-                    &passed.invite.to_string(),
-                    server.as_deref(),
-                )?;
-                let from_invite = passed
-                    .server
-                    .as_deref()
-                    .map(|other| {
-                        servers::find(&config.servers, other)
-                            .map(|server| server.address.clone())
-                            .ok_or_else(|| servers::not_listed(other))
-                    })
-                    .transpose()?;
-                if let (Some(card), Some(pasted)) = (&from_list, &from_invite)
-                    && !same_server(card, pasted)
-                {
-                    return Err("the selected server does not match the invite's server".into());
-                }
-                let named = from_invite.or(from_list);
-                let current = connected.as_ref().ok_or("connect to a server first")?;
+                // Only the region field supplied by an explicit choice or a
+                // verified public-room card is routing authority. A server
+                // token pasted beside the code is ignored: private rooms
+                // are not listed, so a cached public match cannot prove
+                // uniqueness.
+                let selected = servers::selected_room_target(&config.servers, server.as_deref())?;
+                let _current = connected.as_ref().ok_or("connect to a server first")?;
                 let password = password_text(password)?;
-                let here = shared.view().server.clone();
-                if let Some(server) = &named
-                    && !here.is_some_and(|here| same_server(&here, server))
-                {
-                    let name = current.options.name.clone();
-                    connect_to(shared, config, connected, server, name).await?;
-                }
-                renew_unused_link(&config.link, game, idle)?;
                 return join_on_list(
                     shared,
                     config,
@@ -1156,7 +1145,8 @@ async fn act(
                     idle,
                     passed.invite,
                     password,
-                    named.is_some(),
+                    selected,
+                    game,
                 )
                 .await;
             }
@@ -1244,10 +1234,8 @@ async fn act(
                 shared.view().rooms = Some(api::RoomList::of(&own));
                 return Ok(());
             };
-            let (list, routes) = global_room_page(shared, config, current, home, page).await?;
-            let mut view = shared.view();
-            view.rooms = Some(list);
-            view.room_servers = routes;
+            let list = global_room_page(shared, config, current, home, page).await?;
+            shared.view().rooms = Some(list);
             Ok(())
         }
         Action::SetBanner { banner } => {
@@ -1836,12 +1824,9 @@ fn begin_session(
     });
     {
         let mut view = shared.view();
-        // With a server of its own, the code is all friends need; otherwise
-        // they need the server too, and "Copy invite" gives both.
-        view.invite = Some(match &view.server {
-            Some(server) if !view.server_fixed => format!("{server} {invite}"),
-            _ => invite.to_string(),
-        });
+        // Invites are always the six-character code (D13). In a regional
+        // release the receiver resolves it against the compiled server list.
+        view.invite = Some(invite.to_string());
         view.in_room = true;
         view.error = None;
     }
@@ -2042,7 +2027,7 @@ async fn global_room_page(
     current: &Connected,
     home: &servers::ListedServer,
     page: u16,
-) -> Result<(api::RoomList, Vec<(String, String)>), String> {
+) -> Result<api::RoomList, String> {
     let lookouts = shared
         .lookouts
         .all_up(&config.servers, &home.address)
@@ -2152,16 +2137,7 @@ async fn global_room_page(
             page: listed,
         })
         .collect();
-    let (list, _) = servers::merge(page, &merging);
-    let routes = fetched
-        .iter()
-        .flat_map(|(server, _, _, page)| {
-            page.rooms
-                .iter()
-                .map(|room| (room.invite.to_string(), server.address.clone()))
-        })
-        .collect();
-    Ok((list, routes))
+    Ok(servers::merge(page, &merging))
 }
 
 /// Before a room is created on the release's servers: moves to the closest
@@ -2209,12 +2185,10 @@ async fn move_to_closest(
     Ok(())
 }
 
-/// Joins the room of `invite` on the release's servers: on the one played
-/// on when the invite `named` it, else where the last room list showed
-/// the room, else on the one played on, then on every other that answers,
-/// the closest first, while each says it has no such room. An invite is a
-/// code only (D13), so the launcher finds its server. Back on the server
-/// played on when no server has the room.
+/// Joins the room of `invite` on the release's servers. An explicit card or
+/// region choice names one trusted target; otherwise every region must
+/// answer the credential-aware lookup and exactly one must match before
+/// the launcher switches or sends JoinRoom.
 #[allow(clippy::too_many_arguments)]
 async fn join_on_list(
     shared: &Arc<Shared>,
@@ -2224,71 +2198,142 @@ async fn join_on_list(
     idle: &mut Idle,
     invite: Invite,
     password: Option<Text<64>>,
-    named: bool,
+    selected: Option<servers::ListedServer>,
+    game: &mut Option<tpf3mp_launch::Started>,
 ) -> Result<(), String> {
-    let start = shared
+    // A clicked public room or an explicit region selection is already a
+    // trusted route. A bare code must pass the all-region credential check
+    // before the launcher promotes a lookout or sends JoinRoom.
+    let target = match selected {
+        Some(server) => server,
+        None => resolve_invite_target(shared, config, connected, invite, password.clone()).await?,
+    };
+    let current = connected.as_ref().ok_or("connect to a server first")?;
+    let here = shared.view().server.clone();
+    if !here.is_some_and(|here| same_server(&here, &target.address)) {
+        let name = current.options.name.clone();
+        connect_to(shared, config, connected, &target.address, name).await?;
+    }
+    renew_unused_link(&config.link, game, idle)?;
+    // JoinRoom rechecks the code and password, as well as current capacity
+    // and build eligibility. A change after ResolveInvite is a normal join
+    // refusal; it must not trigger a fallback to another region.
+    join(shared, config, connected, session, idle, invite, password).await
+}
+
+/// Asks every trusted region whether it can admit `invite` with `password`.
+/// The response contains no room details. No region is joined, and the
+/// primary connection is left alone, until exactly one positive answer has
+/// arrived and every other answer is a generic no-match.
+async fn resolve_invite_target(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    connected: &Option<Connected>,
+    invite: Invite,
+    password: Option<Text<64>>,
+) -> Result<servers::ListedServer, String> {
+    let current = connected.as_ref().ok_or("connect to a server first")?;
+    let here = shared
         .view()
         .server
         .clone()
-        .ok_or("connect to a server first")?;
-    let code = invite.to_string();
-    let listed_at = shared
-        .view()
-        .room_servers
-        .iter()
-        .find(|(listed, _)| *listed == code)
-        .map(|(_, server)| server.clone());
-    let order = match (named, listed_at) {
-        (true, _) => vec![start.clone()],
-        (false, Some(server)) => vec![server],
-        (false, None) => {
-            let mut others = shared.lookouts.up(&config.servers);
-            others.sort_by_key(|(_, _, ping)| *ping);
-            std::iter::once(start.clone())
-                .chain(others.into_iter().map(|(server, _, _)| server.address))
-                .collect()
-        }
-    };
-    let no_room = ClientError::Refused(RequestError::BadInvite).to_string();
-    let mut last = no_room.clone();
-    for server in &order {
-        let here = shared.view().server.clone();
-        if !here.is_some_and(|here| same_server(&here, server)) {
-            let name = match connected.as_ref() {
-                Some(current) => current.options.name.clone(),
-                None => Text::lossy(shared.view().name.trim()),
-            };
-            if let Err(error) = connect_to(shared, config, connected, server, name).await {
-                warn!(%error, "a listed server would not take the join");
-                last = error;
-                continue;
+        .ok_or("connect to a listed server first")?;
+    let home = servers::find(&config.servers, &here)
+        .ok_or("the current server is not in this release's trusted list")?;
+    let lookouts = shared
+        .lookouts
+        .all_up(&config.servers, &home.address)
+        .await
+        .ok_or_else(|| {
+            "invite lookup is incomplete because a trusted region is unavailable; retry when every listed server is reachable"
+                .to_owned()
+        })?;
+
+    let candidates = std::iter::once((home.clone(), current.client.requests())).chain(
+        lookouts
+            .into_iter()
+            .map(|(server, requests, _ping)| (server, requests)),
+    );
+    let mut checks = JoinSet::new();
+    for (server, requests) in candidates {
+        let request = Request::ResolveInvite {
+            invite,
+            password: password.clone(),
+        };
+        checks.spawn(async move {
+            (
+                server,
+                requests
+                    .request_with_timeout(request, INVITE_RESOLVE_TIMEOUT)
+                    .await,
+            )
+        });
+    }
+
+    let mut probes = Vec::with_capacity(config.servers.len());
+    let mut incomplete = false;
+    let mut rate_limited = false;
+    while let Some(answer) = checks.join_next().await {
+        match answer {
+            Ok((server, response)) => {
+                let (result, limited) = invite_probe(response);
+                incomplete |= result == servers::InviteProbe::Incomplete;
+                rate_limited |= limited;
+                probes.push((server, result));
+            }
+            Err(error) => {
+                warn!(%error, "a trusted region's invite lookup task failed");
+                incomplete = true;
             }
         }
-        match join(
-            shared,
-            config,
-            connected,
-            session,
-            idle,
-            invite,
-            password.clone(),
-        )
-        .await
-        {
-            Ok(()) => return Ok(()),
-            Err(error) if error == no_room => last = error,
-            Err(error) => return Err(error),
+    }
+    if incomplete {
+        return Err(if rate_limited {
+            "a trusted region is busy checking invites; wait briefly and retry".into()
+        } else {
+            "invite lookup is incomplete because a trusted region did not answer; check the connection and retry"
+                .into()
+        });
+    }
+    servers::select_invite_target(probes).map_err(invite_target_error)
+}
+
+fn invite_target_error(error: servers::InviteTargetError) -> String {
+    match error {
+        servers::InviteTargetError::NoMatch => {
+            ClientError::Refused(RequestError::BadInvite).to_string()
+        }
+        servers::InviteTargetError::Ambiguous(matches) => {
+            let regions = matches
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "more than one trusted region accepts that invite and password ({regions}); choose a region and retry"
+            )
+        }
+        servers::InviteTargetError::Incomplete => {
+            "invite lookup is incomplete because a trusted region did not answer; check the connection and retry"
+                .into()
         }
     }
-    // No server has the room: back where the player was.
-    let here = shared.view().server.clone();
-    if session.is_none() && !here.is_some_and(|here| same_server(&here, &start)) {
-        let name = Text::lossy(shared.view().name.trim());
-        if let Err(error) = connect_to(shared, config, connected, &start, name).await {
-            warn!(%error, "cannot go back to the server played on");
+}
+
+/// Which non-mutating probe result a server response represents. Only the
+/// intentionally generic BadInvite is a negative match; every other error
+/// leaves the cross-region answer incomplete.
+fn invite_probe(response: Result<Response, ClientError>) -> (servers::InviteProbe, bool) {
+    match response {
+        Ok(Response::InviteMatch) => (servers::InviteProbe::Match, false),
+        Err(ClientError::Refused(RequestError::BadInvite)) => {
+            (servers::InviteProbe::NoMatch, false)
         }
+        Err(ClientError::Refused(RequestError::RateLimited)) => {
+            (servers::InviteProbe::Incomplete, true)
+        }
+        _ => (servers::InviteProbe::Incomplete, false),
     }
-    Err(last)
 }
 
 /// With the picker, the room this player creates starts from `save`: its
@@ -2382,7 +2427,6 @@ async fn set_server(
         view.on_list = on_list;
         view.connected = false;
         view.rooms = None;
-        view.room_servers.clear();
         view.server_version = None;
         view.session = None;
         view.name.clone()
@@ -2941,6 +2985,45 @@ mod tests {
 
     fn invite() -> Invite {
         Invite("K7QM2X".parse().unwrap())
+    }
+
+    #[test]
+    fn invite_lookup_counts_only_generic_bad_invite_as_a_negative_answer() {
+        assert_eq!(
+            invite_probe(Ok(Response::InviteMatch)),
+            (servers::InviteProbe::Match, false)
+        );
+        assert_eq!(
+            invite_probe(Err(ClientError::Refused(RequestError::BadInvite))),
+            (servers::InviteProbe::NoMatch, false)
+        );
+        assert_eq!(
+            invite_probe(Err(ClientError::Refused(RequestError::RateLimited))),
+            (servers::InviteProbe::Incomplete, true)
+        );
+        assert_eq!(
+            invite_probe(Err(ClientError::Timeout)),
+            (servers::InviteProbe::Incomplete, false)
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_invite_tells_the_player_which_trusted_regions_to_choose() {
+        let message = invite_target_error(servers::InviteTargetError::Ambiguous(vec![
+            servers::ListedServer {
+                name: "EU".into(),
+                address: "eu.example.org:29470".into(),
+            },
+            servers::ListedServer {
+                name: "US".into(),
+                address: "us.example.org:29470".into(),
+            },
+        ]));
+        assert!(
+            message.contains("EU") && message.contains("US"),
+            "{message}"
+        );
+        assert!(message.contains("choose a region and retry"), "{message}");
     }
 
     #[tokio::test]

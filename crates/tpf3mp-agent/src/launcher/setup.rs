@@ -288,8 +288,8 @@ pub fn plays_on(
         .or_else(|| named(default))
 }
 
-/// The servers a launcher plays on (D12's PROPOSED amendment of
-/// 2026-10-06): none with a server `given` on its command line, which it
+/// The servers a launcher plays on (D12's approved regional amendment):
+/// none with a server `given` on its command line, which it
 /// plays on alone; else its `default`, named `name`, then the `more` a
 /// release lists. A list that does not read stops the launcher: it never
 /// guesses where players meet.
@@ -456,12 +456,12 @@ mod tests {
 
     #[test]
     fn the_release_lists_its_default_first_and_server_pins_one() {
-        let more = Some("US=us.example.org:29470, EU=eu.example.org:29470");
+        let more = Some("US=us.example.org:29470, ASIA=asia.example.org:29470");
         let listed = listed_servers(None, Some(RELAY), Some(RELAY_NAME), more).unwrap();
         let names: Vec<&str> = listed.iter().map(|server| server.name.as_str()).collect();
         assert_eq!(
             names,
-            ["EU", "US"],
+            ["EU", "US", "ASIA"],
             "the default first, then the other servers in release order"
         );
         assert_eq!(listed[0].address, RELAY);

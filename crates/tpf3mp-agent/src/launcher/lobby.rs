@@ -130,6 +130,7 @@ fn whole_view(state: &State) -> LobbyView {
         ),
         server_address: Text::lossy(state.server.as_deref().unwrap_or_default()),
         server_default: Text::lossy(state.server_default.as_deref().unwrap_or_default()),
+        servers: lobby_servers(&state.servers),
         name: Text::lossy(&state.name),
         error: state.error.as_deref().map(Text::lossy),
         // The newest notice meant for the game: the one that says the
@@ -269,22 +270,27 @@ fn whole_view(state: &State) -> LobbyView {
                     .collect(),
             )
             .unwrap_or_default(),
-            servers: BoundedVec::new(
-                state
-                    .servers
-                    .iter()
-                    .take(tpf3mp_bridge::MAX_LOBBY_SERVERS)
-                    .map(|server| LobbyServer {
-                        name: Text::lossy(&server.name),
-                        ping_ms: server.ping_ms.map_or(0, ping_ms),
-                        here: server.here,
-                        reachable: server.reachable,
-                    })
-                    .collect(),
-            )
-            .unwrap_or_default(),
+            servers: lobby_servers(&state.servers),
         }),
     }
+}
+
+fn lobby_servers(
+    servers: &[api::ServerRow],
+) -> BoundedVec<LobbyServer, { tpf3mp_bridge::MAX_LOBBY_SERVERS }> {
+    BoundedVec::new(
+        servers
+            .iter()
+            .take(tpf3mp_bridge::MAX_LOBBY_SERVERS)
+            .map(|server| LobbyServer {
+                name: Text::lossy(&server.name),
+                ping_ms: server.ping_ms.map_or(0, ping_ms),
+                here: server.here,
+                reachable: server.reachable,
+            })
+            .collect(),
+    )
+    .unwrap_or_default()
 }
 
 /// A ping as the game's window carries it, in milliseconds: at most
@@ -307,8 +313,9 @@ fn count(rows: &[api::RoomModRow], have: ModHave) -> u16 {
 }
 
 /// The launcher action a button of the menu's window stands for. Connect
-/// goes to the server the launcher plays on (D12): the window names none.
-/// The server setting changes that server, as in the launcher's window.
+/// carries no arbitrary address: the launcher's one-server or compiled-list
+/// policy chooses the primary. The server setting changes that choice, as
+/// in the launcher's window.
 pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
     match action {
         LobbyAction::Connect { name } => Action::Connect {

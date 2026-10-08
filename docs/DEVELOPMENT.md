@@ -326,7 +326,7 @@ stay on the local server whatever the setting says.
 A package built with `TPF3MP_SERVERS` (or a launcher given
 `--more-servers "US=us.example.org:29470"`) lists more servers besides
 its default, and, on its default, plays on all of them: rooms listed from
-each, created on the closest (D12's PROPOSED amendment of 2026-10-06;
+each, created on the closest (D12's approved regional amendment;
 LOBBY.md, "Several servers"). Room lists are merged across server pages,
 and a room card carries its listed server into Join. `--server` turns that
 off for the run. The release workflow validates its built-in server list

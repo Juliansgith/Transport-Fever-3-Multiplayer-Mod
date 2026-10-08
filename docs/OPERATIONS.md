@@ -471,8 +471,8 @@ either.
    [DECISIONS.md](DECISIONS.md); under its proposed amendment players may
    change it in Settings). For the project's relay that is
    `tpf3mp.213-133-98-90.sslip.io:29470`, with `TPF3MP_SERVER_NAME` `EU`.
-   With more servers (D12's PROPOSED amendment of 2026-10-06, not
-   decided), also set `TPF3MP_SERVERS`; see
+   For a regional release (D12, approved 2026-10-08), also set
+   `TPF3MP_SERVERS`; see
    [More than one server](#more-than-one-server).
 5. **Rebuild the draft:** re-run the latest `release` run of `main` (in
    Actions), or promote a new commit to `main`. It stops, and makes no
@@ -495,12 +495,14 @@ themselves once the new release is published and signed.
 
 ## More than one server
 
-*Under D12's PROPOSED amendment of 2026-10-06 (DECISIONS.md), which the
-owner has yet to approve.* A release may list several operated servers,
-such as the project's relay in Europe and a second one in America.
+Under D12 (approved 2026-10-08), a release may list several operated
+servers, such as the project's relay in Europe and a second one in America.
 Launchers then show the public rooms of all of them, each with its server
-and ping, host new rooms on the closest, and find a room by its invite
-code on whichever server has it. The servers know nothing of each other.
+and ping, host new rooms on the closest, and resolve a typed invite only
+after every listed server confirms exactly one credential match. The
+servers know nothing of each other. This is a deployment guide: this code
+change has not configured or deployed regional servers or changed the
+live relay. Regional clients and servers must all run protocol 19 together.
 
 For each further server:
 
@@ -527,8 +529,20 @@ For each further server:
    a list that does not read.
 4. **Release**: only packages built with the variable know the server.
    Launchers of earlier releases keep playing on the default server alone.
+   Every listed server must be upgraded to the same protocol-19 release
+   before publishing that regional client package.
 
-A server that is down is passed over for hosting. When a player opens the
+A server that is down is passed over for hosting. A typed invite waits up
+to five seconds for every trusted region to be reachable, then probes them
+concurrently with a five-second per-region request timeout. A missing,
+timed-out or rate-limited answer makes the lookup incomplete; no room is
+joined or primary connection promoted, and the player is asked to retry.
+No private-room metadata is returned. A unique positive lookup is followed
+by one authoritative JoinRoom which checks the credentials again. An
+explicit trusted-region choice or public room card goes directly to that
+region without probing the others.
+
+When a player opens the
 public room list, the launcher waits up to five seconds for every listed
 server; if one is still connecting or unavailable, it reports that the list
 is incomplete and asks the player to retry instead of silently presenting
@@ -560,9 +574,11 @@ distributions with an older C library too.
   `TPF3MP_DEFAULT_SERVER` (Settings, Secrets and variables, Actions,
   Variables) to the public server's `host:port`. It is built into the
   packages' launcher as its default server (D12 in
-  [DECISIONS.md](DECISIONS.md)): an invite that names another server is
-  refused. Under D12's proposed amendment players may change the server
-  in Settings (remembered in `launcher.json` as `chosen_server`), and
+  [DECISIONS.md](DECISIONS.md)). A one-server release refuses a room on a
+  different server; a regional release resolves codes only across its
+  compiled trusted list (D12, approved regional amendment). Under D12's
+  proposed server-setting amendment players may change the server in
+  Settings (remembered in `launcher.json` as `chosen_server`), and
   **Reset to default** returns to this one. A build without the variable,
   as a developer's, defaults to the project's relay
   (`tpf3mp.213-133-98-90.sslip.io:29470`, shown as `EU`; `setup::RELAY`

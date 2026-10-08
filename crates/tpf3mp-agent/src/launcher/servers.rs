@@ -1,13 +1,13 @@
 //! The servers a release vouches for, and the launcher's look at each
-//! (docs/DECISIONS.md, D12's PROPOSED amendment of 2026-10-06: several
-//! operated servers, the room list from all, rooms hosted on the closest).
+//! (docs/DECISIONS.md, D12's approved regional amendment: several operated
+//! servers, the room list from all, rooms hosted on the closest).
 //!
 //! A release names its servers when it is built: the default one
 //! (`TPF3MP_DEFAULT_SERVER`, named by `TPF3MP_SERVER_NAME`) first, then
 //! the others (`TPF3MP_SERVERS`, `NAME=host:port` separated by commas).
-//! Players never type one, and an invite may only name a server on that
-//! list. With one server, or `--server`, or a server of the player's own
-//! in Settings, the launcher plays on that one alone, as before.
+//! Players never type one. Typed invites are resolved against every region;
+//! explicit room cards and region choices carry only a name from that list.
+//! With one server or `--server`, the launcher plays on that one alone.
 //!
 //! While the launcher is connected on the list, it keeps a quiet
 //! connection, a *lookout*, to every other listed server: it asks each for
@@ -175,70 +175,65 @@ pub fn find_name<'a>(servers: &'a [ListedServer], name: &str) -> Option<&'a List
         .find(|server| server.name.eq_ignore_ascii_case(name))
 }
 
-/// A room card's selected server, or the unique server the last public room
-/// page showed for `invite`. A typed invite with no unique public listing
-/// stays unresolved for the launcher's existing invite path.
-pub fn room_target(
+/// A room card's explicitly selected, trusted server. Bare codes are never
+/// routed from the cached public list: an unseen private room could share it.
+pub(crate) fn selected_room_target(
     servers: &[ListedServer],
-    room_servers: &[(String, String)],
-    invite: &str,
     selected: Option<&str>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<ListedServer>, String> {
     if let Some(name) = selected {
         return find_name(servers, name)
-            .map(|server| Some(server.address.clone()))
+            .cloned()
+            .map(Some)
             .ok_or_else(|| not_listed(name));
     }
-    let mut targets = Vec::new();
-    for (_, address) in room_servers.iter().filter(|(listed, _)| listed == invite) {
-        if !targets
-            .iter()
-            .any(|known: &String| super::same_server(known, address))
-        {
-            targets.push(address.clone());
-        }
+    Ok(None)
+}
+
+/// One trusted region's non-mutating answer to an invite lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InviteProbe {
+    Match,
+    NoMatch,
+    Incomplete,
+}
+
+/// Why a cross-region invite could not select exactly one trusted region.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InviteTargetError {
+    NoMatch,
+    Ambiguous(Vec<ListedServer>),
+    Incomplete,
+}
+
+/// Selects a target only after every trusted region has answered. An
+/// unavailable response invalidates the whole lookup, even when another
+/// region reported a match.
+pub(crate) fn select_invite_target(
+    probes: impl IntoIterator<Item = (ListedServer, InviteProbe)>,
+) -> Result<ListedServer, InviteTargetError> {
+    let probes: Vec<_> = probes.into_iter().collect();
+    if probes
+        .iter()
+        .any(|(_, result)| *result == InviteProbe::Incomplete)
+    {
+        return Err(InviteTargetError::Incomplete);
     }
-    match targets.as_slice() {
-        [] => Ok(None),
-        [server] => Ok(Some(server.clone())),
-        _ => Err("that invite is listed on more than one server; choose its room card".into()),
+    let matches: Vec<_> = probes
+        .into_iter()
+        .filter_map(|(server, result)| (result == InviteProbe::Match).then_some(server))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(InviteTargetError::NoMatch),
+        [server] => Ok(server.clone()),
+        _ => Err(InviteTargetError::Ambiguous(matches)),
     }
 }
 
-/// Where Connect goes on a launcher playing on its release's servers, for
-/// what the player gave it (`typed`, and the invite in it): `Ok(Some)` a
-/// listed server the text names, `Ok(None)` the closest. A server that is
-/// not on the list is refused, as an invite naming it: no message sends a
-/// player to a server the release does not vouch for (D12).
-pub fn connect_target(
-    servers: &[ListedServer],
-    typed: &str,
-    invite_server: Option<&str>,
-    invite: bool,
-) -> Result<Option<String>, String> {
-    let named = match invite_server {
-        Some(server) => Some(server),
-        // A bare server, without an invite, as a playtest's auto room
-        // passes it; anything else that is no invite is refused.
-        None if !invite && !typed.trim().is_empty() => Some(typed.trim()),
-        None => None,
-    };
-    match named {
-        None => Ok(None),
-        Some(named) => match find(servers, named) {
-            Some(listed) => Ok(Some(listed.address.clone())),
-            None if invite => Err(not_listed(named)),
-            None => Err("that is not an invite".into()),
-        },
-    }
-}
-
-/// Why an invite naming `other` is refused by a launcher on its release's
-/// servers.
+/// Why an explicit region `other` is refused when it is not in the
+/// release's compiled list.
 pub fn not_listed(other: &str) -> String {
-    format!(
-        "that invite is for {other}, a server TPF3-MP does not vouch for: invites only join rooms on its own servers"
-    )
+    format!("that region is not in this release's trusted server list: {other}")
 }
 
 /// Which of `pings` (in list order; `None` unreachable) is the closest
@@ -282,9 +277,7 @@ pub struct Page<'a> {
 /// slice after sorting all fetched pages, and callers provide each local
 /// page from zero through `page`. `more` means the global slice has another
 /// room behind it or a server's requested local page has another page.
-/// Also returns each displayed room's server, by invite, so a join goes
-/// where the room is.
-pub fn merge(page: u16, pages: &[Page<'_>]) -> (RoomList, Vec<(String, String)>) {
+pub fn merge(page: u16, pages: &[Page<'_>]) -> RoomList {
     let mut rooms: Vec<(usize, PublicRoom)> = Vec::new();
     for (order, listed) in pages.iter().enumerate() {
         for room in RoomList::of(listed.page).rooms {
@@ -316,16 +309,11 @@ pub fn merge(page: u16, pages: &[Page<'_>]) -> (RoomList, Vec<(String, String)>)
         .skip(start)
         .take(tpf3mp_proto::ROOMS_PER_PAGE)
         .collect();
-    let places = selected
-        .iter()
-        .map(|(order, room)| (room.invite.clone(), pages[*order].server.address.clone()))
-        .collect();
-    let list = RoomList {
+    RoomList {
         page,
         more,
         rooms: selected.into_iter().map(|(_, room)| room).collect(),
-    };
-    (list, places)
+    }
 }
 
 /// What a lookout knows of its server.
@@ -649,24 +637,6 @@ impl Lookouts {
         pings
     }
 
-    /// The servers whose lookout is connected now, with its requests and
-    /// ping, in list order.
-    pub(crate) fn up(&self, servers: &[ListedServer]) -> Vec<(ListedServer, Requests, Duration)> {
-        let seen = self.seen();
-        servers
-            .iter()
-            .filter_map(|server| {
-                let (_, watched) = seen
-                    .iter()
-                    .find(|(listed, _)| super::same_server(&listed.address, &server.address))?;
-                match &*watched.borrow() {
-                    Seen::Up { requests, ping } => Some((server.clone(), requests.clone(), *ping)),
-                    _ => None,
-                }
-            })
-            .collect()
-    }
-
     /// Each listed server as the player sees it: the one played on with
     /// `home_ping`, the others as their lookouts know them.
     pub(crate) fn rows(
@@ -836,52 +806,6 @@ mod tests {
     }
 
     #[test]
-    fn invites_and_connect_go_only_to_listed_servers() {
-        let listed = eu_us();
-        assert_eq!(
-            connect_target(&listed, "", None, false),
-            Ok(None),
-            "the closest"
-        );
-        assert_eq!(
-            connect_target(&listed, "K7QM2X", None, true),
-            Ok(None),
-            "a bare invite: the closest, then wherever the room is"
-        );
-        assert_eq!(
-            connect_target(
-                &listed,
-                "US.example.org:29470 K7QM2X",
-                Some("US.example.org:29470"),
-                true
-            ),
-            Ok(Some("us.example.org:29470".into())),
-            "an invite naming a listed server goes there"
-        );
-        assert_eq!(
-            connect_target(&listed, "eu.example.org:29470", None, false),
-            Ok(Some("eu.example.org:29470".into())),
-            "a playtest's auto room names its server"
-        );
-        let refused = connect_target(
-            &listed,
-            "evil.example.org:29470 K7QM2X",
-            Some("evil.example.org:29470"),
-            true,
-        );
-        assert!(
-            refused
-                .as_ref()
-                .is_err_and(|why| why.contains("does not vouch for")),
-            "{refused:?}"
-        );
-        assert_eq!(
-            connect_target(&listed, "evil.example.org:29470", None, false),
-            Err("that is not an invite".into())
-        );
-    }
-
-    #[test]
     fn the_closest_server_wins_ties_keep_the_current_and_the_unreachable_lose() {
         let ms = |ms| Some(Duration::from_millis(ms));
         assert_eq!(fastest(&[ms(110), ms(24)], None), Some(1));
@@ -958,7 +882,7 @@ mod tests {
             vec![room("Full lobby", "H3WN7K", 3, RoomPhase::Lobby)],
             true,
         );
-        let (list, places) = merge(
+        let list = merge(
             0,
             &[
                 Page {
@@ -990,8 +914,6 @@ mod tests {
             "lobbies first, the fuller first, each with its server"
         );
         assert!(list.more, "one server has more");
-        assert!(places.contains(&("H3WN7K".into(), "us.example.org:29470".into())));
-        assert!(places.contains(&("K7QM2X".into(), "eu.example.org:29470".into())));
     }
 
     #[test]
@@ -1042,42 +964,88 @@ mod tests {
             .filter(|source| source.page_index == 0)
             .copied()
             .collect();
-        let (first, _) = merge(0, &first_sources);
+        let first = merge(0, &first_sources);
         assert_eq!(first.rooms.len(), tpf3mp_proto::ROOMS_PER_PAGE);
         assert!(
             first.more,
             "two regions have 22 rooms, so page 0 has a next page"
         );
 
-        let (second, places) = merge(1, &sources);
+        let second = merge(1, &sources);
         assert_eq!(
             second.rooms.len(),
             2,
             "the two overflow rooms appear on page 1"
         );
         assert!(!second.more, "all 22 rooms have been shown");
-        assert_eq!(places.len(), 2);
+        assert!(second.rooms.iter().all(|room| room.server.is_some()));
     }
 
     #[test]
-    fn duplicate_public_codes_require_a_card_target() {
+    fn public_cards_route_directly_but_bare_codes_always_need_resolution() {
         let listed = eu_us();
-        let routes = vec![
+        let routes = [
             ("K7QM2X".to_owned(), listed[0].address.clone()),
             ("K7QM2X".to_owned(), listed[1].address.clone()),
         ];
         assert_eq!(
-            room_target(&listed, &routes, "K7QM2X", Some("US")),
-            Ok(Some("us.example.org:29470".into())),
+            selected_room_target(&listed, Some("US")),
+            Ok(Some(listed[1].clone())),
             "the clicked room's trusted server wins"
         );
-        assert!(
-            room_target(&listed, &routes, "K7QM2X", None)
-                .unwrap_err()
-                .contains("more than one server"),
-            "a bare collision is refused instead of selecting the first route"
+        assert_eq!(
+            selected_room_target(&listed, None),
+            Ok(None),
+            "the public route table is deliberately not an input to bare-code selection"
         );
-        assert!(room_target(&listed, &routes, "K7QM2X", Some("ASIA")).is_err());
+        assert!(selected_room_target(&listed, Some("ASIA")).is_err());
+        assert_eq!(
+            routes.len(),
+            2,
+            "two room cards can share a six-character code"
+        );
+    }
+
+    #[test]
+    fn an_invite_target_requires_every_region_and_exactly_one_match() {
+        let listed = eu_us();
+        let unique = select_invite_target([
+            (listed[0].clone(), InviteProbe::NoMatch),
+            (listed[1].clone(), InviteProbe::Match),
+        ]);
+        assert_eq!(unique, Ok(listed[1].clone()));
+
+        let absent = select_invite_target([
+            (listed[0].clone(), InviteProbe::NoMatch),
+            (listed[1].clone(), InviteProbe::NoMatch),
+        ]);
+        assert_eq!(absent, Err(InviteTargetError::NoMatch));
+
+        let incomplete = select_invite_target([
+            (listed[0].clone(), InviteProbe::Match),
+            (listed[1].clone(), InviteProbe::Incomplete),
+        ]);
+        assert_eq!(
+            incomplete,
+            Err(InviteTargetError::Incomplete),
+            "a positive match cannot route while a region is unchecked"
+        );
+    }
+
+    #[test]
+    fn a_public_private_code_collision_is_ambiguous_when_both_credentials_match() {
+        let listed = eu_us();
+        // EU can have this code on a listed public room while US has a
+        // hidden private room with the same code and password. ResolveInvite
+        // gives each the same metadata-free positive, so the public listing
+        // cannot safely be used to break the tie.
+        assert_eq!(
+            select_invite_target([
+                (listed[0].clone(), InviteProbe::Match),
+                (listed[1].clone(), InviteProbe::Match),
+            ]),
+            Err(InviteTargetError::Ambiguous(listed))
+        );
     }
 
     #[test]

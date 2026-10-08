@@ -14,8 +14,8 @@ pub(crate) struct View {
     /// The banner this player picked, if any.
     pub(crate) banner: Option<String>,
     pub(crate) server: Option<String>,
-    /// The server is the one this launcher plays on: no invite goes
-    /// elsewhere (D12).
+    /// Whether this launcher is fixed to one server rather than playing on
+    /// the compiled regional list. A regional invite may resolve elsewhere.
     pub(crate) server_fixed: bool,
     /// The launcher's default server, which "Reset to default" goes back to.
     pub(crate) server_default: Option<String>,
@@ -59,15 +59,13 @@ pub(crate) struct View {
     /// The page of public rooms last asked for, while connected.
     pub(crate) rooms: Option<RoomList>,
     /// The servers the release vouches for, its default first; empty or
-    /// one when it plays on one server alone (D12's PROPOSED amendment of
-    /// 2026-10-06).
+    /// one when it plays on one server alone (D12's approved regional
+    /// amendment).
     pub(crate) listed: Vec<super::servers::ListedServer>,
     /// Whether the launcher plays on `listed`, two or more: rooms are
     /// listed from all and hosted on the closest. Not with `--server` nor
     /// with a server of the player's own in Settings.
     pub(crate) on_list: bool,
-    /// Each room of the last list's server, by invite, while `on_list`.
-    pub(crate) room_servers: Vec<(String, String)>,
     /// The round trip to the server played on, last read.
     pub(crate) home_ping: Option<std::time::Duration>,
 }
@@ -304,10 +302,9 @@ pub struct State {
     /// This player's short ID, as others see it.
     pub player: Option<String>,
     pub server: Option<String>,
-    /// Whether `server` is the server this launcher plays on (D12, as
-    /// amended): Connect then asks for no server, invites join on it and an
-    /// invite to another is refused; the server setting
-    /// ([`Action::SetServer`]) changes it.
+    /// Whether this launcher is fixed to one server (rather than playing on
+    /// the release's compiled regional list). An invite's pasted address
+    /// does not override either route.
     pub server_fixed: bool,
     /// The launcher's default server, `host:port`: the package's, or the
     /// project's relay. "Reset to default" goes back to it.
@@ -359,8 +356,8 @@ pub struct State {
     /// launcher plays on several ([`State::servers`]).
     pub rooms: Option<RoomList>,
     /// The servers the release vouches for, with their pings, while the
-    /// launcher plays on them (two or more; D12's PROPOSED amendment of
-    /// 2026-10-06): rooms are listed from all, and a room this player
+    /// launcher plays on them (two or more; D12's approved regional
+    /// amendment): rooms are listed from all, and a room this player
     /// creates goes to the closest. Empty when it plays on one server.
     pub servers: Vec<ServerRow>,
     /// The mods this player has installed, those they may choose first
@@ -580,7 +577,7 @@ pub struct Room {
     pub name: String,
     pub rules: String,
     pub phase: Phase,
-    /// What to send friends: the server and the room's invite.
+    /// The room's six-character invite code to send friends.
     pub invite: Option<String>,
     pub you_own: bool,
     pub max_players: u8,

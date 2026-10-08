@@ -851,6 +851,17 @@ impl Client {
 impl Requests {
     /// Sends a request and waits for its response.
     pub async fn request(&self, request: Request) -> Result<Response, ClientError> {
+        self.request_with_timeout(request, REQUEST_TIMEOUT).await
+    }
+
+    /// Sends a request with its own bounded wait. On timeout, forgets its
+    /// pending response before returning so a slow server cannot leave a
+    /// cancelled request behind on a reused connection.
+    pub async fn request_with_timeout(
+        &self,
+        request: Request,
+        timeout: Duration,
+    ) -> Result<Response, ClientError> {
         let id = self.next_request.fetch_add(1, Ordering::Relaxed);
         let (reply, answer) = oneshot::channel();
         self.pending_map().insert(id, reply);
@@ -869,7 +880,7 @@ impl Requests {
             self.pending_map().remove(&id);
             return Err(ClientError::Disconnected);
         }
-        match tokio::time::timeout(REQUEST_TIMEOUT, answer).await {
+        match tokio::time::timeout(timeout, answer).await {
             Ok(Ok(Ok(response))) => Ok(response),
             Ok(Ok(Err(error))) => Err(ClientError::Refused(error)),
             Ok(Err(_)) => Err(ClientError::Disconnected),
@@ -1051,6 +1062,24 @@ async fn read_turn_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_request_timeout_removes_its_pending_response() {
+        let (outgoing, _sent) = mpsc::channel(1);
+        let requests = Requests {
+            outgoing,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            reader_done: Arc::new(AtomicBool::new(false)),
+            next_request: Arc::new(AtomicU32::new(0)),
+        };
+        assert_eq!(
+            requests
+                .request_with_timeout(Request::LeaveRoom, Duration::from_millis(1))
+                .await,
+            Err(ClientError::Timeout)
+        );
+        assert!(requests.pending_map().is_empty());
+    }
 
     #[test]
     fn only_a_newer_server_calls_for_an_update() {

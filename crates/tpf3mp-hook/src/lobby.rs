@@ -25,8 +25,8 @@ use std::{
 
 use serde::Deserialize;
 use tpf3mp_bridge::{
-    LobbyAction, LobbyConnection, LobbyHave, LobbyListing, LobbyModClass, LobbyRoomList, LobbyView,
-    LobbyWorld, ModName,
+    LobbyAction, LobbyConnection, LobbyHave, LobbyListing, LobbyModClass, LobbyRoomList,
+    LobbyServer, LobbyView, LobbyWorld, ModName,
 };
 use tpf3mp_proto::{FixedBytes, PlayerId, Text};
 
@@ -173,6 +173,8 @@ pub struct LobbyState {
     /// The launcher's default server, which `set_server` with an empty
     /// server goes back to; empty without one.
     pub server_default: String,
+    /// The release's trusted regions, also available before room browsing.
+    pub servers: Vec<LobbyServer>,
     /// The banner this player picked: empty for their default.
     pub banner: String,
     /// The campaign portraits this game can show, by id
@@ -618,6 +620,7 @@ impl LobbyState {
             server: String::new(),
             server_address: String::new(),
             server_default: String::new(),
+            servers: Vec::new(),
             banner: String::new(),
             portraits: Vec::new(),
             name: String::new(),
@@ -662,6 +665,7 @@ impl LobbyState {
             server: view.server.as_str().to_owned(),
             server_address: view.server_address.as_str().to_owned(),
             server_default: view.server_default.as_str().to_owned(),
+            servers: view.servers.iter().cloned().collect(),
             banner: view
                 .banner
                 .as_ref()
@@ -844,6 +848,17 @@ impl LobbyState {
         out.push_str(&lua_str(&self.server_address));
         out.push_str(", server_default = ");
         out.push_str(&lua_str(&self.server_default));
+        out.push_str(", servers = {");
+        for server in &self.servers {
+            out.push_str(&format!(
+                " {{ name = {}, ping = {}, here = {}, reachable = {} }},",
+                lua_str(server.name.as_str()),
+                server.ping_ms,
+                server.here,
+                server.reachable
+            ));
+        }
+        out.push_str(" }");
         out.push_str(", banner = ");
         out.push_str(&lua_str(&self.banner));
         out.push_str(", portraits = {");
@@ -1296,6 +1311,13 @@ mod tests {
             server: Text::new("EU").unwrap(),
             server_address: Text::new("eu.example.org:29470").unwrap(),
             server_default: Text::new("relay.example.org:29470").unwrap(),
+            servers: BoundedVec::new(vec![LobbyServer {
+                name: Text::new("EU").unwrap(),
+                ping_ms: 24,
+                here: true,
+                reachable: true,
+            }])
+            .unwrap(),
             banner: None,
             portraits: BoundedVec::new(vec![
                 Text::new("andrew").unwrap(),
@@ -1452,6 +1474,10 @@ mod tests {
             state.get::<String>("server_address").unwrap(),
             "eu.example.org:29470"
         );
+        let servers: mlua::Table = state.get("servers").unwrap();
+        let first_server: mlua::Table = servers.get(1).unwrap();
+        assert_eq!(first_server.get::<String>("name").unwrap(), "EU");
+        assert!(first_server.get::<bool>("reachable").unwrap());
         assert_eq!(
             state.get::<String>("server_default").unwrap(),
             "relay.example.org:29470"

@@ -1,9 +1,8 @@
-//! A release with several servers (docs/DECISIONS.md, D12's PROPOSED
-//! amendment of 2026-10-06): launchers play on all of them. Rooms are hosted
-//! on the closest server that answers, every server's public rooms are
-//! listed together, each with its server, and an invite, a code alone,
-//! joins wherever its room is; an invite naming a server the release does
-//! not list is refused.
+//! A release with several servers (docs/DECISIONS.md, D12's approved
+//! amendment): launchers play on all of them. Rooms are hosted on the closest
+//! server that answers, every server's public rooms are listed together, and
+//! a six-character invite is resolved against all regions before a unique
+//! credential match can be joined.
 
 #![allow(clippy::unwrap_used)]
 
@@ -236,7 +235,10 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
     .unwrap();
     let bob_page = Page::of(&bob);
     bob_page
-        .act(json!({ "action": "connect", "server": "", "name": "Bob" }))
+        // The game's lobby echoes the current trusted address when it asks
+        // Connect; the address is context, while the release still chooses
+        // the closest primary server itself.
+        .act(json!({ "action": "connect", "server": eu.clone(), "name": "Bob" }))
         .await;
     assert_eq!(bob_page.state().await["server"], eu, "ties go to the first");
     bob_page
@@ -256,8 +258,7 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
     assert_eq!(state["room"]["invite"], invite.as_str());
 
     // Cat lists the rooms of both servers, each with its server, and joins
-    // from the list. An invite naming a server the release does not list
-    // is refused.
+    // from the listed room card, whose region is explicit and trusted.
     let cat = Launcher::start(launcher_config(
         root.path(),
         "cat",
@@ -268,9 +269,9 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
     .unwrap();
     let cat_page = Page::of(&cat);
     cat_page
-        // An explicit listed address connects without waiting for every
-        // lookout, so the next action can arrive while US is still starting.
-        .act(json!({ "action": "connect", "server": eu.clone(), "name": "Cat" }))
+        // Connect to the release's default; the US lookout may still be
+        // starting when the immediate room-list request arrives.
+        .act(json!({ "action": "connect", "server": "", "name": "Cat" }))
         .await;
     cat_page
         .act(json!({ "action": "list_rooms", "page": 0 }))
@@ -285,15 +286,6 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
     assert_eq!(rooms[0]["name"], "transatlantic");
     assert_eq!(rooms[0]["server"], "US");
 
-    let (status, body) = cat_page
-        .try_act(&json!({
-            "action": "join", "invite": format!("evil.example.org:29470 {invite}"), "password": null,
-        }))
-        .await;
-    assert_eq!(status, 409, "{body}");
-    assert!(body.to_string().contains("does not vouch for"), "{body}");
-    let state = cat_page.state().await;
-    assert_eq!(state["server"], eu);
     assert!(rooms[0]["ping_ms"].is_u64(), "{state}");
     cat_page
         .act(json!({
@@ -317,6 +309,168 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pasted_server_address_does_not_route_a_typed_invite() {
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let (eu, _stop_eu) = start_server(identity.clone());
+    let (us, _stop_us) = start_server(identity);
+
+    let host = Launcher::start(launcher_config(
+        root.path(),
+        "prefix-host",
+        &trust,
+        &[("US", &us)],
+    ))
+    .await
+    .unwrap();
+    let host_page = Page::of(&host);
+    host_page
+        .act(json!({ "action": "connect", "server": "", "name": "Host" }))
+        .await;
+    host_page
+        .act(json!({
+            "action": "create", "room": "trusted room", "max_players": 4, "password": null,
+            "listing": { "map": "dry", "year": 1850 },
+        }))
+        .await;
+    let invite = host_page
+        .wait_for("the room invite", |state| {
+            state["room"]["invite"].is_string()
+        })
+        .await["room"]["invite"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let guest = Launcher::start(launcher_config(
+        root.path(),
+        "prefix-guest",
+        &trust,
+        &[("EU", &eu), ("US", &us)],
+    ))
+    .await
+    .unwrap();
+    let guest_page = Page::of(&guest);
+    guest_page
+        .act(json!({ "action": "connect", "server": "", "name": "Guest" }))
+        .await;
+    assert_eq!(guest_page.state().await["server"], eu);
+
+    // A server-looking prefix in copied chat text is not route authority;
+    // the six-character credential is resolved only among compiled regions.
+    guest_page
+        .act(json!({
+            "action": "connect",
+            "server": format!("evil.example.org:29470 {invite}"),
+            "name": "Guest",
+        }))
+        .await;
+    let joined = guest_page
+        .wait_for("the trusted region room", |state| {
+            state["server"] == us && state["room"].is_object()
+        })
+        .await;
+    assert_eq!(joined["room"]["invite"], invite);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_private_invite_requires_its_password_without_switching_regions() {
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let (eu, _stop_eu) = start_server(identity.clone());
+    let (us, _stop_us) = start_server(identity);
+
+    // A one-server launcher creates a private room on EU. Its invite never
+    // appears in a public room list, and the code is shared out of band.
+    let host = Launcher::start(launcher_config(
+        root.path(),
+        "private-host",
+        &trust,
+        &[("EU", &eu)],
+    ))
+    .await
+    .unwrap();
+    let host_page = Page::of(&host);
+    host_page
+        .act(json!({ "action": "connect", "server": "", "name": "Host" }))
+        .await;
+    host_page
+        .act(json!({
+            "action": "create", "room": "private room", "max_players": 4,
+            "password": "correct horse", "listing": null,
+        }))
+        .await;
+    let invite = host_page
+        .wait_for("the private invite", |state| {
+            state["room"]["invite"].is_string()
+        })
+        .await["room"]["invite"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let guest = Launcher::start(launcher_config(
+        root.path(),
+        "private-guest",
+        &trust,
+        &[("US", &us), ("EU", &eu)],
+    ))
+    .await
+    .unwrap();
+    let guest_page = Page::of(&guest);
+    guest_page
+        .act(json!({ "action": "connect", "server": "", "name": "Guest" }))
+        .await;
+    assert_eq!(guest_page.state().await["server"], us);
+    guest_page
+        .wait_for("the EU lookout", |state| {
+            state["servers"].as_array().is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row["name"] == "EU" && row["reachable"] == true)
+            })
+        })
+        .await;
+
+    let (wrong_status, wrong) = guest_page
+        .try_act(&json!({
+            "action": "join", "invite": invite, "password": "wrong password",
+        }))
+        .await;
+    let (absent_status, absent) = guest_page
+        .try_act(&json!({
+            "action": "join", "invite": "A2BCDE", "password": "wrong password",
+        }))
+        .await;
+    assert_eq!(wrong_status, 409, "{wrong}");
+    assert_eq!(
+        wrong, absent,
+        "a hidden private room and bad password reveal no distinction"
+    );
+    assert_eq!(absent_status, wrong_status);
+    let after_wrong = guest_page.state().await;
+    assert_eq!(
+        after_wrong["server"], us,
+        "no region promotion before a unique match"
+    );
+    assert!(after_wrong["room"].is_null(), "ResolveInvite never joins");
+
+    guest_page
+        .act(json!({
+            "action": "join", "invite": invite, "password": "correct horse",
+        }))
+        .await;
+    let joined = guest_page
+        .wait_for("the private room after credential resolution", |state| {
+            state["server"] == eu && state["room"].is_object()
+        })
+        .await;
+    assert_eq!(joined["room"]["invite"], invite);
+    assert_eq!(joined["room"]["name"], "private room");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_room_list_refuses_to_hide_a_region_that_is_still_connecting() {
     let root = tempfile::tempdir().unwrap();
     let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
@@ -336,7 +490,7 @@ async fn a_room_list_refuses_to_hide_a_region_that_is_still_connecting() {
     .await
     .unwrap();
     let page = Page::of(&launcher);
-    page.act(json!({ "action": "connect", "server": eu, "name": "Player" }))
+    page.act(json!({ "action": "connect", "server": "", "name": "Player" }))
         .await;
 
     let (status, body) = page
@@ -349,6 +503,37 @@ async fn a_room_list_refuses_to_hide_a_region_that_is_still_connecting() {
             .is_some_and(|error| error.contains("incomplete") && error.contains("retry")),
         "the response must explain that the list is incomplete and retryable: {body}"
     );
+
+    // A bare code must refuse to choose EU while US is unchecked, even if
+    // EU can already answer a generic miss. No primary switch is allowed.
+    let (status, body) = page
+        .try_act(&json!({ "action": "join", "invite": "A2BCDE", "password": null }))
+        .await;
+    assert_eq!(status, 409, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("incomplete"),
+        "{body}"
+    );
+    assert_eq!(page.state().await["server"], eu);
+
+    // An explicit trusted region is a user-selected route. It may be joined
+    // directly even when another configured region is unavailable.
+    let started = tokio::time::Instant::now();
+    let (status, body) = page
+        .try_act(&json!({
+            "action": "join", "invite": "A2BCDE", "server": "EU", "password": null,
+        }))
+        .await;
+    assert_eq!(status, 409, "{body}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "explicit route probed the unavailable region"
+    );
+    assert!(
+        !body["error"].as_str().unwrap().contains("incomplete"),
+        "{body}"
+    );
+    assert_eq!(page.state().await["server"], eu);
     drop(silent_socket);
 }
 

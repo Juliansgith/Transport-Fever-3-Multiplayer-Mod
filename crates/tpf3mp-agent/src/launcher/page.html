@@ -100,6 +100,9 @@
     <div class="row">
       <input id="invite" class="grow" placeholder="the code you were sent, such as K7QM2X" autocomplete="off">
       <input id="join-password" class="grow" placeholder="password (if any)" maxlength="64">
+      <select id="join-server" class="grow hidden" title="invite region (optional)">
+        <option value="">Find automatically across regions</option>
+      </select>
       <button id="join-button">Join room</button>
     </div>
     <div class="row" style="margin-top: 10px">
@@ -206,8 +209,8 @@ function renderServerSetting(s) {
     $("server-setting").value = s.server || "";
   }
   $("server-setting").placeholder = s.server_default || "host:port";
-  // On the release's several servers (D12's proposed amendment of
-  // 2026-10-06) the launcher is on its default wherever it plays.
+  // On the release's several servers (D12's approved regional amendment)
+  // the launcher is on its default wherever it plays.
   const listed = s.servers || [];
   const onDefault = listed.length > 0 || (!!s.server && sameServer(s.server, s.server_default));
   text($("server-setting-line"), listed.length > 0
@@ -338,6 +341,22 @@ function renderContentDiff(diff) {
 
 function render(s) {
   state = s;
+  const regionPicker = $("join-server");
+  const selectedRegion = regionPicker.value;
+  const regions = s.servers || [];
+  regionPicker.replaceChildren();
+  const automatic = document.createElement("option");
+  automatic.value = "";
+  automatic.textContent = "Find automatically across regions";
+  regionPicker.appendChild(automatic);
+  for (const region of regions) {
+    const option = document.createElement("option");
+    option.value = region.name;
+    option.textContent = region.reachable ? region.name : region.name + " (unavailable)";
+    regionPicker.appendChild(option);
+  }
+  regionPicker.value = regions.some((region) => region.name === selectedRegion) ? selectedRegion : "";
+  show("join-server", regions.length > 1);
   const badge = $("connection");
   text(badge, s.tunneled ? s.connection + " via tunnel" : s.connection);
   badge.className = "badge " + s.connection;
@@ -495,7 +514,11 @@ $("create-button").onclick = () => act({
 });
 $("rules").onchange = () => { if (state) renderRules(state.rules || []); };
 $("join-button").onclick = () =>
-  act({ action: "join", invite: $("invite").value, password: $("join-password").value || null });
+  act({
+    action: "join", invite: $("invite").value,
+    server: $("join-server").value || null,
+    password: $("join-password").value || null,
+  });
 $("ready-button").onclick = () =>
   act({ action: "ready", ready: !$("ready-button").dataset.ready });
 $("start-button").onclick = () => act({ action: "start" });
