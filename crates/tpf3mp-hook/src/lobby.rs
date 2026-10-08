@@ -268,6 +268,8 @@ enum WindowAction {
     Join {
         invite: String,
         #[serde(default)]
+        server: Option<String>,
+        #[serde(default)]
         password: String,
     },
     Ready {
@@ -457,9 +459,13 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
         WindowAction::ListRooms { page } => LobbyAction::ListRooms { page },
         WindowAction::Join {
             invite,
+            server,
             password: given,
         } => LobbyAction::Join {
             invite: text(&invite, "invite")?,
+            server: server
+                .map(|server| text::<24>(&server, "server name"))
+                .transpose()?,
             password: password(&given)?,
         },
         WindowAction::Ready { ready } => LobbyAction::Ready { ready },
@@ -1215,6 +1221,15 @@ mod tests {
             parse_action(r#"{"action":"join","invite":"K7QM2X","password":"pw"}"#),
             Ok(LobbyAction::Join {
                 invite: Text::new("K7QM2X").unwrap(),
+                server: None,
+                password: Some(Text::new("pw").unwrap()),
+            })
+        );
+        assert_eq!(
+            parse_action(r#"{"action":"join","invite":"K7QM2X","server":"US","password":"pw"}"#),
+            Ok(LobbyAction::Join {
+                invite: Text::new("K7QM2X").unwrap(),
+                server: Some(Text::new("US").unwrap()),
                 password: Some(Text::new("pw").unwrap()),
             })
         );

@@ -2112,14 +2112,14 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 		)
 	end
 
-	local function joinBy(code, password)
+	local function joinBy(code, password, server)
 		code = (code or ""):gsub("%s", ""):upper()
 		if code == "" then
 			refusedS:set(_("Type the invite code a friend sent you."))
 			return
 		end
 		joiningS:set(nil)
-		send({ action = "join", invite = code, password = password or "" }, _("Joining the room..."))
+		send({ action = "join", invite = code, server = server, password = password or "" }, _("Joining the room..."))
 	end
 
 	-- Join: the public rooms, as cards, and an invite.
@@ -2145,10 +2145,11 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 		local shown = {}
 		for _i, listed in ipairs(found) do
 			shown[#shown + 1] = lobby.roomCard(listed, function()
+				local server = type(listed.server) == "string" and listed.server ~= "" and listed.server or nil
 				if listed.has_password then
-					joiningS:set({ invite = listed.invite, name = listed.name })
+					joiningS:set({ invite = listed.invite, name = listed.name, server = server })
 				else
-					joinBy(listed.invite, "")
+					joinBy(listed.invite, "", server)
 				end
 			end, canAct and not busy)
 		end
@@ -2191,10 +2192,10 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 				gap(8),
 				input(joinPassword, _("Password"), 220, {
 					password = true, maxLength = 64,
-					onEnter = function(value) joinBy(joining.invite, value) end,
+					onEnter = function(value) joinBy(joining.invite, value, joining.server) end,
 				}),
 				gap(8),
-				primary(_("Join"), function() joinBy(joining.invite, joinPassword:get()) end, canAct and not busy),
+				primary(_("Join"), function() joinBy(joining.invite, joinPassword:get(), joining.server) end, canAct and not busy),
 				gap(6),
 				button(_("Cancel"), function() joiningS:set(nil) end),
 			})

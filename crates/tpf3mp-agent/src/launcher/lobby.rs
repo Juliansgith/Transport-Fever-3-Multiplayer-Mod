@@ -337,8 +337,13 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
             competitive,
         },
         LobbyAction::ListRooms { page } => Action::ListRooms { page },
-        LobbyAction::Join { invite, password } => Action::Join {
+        LobbyAction::Join {
+            invite,
+            server,
+            password,
+        } => Action::Join {
             invite: invite.as_str().to_owned(),
+            server: server.map(|server| server.as_str().to_owned()),
             password: password.map(|password| password.as_str().to_owned()),
         },
         LobbyAction::Ready { ready } => Action::Ready { ready },

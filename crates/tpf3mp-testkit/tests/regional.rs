@@ -147,10 +147,21 @@ fn launcher_config(
 /// Starts a server on a free port with `identity`; its address and the
 /// sender that stops it.
 fn start_server(identity: ServerIdentity) -> (String, tokio::sync::oneshot::Sender<()>) {
+    start_server_with_session_limit(identity, Some(100))
+}
+
+/// Starts a server with the configured session limit, or the runtime default
+/// when `limit` is `None`.
+fn start_server_with_session_limit(
+    identity: ServerIdentity,
+    limit: Option<usize>,
+) -> (String, tokio::sync::oneshot::Sender<()>) {
     let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
     config.rules = toy_rules_menu();
     config.tick = Duration::from_millis(25);
-    config.max_sessions_per_address = 100;
+    if let Some(limit) = limit {
+        config.max_sessions_per_address = limit;
+    }
     config.max_handshakes_per_address = 100;
     let server = Server::bind(config).unwrap();
     let address = server.local_addr().unwrap().to_string();
@@ -284,7 +295,12 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
     assert_eq!(rooms[0]["server"], "US");
     assert!(rooms[0]["ping_ms"].is_u64(), "{state}");
     cat_page
-        .act(json!({ "action": "join", "invite": rooms[0]["invite"], "password": null }))
+        .act(json!({
+            "action": "join",
+            "invite": rooms[0]["invite"],
+            "server": rooms[0]["server"],
+            "password": null
+        }))
         .await;
     let state = cat_page
         .wait_for("Cat in Ann's room", |state| state["room"].is_object())
@@ -295,6 +311,102 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
             state["room"]["members"]
                 .as_array()
                 .is_some_and(|members| members.len() == 3)
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn promoting_a_room_card_releases_the_lookout_slot_at_the_default_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let (eu, _stop_eu) = start_server(identity.clone());
+    // Keep the server's actual default: eight sessions per peer address.
+    let (us, _stop_us) = start_server_with_session_limit(identity, None);
+
+    let host = Launcher::start(launcher_config(root.path(), "host", &trust, &[("US", &us)]))
+        .await
+        .unwrap();
+    let host_page = Page::of(&host);
+    host_page
+        .act(json!({ "action": "connect", "server": "", "name": "Host" }))
+        .await;
+    host_page
+        .act(json!({
+            "action": "create", "room": "full address", "max_players": 8, "password": null,
+            "listing": { "map": "dry", "year": 1850 },
+        }))
+        .await;
+    host_page
+        .wait_for("the listed room", |state| {
+            state["room"]["invite"].is_string()
+        })
+        .await;
+
+    // One host and seven regional lookouts fill the US server's eight
+    // sessions for this loopback address. Joining from one lookout must
+    // release that slot before opening its primary US connection.
+    let mut players = Vec::new();
+    for index in 0..7 {
+        let name = format!("player-{index}");
+        let launcher = Launcher::start(launcher_config(
+            root.path(),
+            &name,
+            &trust,
+            &[("EU", &eu), ("US", &us)],
+        ))
+        .await
+        .unwrap();
+        let page = Page::of(&launcher);
+        page.act(json!({ "action": "connect", "server": "", "name": name }))
+            .await;
+        page.wait_for("its US lookout", |state| {
+            state["servers"].as_array().is_some_and(|rows| {
+                rows.len() == 2 && rows[0]["here"] == true && rows[1]["reachable"] == true
+            })
+        })
+        .await;
+        players.push((launcher, page));
+    }
+
+    players[0]
+        .1
+        .act(json!({ "action": "list_rooms", "page": 0 }))
+        .await;
+    let listed = players[0]
+        .1
+        .wait_for("the room card on US", |state| {
+            state["rooms"]["rooms"].as_array().is_some_and(|rooms| {
+                rooms
+                    .iter()
+                    .any(|room| room["name"] == "full address" && room["server"] == "US")
+            })
+        })
+        .await;
+    let card = listed["rooms"]["rooms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|room| room["name"] == "full address")
+        .unwrap();
+    let invite = card["invite"].as_str().unwrap().to_owned();
+    let region = card["server"].as_str().unwrap().to_owned();
+    players[0]
+        .1
+        .act(json!({ "action": "join", "invite": invite, "server": region, "password": null }))
+        .await;
+    let joined = players[0]
+        .1
+        .wait_for("the promoted US connection joining", |state| {
+            state["server"] == us && state["room"].is_object()
+        })
+        .await;
+    assert_eq!(joined["room"]["invite"], invite);
+    host_page
+        .wait_for("the player's room membership", |state| {
+            state["room"]["members"]
+                .as_array()
+                .is_some_and(|members| members.len() == 2)
         })
         .await;
 }

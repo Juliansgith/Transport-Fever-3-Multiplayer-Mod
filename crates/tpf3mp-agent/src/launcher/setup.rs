@@ -304,7 +304,8 @@ pub fn listed_servers(
     }
     let more = super::servers::parse_list(more.unwrap_or_default())
         .map_err(|why| anyhow::anyhow!("the release's servers: {why}"))?;
-    Ok(super::servers::release_list(default, name, &more))
+    super::servers::release_list(default, name, &more)
+        .map_err(|why| anyhow::anyhow!("the release's servers: {why}"))
 }
 
 impl LauncherArgs {
@@ -461,7 +462,7 @@ mod tests {
         assert_eq!(
             names,
             ["EU", "US"],
-            "the default first; a name it has already is not listed twice"
+            "the default first, then the other servers in release order"
         );
         assert_eq!(listed[0].address, RELAY);
         assert!(
@@ -480,6 +481,26 @@ mod tests {
         assert!(
             listed_servers(None, Some(RELAY), None, Some("US=not a server")).is_err(),
             "a list that does not read stops the launcher"
+        );
+        assert!(
+            listed_servers(
+                None,
+                Some(RELAY),
+                Some(RELAY_NAME),
+                Some("US=us.example.org:99999")
+            )
+            .is_err(),
+            "the release validator and runtime use the same port parser"
+        );
+        assert!(
+            listed_servers(
+                None,
+                Some(RELAY),
+                Some(RELAY_NAME),
+                Some("EU=another.example.org:29470")
+            )
+            .is_err(),
+            "the default name cannot be reused"
         );
         assert_eq!(super::super::server_address(RELAY).as_deref(), Ok(RELAY));
     }

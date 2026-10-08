@@ -110,6 +110,9 @@ pub enum Action {
     },
     Join {
         invite: String,
+        /// The region chosen by a public room card or invite form.
+        #[serde(default)]
+        server: Option<String>,
         password: Option<String>,
     },
     Ready {
@@ -885,7 +888,20 @@ mod tests {
             action,
             Action::Join {
                 invite: "K7QM2X".into(),
+                server: None,
                 password: None
+            }
+        );
+        let action: Action = serde_json::from_str(
+            r#"{"action":"join","invite":"K7QM2X","server":"US","password":null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            action,
+            Action::Join {
+                invite: "K7QM2X".into(),
+                server: Some("US".into()),
+                password: None,
             }
         );
         let action: Action = serde_json::from_str(

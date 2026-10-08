@@ -210,32 +210,12 @@ jobs:
           # build is this"); a shallow clone has none.
           fetch-depth: 0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Validate the release's server list
+        run: cargo run --locked -p tpf3mp-agent -- validate-release-servers
       - name: Check the settings built in
         shell: bash
         run: |
           set -euo pipefail
-          # A bracket expression: "]" first and "-" last are literal.
-          if [ -n "$TPF3MP_DEFAULT_SERVER" ] && ! [[ "$TPF3MP_DEFAULT_SERVER" =~ ^[]A-Za-z0-9.:[-]+$ ]]; then
-            echo "::error::TPF3MP_DEFAULT_SERVER must be host:port, nothing else"
-            exit 1
-          fi
-          if [ -n "$TPF3MP_SERVER_NAME" ] && ! [[ "$TPF3MP_SERVER_NAME" =~ ^[A-Za-z0-9\ ._-]{1,24}$ ]]; then
-            echo "::error::TPF3MP_SERVER_NAME must be a short name such as EU: letters, digits, spaces, dots and dashes"
-            exit 1
-          fi
-          # NAME=host:port entries separated by commas; the launcher
-          # refuses to start with a list that does not read.
-          if [ -n "$TPF3MP_SERVERS" ]; then
-            IFS=',' read -ra entries <<< "$TPF3MP_SERVERS"
-            for entry in "${entries[@]}"; do
-              entry="$(echo "$entry" | xargs)"
-              [ -z "$entry" ] && continue
-              if ! [[ "$entry" =~ ^[A-Za-z0-9\ ._-]{1,24}=[]A-Za-z0-9.:[-]+:[0-9]+$ ]]; then
-                echo "::error::TPF3MP_SERVERS must be NAME=host:port entries separated by commas, such as US=us.example.org:29470"
-                exit 1
-              fi
-            done
-          fi
           # One key or several, separated by commas or spaces.
           if [ -n "$TPF3MP_UPDATE_PUBLIC_KEY" ] && ! [[ "$TPF3MP_UPDATE_PUBLIC_KEY" =~ ^[A-Za-z0-9+/]{43}=([\ ,]+[A-Za-z0-9+/]{43}=)*$ ]]; then
             echo "::error::TPF3MP_UPDATE_PUBLIC_KEY must be base64 32-byte Ed25519 public keys, separated by commas"

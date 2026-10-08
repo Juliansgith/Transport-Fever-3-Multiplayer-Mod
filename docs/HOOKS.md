@@ -453,7 +453,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     the room list carries the release's servers when the launcher plays
     on several (`servers`: name, ping, here, reachable) and each room its
     server's name and ping (`server`, `ping_ms`; LOBBY.md, "Several
-    servers").
+    servers"). Since bridge version 27 a room-card Join also carries the
+    listed server name, so duplicate invite codes still select the card the
+    player clicked.
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.

@@ -19,7 +19,10 @@ use std::{
     time::Duration,
 };
 
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{RoomPage, Text};
 use tracing::{debug, info};
@@ -80,7 +83,7 @@ pub fn parse_list(text: &str) -> Result<Vec<ListedServer>, String> {
         let name = name.trim();
         if !name_ok(name) {
             return Err(format!(
-                "the server name {name:?} must be 1 to {MAX_NAME} letters, digits, spaces, dots or dashes"
+                "the server name {name:?} must be 1 to {MAX_NAME} letters, digits, spaces, dots, dashes or underscores"
             ));
         }
         let address = super::server_address(address)?;
@@ -108,43 +111,54 @@ pub fn parse_list(text: &str) -> Result<Vec<ListedServer>, String> {
 }
 
 /// A release's servers: its `default` one first, called `default_name`
-/// (else its host), then `more`, less any that repeats one before it.
-/// Without a default, none: the player types a server, as a developer's
-/// build without one did.
+/// (else its host), then `more`. A bad default, duplicate name or address,
+/// or more than [`MAX_SERVERS`] in total refuses the release list. Without
+/// a default, none: the player types a server, as a developer's build
+/// without one did.
 pub fn release_list(
     default: Option<&str>,
     default_name: Option<&str>,
     more: &[ListedServer],
-) -> Vec<ListedServer> {
+) -> Result<Vec<ListedServer>, String> {
     let Some(default) = default.map(str::trim).filter(|d| !d.is_empty()) else {
-        return Vec::new();
-    };
-    let name = default_name
-        .map(str::trim)
-        .filter(|name| name_ok(name))
-        .map_or_else(
-            || {
-                default
-                    .rsplit_once(':')
-                    .map_or(default, |(host, _)| host)
-                    .to_owned()
-            },
-            str::to_owned,
-        );
-    let mut listed = vec![ListedServer {
-        name,
-        address: default.to_owned(),
-    }];
-    for server in more {
-        let repeats = listed.iter().any(|before| {
-            super::same_server(&before.address, &server.address)
-                || before.name.eq_ignore_ascii_case(&server.name)
-        });
-        if !repeats && listed.len() < MAX_SERVERS {
-            listed.push(server.clone());
+        if more.is_empty() {
+            return Ok(Vec::new());
         }
+        return Err("the release's other servers need a default server".into());
+    };
+    let address = super::server_address(default)?;
+    let name = match default_name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) if name_ok(name) => name.to_owned(),
+        Some(name) => {
+            return Err(format!(
+                "the default server name {name:?} must be 1 to {MAX_NAME} letters, digits, spaces, dots, dashes or underscores"
+            ));
+        }
+        None => address
+            .rsplit_once(':')
+            .map_or(address.as_str(), |(host, _)| host)
+            .to_owned(),
+    };
+    let mut listed = vec![ListedServer { name, address }];
+    for server in more {
+        if listed
+            .iter()
+            .any(|before| before.name.eq_ignore_ascii_case(&server.name))
+        {
+            return Err(format!("the server name {} is listed twice", server.name));
+        }
+        if listed
+            .iter()
+            .any(|before| super::same_server(&before.address, &server.address))
+        {
+            return Err(format!("the server {} is listed twice", server.address));
+        }
+        listed.push(server.clone());
     }
-    listed
+    if listed.len() > MAX_SERVERS {
+        return Err(format!("a release lists at most {MAX_SERVERS} servers"));
+    }
+    Ok(listed)
 }
 
 /// The listed server at `address`, if it is one.
@@ -152,6 +166,43 @@ pub fn find<'a>(servers: &'a [ListedServer], address: &str) -> Option<&'a Listed
     servers
         .iter()
         .find(|server| super::same_server(&server.address, address))
+}
+
+/// The listed server called `name`, ignoring ASCII case.
+pub fn find_name<'a>(servers: &'a [ListedServer], name: &str) -> Option<&'a ListedServer> {
+    servers
+        .iter()
+        .find(|server| server.name.eq_ignore_ascii_case(name))
+}
+
+/// A room card's selected server, or the unique server the last public room
+/// page showed for `invite`. A typed invite with no unique public listing
+/// stays unresolved for the launcher's existing invite path.
+pub fn room_target(
+    servers: &[ListedServer],
+    room_servers: &[(String, String)],
+    invite: &str,
+    selected: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(name) = selected {
+        return find_name(servers, name)
+            .map(|server| Some(server.address.clone()))
+            .ok_or_else(|| not_listed(name));
+    }
+    let mut targets = Vec::new();
+    for (_, address) in room_servers.iter().filter(|(listed, _)| listed == invite) {
+        if !targets
+            .iter()
+            .any(|known: &String| super::same_server(known, address))
+        {
+            targets.push(address.clone());
+        }
+    }
+    match targets.as_slice() {
+        [] => Ok(None),
+        [server] => Ok(Some(server.clone())),
+        _ => Err("that invite is listed on more than one server; choose its room card".into()),
+    }
 }
 
 /// Where Connect goes on a launcher playing on its release's servers, for
@@ -215,17 +266,24 @@ pub fn millis(ping: Duration) -> u32 {
 }
 
 /// One server's page of rooms, to merge.
+#[derive(Clone, Copy)]
 pub struct Page<'a> {
     pub server: &'a ListedServer,
     pub ping: Option<Duration>,
+    /// The server-local page this entry came from; several consecutive
+    /// pages are merged to build a global page.
+    pub page_index: u16,
     pub page: &'a RoomPage,
 }
 
 /// The rooms of every server's page, in one list: each room labelled with
 /// its server's name and ping, rooms in their lobby first, then the fuller,
-/// then by name, as a server sorts its own. A later page has more if any
-/// server's has. Also returns each room's server, by invite, so a join
-/// goes where the room is.
+/// then by name, as a server sorts its own. It takes the requested global
+/// slice after sorting all fetched pages, and callers provide each local
+/// page from zero through `page`. `more` means the global slice has another
+/// room behind it or a server's requested local page has another page.
+/// Also returns each displayed room's server, by invite, so a join goes
+/// where the room is.
 pub fn merge(page: u16, pages: &[Page<'_>]) -> (RoomList, Vec<(String, String)>) {
     let mut rooms: Vec<(usize, PublicRoom)> = Vec::new();
     for (order, listed) in pages.iter().enumerate() {
@@ -247,14 +305,25 @@ pub fn merge(page: u16, pages: &[Page<'_>]) -> (RoomList, Vec<(String, String)>)
             .then_with(|| a.name.cmp(&b.name))
             .then(a_order.cmp(b_order))
     });
-    let places = rooms
+    let start = usize::from(page).saturating_mul(tpf3mp_proto::ROOMS_PER_PAGE);
+    let end = start.saturating_add(tpf3mp_proto::ROOMS_PER_PAGE);
+    let more = rooms.len() > end
+        || pages
+            .iter()
+            .any(|listed| listed.page_index == page && listed.page.more);
+    let selected: Vec<_> = rooms
+        .into_iter()
+        .skip(start)
+        .take(tpf3mp_proto::ROOMS_PER_PAGE)
+        .collect();
+    let places = selected
         .iter()
         .map(|(order, room)| (room.invite.clone(), pages[*order].server.address.clone()))
         .collect();
     let list = RoomList {
         page,
-        more: pages.iter().any(|listed| listed.page.more),
-        rooms: rooms.into_iter().map(|(_, room)| room).collect(),
+        more,
+        rooms: selected.into_iter().map(|(_, room)| room).collect(),
     };
     (list, places)
 }
@@ -298,11 +367,15 @@ struct Lookout {
     server: ListedServer,
     seen: watch::Receiver<Seen>,
     task: JoinHandle<()>,
+    stop: Option<oneshot::Sender<()>>,
 }
 
 impl Drop for Lookout {
     fn drop(&mut self) {
         // The connection goes with the task.
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
         self.task.abort();
     }
 }
@@ -310,21 +383,37 @@ impl Drop for Lookout {
 impl Lookout {
     fn start(server: ListedServer, quiet: Quiet) -> Self {
         let (tell, seen) = watch::channel(Seen::Connecting);
-        let task = tokio::spawn(look(server.clone(), quiet, tell));
-        Self { server, seen, task }
+        let (stop, stopped) = oneshot::channel();
+        let task = tokio::spawn(look(server.clone(), quiet, tell, stopped));
+        Self {
+            server,
+            seen,
+            task,
+            stop: Some(stop),
+        }
     }
 }
 
-async fn look(server: ListedServer, quiet: Quiet, tell: watch::Sender<Seen>) {
+async fn look(
+    server: ListedServer,
+    quiet: Quiet,
+    tell: watch::Sender<Seen>,
+    mut stop: oneshot::Receiver<()>,
+) {
     loop {
         tell.send_replace(Seen::Connecting);
-        let opened = match quiet.options(&server.address).await {
-            Ok(options) => match tokio::time::timeout(PROBE_WAIT, connect(options)).await {
-                Ok(Ok(opened)) => Ok(opened),
-                Ok(Err(error)) => Err(error.for_player()),
-                Err(_) => Err("no answer in time".to_owned()),
-            },
-            Err(error) => Err(error),
+        let opened = tokio::select! {
+            _ = &mut stop => return,
+            opened = async {
+                match quiet.options(&server.address).await {
+                    Ok(options) => match tokio::time::timeout(PROBE_WAIT, connect(options)).await {
+                        Ok(Ok(opened)) => Ok(opened),
+                        Ok(Err(error)) => Err(error.for_player()),
+                        Err(_) => Err("no answer in time".to_owned()),
+                    },
+                    Err(error) => Err(error),
+                }
+            } => opened,
         };
         match opened {
             Ok((client, mut events)) => {
@@ -338,8 +427,13 @@ async fn look(server: ListedServer, quiet: Quiet, tell: watch::Sender<Seen>) {
                     ping: client.rtt(),
                 });
                 let mut every = tokio::time::interval(PING_EVERY);
+                let mut stopping = false;
                 loop {
                     tokio::select! {
+                        _ = &mut stop => {
+                            stopping = true;
+                            break;
+                        }
                         event = events.recv() => match event {
                             None | Some(ClientEvent::Closed(_)) => break,
                             Some(_) => {}
@@ -354,12 +448,20 @@ async fn look(server: ListedServer, quiet: Quiet, tell: watch::Sender<Seen>) {
                         }
                     }
                 }
+                if stopping {
+                    drop(events);
+                    client.close().await;
+                    return;
+                }
                 info!(server = %server.name, "a listed server's lookout closed");
             }
             Err(error) => debug!(server = %server.name, %error, "a listed server does not answer"),
         }
         tell.send_replace(Seen::Down);
-        tokio::time::sleep(RETRY_AFTER).await;
+        tokio::select! {
+            _ = &mut stop => return,
+            _ = tokio::time::sleep(RETRY_AFTER) => {}
+        }
     }
 }
 
@@ -394,9 +496,44 @@ impl Lookouts {
         }
     }
 
-    /// Stops every lookout.
-    pub(crate) fn stop(&self) {
-        self.watching().clear();
+    /// Closes every lookout and waits for its server session to be released.
+    pub(crate) async fn stop(&self) {
+        let mut lookouts = {
+            let mut watching = self.watching();
+            std::mem::take(&mut *watching)
+        };
+        for lookout in &mut lookouts {
+            if let Some(stop) = lookout.stop.take() {
+                let _ = stop.send(());
+            }
+        }
+        for lookout in &mut lookouts {
+            let _ = (&mut lookout.task).await;
+        }
+    }
+
+    /// Releases `address`'s quiet connection so it can be promoted to the
+    /// primary connection without briefly counting twice against the
+    /// server's per-address session limit.
+    pub(crate) async fn stop_at(&self, address: &str) -> bool {
+        let removed = {
+            let mut watching = self.watching();
+            watching
+                .iter()
+                .position(|lookout| super::same_server(&lookout.server.address, address))
+                .map(|at| watching.remove(at))
+        };
+        if let Some(mut lookout) = removed {
+            if let Some(stop) = lookout.stop.take() {
+                let _ = stop.send(());
+            }
+            // Wait until the quiet Client has closed its connection and the
+            // server can release its session before primary promotion.
+            let _ = (&mut lookout.task).await;
+            true
+        } else {
+            false
+        }
     }
 
     /// What each lookout knows now, by server address.
@@ -555,6 +692,8 @@ mod tests {
             "eu.example.org:29470",
             "EU=eu.example.org",
             "EU=eu.example.org:0",
+            "EU=eu.example.org:99999",
+            "EU=eu.example.org:65536",
             "=eu.example.org:29470",
             "E,U=eu.example.org:29470",
             "Europe/West=eu.example.org:29470",
@@ -564,6 +703,10 @@ mod tests {
         ] {
             assert!(parse_list(bad).is_err(), "{bad} is refused");
         }
+        assert!(
+            parse_list("EU=[::1]:29470").is_ok(),
+            "bracketed IPv6 is valid"
+        );
         let nine = (0..9)
             .map(|n| format!("S{n}=s{n}.example.org:29470"))
             .collect::<Vec<_>>()
@@ -573,17 +716,46 @@ mod tests {
 
     #[test]
     fn the_default_leads_the_release_list() {
-        let listed = release_list(Some("relay.example.org:29470"), Some("EU"), &eu_us());
+        let more = parse_list("US=us.example.org:29470").unwrap();
+        let listed = release_list(Some("relay.example.org:29470"), Some("EU"), &more).unwrap();
         let names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["EU", "US"],
-            "the list's EU repeats the default's name"
-        );
+        assert_eq!(names, ["EU", "US"], "the default leads the additional list");
         assert_eq!(listed[0].address, "relay.example.org:29470");
-        let unnamed = release_list(Some("relay.example.org:29470"), None, &[]);
+        let unnamed = release_list(Some("relay.example.org:29470"), None, &[]).unwrap();
         assert_eq!(unnamed[0].name, "relay.example.org", "named by its host");
-        assert!(release_list(None, Some("EU"), &eu_us()).is_empty());
+        assert!(release_list(None, Some("EU"), &[]).unwrap().is_empty());
+        assert!(release_list(None, Some("EU"), &eu_us()).is_err());
+        assert!(
+            release_list(Some("relay.example.org:29470"), Some("EU"), &eu_us()).is_err(),
+            "a repeated server name is refused instead of silently discarded"
+        );
+        let duplicate_default =
+            parse_list("US=relay.example.org:29470").expect("the extra entry is valid alone");
+        assert!(
+            release_list(
+                Some("relay.example.org:29470"),
+                Some("EU"),
+                &duplicate_default
+            )
+            .is_err(),
+            "the default address cannot be repeated in the additional list"
+        );
+        let eight_more = parse_list(
+            "S1=a.example.org:29470,S2=b.example.org:29470,S3=c.example.org:29470,S4=d.example.org:29470,S5=e.example.org:29470,S6=f.example.org:29470,S7=g.example.org:29470,S8=h.example.org:29470",
+        )
+        .unwrap();
+        assert!(
+            release_list(Some("relay.example.org:29470"), Some("EU"), &eight_more).is_err(),
+            "the release's total server count includes the default"
+        );
+        assert!(
+            release_list(Some("relay.example.org:99999"), None, &[]).is_err(),
+            "the default uses the runtime host-and-port validator"
+        );
+        assert!(
+            release_list(Some("relay.example.org:29470"), Some("bad/name"), &[]).is_err(),
+            "the release validator applies the server-name rules to the default too"
+        );
     }
 
     #[test]
@@ -684,8 +856,12 @@ mod tests {
     }
 
     fn page(rooms: Vec<ListedRoom>, more: bool) -> RoomPage {
+        page_at(0, rooms, more)
+    }
+
+    fn page_at(page: u16, rooms: Vec<ListedRoom>, more: bool) -> RoomPage {
         RoomPage {
-            page: 0,
+            page,
             rooms: BoundedVec::new(rooms).unwrap(),
             more,
         }
@@ -711,11 +887,13 @@ mod tests {
                 Page {
                     server: &listed[0],
                     ping: Some(Duration::from_micros(23_400)),
+                    page_index: 0,
                     page: &eu,
                 },
                 Page {
                     server: &listed[1],
                     ping: None,
+                    page_index: 0,
                     page: &us,
                 },
             ],
@@ -737,6 +915,92 @@ mod tests {
         assert!(list.more, "one server has more");
         assert!(places.contains(&("H3WN7K".into(), "us.example.org:29470".into())));
         assert!(places.contains(&("K7QM2X".into(), "eu.example.org:29470".into())));
+    }
+
+    #[test]
+    fn global_pages_include_overflow_from_each_region() {
+        let listed = eu_us();
+        let rooms = |region: &str, prefix: char| {
+            let alphabet = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+            (0..11)
+                .map(|index| {
+                    let code = format!("{prefix}2A{}BC", alphabet[index] as char);
+                    room(&format!("{region} {index:02}"), &code, 1, RoomPhase::Lobby)
+                })
+                .collect::<Vec<_>>()
+        };
+        let eu_first = page_at(0, rooms("EU", 'E'), false);
+        let us_first = page_at(0, rooms("US", 'U'), false);
+        let eu_second = page_at(1, Vec::new(), false);
+        let us_second = page_at(1, Vec::new(), false);
+        let sources = [
+            Page {
+                server: &listed[0],
+                ping: Some(Duration::from_millis(24)),
+                page_index: 0,
+                page: &eu_first,
+            },
+            Page {
+                server: &listed[0],
+                ping: Some(Duration::from_millis(24)),
+                page_index: 1,
+                page: &eu_second,
+            },
+            Page {
+                server: &listed[1],
+                ping: Some(Duration::from_millis(30)),
+                page_index: 0,
+                page: &us_first,
+            },
+            Page {
+                server: &listed[1],
+                ping: Some(Duration::from_millis(30)),
+                page_index: 1,
+                page: &us_second,
+            },
+        ];
+
+        let first_sources: Vec<_> = sources
+            .iter()
+            .filter(|source| source.page_index == 0)
+            .copied()
+            .collect();
+        let (first, _) = merge(0, &first_sources);
+        assert_eq!(first.rooms.len(), tpf3mp_proto::ROOMS_PER_PAGE);
+        assert!(
+            first.more,
+            "two regions have 22 rooms, so page 0 has a next page"
+        );
+
+        let (second, places) = merge(1, &sources);
+        assert_eq!(
+            second.rooms.len(),
+            2,
+            "the two overflow rooms appear on page 1"
+        );
+        assert!(!second.more, "all 22 rooms have been shown");
+        assert_eq!(places.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_public_codes_require_a_card_target() {
+        let listed = eu_us();
+        let routes = vec![
+            ("K7QM2X".to_owned(), listed[0].address.clone()),
+            ("K7QM2X".to_owned(), listed[1].address.clone()),
+        ];
+        assert_eq!(
+            room_target(&listed, &routes, "K7QM2X", Some("US")),
+            Ok(Some("us.example.org:29470".into())),
+            "the clicked room's trusted server wins"
+        );
+        assert!(
+            room_target(&listed, &routes, "K7QM2X", None)
+                .unwrap_err()
+                .contains("more than one server"),
+            "a bare collision is refused instead of selecting the first route"
+        );
+        assert!(room_target(&listed, &routes, "K7QM2X", Some("ASIA")).is_err());
     }
 
     #[test]

@@ -79,7 +79,7 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// [`ModLists`] (protocol 18); 26 the release's servers in the room list
 /// ([`LobbyRoomList::servers`]) and each public room's server and ping
 /// ([`LobbyPublicRoom::server`], [`LobbyPublicRoom::ping_ms`]).
-pub const BRIDGE_VERSION: u32 = 26;
+pub const BRIDGE_VERSION: u32 = 27;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
@@ -535,6 +535,10 @@ pub enum LobbyAction {
     },
     Join {
         invite: Text<128>,
+        /// The trusted listed region shown on a public room card. Absent
+        /// for a typed invite, which the launcher resolves as before.
+        #[serde(default)]
+        server: Option<Text<24>>,
         password: Option<Text<64>>,
     },
     Ready {

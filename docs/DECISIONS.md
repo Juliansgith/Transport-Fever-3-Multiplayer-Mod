@@ -506,14 +506,17 @@ through what an invite says"; this is that step:
   always did.
 - **Players see the rooms of every server.** While connected, the
   launcher keeps a quiet connection to each other listed server (no
-  content declared, no room, no diagnostics) and asks each for its public
-  rooms with its own: the room list shows them together, each with its
-  server's name and ping.
+  content declared, no room, no diagnostics). It gathers each server's
+  pages from zero through the requested global page, sorts the rooms
+  together, and returns 20 at a time; earlier local pages are cached while
+  browsing. Each room card carries the listed server name through Join, so
+  equal invite codes on different servers still select the clicked room.
 - **Invites stay codes, and stay on the list.** An invite is still a code
   alone (D13). Joining a room from the list goes to its server; a code
   typed or pasted is tried on the server played on, then on the others
   that answer, closest first, while each says it has no such room (each
-  such try counts against that server's limit on wrong invites). An
+  such try counts against that server's limit on wrong invites). A bare
+  code found on several currently listed rooms is refused as ambiguous. An
   invite that names a server the release does not list is refused, as
   under D12: no message sends a player to a server nobody vouches for.
 - **Trust is unchanged** (D4): every listed server needs a certificate
@@ -530,9 +533,8 @@ Trade-offs: each launcher holds one idle connection per other server
 while connected (keep-alives only, while idle), and every server
 sees each connected player's session, not only the one they play on. A
 code that is not in the list costs a join on each server until one has
-it. Rooms of one page are merged from every server's same page, so the
-game's window shows the first 20 of a page when several servers are
-full.
+it. Loading a later global page may need one request per preceding local
+page, but those pages are kept for the current browse.
 
 Rejected:
 

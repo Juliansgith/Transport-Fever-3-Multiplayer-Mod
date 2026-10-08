@@ -224,6 +224,7 @@ fn a_room_is_joined_with_its_code() {
         actions(&window),
         [Action::Join {
             invite: "K7QM2X".into(),
+            server: None,
             password: None,
         }]
     );

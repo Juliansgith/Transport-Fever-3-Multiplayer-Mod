@@ -517,10 +517,14 @@ For each further server:
 3. **Add it to the repository variable `TPF3MP_SERVERS`** (Settings,
    Secrets and variables, Actions, Variables): `NAME=host:port`, more
    than one separated by commas, such as `US=<host>:29470`. Names are 1 to
-   24 letters, digits, spaces, dots or dashes, and are what players see.
+   24 letters, digits, spaces, dots, dashes or underscores, and are what
+   players see. A release has at most eight servers including the default;
+   names and addresses must be unique. Before packaging, the release
+   workflow validates these variables with the same parser the launcher
+   uses, including the host and port, so an invalid entry stops the build.
    The default server stays in `TPF3MP_DEFAULT_SERVER` and
    `TPF3MP_SERVER_NAME`, and is listed first. The release workflow refuses
-   an entry that does not read.
+   a list that does not read.
 4. **Release**: only packages built with the variable know the server.
    Launchers of earlier releases keep playing on the default server alone.
 

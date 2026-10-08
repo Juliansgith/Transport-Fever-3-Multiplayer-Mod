@@ -465,6 +465,7 @@ fn auto_room(
                     match handle
                         .act(Action::Join {
                             invite: invite.clone(),
+                            server: None,
                             password: None,
                         })
                         .await

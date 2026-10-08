@@ -923,6 +923,7 @@ impl<B: Backend> LauncherApp<B> {
             Form::Join => {
                 self.backend.act(Action::Join {
                     invite: self.join_invite.trim().to_uppercase(),
+                    server: None,
                     password: non_empty(&self.join_password),
                 });
                 self.open_form = None;

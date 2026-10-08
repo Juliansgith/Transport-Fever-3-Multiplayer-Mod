@@ -313,11 +313,15 @@ decided). A release may list servers besides its default
 then plays on all of them: Connect goes to the closest that answers, by
 the round trip of its QUIC connection, and keeps a quiet connection, a
 *lookout*, to every other (`launcher::servers`): no content, no room, no
-diagnostics. `ListRooms` asks its own server and each lookout for the same
-page and merges them, lobbies first, then the fuller, then by name, each
-room with its server's name and ping (`server`, `ping_ms`; in the game's
+diagnostics. `ListRooms` gathers each server's pages from zero through the
+requested global page, merges and sorts their rooms together (lobbies
+first, then fuller, then by name), and returns 20 at a time. Earlier
+server pages are cached while paging; page zero starts a fresh browse. Each
+room carries its server's name and ping (`server`, `ping_ms`; in the game's
 lobby `server`, `ping`, and the list's `servers`: name, ping, `here`,
-`reachable`; bridge version 26). Create first moves to the closest server
+`reachable`; bridge version 27). A room-card join carries that listed server
+along with its invite, so identical six-character codes on different
+servers still select the clicked room. Create first moves to the closest server
 (pings within 10 ms count as equal: the current stays, else the first
 listed). Join goes to the server the last list showed the room on; a code
 it did not show is tried on the server played on, then on the other

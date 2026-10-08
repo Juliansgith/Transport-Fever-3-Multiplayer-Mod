@@ -19,6 +19,7 @@ pub mod servers;
 pub mod setup;
 
 use std::{
+    collections::HashMap,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -37,7 +38,7 @@ use tokio::{
 use tpf3mp_bridge::{LobbyAction, LobbyView};
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{
-    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase,
+    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomPage, RoomPhase,
     RoomSettings, StartSave, Text,
 };
 use tracing::{info, warn};
@@ -321,6 +322,15 @@ struct LobbyEnds {
     actions: mpsc::UnboundedReceiver<LobbyAction>,
 }
 
+/// The server-local pages collected for the current public-room browse.
+/// Keeping earlier pages avoids repeating rate-limited lookups while the
+/// player moves through the globally merged list.
+#[derive(Default)]
+struct RoomPageCache {
+    home: Option<String>,
+    pages: HashMap<(String, u16), RoomPage>,
+}
+
 /// What the front ends and the controller share.
 pub(crate) struct Shared {
     view: Mutex<View>,
@@ -333,6 +343,7 @@ pub(crate) struct Shared {
     /// The quiet connections to the other listed servers, while the
     /// launcher plays on its release's servers.
     lookouts: servers::Lookouts,
+    room_pages: Mutex<RoomPageCache>,
 }
 
 /// Whether a launcher set up as `config` starts on its release's servers:
@@ -383,6 +394,7 @@ impl Shared {
             },
             picker: config.picker.clone().map(|mods| Arc::new(Mutex::new(mods))),
             lookouts: servers::Lookouts::default(),
+            room_pages: Mutex::new(RoomPageCache::default()),
         });
         shared.show_mods();
         let lobby = LobbyEnds {
@@ -425,12 +437,12 @@ impl Shared {
 
     /// Watches the listed servers but `home`, where the launcher now plays,
     /// as `name`; while on its release's servers only.
-    fn watch_others(&self, config: &LauncherConfig, home: &str, name: &Text<32>) {
+    async fn watch_others(&self, config: &LauncherConfig, home: &str, name: &Text<32>) {
         if self.on_list() {
             self.lookouts
                 .watch(&config.servers, Some(home), &quiet_as(config, name));
         } else {
-            self.lookouts.stop();
+            self.lookouts.stop().await;
         }
     }
 
@@ -975,7 +987,7 @@ async fn act(
             if let Some(connected) = connected.take() {
                 connected.client.close().await;
             }
-            shared.lookouts.stop();
+            shared.lookouts.stop().await;
             let mut view = shared.view();
             view.connected = false;
             view.in_room = false;
@@ -1094,20 +1106,38 @@ async fn act(
             choose_room_mods(shared, config, session, start, &mods, &params).await
         }
         Action::RescanMods => rescan_mods(shared, config, connected, session).await,
-        Action::Join { invite, password } => {
+        Action::Join {
+            invite,
+            server,
+            password,
+        } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
             if shared.on_list() {
-                // An invite may name any of the release's servers, and no
-                // other.
-                let named = match &passed.server {
-                    Some(other) => Some(
+                // A room card carries its listed server through this action,
+                // so duplicate six-character codes still join the clicked
+                // room. Bare codes shown on several servers are ambiguous.
+                let room_servers = shared.view().room_servers.clone();
+                let from_list = servers::room_target(
+                    &config.servers,
+                    &room_servers,
+                    &passed.invite.to_string(),
+                    server.as_deref(),
+                )?;
+                let from_invite = passed
+                    .server
+                    .as_deref()
+                    .map(|other| {
                         servers::find(&config.servers, other)
-                            .ok_or_else(|| servers::not_listed(other))?
-                            .address
-                            .clone(),
-                    ),
-                    None => None,
-                };
+                            .map(|server| server.address.clone())
+                            .ok_or_else(|| servers::not_listed(other))
+                    })
+                    .transpose()?;
+                if let (Some(card), Some(pasted)) = (&from_list, &from_invite)
+                    && !same_server(card, pasted)
+                {
+                    return Err("the selected server does not match the invite's server".into());
+                }
+                let named = from_invite.or(from_list);
                 let current = connected.as_ref().ok_or("connect to a server first")?;
                 let password = password_text(password)?;
                 let here = shared.view().server.clone();
@@ -1129,6 +1159,9 @@ async fn act(
                     named.is_some(),
                 )
                 .await;
+            }
+            if server.is_some() {
+                return Err("that room card names a server this launcher does not play on".into());
             }
             // An invite to another server is refused, connected or not.
             if let (Some(fixed), Some(other)) = (fixed_server(shared), &passed.server)
@@ -1200,37 +1233,21 @@ async fn act(
         }
         Action::ListRooms { page } => {
             let current = connected.as_ref().ok_or("connect to a server first")?;
-            let own = current
-                .client
-                .list_rooms(page)
-                .await
-                .map_err(|error| error.to_string())?;
             let here = shared.view().server.clone().unwrap_or_default();
             let home = servers::find(&config.servers, &here).filter(|_| shared.on_list());
             let Some(home) = home else {
+                let own = current
+                    .client
+                    .list_rooms(page)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 shared.view().rooms = Some(api::RoomList::of(&own));
                 return Ok(());
             };
-            // Every listed server's rooms, its own server's first: the
-            // others' through their lookouts, those that answer in time.
-            let mut pages = vec![(home.clone(), Some(current.client.rtt()), own)];
-            for (server, requests, ping) in shared.lookouts.up(&config.servers) {
-                if let Some(theirs) = servers::list(&requests, page).await {
-                    pages.push((server, Some(ping), theirs));
-                }
-            }
-            let merging: Vec<servers::Page<'_>> = pages
-                .iter()
-                .map(|(server, ping, page)| servers::Page {
-                    server,
-                    ping: *ping,
-                    page,
-                })
-                .collect();
-            let (list, places) = servers::merge(page, &merging);
+            let (list, routes) = global_room_page(shared, config, current, home, page).await?;
             let mut view = shared.view();
             view.rooms = Some(list);
-            view.room_servers = places;
+            view.room_servers = routes;
             Ok(())
         }
         Action::SetBanner { banner } => {
@@ -1893,7 +1910,17 @@ async fn connect_to(
     name: Text<32>,
 ) -> Result<(), String> {
     let options = connect_options(config, server, name).await?;
-    *connected = None;
+    let previous_server = connected
+        .as_ref()
+        .and_then(|_| shared.view().server.clone());
+    let on_list = shared.on_list();
+    if servers::find(&config.servers, server).is_some() {
+        // A target lookout already uses one per-address session. Stop it
+        // fully before opening the primary connection, or the server's
+        // default eight-session cap can reject the promotion.
+        shared.lookouts.stop_at(server).await;
+    }
+    let previous = connected.take();
     {
         let mut view = shared.view();
         view.connecting = true;
@@ -1914,18 +1941,37 @@ async fn connect_to(
             Err(error.for_player())
         }
     };
-    let mut view = shared.view();
-    view.connecting = false;
-    let (client, events) = result?;
-    view.connected = true;
-    view.outdated = false;
-    view.tunneled = client.tunneled();
-    view.error = None;
-    view.name = options.name.as_str().to_owned();
-    view.server_version = Some(client.welcome().server_version.as_str().to_owned());
-    view.session = Some(client.welcome().session_id.to_string());
-    view.rules = client.welcome().rules.clone();
-    drop(view);
+    let (client, events) = match result {
+        Ok(connected) => connected,
+        Err(error) => {
+            *connected = previous;
+            {
+                let mut view = shared.view();
+                view.connecting = false;
+                view.connected = connected.is_some();
+                view.server.clone_from(&previous_server);
+            }
+            if on_list {
+                let quiet = quiet_as(config, &options.name);
+                shared
+                    .lookouts
+                    .watch(&config.servers, previous_server.as_deref(), &quiet);
+            }
+            return Err(error);
+        }
+    };
+    {
+        let mut view = shared.view();
+        view.connecting = false;
+        view.connected = true;
+        view.outdated = false;
+        view.tunneled = client.tunneled();
+        view.error = None;
+        view.name = options.name.as_str().to_owned();
+        view.server_version = Some(client.welcome().server_version.as_str().to_owned());
+        view.session = Some(client.welcome().session_id.to_string());
+        view.rules = client.welcome().rules.clone();
+    }
     if let Some(file) = &config.remember {
         let mut remembered = Remembered::load(file);
         remembered.server = Some(server.to_owned());
@@ -1935,7 +1981,8 @@ async fn connect_to(
         }
     }
     // The other listed servers, watched from here on.
-    shared.watch_others(config, server, &options.name);
+    drop(previous);
+    shared.watch_others(config, server, &options.name).await;
     *connected = Some(Connected {
         options: options.again_after(&client),
         client,
@@ -1986,6 +2033,133 @@ async fn connect_closest(
     result
 }
 
+/// Builds page `page` of the globally merged public-room list. Each server's
+/// first `page + 1` local pages may contribute to it, so earlier results are
+/// cached while the player pages through the combined list.
+async fn global_room_page(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    current: &Connected,
+    home: &servers::ListedServer,
+    page: u16,
+) -> Result<(api::RoomList, Vec<(String, String)>), String> {
+    {
+        let mut cache = shared
+            .room_pages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if page == 0
+            || cache
+                .home
+                .as_deref()
+                .is_none_or(|cached| !same_server(cached, &home.address))
+        {
+            *cache = RoomPageCache {
+                home: Some(home.address.clone()),
+                pages: HashMap::new(),
+            };
+        }
+    }
+
+    let mut sources = vec![(
+        home.clone(),
+        Some(current.client.rtt()),
+        current.client.requests(),
+        true,
+    )];
+    sources.extend(
+        shared
+            .lookouts
+            .up(&config.servers)
+            .into_iter()
+            .map(|(server, requests, ping)| (server, Some(ping), requests, false)),
+    );
+
+    let mut fetched: Vec<(servers::ListedServer, Option<Duration>, u16, RoomPage)> = Vec::new();
+    let mut unknown_more = false;
+    for (server, ping, requests, is_home) in sources {
+        let mut local_pages = Vec::new();
+        for page_index in 0..=page {
+            if local_pages
+                .last()
+                .is_some_and(|previous: &RoomPage| !previous.more)
+            {
+                break;
+            }
+            let key = (server.address.clone(), page_index);
+            let cached = shared
+                .room_pages
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pages
+                .get(&key)
+                .cloned();
+            let listed = match cached {
+                Some(listed) => listed,
+                None => match servers::list(&requests, page_index).await {
+                    Some(listed) => {
+                        shared
+                            .room_pages
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .pages
+                            .insert(key, listed.clone());
+                        listed
+                    }
+                    None if is_home => {
+                        return Err("the server did not return its room list".into());
+                    }
+                    None => {
+                        unknown_more |= local_pages
+                            .last()
+                            .is_some_and(|previous: &RoomPage| previous.more);
+                        break;
+                    }
+                },
+            };
+            let has_more = listed.more;
+            local_pages.push(listed);
+            if !has_more {
+                break;
+            }
+        }
+        fetched.extend(
+            local_pages
+                .into_iter()
+                .enumerate()
+                .map(|(page_index, listed)| {
+                    (
+                        server.clone(),
+                        ping,
+                        u16::try_from(page_index).unwrap_or(u16::MAX),
+                        listed,
+                    )
+                }),
+        );
+    }
+
+    let merging: Vec<servers::Page<'_>> = fetched
+        .iter()
+        .map(|(server, ping, page_index, listed)| servers::Page {
+            server,
+            ping: *ping,
+            page_index: *page_index,
+            page: listed,
+        })
+        .collect();
+    let (mut list, _) = servers::merge(page, &merging);
+    list.more |= unknown_more;
+    let routes = fetched
+        .iter()
+        .flat_map(|(server, _, _, page)| {
+            page.rooms
+                .iter()
+                .map(|room| (room.invite.to_string(), server.address.clone()))
+        })
+        .collect();
+    Ok((list, routes))
+}
+
 /// Before a room is created on the release's servers: moves to the closest
 /// of them, if that is not the one played on. Pings within
 /// [`servers::TIE_MARGIN`] keep the one played on. Should the closest not
@@ -2002,7 +2176,7 @@ async fn move_to_closest(
     let name = current.options.name.clone();
     let ping = current.client.rtt();
     // Lookouts run, as the player is connected; started if they did not.
-    shared.watch_others(config, &here, &name);
+    shared.watch_others(config, &here, &name).await;
     let pings = shared
         .lookouts
         .pings(&config.servers, Some((&here, ping)))
@@ -2209,7 +2383,7 @@ async fn set_server(
         view.session = None;
         view.name.clone()
     };
-    shared.lookouts.stop();
+    shared.lookouts.stop().await;
     info!(%server, chosen = chosen.is_some(), on_list, "the player set the server");
     if was_connected {
         let name = Text::new(name.trim()).map_err(|_| "that name is too long".to_owned())?;

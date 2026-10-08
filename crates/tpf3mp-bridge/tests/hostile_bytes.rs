@@ -249,6 +249,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         },
         ToAgent::Lobby(LobbyAction::Join {
             invite: Text::new("tpf3mp.example.org:29470 K7QM2X").unwrap(),
+            server: None,
             password: Some(Text::new("pw").unwrap()),
         }),
         ToAgent::Lobby(LobbyAction::ChooseStart {
