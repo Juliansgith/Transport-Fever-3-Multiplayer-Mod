@@ -387,7 +387,8 @@ derived (`WorldModel::TPF2_BUILD_35924`), until TF3's are measured.
 
 Shipped, Big Maps would be a native package of the project's signed index,
 its features switched on by the launcher instead of by hand
-([NATIVE_MODS.md](NATIVE_MODS.md), proposed D29).
+([NATIVE_MODS.md](NATIVE_MODS.md), approved D29). The signed-index
+framework does not yet ship a Big Maps package or player-facing manager.
 
 `cargo run -p tpf3mp-bigmap -- ladder` prints the ladder under a settings
 file (`--config`, the example is `crates/tpf3mp-bigmap/tpf3mp_bigmap.example.toml`,
