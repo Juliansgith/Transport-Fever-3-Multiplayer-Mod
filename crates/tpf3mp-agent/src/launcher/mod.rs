@@ -1827,7 +1827,7 @@ fn begin_session(
         view.invite = Some(invite_for_copy(
             &invite,
             view.server.as_deref(),
-            config.servers.len() >= 2,
+            config.server_fixed || config.servers.len() >= 2,
         ));
         view.in_room = true;
         view.error = None;
@@ -1841,10 +1841,10 @@ fn begin_session(
     Ok(())
 }
 
-/// A regional launcher resolves a bare invite across its trusted list. A
+/// Fixed-server and regional launchers copy a bare invite code. A dynamic
 /// one-server playtest names its server so another launcher can connect too.
-fn invite_for_copy(invite: &Invite, server: Option<&str>, regional: bool) -> String {
-    if regional {
+fn invite_for_copy(invite: &Invite, server: Option<&str>, code_only: bool) -> String {
+    if code_only {
         invite.to_string()
     } else if let Some(server) = server.filter(|server| !server.is_empty()) {
         format!("{server} {invite}")
@@ -3035,7 +3035,7 @@ mod tests {
     }
 
     #[test]
-    fn copied_invites_name_a_server_only_for_single_server_playtests() {
+    fn copied_invites_name_a_server_only_for_dynamic_single_server_playtests() {
         let invite = Invite("K7QM2X".parse().unwrap());
         assert_eq!(
             invite_for_copy(&invite, Some("play.example:29470"), true),
