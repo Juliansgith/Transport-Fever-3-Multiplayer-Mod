@@ -2418,6 +2418,7 @@ impl Room {
             platform: self.members[order].platform,
             order,
             lanes,
+            loaded: self.members[order].loaded,
         };
         let notices = match &round.verdict {
             Some(verdict) => {
@@ -2528,7 +2529,7 @@ impl Room {
             debug!(room = %self.id, %player, event, "ignoring a report of a save this member never saw");
             return;
         }
-        let platform = member.platform;
+        let (platform, loaded) = (member.platform, member.loaded);
         let Phase::Running(game) = &mut self.phase else {
             return;
         };
@@ -2552,6 +2553,7 @@ impl Room {
                 platform,
                 order,
                 lanes,
+                loaded,
             },
             world,
         });
@@ -2866,6 +2868,22 @@ impl Room {
         }
         game.saves.wanted = waiting;
         let offered = game.saves.current.as_ref().map(Agreed::id);
+        // Every game handed the world, and every one already on it, plays
+        // from it now: what the others reported past its step came from
+        // worlds nobody plays any more.
+        let handed = game
+            .saves
+            .current
+            .as_ref()
+            .map(|agreed| (agreed.point.sealed_through, agreed.point.event, agreed.id()));
+        if !feeds.is_empty()
+            && let Some((step, event, world)) = handed
+        {
+            let forgotten = game.forget_reports_after(step, event, world, now);
+            if forgotten > 0 {
+                info!(room = %self.id, step, forgotten, "forgot reports past the world handed out from games that did not play it");
+            }
+        }
         let mut slow = Vec::new();
         for (index, (feed, stream_from)) in feeds {
             let member = &mut self.members[index];
@@ -3747,6 +3765,57 @@ impl Game {
         for step in &decided[..excess] {
             self.close_round(*step);
         }
+    }
+
+    /// Forgets every checkpoint and save report made past a snapshot by a
+    /// game that did not play from it. The room has just handed the snapshot
+    /// `world`, saved after `step` (its event `event`), so every game of the
+    /// room plays from it, or owes it (see `offer_worlds`). A game that keeps
+    /// its own world numbers its entities otherwise than one that loaded the
+    /// save, and the simulation depends on the ids (a vehicle bought after
+    /// the save starts at an offset made from its id), so the replayed steps
+    /// may rightly differ from what was reported before the load. Kept, those
+    /// reports made the room ignore a reloaded game's report of the same step
+    /// as a repeat, and judge a game that had not reported it yet against a
+    /// verdict the old worlds decided: a false divergence, and a rebase.
+    /// A round that loses reports is decided again from the ones it keeps,
+    /// with a fresh deadline; one that loses all of them is dropped, and a
+    /// report opens it again unless a later round closed since (then that
+    /// step goes unchecked, as any closed round's). Returns how many
+    /// reports it forgot.
+    fn forget_reports_after(
+        &mut self,
+        step: u64,
+        event: u64,
+        world: SnapshotId,
+        now: Instant,
+    ) -> usize {
+        let current = Some(world);
+        let mut forgotten = 0;
+        let mut emptied = Vec::new();
+        for (&at, round) in self.rounds.range_mut(step.saturating_add(1)..) {
+            let before = round.reports.len();
+            round.reports.retain(|report| report.loaded == current);
+            if round.reports.len() == before {
+                continue;
+            }
+            forgotten += before - round.reports.len();
+            if round.reports.is_empty() {
+                emptied.push(at);
+            } else {
+                round.verdict = None;
+                round.opened = now;
+            }
+        }
+        for at in emptied {
+            self.rounds.remove(&at);
+        }
+        for (_, round) in self.saves.rounds.range_mut(event.saturating_add(1)..) {
+            let before = round.reports.len();
+            round.reports.retain(|save| save.report.loaded == current);
+            forgotten += before - round.reports.len();
+        }
+        forgotten
     }
 
     fn close_round(&mut self, step: u64) {
@@ -4635,6 +4704,130 @@ mod tests {
         assert_eq!(taken, ROOM_SECRETS_PER_WINDOW);
         // A new window gives them back.
         assert!(budget.take(&player(1), now + SECRET_WINDOW));
+    }
+
+    /// A checkpoint report of lane 3 with `value`, from a game that played
+    /// `loaded`.
+    fn lane_report(n: u8, value: u8, loaded: Option<SnapshotId>) -> Report {
+        Report {
+            player: player(n),
+            platform: Platform::current(),
+            order: usize::from(n),
+            lanes: vec![LaneDigest {
+                lane: 3,
+                digest: FixedBytes([value; 32]),
+            }],
+            loaded,
+        }
+    }
+
+    /// The production desync of 2026-10-06 (room r-61f8…): three games
+    /// played to steps 9171-9600 on the start world, the room then handed
+    /// all of them its save of step 8208, and their replays, renumbered by
+    /// the load, rightly differed from what they had played. The room kept
+    /// the rounds the old worlds decided, ignored two replays' reports as
+    /// repeats and judged the third against the old verdict: "diverged at
+    /// step 9200, lanes [3, 4]", and a needless rebase. Handing the world
+    /// out forgets every report past its step from games that did not play
+    /// it.
+    #[test]
+    fn a_world_handed_out_forgets_what_older_worlds_reported_past_it() {
+        let start = Some(SnapshotId(FixedBytes([1; 32])));
+        let world = SnapshotId(FixedBytes([2; 32]));
+        let now = Instant::now();
+        let mut game = Game::new(RoomSettings::DEFAULT, 1);
+        let mut decided = |step: u64, reports: Vec<Report>| {
+            let mut round = Round {
+                opened: now,
+                reports,
+                verdict: None,
+            };
+            assert!(decide_round(&mut round).is_empty());
+            game.rounds.insert(step, round);
+        };
+        // Before the save: the old worlds agreed, and nothing replays it.
+        decided(
+            8200,
+            vec![lane_report(1, 7, start), lane_report(2, 7, start)],
+        );
+        // Past the save, live: Porkster and Brad decided step 9200.
+        decided(9150, (1..=3).map(|n| lane_report(n, 8, start)).collect());
+        decided(
+            9200,
+            vec![lane_report(1, 9, start), lane_report(2, 9, start)],
+        );
+        // A game already on the world reported step 9250 from it.
+        decided(
+            9250,
+            vec![lane_report(1, 5, start), lane_report(2, 5, Some(world))],
+        );
+        game.rounds_closed_through = 8000;
+        // A save past the snapshot's event, reported from both worlds.
+        let point = |event: u64| SavePoint {
+            event,
+            after_turn: event,
+            history: 1,
+            sealed_through: 9300,
+        };
+        let save_report = |n: u8, loaded: Option<SnapshotId>| SaveReport {
+            report: lane_report(n, 1, loaded),
+            world: None,
+        };
+        game.saves.rounds.insert(
+            600,
+            SaveRound {
+                point: point(600),
+                opened: now,
+                reports: vec![save_report(1, start), save_report(2, Some(world))],
+            },
+        );
+        game.saves.rounds.insert(
+            500,
+            SaveRound {
+                point: point(500),
+                opened: now,
+                reports: vec![save_report(1, start)],
+            },
+        );
+
+        assert_eq!(game.forget_reports_after(8208, 556, world, now), 7);
+
+        let steps: Vec<u64> = game.rounds.keys().copied().collect();
+        assert_eq!(
+            steps,
+            [8200, 9250],
+            "rounds only old worlds reported are gone"
+        );
+        assert_eq!(game.rounds[&8200].reports.len(), 2, "before the save: kept");
+        assert!(game.rounds[&8200].verdict.is_some());
+        let mixed = &game.rounds[&9250];
+        assert_eq!(mixed.reports.len(), 1, "only the report from the world");
+        assert_eq!(mixed.reports[0].player, player(2));
+        assert!(mixed.verdict.is_none(), "decided again from what is left");
+        assert_eq!(game.rounds_closed_through, 8000, "nothing reopens below it");
+        let later = &game.saves.rounds[&600].reports;
+        assert_eq!(later.len(), 1);
+        assert_eq!(later[0].report.player, player(2));
+        assert_eq!(
+            game.saves.rounds[&500].reports.len(),
+            1,
+            "before the save: kept"
+        );
+
+        // The replays now report steps 9150 and 9200 afresh, and their own
+        // agreement decides them.
+        for step in [9150, 9200] {
+            let mut round = Round {
+                opened: now,
+                reports: Vec::new(),
+                verdict: None,
+            };
+            for n in 1..=3 {
+                round.reports.push(lane_report(n, 4, Some(world)));
+            }
+            assert!(decide_round(&mut round).is_empty(), "step {step}");
+            assert!(game.rounds.insert(step, round).is_none());
+        }
     }
 
     fn test_member() -> Member {

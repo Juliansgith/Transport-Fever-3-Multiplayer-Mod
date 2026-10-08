@@ -145,7 +145,10 @@ world: street and track graphs with node snapping and edge splits within
 BUILDING.md's tolerances, constructions (stations and depots by file
 name), stops on edges, vehicles, lines, terrain and companies with
 money. Vehicles on lines carry passengers between stations, with fares
-and upkeep, driven by a seeded generator. An action is applied whole or
+and upkeep, driven by a seeded generator. Vehicles and stations have
+names and vehicles a colour, set as their windows set them (`Rename`,
+`VehicleOp` `Recolor`) and only by the company that owns them; the
+`line-editing` and `two-companies` scenarios check both. An action is applied whole or
 not at all. An edge with a stop on it is removed only where the same build
 rebuilds it between the same ends (an upgrade tool's build), and the stop
 stays; the `upgrades` scenario plays that, an electrified track and a

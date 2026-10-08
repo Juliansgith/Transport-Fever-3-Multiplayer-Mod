@@ -10,7 +10,8 @@
 //! so the hook's cost can be set against the game's.
 //!
 //! Every [`WINDOW`] of wall time the step detour takes the counters and
-//! writes two lines to hook.log ([`lines`]). [`ENV`] set to `0` turns the
+//! writes two lines to hook.log ([`lines`]), then the game's own systems'
+//! (`crate::simperf`, the `perf: sim` line). [`ENV`] set to `0` turns the
 //! timing off; it is on otherwise, because a timed call costs two reads of
 //! the clock and two atomic adds, about 56 ns (measured on the development
 //! PC, see the `a_timed_call_costs_two_clock_reads` benchmark), against
@@ -21,17 +22,123 @@
 
 use std::{
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
 /// The game's environment: `0` (or `off`, `false`, `no`) turns the timing
-/// and its lines off; anything else, or unset, leaves them on.
+/// and its lines off; anything else, or unset, leaves them on. [`FULL`]
+/// also counts the game's component lookups (`crate::fastindex`).
 pub const ENV: &str = "TPF3MP_HOOK_PERF";
+/// [`ENV`]'s value that also counts `GetComponentDataIndex`'s calls, a
+/// few cycles on each of millions of calls a second, so not by default.
+pub const FULL: &str = "full";
 /// The wall time between two `perf:` line pairs.
 pub const WINDOW: Duration = Duration::from_secs(10);
+
+const STEP_BUCKETS: usize = 5;
+
+/// A window of selected step counts. `room` is the room's actual
+/// `Updates::Exactly` answer; `outside` is an exact answer on a non-room
+/// call; `own_speed` is a call whose update count comes from the game.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StepWindow {
+    room: [u64; STEP_BUCKETS],
+    outside: [u64; STEP_BUCKETS],
+    own_speed: u64,
+    max_zero_run: u64,
+    max_call_start_gap_ns: u64,
+}
+
+/// Allocation-free counters for the selected answer to each GameSim::Step
+/// call. The detour records on the simulation thread; atomics keep taking a
+/// window independent of the existing per-piece timing counters.
+struct StepCounters {
+    room: [AtomicU64; STEP_BUCKETS],
+    outside: [AtomicU64; STEP_BUCKETS],
+    own_speed: AtomicU64,
+    zero_run: AtomicU64,
+    zero_run_at_window_start: AtomicU64,
+    max_zero_run: AtomicU64,
+    previous_start_ns: AtomicU64,
+    max_call_start_gap_ns: AtomicU64,
+}
+
+impl StepCounters {
+    const fn new() -> Self {
+        Self {
+            room: [const { AtomicU64::new(0) }; STEP_BUCKETS],
+            outside: [const { AtomicU64::new(0) }; STEP_BUCKETS],
+            own_speed: AtomicU64::new(0),
+            zero_run: AtomicU64::new(0),
+            zero_run_at_window_start: AtomicU64::new(0),
+            max_zero_run: AtomicU64::new(0),
+            previous_start_ns: AtomicU64::new(0),
+            max_call_start_gap_ns: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, room: bool, updates: Option<u32>, start_ns: Option<u64>) {
+        match updates {
+            Some(updates) => {
+                let buckets = if room { &self.room } else { &self.outside };
+                buckets[step_bucket(updates)].fetch_add(1, Ordering::Relaxed);
+            }
+            None => {
+                self.own_speed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        if room && updates == Some(0) {
+            let run = self.zero_run.fetch_add(1, Ordering::Relaxed) + 1;
+            let began = self.zero_run_at_window_start.load(Ordering::Relaxed);
+            self.max_zero_run
+                .fetch_max(run.saturating_sub(began), Ordering::Relaxed);
+        } else {
+            self.zero_run.store(0, Ordering::Relaxed);
+            self.zero_run_at_window_start.store(0, Ordering::Relaxed);
+        }
+
+        if let Some(start_ns) = start_ns {
+            // One keeps zero as the "no prior call" sentinel.
+            let encoded = start_ns.saturating_add(1);
+            let previous = self.previous_start_ns.swap(encoded, Ordering::Relaxed);
+            if previous != 0 {
+                self.max_call_start_gap_ns
+                    .fetch_max(encoded.saturating_sub(previous), Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn take(&self) -> StepWindow {
+        let mut window = StepWindow::default();
+        for (count, bucket) in window.room.iter_mut().zip(self.room.iter()) {
+            *count = bucket.swap(0, Ordering::Relaxed);
+        }
+        for (count, bucket) in window.outside.iter_mut().zip(self.outside.iter()) {
+            *count = bucket.swap(0, Ordering::Relaxed);
+        }
+        window.own_speed = self.own_speed.swap(0, Ordering::Relaxed);
+        window.max_zero_run = self.max_zero_run.swap(0, Ordering::Relaxed);
+        window.max_call_start_gap_ns = self.max_call_start_gap_ns.swap(0, Ordering::Relaxed);
+        self.zero_run_at_window_start
+            .store(self.zero_run.load(Ordering::Relaxed), Ordering::Relaxed);
+        window
+    }
+}
+
+fn step_bucket(updates: u32) -> usize {
+    updates.min(4) as usize
+}
+
+fn step_start_ns(started: Instant, origin: Instant) -> u64 {
+    u64::try_from(started.saturating_duration_since(origin).as_nanos()).unwrap_or(u64::MAX)
+}
+
+static STEP_COUNTERS: StepCounters = StepCounters::new();
+static STEP_START_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
 /// A piece of the hook's work, timed on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +269,7 @@ impl Sample {
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
+static FULL_ON: AtomicBool = AtomicBool::new(false);
 static PIECES: [Counter; Piece::ALL.len()] = [const { Counter::new() }; Piece::ALL.len()];
 /// The game's `GameSim::Step`, one call per batch.
 static GAME: Counter = Counter::new();
@@ -176,11 +284,23 @@ pub fn wanted(value: Option<&str>) -> bool {
     crate::ticks::wanted(value)
 }
 
+/// Whether [`ENV`]'s value asks for the [`FULL`] timing.
+pub fn wanted_full(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim().eq_ignore_ascii_case(FULL))
+}
+
 /// Reads [`ENV`] and switches the timing on or off; `true` when on.
 pub fn configure_from_env() -> bool {
-    let on = wanted(std::env::var(ENV).ok().as_deref());
+    let value = std::env::var(ENV).ok();
+    let on = wanted(value.as_deref());
     ENABLED.store(on, Ordering::Release);
+    FULL_ON.store(on && wanted_full(value.as_deref()), Ordering::Release);
     on
+}
+
+/// Whether the [`FULL`] timing was asked for.
+pub fn full() -> bool {
+    FULL_ON.load(Ordering::Relaxed)
 }
 
 pub fn enabled() -> bool {
@@ -229,6 +349,19 @@ pub fn game_step(nanos: u64) {
     GAME.add(nanos);
 }
 
+/// Records the speed answer selected for one GameSim::Step call. `updates`
+/// is `None` when the step uses the game's own speed, whose update count is
+/// not known here. `room` keeps exact non-room answers out of room cadence.
+/// The call-start `Instant` is the one already read at detour entry.
+pub fn step_call(room: bool, updates: Option<u32>, started: Option<Instant>) {
+    let Some(started) = started else {
+        return;
+    };
+    let origin = *STEP_START_ORIGIN.get_or_init(|| started);
+    let start_ns = step_start_ns(started, origin);
+    STEP_COUNTERS.record(room, updates, Some(start_ns));
+}
+
 /// One simulation update began.
 pub fn update() {
     if enabled() {
@@ -250,6 +383,10 @@ pub struct Window {
     /// system.
     pub cache_hits: u64,
     pub cache_misses: u64,
+    /// Guarded reads ([`crate::image::guarded`]), and those a fault
+    /// refused.
+    pub guarded_reads: u64,
+    pub guarded_faults: u64,
 }
 
 /// The window's two lines: the game's step and the hook's total against
@@ -285,8 +422,8 @@ pub fn lines(window: &Window) -> [String; 2] {
         hook.millis() / seconds,
     );
     let first = format!(
-        "{first}; readable cache {} hits, {} misses",
-        window.cache_hits, window.cache_misses
+        "{first}; readable cache {} hits, {} misses; guarded reads {}, {} faults",
+        window.cache_hits, window.cache_misses, window.guarded_reads, window.guarded_faults
     );
     let mut second = String::from("perf: ");
     for (i, (piece, sample)) in Piece::ALL.iter().zip(window.pieces.iter()).enumerate() {
@@ -314,9 +451,39 @@ pub fn lines(window: &Window) -> [String; 2] {
     [first, second]
 }
 
+/// The selected call cadence, kept separate so the established two `perf:`
+/// lines retain their format.
+fn step_line(window: &StepWindow, seconds: f64) -> String {
+    let room = &window.room;
+    let outside = &window.outside;
+    let gap = if window.max_call_start_gap_ns == 0 {
+        "n/a".to_owned()
+    } else {
+        format!("{:.1} ms", window.max_call_start_gap_ns as f64 / 1e6)
+    };
+    format!(
+        "perf-step: {:.1}s: room updates/call 0:{} 1:{} 2:{} 3:{} 4+:{}; outside-room exact calls 0:{} 1:{} 2:{} 3:{} 4+:{}; own-speed calls {} (updates unknown); max consecutive zero-update room calls {}; max call-start gap {}",
+        seconds.max(1e-9),
+        room[0],
+        room[1],
+        room[2],
+        room[3],
+        room[4],
+        outside[0],
+        outside[1],
+        outside[2],
+        outside[3],
+        outside[4],
+        window.own_speed,
+        window.max_zero_run,
+        gap,
+    )
+}
+
 /// Takes every counter, zero again, into a window of `seconds`.
 fn take(seconds: f64) -> Window {
     let (cache_hits, cache_misses) = crate::image::take_counts();
+    let (guarded_reads, guarded_faults) = crate::image::take_guarded_counts();
     let mut pieces = [Sample::default(); Piece::ALL.len()];
     for (sample, counter) in pieces.iter_mut().zip(PIECES.iter()) {
         *sample = counter.take();
@@ -329,12 +496,15 @@ fn take(seconds: f64) -> Window {
         road_refusals: crate::order::road::take_refusals(),
         cache_hits,
         cache_misses,
+        guarded_reads,
+        guarded_faults,
     }
 }
 
 /// From the step detour after each call: once a window has passed, its
-/// lines for the log. The first call starts the first window.
-pub fn tick(now: Instant) -> Option<[String; 2]> {
+/// lines for the log, the game's own systems' last
+/// ([`crate::simperf::line`]). The first call starts the first window.
+pub fn tick(now: Instant) -> Option<Vec<String>> {
     if !enabled() {
         return None;
     }
@@ -343,6 +513,8 @@ pub fn tick(now: Instant) -> Option<[String; 2]> {
         *start = Some(now);
         // Whatever ran before the first step belongs to no window.
         let _ = take(0.0);
+        let _ = STEP_COUNTERS.take();
+        let _ = crate::simperf::take();
         return None;
     };
     let elapsed = now.saturating_duration_since(began);
@@ -351,7 +523,14 @@ pub fn tick(now: Instant) -> Option<[String; 2]> {
     }
     *start = Some(now);
     drop(start);
-    Some(lines(&take(elapsed.as_secs_f64())))
+    let window = take(elapsed.as_secs_f64());
+    let mut out = lines(&window).to_vec();
+    out.push(step_line(&STEP_COUNTERS.take(), elapsed.as_secs_f64()));
+    out.extend(crate::simperf::line(
+        &crate::simperf::take(),
+        window.updates,
+    ));
+    Some(out)
 }
 
 #[cfg(test)]
@@ -403,6 +582,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn selected_update_buckets_keep_room_outside_and_own_speed_separate() {
+        let counters = StepCounters::new();
+        for updates in [0, 1, 2, 3, 4, 16] {
+            counters.record(true, Some(updates), None);
+        }
+        counters.record(false, Some(2), None);
+        counters.record(false, Some(9), None);
+        counters.record(true, None, None);
+
+        let window = counters.take();
+        assert_eq!(window.room, [1, 1, 1, 1, 2]);
+        assert_eq!(window.outside, [0, 0, 1, 0, 1]);
+        assert_eq!(window.own_speed, 1);
+
+        let reset = counters.take();
+        assert_eq!(reset.room, [0; STEP_BUCKETS]);
+        assert_eq!(reset.outside, [0; STEP_BUCKETS]);
+        assert_eq!(reset.own_speed, 0);
+    }
+
+    #[test]
+    fn only_adjacent_room_zero_update_calls_form_the_window_maximum() {
+        let counters = StepCounters::new();
+        counters.record(true, Some(0), None);
+        counters.record(true, Some(0), None);
+        counters.record(false, Some(0), None);
+        counters.record(true, Some(0), None);
+        counters.record(true, None, None);
+        counters.record(true, Some(0), None);
+        assert_eq!(counters.take().max_zero_run, 2);
+
+        counters.record(true, Some(0), None);
+        counters.record(true, Some(0), None);
+        assert_eq!(counters.take().max_zero_run, 2);
+    }
+
+    #[test]
+    fn call_start_gap_keeps_the_window_max_and_resets_it_on_take() {
+        let counters = StepCounters::new();
+        counters.record(true, Some(1), Some(100));
+        counters.record(true, Some(1), Some(150));
+        counters.record(false, None, Some(210));
+        assert_eq!(counters.take().max_call_start_gap_ns, 60);
+
+        counters.record(true, Some(1), Some(300));
+        assert_eq!(counters.take().max_call_start_gap_ns, 90);
+    }
+
+    #[test]
+    fn call_start_timestamp_uses_the_detours_existing_instant() {
+        let origin = Instant::now();
+        assert_eq!(
+            step_start_ns(origin + Duration::from_millis(7), origin),
+            7_000_000
+        );
+    }
+
+    #[test]
+    fn step_line_names_the_separate_cadence_fields_and_buckets() {
+        let window = StepWindow {
+            room: [1, 2, 3, 4, 5],
+            outside: [5, 4, 3, 2, 1],
+            own_speed: 7,
+            max_zero_run: 6,
+            max_call_start_gap_ns: 1_250_000_000,
+        };
+        assert_eq!(
+            step_line(&window, 10.0),
+            "perf-step: 10.0s: room updates/call 0:1 1:2 2:3 3:4 4+:5; outside-room exact calls 0:5 1:4 2:3 3:2 4+:1; own-speed calls 7 (updates unknown); max consecutive zero-update room calls 6; max call-start gap 1250.0 ms"
+        );
+    }
+
     fn window() -> Window {
         let mut pieces = [Sample::default(); Piece::ALL.len()];
         pieces[Piece::RoadEntry as usize] = Sample {
@@ -426,8 +678,10 @@ mod tests {
             updates: 600,
             pieces,
             road_refusals: vec![("the edge's entity has no slot", 12)],
-            cache_hits: 90_000,
-            cache_misses: 1_200,
+            cache_hits: 0,
+            cache_misses: 0,
+            guarded_reads: 90_000,
+            guarded_faults: 3,
         }
     }
 
@@ -437,7 +691,7 @@ mod tests {
         assert_eq!(
             first,
             "perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates \
-             (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses"
+             (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 0 hits, 0 misses; guarded reads 90000, 3 faults"
         );
     }
 
@@ -489,6 +743,11 @@ mod tests {
         assert!(wanted(Some("1")));
         for off in ["0", "off", "false", "no"] {
             assert!(!wanted(Some(off)), "{off}");
+        }
+        assert!(wanted(Some("full")));
+        assert!(wanted_full(Some(" FULL ")));
+        for not_full in [None, Some("1"), Some("0"), Some("fully")] {
+            assert!(!wanted_full(not_full), "{not_full:?}");
         }
     }
 

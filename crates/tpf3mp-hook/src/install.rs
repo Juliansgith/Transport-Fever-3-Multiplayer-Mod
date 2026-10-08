@@ -415,6 +415,8 @@ unsafe fn run_step(
     crate::image::invalidate();
     let perf = crate::perf::start();
     let started = crate::steptrace::step_timer(perf, crate::steptrace::enabled());
+    // The free-id trace learns which engine this game simulates.
+    crate::persons::freed_ids::trace::note_step(this as u64, room);
     crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
@@ -430,6 +432,21 @@ unsafe fn run_step(
     UPDATES.store(OWN_SPEED, Ordering::Release);
 }
 
+/// Closes the per-call timing window after the detour has done its work.
+fn finish_perf(started: Option<Instant>) {
+    if let Some(started) = started {
+        let total = crate::perf::nanos_since(started);
+        let game = STEP_GAME_NANOS.swap(0, Ordering::Relaxed);
+        crate::perf::add(crate::perf::Piece::Gate, total.saturating_sub(game));
+        // Once a window: the timing's established pair and the step line.
+        if let Some(lines) = crate::perf::tick(Instant::now()) {
+            for line in lines {
+                log_line(&line);
+            }
+        }
+    }
+}
+
 /// After a batch of the room's steps `first..first + updates`: at a
 /// checkpoint, and at the first batch after a world was loaded, the game's
 /// two counters go to the log with the room's step, for two games' logs to
@@ -440,6 +457,11 @@ fn log_counters(first: u64, updates: u32, checkpoint: bool) {
     if checkpoint || before.saturating_add(1) != first {
         let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
         log_line(&crate::ticks::checkpoint_line(last, counters));
+        // The free-id queue's fingerprint (docs/HOOKS.md, "The free-id
+        // trace").
+        if let Some(line) = crate::persons::freed_ids::trace::checkpoint_line(last) {
+            log_line(&line);
+        }
         // The road entry trace's digest of the in-step appends since the
         // last checkpoint (docs/HOOKS.md, "The road entry trace").
         if let Some(line) = crate::roadtrace::take_checkpoint(last) {
@@ -467,9 +489,12 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     if BROKEN.load(Ordering::Acquire) {
         // SAFETY: the game's step on its paused path: the world stands still.
         unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        crate::perf::step_call(false, Some(0), started);
+        finish_perf(started);
         return;
     }
     let mut ran = false;
+    let mut selected: Option<(Updates, bool)> = None;
     // What this call answered, and why, for the step trace.
     let mut answered: Option<(Updates, bool)> = None;
     let mut why: &'static str = "own";
@@ -478,6 +503,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         let Some(driver) = driver.as_mut() else {
             ran = true;
             answered = Some((Updates::Own, false));
+            selected = Some((Updates::Own, false));
             // SAFETY: the game's own step, called as the game called it.
             unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
@@ -487,6 +513,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
             answered = Some((batch.updates, batch.lanes));
+            selected = Some((batch.updates, batch.room));
             let updates = match batch.updates {
                 Updates::Exactly(updates) => updates,
                 Updates::Own => 0,
@@ -500,6 +527,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                     lua::end_batch()
                 }
                 Err(reason) => {
+                    selected = Some((Updates::Exactly(0), batch.room));
                     unsafe { run_step(original, Updates::Exactly(0), batch.room, this, a, b, c) };
                     Err(reason)
                 }
@@ -536,9 +564,17 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         BROKEN.store(true, Ordering::Release);
         UPDATES.store(OWN_SPEED, Ordering::Release);
         if !ran {
+            selected = Some((Updates::Exactly(0), false));
             // SAFETY: as above.
             unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
         }
+    }
+    if let Some((updates, room)) = selected {
+        let updates = match updates {
+            Updates::Own => None,
+            Updates::Exactly(updates) => Some(updates),
+        };
+        crate::perf::step_call(room, updates, started);
     }
     if let (Some(at), Some((updates, lanes))) = (traced_at, answered) {
         let updates = match updates {
@@ -554,18 +590,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             log.lines(&lines);
         }
     }
-    if let Some(started) = started {
-        let total = crate::perf::nanos_since(started);
-        let game = STEP_GAME_NANOS.swap(0, Ordering::Relaxed);
-        crate::perf::add(crate::perf::Piece::Gate, total.saturating_sub(game));
-        // Once a window: the timing's two lines (their own write is the
-        // next window's gate).
-        if let Some(lines) = crate::perf::tick(std::time::Instant::now()) {
-            for line in lines {
-                log_line(&line);
-            }
-        }
-    }
+    finish_perf(started);
 }
 
 /// The main menu's Multiplayer window asks (crate::menu_entry): its actions
@@ -864,6 +889,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     } else {
         format!("perf: timing off ({} says so)", crate::perf::ENV)
     });
+    // Guarded reads (docs/HOOKS.md, "Reading the game's memory"): the
+    // handler goes in before any fix reads.
+    log_line(&crate::image::guarded::configure_from_env());
     if let Some(line) = crate::steptrace::configure_from_env() {
         log_line(&line);
     }
@@ -907,6 +935,15 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     for line in crate::streettrace::install(&absolute) {
         log_line(&line);
     }
+    // The game's own systems timed (crate::simperf) and the faster component
+    // lookup (crate::fastindex), each failing closed on its own.
+    for line in crate::simperf::install(&absolute, base as u64) {
+        log_line(&line);
+    }
+    log_line(&crate::fastindex::install(&absolute));
+    // The fused emission grid (crate::emission): bit-identical, on unless
+    // TPF3MP_HOOK_FAST_EMISSION=0.
+    log_line(&crate::emission::install(&absolute));
     Ok(step_rva)
 }
 
@@ -1234,6 +1271,9 @@ mod tests {
         forget_menu_sight();
         crate::menu::tests::menu51();
         assert!(!crate::menu::available());
+        // Other serialized tests have stepped a world. This scenario models
+        // a fresh process, so its last-step clock must start fresh as well.
+        LAST_STEP.store(0, Ordering::Release);
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
         script.gates.push_back(StepGate::Wait);
@@ -1243,6 +1283,10 @@ mod tests {
             script,
             Box::new(FakeControl::default()),
         )));
+        // No step ran in this game: a test that ran the step's detour
+        // before this one leaves its time behind, and the menu then waits
+        // for the world it thinks is closing.
+        LAST_STEP.store(0, Ordering::Release);
         let mut cmenu = [0usize; 3];
         crate::menu::set_load_field(16);
         let at = cmenu.as_mut_ptr() as usize;

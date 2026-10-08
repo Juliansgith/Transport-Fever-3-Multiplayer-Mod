@@ -112,10 +112,18 @@ Start the launcher from the package:
 
 It opens the TPF3-MP window. Keep it open while you play: it holds your
 connection to the server, closing it ends your session, and during a game
-it asks first. On a system where the window cannot open, the launcher
-opens the same launcher as a page in your browser instead (`--browser`
-does so on purpose); that page works only on your own machine, in the tab
-the launcher opened, and has the whole lobby in it.
+it asks first. If the native window cannot open or stops working, the
+launcher opens the same launcher as a page in your browser instead
+(`--browser` does so on purpose); that page works only on your own machine,
+in the tab the launcher opened, and has the whole lobby in it. When the
+window fails, the page takes over the existing launcher session, including
+its room and game link. If Windows cannot open the page automatically, a
+Windows dialog shows the private address and copies it to the clipboard when
+available; otherwise it explains how to copy the address from the dialog.
+Paste it into a browser on this computer. If the configured local port is
+already in use, the launcher tries another loopback port. If it still cannot
+serve the page, a Windows notice explains why; the existing session remains
+connected, so keep the launcher running while you play.
 
 The window starts the game and shows where things stand; you play from the
 game's own **Multiplayer** button (next section).
@@ -428,8 +436,19 @@ protected folder such as Program Files.
   loans, up to four loans at once. An offer you take goes on a four-to-eight
   month cooldown before that slot gets a new offer; the interest and
   repayments are your company's alone.
-- **Subsidies, entity renaming, vehicle recolouring, line waypoints, bridge/tunnel
-  window type changes, Industry Greenification marketing campaigns and Historic Preservation.**
+- **Renaming and recolouring.** Rename a station, a vehicle, a town or a
+  depot from its window or the line manager, and recolour a vehicle from
+  its window, as usual: every player's game applies it.
+- **Subsidies.** Accept or decline a subsidy offer from its card as
+  usual. An offer is everyone's until a company takes it: the first to
+  accept gets it, and it leaves every player's list. A subsidy you took is
+  your company's alone: the money up front, the reward and the penalty are
+  booked to it, and only your company's lines count towards it. The
+  game's subsidy cards show every taken subsidy as accepted, another
+  company's too. A "Transport Workers" subsidy still completes by anyone's
+  commuters.
+- **Line waypoints, bridge/tunnel window type changes, Industry
+  Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).

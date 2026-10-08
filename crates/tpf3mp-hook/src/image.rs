@@ -7,12 +7,17 @@
 //!
 //! [`readable`] asks the system every time (`VirtualQuery`, a system call:
 //! about a microsecond, tens of microseconds inside Sandboxie, which hooks
-//! system calls). The hot paths check through [`Readable`] instead, whose
-//! per-thread cache remembers the regions found readable until
-//! [`invalidate`], which the hook calls before every simulation update and
-//! at every world change.
+//! system calls). The hot paths check and read through [`Readable`]
+//! instead, which reads through [`guarded`]: no system call, a fault on a
+//! misread address refused by the hook's vectored handler. With guarded
+//! reads off (`TPF3MP_HOOK_GUARDED_READS=0`) it checks with `VirtualQuery`
+//! through a per-thread cache that remembers the regions found readable
+//! until [`invalidate`], which the hook calls before every simulation
+//! update and at every world change.
 
 #![allow(unsafe_code)]
+
+pub mod guarded;
 
 use std::{
     cell::RefCell,
@@ -192,6 +197,96 @@ impl<const N: usize> Default for EpochCache<N> {
     }
 }
 
+/// Regions found readable this epoch by any thread, sorted by base and
+/// never overlapping: the level behind each thread's [`RegionCache`]. The
+/// hook's reads run on up to all of the game's threads, and each thread's
+/// own cache is dropped every update, so without it every thread asked the
+/// system again for the regions another had just asked about (about 4.5
+/// system calls per road-fix append, on every map size).
+#[derive(Debug, Default)]
+pub struct SharedRegions {
+    epoch: u64,
+    regions: Vec<(usize, usize)>,
+}
+
+impl SharedRegions {
+    /// Regions kept at most; past it the list starts over (a cost, never a
+    /// wrong answer).
+    pub const MAX: usize = 1 << 16;
+
+    pub const fn new() -> Self {
+        Self {
+            epoch: 0,
+            regions: Vec::new(),
+        }
+    }
+
+    /// The remembered region holding `at` in `epoch`, if any.
+    pub fn lookup(&self, epoch: u64, at: usize) -> Option<(usize, usize)> {
+        if epoch != self.epoch {
+            return None;
+        }
+        let i = self.regions.partition_point(|&(base, _)| base <= at);
+        let (base, end) = *self.regions.get(i.checked_sub(1)?)?;
+        (base <= at && at < end).then_some((base, end))
+    }
+
+    /// Remembers `[base, end)` for `epoch`: a later epoch forgets the
+    /// rest first, an earlier one (a check that began before an
+    /// invalidation) is not kept. Overlapping or touching regions merge.
+    pub fn insert(&mut self, epoch: u64, base: usize, end: usize) {
+        if epoch < self.epoch || base >= end {
+            return;
+        }
+        if epoch > self.epoch || self.regions.len() >= Self::MAX {
+            self.epoch = epoch;
+            self.regions.clear();
+        }
+        let first = self.regions.partition_point(|&(_, e)| e < base);
+        let last = self.regions.partition_point(|&(b, _)| b <= end);
+        let (mut base, mut end) = (base, end);
+        if first < last {
+            base = base.min(self.regions[first].0);
+            end = end.max(self.regions[last - 1].1);
+        }
+        self.regions
+            .splice(first..last, std::iter::once((base, end)));
+    }
+
+    /// How many regions are remembered.
+    pub fn len(&self) -> usize {
+        self.regions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+}
+
+static SHARED_REGIONS: std::sync::RwLock<SharedRegions> =
+    std::sync::RwLock::new(SharedRegions::new());
+
+thread_local! {
+    /// The system calls this thread's last check made.
+    static ASKED_SYSTEM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The region holding `at`: from the shared level if another thread
+/// already asked this epoch, else from the system, then shared.
+fn shared_query(epoch: u64, at: usize) -> Option<(usize, usize)> {
+    if let Ok(shared) = SHARED_REGIONS.read()
+        && let Some(region) = shared.lookup(epoch, at)
+    {
+        return Some(region);
+    }
+    ASKED_SYSTEM.with(|asked| asked.set(asked.get() + 1));
+    let region = query(at)?;
+    if let Ok(mut shared) = SHARED_REGIONS.write() {
+        shared.insert(epoch, region.0, region.1);
+    }
+    Some(region)
+}
+
 /// The epoch of every thread's [`Readable`] cache. Starts at 1, so a fresh
 /// cache (epoch 0) is always refilled.
 static EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -199,8 +294,16 @@ static EPOCH: AtomicU64 = AtomicU64::new(1);
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
 
+/// Regions each thread's cache remembers. 8 was enough on stock maps; a
+/// big map's world spreads over far more heap regions, and with 8 the road
+/// fix's walk evicted regions it needed again within the same update: on a
+/// 100 x 1000 tile world a fifth of all checks (230,000 per 10 s) asked
+/// `VirtualQuery`, 12% of the simulation thread's working time. A hit is a
+/// short scan, a miss a system call, so the list can be longer.
+pub const REGIONS_PER_THREAD: usize = 32;
+
 thread_local! {
-    static SHARED: RefCell<EpochCache<8>> = const { RefCell::new(EpochCache::new()) };
+    static SHARED: RefCell<EpochCache<REGIONS_PER_THREAD>> = const { RefCell::new(EpochCache::new()) };
 }
 
 /// Forgets every region every thread's [`Readable`] cache remembers (they
@@ -212,6 +315,12 @@ pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::AcqRel);
 }
 
+/// Guarded reads and those a fault refused since the last take (the
+/// `perf:` line's).
+pub fn take_guarded_counts() -> (u64, u64) {
+    guarded::take_counts()
+}
+
 /// The cache's hits and misses since the last take (the `perf:` line's).
 pub fn take_counts() -> (u64, u64) {
     (
@@ -220,17 +329,28 @@ pub fn take_counts() -> (u64, u64) {
     )
 }
 
-/// Readability checks through this thread's region cache: a region the
-/// system said was committed and readable is remembered until the next
-/// [`invalidate`], so the hot paths (the road fix's walk, the order fixes'
-/// vectors, the game scripts' reseed) ask `VirtualQuery` once per region
-/// and update, not once per word. Inside Sandboxie a `VirtualQuery` costs
-/// tens of microseconds, so this is most of the hook's cost there.
+/// Readability checks and reads on the hot paths (the road fix's walk, the
+/// order fixes' vectors, the game scripts' reseed).
 ///
-/// Safe as long as nothing the engine frees in between is read: every
-/// address the hook reads comes from a structure the engine keeps live, the
-/// checks only guard against a layout the hook misreads, and the cache is
-/// dropped at every update and world change, where the engine frees.
+/// With guarded reads on ([`guarded::active`], the default) a check reads
+/// one byte of every page the range spans and a read copies the value out,
+/// both through [`guarded`]'s routines: a misread address faults, and the
+/// hook's vectored handler turns the fault into a refusal. No system call,
+/// no cache.
+///
+/// Off, checks go through this thread's region cache: a region the system
+/// said was committed and readable is remembered until the next
+/// [`invalidate`], so `VirtualQuery` is asked once per region and update,
+/// not once per word. Inside Sandboxie a `VirtualQuery` costs tens of
+/// microseconds, so this was most of the hook's cost there.
+///
+/// A check, either way, says the memory could be read at that moment;
+/// reading it later through a raw pointer, or writing it (a successful
+/// check proves nothing about writing; neither did `VirtualQuery`'s), is
+/// safe as long as nothing the engine frees in between is touched: every
+/// address the hook reads comes from a structure the engine keeps live,
+/// the checks only guard against a layout the hook misreads, and the cache
+/// is dropped at every update and world change, where the engine frees.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Readable;
 
@@ -244,21 +364,20 @@ impl Readable {
         if cfg!(not(windows)) {
             return false;
         }
-        let epoch = EPOCH.load(Ordering::Acquire);
-        let (readable, asked) =
-            SHARED.with(|cache| cache.borrow_mut().readable_with(epoch, address, len, query));
-        if asked == 0 {
-            HITS.fetch_add(1, Ordering::Relaxed);
-        } else {
-            MISSES.fetch_add(1, Ordering::Relaxed);
+        if guarded::active() {
+            return guarded::probe(address, len);
         }
-        readable
+        readable_by_query(address, len)
     }
 
-    /// A plain value of the game's memory, only if it is readable.
+    /// A plain value of the game's memory, only if it is readable. `T` is
+    /// plain data: every bit pattern a valid value.
     pub fn read<T: Copy>(&mut self, address: u64) -> Option<T> {
         let address = usize::try_from(address).ok()?;
-        if !self.readable(address, std::mem::size_of::<T>()) {
+        if cfg!(windows) && guarded::active() {
+            return guarded::read(address);
+        }
+        if !readable_by_query(address, std::mem::size_of::<T>()) {
             return None;
         }
         // SAFETY: `size_of::<T>()` bytes at `address` are committed,
@@ -266,6 +385,28 @@ impl Readable {
         // unaligned and by value.
         Some(unsafe { std::ptr::read_unaligned(address as *const T) })
     }
+}
+
+/// [`Readable::readable`] with guarded reads off: through this thread's
+/// region cache and the shared level, asking `VirtualQuery` for what
+/// neither knows.
+fn readable_by_query(address: usize, len: usize) -> bool {
+    if cfg!(not(windows)) {
+        return false;
+    }
+    let epoch = EPOCH.load(Ordering::Acquire);
+    ASKED_SYSTEM.with(|asked| asked.set(0));
+    let (readable, _) = SHARED.with(|cache| {
+        cache
+            .borrow_mut()
+            .readable_with(epoch, address, len, |at| shared_query(epoch, at))
+    });
+    if ASKED_SYSTEM.with(std::cell::Cell::get) == 0 {
+        HITS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+    readable
 }
 
 /// [`Readable::readable`], for one check.
@@ -290,6 +431,92 @@ pub fn readable(_address: usize, _len: usize) -> bool {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+
+    #[test]
+    fn the_shared_level_finds_merges_and_forgets_by_epoch() {
+        let mut shared = SharedRegions::new();
+        shared.insert(1, 0x3000, 0x4000);
+        shared.insert(1, 0x1000, 0x2000);
+        assert_eq!(shared.lookup(1, 0x1800), Some((0x1000, 0x2000)));
+        assert_eq!(shared.lookup(1, 0x3fff), Some((0x3000, 0x4000)));
+        assert_eq!(shared.lookup(1, 0x2000), None, "between regions");
+        assert_eq!(shared.lookup(1, 0x0fff), None, "below every region");
+        // Touching and overlapping answers merge into one.
+        shared.insert(1, 0x2000, 0x3000);
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared.lookup(1, 0x2800), Some((0x1000, 0x4000)));
+        // Another epoch's question gets nothing; an older epoch's answer is
+        // not kept; a newer one starts over.
+        assert_eq!(shared.lookup(2, 0x1800), None);
+        shared.insert(0, 0x9000, 0xa000);
+        assert_eq!(shared.lookup(1, 0x9800), None);
+        shared.insert(2, 0x9000, 0xa000);
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared.lookup(2, 0x1800), None, "forgotten with its epoch");
+        assert_eq!(shared.lookup(2, 0x9800), Some((0x9000, 0xa000)));
+    }
+
+    #[test]
+    fn the_shared_level_agrees_with_a_plain_list_on_random_regions() {
+        // Disjoint random regions, inserted in random order, looked up at
+        // random points: the same answer as a linear search.
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut plain = Vec::new();
+        let mut at = 0x10000usize;
+        for _ in 0..500 {
+            at += (next() % 0x8000) as usize + 1;
+            let len = (next() % 0x8000) as usize + 1;
+            plain.push((at, at + len));
+            at += len;
+        }
+        let mut shared = SharedRegions::new();
+        let mut order: Vec<usize> = (0..plain.len()).collect();
+        for i in (1..order.len()).rev() {
+            order.swap(i, (next() % (i as u64 + 1)) as usize);
+        }
+        for &i in &order {
+            shared.insert(7, plain[i].0, plain[i].1);
+        }
+        for _ in 0..20_000 {
+            let probe = 0x10000 + (next() % (at as u64)) as usize;
+            let expected = plain
+                .iter()
+                .find(|(b, e)| *b <= probe && probe < *e)
+                .copied();
+            let got = shared.lookup(7, probe);
+            // Regions that touch merge, so compare containment.
+            match (expected, got) {
+                (None, None) => {}
+                (Some(_), Some((b, e))) => assert!(b <= probe && probe < e),
+                other => panic!("{probe:#x}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_walk_over_twenty_regions_asks_once_per_region() {
+        // A big map's road walk touches many heap regions each update; the
+        // shared cache must hold them all, not thrash.
+        let mut cache = EpochCache::<REGIONS_PER_THREAD>::new();
+        let mut asked = 0;
+        for _round in 0..5 {
+            for region in 0..20usize {
+                let base = 0x10_0000 * (region + 1);
+                let (readable, n) = cache.readable_with(1, base + 8, 8, |at| {
+                    Some((at & !0xF_FFFF, (at & !0xF_FFFF) + 0x1000))
+                });
+                assert!(readable);
+                asked += n;
+            }
+        }
+        assert_eq!(asked, 20);
+    }
 
     #[test]
     fn a_remembered_region_answers_without_asking_again() {
@@ -458,28 +685,59 @@ mod tests {
         assert_eq!(Readable::new().read::<u64>(page as u64), None);
     }
 
-    /// A check with and without the cache. Run with
+    #[test]
+    fn the_query_path_still_answers_as_before() {
+        // The path the kill switch falls back to.
+        let value = 7u64;
+        let at = &value as *const u64 as usize;
+        invalidate();
+        assert!(readable_by_query(at, 8));
+        assert!(!readable_by_query(0x10, 8));
+        assert!(!readable_by_query(usize::MAX - 4, 8));
+    }
+
+    /// Old against new: a check and a read through the `VirtualQuery`
+    /// cache, through guarded reads, and a fresh `VirtualQuery`. Run with
     /// `cargo test --release -p tpf3mp-hook image::tests::readable_bench -- --ignored --nocapture`.
     #[test]
-    #[ignore = "a benchmark: prints a readability check's cost with and without the cache"]
+    #[ignore = "a benchmark: prints a readability check's and a read's cost each way"]
     fn readable_bench() {
-        let words = vec![0u64; 64];
+        let words: Vec<u64> = (0..64).collect();
         let at = words.as_ptr() as usize;
-        const N: usize = 200_000;
-        let begin = std::time::Instant::now();
-        for i in 0..N {
-            assert!(readable(at + 8 * (i % 64), 8));
-        }
-        let fresh = begin.elapsed().as_nanos() as f64 / N as f64;
+        const N: usize = 1_000_000;
+        let time = |f: &mut dyn FnMut(usize)| {
+            let begin = std::time::Instant::now();
+            for i in 0..N {
+                f(i);
+            }
+            begin.elapsed().as_nanos() as f64 / N as f64
+        };
+        let fresh = time(&mut |i| assert!(readable(at + 8 * (i % 64), 8)));
         invalidate();
+        let cached = time(&mut |i| assert!(readable_by_query(at + 8 * (i % 64), 8)));
+        let cached_read = time(&mut |i| {
+            let address = at + 8 * (i % 64);
+            assert!(readable_by_query(address, 8));
+            // SAFETY: checked just above; our own vector.
+            let v = unsafe { std::ptr::read_unaligned(address as *const u64) };
+            std::hint::black_box(v);
+        });
+        assert!(guarded::active(), "guarded reads on for the benchmark");
+        let probe = time(&mut |i| assert!(guarded::probe(at + 8 * (i % 64), 8)));
+        let read = time(&mut |i| {
+            std::hint::black_box(guarded::read::<u64>(at + 8 * (i % 64)).unwrap());
+        });
+        let faults = 20_000;
         let begin = std::time::Instant::now();
-        for i in 0..N {
-            assert!(readable_cached(at + 8 * (i % 64), 8));
+        for _ in 0..faults {
+            assert!(!guarded::probe(0x7FFF_0000_0000, 8));
         }
-        let cached = begin.elapsed().as_nanos() as f64 / N as f64;
+        let fault = begin.elapsed().as_nanos() as f64 / faults as f64;
         println!(
-            "a readability check: {fresh:.0} ns asking VirtualQuery, {cached:.1} ns from the cache ({:.0}x)",
-            fresh / cached
+            "a check: {fresh:.0} ns asking VirtualQuery, {cached:.1} ns from the cache, {probe:.1} ns guarded"
+        );
+        println!(
+            "a check and an 8-byte read: {cached_read:.1} ns through the cache, {read:.1} ns guarded; a refused guarded read (a fault): {fault:.0} ns"
         );
     }
 }

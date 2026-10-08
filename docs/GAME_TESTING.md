@@ -89,17 +89,37 @@ reinstalled by every `room.ps1` (without `-NoInstall`).
 
 Rooms start from a save in the game's `save` folder:
 
-- `tpf3mp_fixture`: a plain map.
+- `tpf3mp_fixture`: a plain map, 16 by 16 tiles, seed `tpf3mp`, the
+  tutorial off, with the mod in its mod list. `tools\game\fixture.ps1`
+  makes it: it installs the mod as `room.ps1` does, starts one game
+  without the hook, has the console start that world with the mod and
+  save it, and quits the game. It needs the console (`debugMode = true`),
+  refuses while a game runs, and never overwrites a save; `-Name` saves
+  under another name.
+
+A fixture has to list the mod: the hook saves the room's world through
+the mod's GUI, so a world whose save does not list the mod leaves the
+host's save for the room unanswered (`hook.log`: "the game did not save
+within 120 s"), and the guests never join. A save made without it is
+mended by loading it with the mod added to its mods and saving it again
+(`app.loadGame` with the save's details and `mods` extended, as
+`tpf3mp/worldload.lua` does for the room).
 - `tpf3mp_fixture3`: a loan, a road depot, two bus stations, Line 1, and
   no bus yet (the default).
 
-To make another: set the world up by hand, then run this in its console:
+To make one by hand: set the world up, then run this in its console:
 
 ```lua
 app.saveGame("tpf3mp_fixture4", function() print("@@saved") end, false, true)
 ```
 
 ## Starting a room
+
+The helper waits for every game's main menu before typing the host's load
+command, so a guest opening its window cannot interrupt that input. Console
+typing stops without pressing Enter if focus changes or Windows rejects an
+input event. Clear any partial console input before retrying; a returned
+typing error is not evidence that the command ran.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\game\room.ps1 -Players 2
@@ -168,6 +188,10 @@ conversion.
 
 Things learned the hard way:
 
+- **A loaded world takes the keyboard from the console.** The console
+  stays open through a load, but what is typed afterwards no longer
+  reaches its input line. Close it and open it again (its key) first;
+  `fixture.ps1` does.
 - **Hover before clicking a build tool.** The game places at the last
   position it saw the cursor move to, so `move`, wait about a second, then
   `click`. `tools/game/tool.ps1` does this.

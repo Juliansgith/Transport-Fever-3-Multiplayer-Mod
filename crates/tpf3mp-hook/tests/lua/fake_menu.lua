@@ -98,8 +98,35 @@ INSTALLED = {}
 -- Mod Hub, as api.modhub gives it: HUB.mods maps a number (as text) to what
 -- Mod Hub tells of it; HUB.state to its install state's name; subscribing
 -- records the number in HUB.subscribed. Lookups and subscriptions answer
--- at once, as if Mod Hub were quick.
-HUB = { backend = 1, signedIn = true, mods = {}, state = {}, subscribed = {} }
+-- at once, as if Mod Hub were quick; with HUB.later they answer when
+-- HUB.answer() is called, as the game does. Each returns a handle, as the
+-- game's UniquePendingRequestId: a request whose handle was collected is
+-- aborted and never answers. HUB.silent leaves every request unanswered.
+HUB = { backend = 1, signedIn = true, mods = {}, state = {}, subscribed = {}, queue = {} }
+local function request(run)
+	local handle = { abort = function(self) self.aborted = true end }
+	if not HUB.later then
+		run()
+		return handle
+	end
+	HUB.queue[#HUB.queue + 1] = { handle = setmetatable({ handle }, { __mode = "v" }), run = run }
+	return handle
+end
+-- Answers the requests under way whose handle is kept; returns how many.
+function HUB.answer()
+	collectgarbage("collect")
+	collectgarbage("collect")
+	local queue, answered = HUB.queue, 0
+	HUB.queue = {}
+	for _i, one in ipairs(queue) do
+		local handle = one.handle[1]
+		if handle and not handle.aborted and not HUB.silent then
+			answered = answered + 1
+			one.run()
+		end
+	end
+	return answered
+end
 api.type.modhub = {
 	ModId = { new = function() return { isValid = function(self) return self.value ~= nil end } end },
 	GetModDetailsRequest = { new = function(id) return { id = id } end },
@@ -122,14 +149,18 @@ api.modhub = {
 	isInitialized = function() return true end,
 	getCapabilities = function() return { isInfoOnly = false } end,
 	getUserInfo = function() return HUB.signedIn and { userName = "max" } or nil end,
-	getModDetailsAsync = function(_b, request, done)
-		local mod = HUB.mods[request.id.value]
-		done(result(true, { found = mod ~= nil, modInfo = mod or {}, author = mod and mod.author or "" }))
+	getModDetailsAsync = function(_b, asked, done)
+		return request(function()
+			local mod = HUB.mods[asked.id.value]
+			done(result(true, { found = mod ~= nil, modInfo = mod or {}, author = mod and mod.author or "" }))
+		end)
 	end,
-	subscribeModAsync = function(_b, request, done)
-		HUB.subscribed[#HUB.subscribed + 1] = request.id.value
-		HUB.state[request.id.value] = HUB.state[request.id.value] or "DownloadPending"
-		done(result(true, {}))
+	subscribeModAsync = function(_b, asked, done)
+		return request(function()
+			HUB.subscribed[#HUB.subscribed + 1] = asked.id.value
+			HUB.state[asked.id.value] = HUB.state[asked.id.value] or "DownloadPending"
+			done(result(true, {}))
+		end)
 	end,
 	getModSubscriptionState = function(_b, id)
 		for _i, n in ipairs(HUB.subscribed) do if n == id.value then return true end end

@@ -4457,6 +4457,7 @@ name = "tpf3mp-hook"
 version = "1.2.8"
 dependencies = [
  "ctor",
+ "iced-x86",
  "libc",
  "mlua",
  "ring",
@@ -4531,6 +4532,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
