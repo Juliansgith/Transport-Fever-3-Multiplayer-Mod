@@ -14231,6 +14231,16 @@ EDGES[201] = { node0 = 22, node1 = 21, tangent0 = { x = -100, y = 0, z = 0 }, ta
                type = 0, typeIndex = -1, objects = {},
                laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } }
 TRACKS = { [20] = { 200 }, [21] = { 200, 201 }, [22] = { 201 } }
+-- The rebuilt tracks are both owned by the player; the proposal must carry
+-- the same owner so a signal-only replay is accepted.
+local CT = api.type.ComponentType
+CT.PLAYER_OWNED = 14
+api.type.PlayerOwned = { new = function() return {} end }
+local get = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    if kind == CT.PLAYER_OWNED and (e == 200 or e == 201) then return { player = 25 } end
+    return get(e, kind)
+end
 -- Node 21's turn from track 200 into 201, which the player set by hand.
 CONFIGS[21] = api.type.BaseNodeConfig.new()
 CONFIGS[21].laneConnections = { { segment0 = 200, lane0 = 0, segment1 = 201, lane1 = 0, withRoad = false, withTram = false } }
@@ -14258,11 +14268,13 @@ const SIGNALS_BUILD: &str = "{ constructionsToAdd = {}, constructionsToRemove = 
       { entity = -1, type = 1, comp = { node0 = 20, node1 = 21, type = 0, typeIndex = -1, \
           tangent0 = { x = 100, y = 0, z = 0 }, tangent1 = { x = 100, y = 0, z = 0 }, \
           objects = { { 300, 2 }, { -400000000, 2 } }, \
-          laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } } }, \
+          laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } }, \
+        playerOwned = { player = 25 } }, \
       { entity = -2, type = 1, comp = { node0 = 22, node1 = 21, type = 0, typeIndex = -1, \
           tangent0 = { x = -100, y = 0, z = 0 }, tangent1 = { x = -100, y = 0, z = 0 }, \
           objects = { { -400000001, 2 }, { -400000002, 2 } }, \
-          laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } } } }, \
+          laneConfigs = { { speed = 30, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } } }, \
+        playerOwned = { player = 25 } } }, \
     edgeObjectsToAdd = { \
       { edgeEntity = -1, param = 0.75, left = true, oneWay = false, \
         model = '::/infrastructure/signal/signal_path_c.con' }, \
@@ -14559,6 +14571,10 @@ fn a_signal_build_the_room_cannot_carry_says_why() {
             "a signal build that changes its track owner",
         ),
         (
+            "s.edgesToAdd[1].playerOwned = nil",
+            "a signal build that changes its track owner",
+        ),
+        (
             "s.edgesToAdd[1].comp.edgeDecorations = { { 42, true } }",
             "a signal build that changes its track",
         ),
@@ -14672,6 +14688,8 @@ fn a_signal_build_the_room_cannot_carry_says_why() {
     assert!(hook_log(&lua).contains("two signals where one is removed"));
     assert_eq!(
         apply("OBJECTS[302] = nil EDGES[200].objects = { { 300, 2 }, { 301, 2 } }"),
-        "built"
+        "built",
+        "{}",
+        hook_log(&lua)
     );
 }
