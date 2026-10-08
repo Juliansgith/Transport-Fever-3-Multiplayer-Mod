@@ -24,9 +24,12 @@ pub use crate::build_data::native::savefast::{
     BUFFER_64K_BYTES, BUFFER_BYTES, BUFFER_SIZE, LEVEL_LOAD, LEVEL_LOAD_BYTES, LEVEL_ONE_BYTES,
 };
 
-/// The kill switch: `0` (or `off`, `false`, `no`) keeps the game's level
-/// and buffer.
+/// Opt-in: unset keeps the game's level and buffer; `1` enables the rewrite.
 pub const ENV: &str = "TPF3MP_HOOK_SAVE_FAST";
+
+fn enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| crate::ticks::wanted(Some(value)))
+}
 
 /// Rewrites both sites the profile resolved, where their bytes are the
 /// expected ones, and says what it did.
@@ -36,8 +39,17 @@ pub const ENV: &str = "TPF3MP_HOOK_SAVE_FAST";
 /// `at` gives addresses in this process's image; nothing saves yet (the
 /// hook installs before the game's first frame).
 pub unsafe fn install(at: &dyn Fn(&str) -> Result<usize, String>) -> String {
-    if !crate::ticks::wanted(std::env::var(ENV).ok().as_deref()) {
-        return format!("faster saves: off ({ENV} says so)");
+    let setting = std::env::var(ENV).ok();
+    // SAFETY: forwarded from this function's caller.
+    unsafe { install_with_setting(setting.as_deref(), at) }
+}
+
+unsafe fn install_with_setting(
+    setting: Option<&str>,
+    at: &dyn Fn(&str) -> Result<usize, String>,
+) -> String {
+    if !enabled(setting) {
+        return format!("faster saves: off (set {ENV}=1 to enable)");
     }
     let rewrite = |name: &str, expected: &[u8], replacement: &[u8]| {
         at(name).and_then(|address| {
@@ -62,12 +74,38 @@ pub unsafe fn install(at: &dyn Fn(&str) -> Result<usize, String>) -> String {
         }
         Err(why) => format!("the game's 128-byte buffer ({why})"),
     };
-    format!("faster saves: {level}, {buffer} ({ENV}=0 turns them off)")
+    format!("faster saves: {level}, {buffer} (opt-in via {ENV}=1)")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_rewrites_are_opt_in_and_explicit_disable_still_wins() {
+        assert!(
+            !enabled(None),
+            "unset must preserve the native save settings"
+        );
+        for value in ["0", "off", "false", "no"] {
+            assert!(!enabled(Some(value)), "{value} must disable the rewrite");
+        }
+        for value in ["1", "on", "true", "yes"] {
+            assert!(enabled(Some(value)), "{value} must explicitly enable it");
+        }
+    }
+
+    #[test]
+    fn install_logs_the_opt_in_when_disabled_without_resolving_sites() {
+        // SAFETY: no site is resolved or changed on the disabled path.
+        let line = unsafe {
+            install_with_setting(None, &|name| Err(format!("unexpected lookup: {name}")))
+        };
+        assert_eq!(
+            line,
+            "faster saves: off (set TPF3MP_HOOK_SAVE_FAST=1 to enable)"
+        );
+    }
 
     #[test]
     fn the_rewrites_keep_each_instruction_whole() {
@@ -88,8 +126,12 @@ mod tests {
 
     #[test]
     fn missing_sites_leave_the_game_its_own() {
-        // SAFETY: nothing resolves, so nothing is written.
-        let line = unsafe { install(&|name| Err(format!("{name} is not in this build"))) };
+        // SAFETY: both lookups fail, so no address is written.
+        let line = unsafe {
+            install_with_setting(Some("1"), &|name| {
+                Err(format!("{name} is not in this build"))
+            })
+        };
         assert!(line.contains("the game's zstd level"), "{line}");
         assert!(line.contains("the game's 128-byte buffer"), "{line}");
     }
