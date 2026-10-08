@@ -5,7 +5,7 @@
 #   quit.ps1 -GamePids 1234,5678
 # -QuitAt / -DesktopAt: the two buttons in capture coordinates, when the
 # window's size differs from the one they were read on (docs/GAME_TESTING.md).
-param([string[]]$GamePids, [string]$QuitAt = "214,508", [string]$DesktopAt = "793,508")
+param([string[]]$GamePids, [string]$QuitAt = "314,726", [string]$DesktopAt = "1177,726")
 . "$PSScriptRoot\env.ps1"
 # "1234,5678" from powershell -File, or an array from a script.
 $GamePids = @($GamePids | ForEach-Object { $_ -split "," } | Where-Object { $_ } | ForEach-Object { [int]$_ })

@@ -134,7 +134,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-buildinfo` | The build scripts' helper: the commit, build time and build number built into the binaries, and their Windows version resource ("Which build is this"). |
 | `mod/tpf3mp_1` | The game-side Lua mod, in Transport Fever 3's layout: captures builds as actions for the hook, linked to it by `tpf3mp/bridge.lua`. |
 | `mod/tpf3mp_bigmap_1` | Big maps' New Game side, prototype: the added size rows. Registers nothing with the game yet. |
-| `profiles/` | The hook's per-build signature profiles, built into the hook (Transport Fever 3 Steam build 40408, Windows). |
+| `profiles/` | Exact-build signature profiles and native bundles for Windows Steam builds; `native-build.txt` selects the one compiled into this checkout. |
 | `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
 | `deploy/` | Container image and compose file. |
@@ -203,6 +203,18 @@ Other feature branches can run it manually with `verify_only` enabled. Set up:
   `.claude/tools/quiet-cargo/quiet-cargo.cmd`;
 - the repository variable `TPF3MP_GAME_ARCHIVE`, an absolute path to the
   complete source archive readable by that runner, outside its checkout.
+
+During the 40408-to-40420 transition, keep `TPF3MP_GAME_ARCHIVE` on the 40408
+archive. Set `TPF3MP_UPDATED_GAME_ARCHIVE` to the separate complete public
+Steam build ID 25754343 archive on the same private runner before verifying a
+40420-selected branch. The workflow chooses the archive from
+`profiles/native-build.txt`; `tpfre verify-build` then checks the selected
+bundle's SHA-256, size, PE timestamp and every target. An unknown bundle or
+missing archive stops verification, while the old release stays verifiable.
+The `feat/game-update-40420` branch alone may use a one-job private runner
+labelled `tpf3mp-40420-validation` to avoid taking unrelated queued release
+checks. The `dev`, `acceptance` and `main` jobs continue to require the normal
+`tpf3mp-game-builds` runner.
 
 Set up the runner and repository variable in each repository before merging
 these release-workflow changes there. A runner registered to a fork and the
@@ -414,11 +426,11 @@ tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file in
 tpf3mp-launcher --server 127.0.0.1:29470 --name cat --auto-join --invite-file invite.txt --auto-play
 ```
 
-With Transport Fever 3 itself (build 40408), two games run on one PC like
+With Transport Fever 3 itself (build 40420), two games run on one PC like
 this:
 
 ```sh
-tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40408
+tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40420
 ```
 
 - `--stagger 75` starts each game 75 s after the one before: two started at

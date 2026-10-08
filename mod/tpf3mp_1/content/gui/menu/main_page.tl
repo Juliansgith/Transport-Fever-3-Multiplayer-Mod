@@ -72,9 +72,12 @@ local DeluxeContentWindow = react.RegisterWrapperRecipe("DeluxeContentWindow", b
 	}
 end)
 
--- TPF3-MP: the Multiplayer window, opened from the main menu into the menu's
--- own window container (as DeluxeContentWindow is). Its content is the mod's
--- gui/menu/lobby.lua: the lobby, talking to the hook.
+-- TPF3-MP: the Multiplayer page, shown over the main menu while this is
+-- set: { focus }, "join" putting joining by invite first. A page as the
+-- game's own (load_game_page.tl), with its top bar, not a window. The
+-- menu's cards stay, hidden as the game hides them under its windows
+-- (title-icon-only): their node refs must stay attached, or the game
+-- stops ("Could not initialize all node refs", 2026-10-04).
 local record LobbyModule
 	prepareNewWorld : function()
 	content : function(onClose : function(), focus : string, onNewGame : function(), onPick : function(), onModHub : function(), commonParams : CommonMenuParams) : TreeNodeId
@@ -929,9 +932,9 @@ return react.RegisterRecipe("MainPage", function(mainPageParams : MenuPageParam<
 		}), multiplayerColumn }), -- TPF3-MP
 	}, "card-wrap", cardWrapRef)
 
-	-- TPF3-MP: no logo under the Multiplayer page, whose top bar has its
-	-- title there; each its own key, so one is never turned into the other.
 	local startMenu = vBox({
+		-- TPF3-MP: no logo under the Multiplayer page, whose top bar has its
+		-- title there; each its own key, so one is never turned into the other.
 		lobbyState:old() and builtin.Component{
 			meta = { localKey = "tpf3mp-no-logo" },
 		} or menu_util.EditionLogo{

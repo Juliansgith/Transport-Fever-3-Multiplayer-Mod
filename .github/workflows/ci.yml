@@ -36,6 +36,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tools/game/test-tools.ps1
+      - name: Private game archive selection (no game required)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tools/github/test-select-game-archive.ps1
       # rustup installs the toolchain pinned in rust-toolchain.toml on first use.
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
@@ -94,6 +98,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python tools/dayone/test_dayone.py
+      - run: python tools/lobby/test_make_main_page.py
       - run: python tools/test_lane_diff.py
       - run: pip install lupa==2.8 && python tools/probe/check_lua.py
       - run: python tools/probe/test_tf3_detprobe.py

@@ -585,21 +585,73 @@ prologue = "40 53"
     }
 
     #[test]
-    fn the_built_in_profiles_parse_and_match_the_steam_release() {
+    fn the_steam_profiles_select_by_identity_and_native_bundle_fails_closed() {
+        const RELEASE_40408: &str =
+            include_str!("../../../profiles/tf3_build40408_steam_windows/hooks.toml");
+        const RELEASE_40420: &str =
+            include_str!("../../../profiles/tf3_build40420_steam_windows/hooks.toml");
+        let known = [
+            (
+                "Transport Fever 3 Build 40408 (Steam, Windows x64)",
+                RELEASE_40408,
+                BuildIdentity {
+                    sha256: "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2"
+                        .into(),
+                    size: Some(69_711_288),
+                    pe_timestamp: Some(0x6AB6_9FE5),
+                },
+            ),
+            (
+                "Transport Fever 3 Build 40420 (Steam, Windows x64)",
+                RELEASE_40420,
+                BuildIdentity {
+                    sha256: "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5fa602e4"
+                        .into(),
+                    size: Some(69_755_832),
+                    pe_timestamp: Some(0x6AC5_0427),
+                },
+            ),
+        ];
+        let profiles: Vec<_> = known
+            .iter()
+            .map(|(name, text, _)| LoadedProfile {
+                path: PathBuf::from(name),
+                profile: Profile::from_toml(text).map_err(LoadError::Parse),
+            })
+            .collect();
+        for (expected_name, _, identity) in &known {
+            assert_eq!(
+                select_profile(&profiles, identity).map(|profile| profile.name.as_str()),
+                Some(*expected_name),
+                "profile selection for {}",
+                identity.sha256
+            );
+            assert_eq!(matching_profiles(&profiles, identity).len(), 1);
+        }
+
         let built_in = built_in_profiles();
         assert_eq!(built_in.len(), BUILT_IN_PROFILES.len());
         assert!(built_in.iter().all(|loaded| loaded.profile.is_ok()));
-        let steam_40408 = BuildIdentity {
-            sha256: "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2".into(),
-            size: Some(69_711_288),
-            pe_timestamp: Some(0x6AB6_9FE5),
-        };
-        let selected = select_profile(&built_in, &steam_40408).map(|p| p.name.as_str());
+        let compiled = Profile::from_toml(build_data::native::PROFILE_TOML).unwrap();
         assert_eq!(
-            selected,
-            Some("Transport Fever 3 Build 40408 (Steam, Windows x64)")
+            select_profile(&built_in, &compiled.build).map(|profile| profile.name.as_str()),
+            Some(compiled.name.as_str())
         );
-        assert!(select_native_profile(&built_in, &steam_40408).is_ok());
+        assert!(select_native_profile(&built_in, &compiled.build).is_ok());
+        let selected = known
+            .iter()
+            .find(|(_, _, identity)| identity.sha256 == compiled.build.sha256)
+            .expect("the compiled native bundle names one of the verified Steam builds");
+        assert_eq!(selected.0, compiled.name);
+        for (_, _, identity) in known
+            .iter()
+            .filter(|(_, _, identity)| identity.sha256 != compiled.build.sha256)
+        {
+            assert!(
+                select_native_profile(&built_in, identity).is_err(),
+                "the compiled native bundle must refuse a different known build"
+            );
+        }
     }
 
     #[test]

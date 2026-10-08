@@ -2,6 +2,11 @@
 //! (with `crate::original`): its three kernels against
 //! the fused step on random grids, and its whole `Update` with and without
 //! the hook, compared bit for bit, buffer for buffer.
+//!
+//! These executable-backed tests use the 40408-pinned harness. A static
+//! `tpfre audit` finds the three 40420 kernel functions normalized-equal to
+//! 40408, but this does not prove the 40420 call/data ABI or dynamically test
+//! the fused path against those bodies.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -13,6 +18,10 @@ use iced_x86::{Decoder, DecoderOptions, OpKind};
 
 use super::*;
 use crate::original::{Exe, Page};
+
+#[allow(clippy::duplicate_mod, dead_code)]
+#[path = "../../../../profiles/tf3_build40408_steam_windows/emission.rs"]
+mod release_40408;
 
 const UPDATE_RVA: u64 = 0xaa9230;
 const UPDATE_LEN: usize = 0x4b2;
@@ -166,7 +175,12 @@ impl Original {
             let snapshot = map.clone();
             page.relocate(exe, rva, len, &|t| snapshot.get(&t).copied())
         };
-        let code = |what: &str| CODE.iter().find(|c| c.what.contains(what)).unwrap();
+        let code = |what: &str| {
+            release_40408::CODE
+                .iter()
+                .find(|c| c.what.contains(what))
+                .unwrap()
+        };
         let diffuse = relocate(&mut page, &mut map, DIFFUSE_RVA, code("Diffuse kernel").len).0;
         let wind = relocate(&mut page, &mut map, WIND_RVA, code("Wind kernel").len).0;
         let average = relocate(&mut page, &mut map, AVERAGE_RVA, code("Average kernel").len).0;
@@ -847,10 +861,16 @@ fn emission_speed() {
 fn the_recorded_code_is_the_executables() {
     let Some(exe) = Exe::load() else { return };
     let update = UPDATE_RVA as usize;
-    check_code(update, &|at, len| {
-        exe.try_bytes(at as u64, len).map(<[u8]>::to_vec)
-    })
-    .unwrap();
+    for code in release_40408::CODE {
+        let at = update.wrapping_add_signed(code.offset as isize);
+        let found = exe.bytes(at as u64, code.len);
+        assert_eq!(
+            fnv1a(found),
+            code.fnv1a,
+            "{} at {at:#x} is not the archived 40408 code",
+            code.what
+        );
+    }
     let callee = |site: usize| {
         let code = exe.bytes(site as u64, 5);
         assert_eq!(code[0], 0xE8, "a call at {site:#x}");

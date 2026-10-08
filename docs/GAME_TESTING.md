@@ -212,7 +212,7 @@ capture (check with a shot first):
 | its tools: tram, bus lane, crosswalk, barrier, trees, lock, lane arrows, traffic lights | `343,652`, `430`, `515`, `600`, `690`, `775`, `860`, `945` (same row) |
 | a point on the east road; the main crossing | `850,409`; `606,380` |
 | the depot, north and south stations (scenario build spots) | `885,432`; `662,195`; `590,562` |
-| the pause menu's Quit; then Return to Desktop | `214,508`; `793,508` |
+| the 40420 pause menu's Quit; then Return to Desktop | `314,726`; `1177,726` |
 
 ## The console
 
