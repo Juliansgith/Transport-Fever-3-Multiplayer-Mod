@@ -60,16 +60,22 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<String> {
     }
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 const MAX_TEXT: usize = 48;
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 const MAX_CANDIDATES: usize = 32;
+#[cfg(all(windows, target_arch = "x86_64"))]
 const MAX_CALLBACKS: u64 = 512;
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 const QUEUE_CAPACITY: usize = 64;
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 const CAPACITY_PROLOGUE_LEN: usize = 16;
 
 /// Runs the capacity detour installation only when the resolved address still
 /// holds the compiled native function's entry bytes. A profile in the user's
 /// data directory can shadow the built-in profile, so the resolver's
 /// profile-supplied signature is not sufficient for this detour's ABI.
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 fn install_capacity_if_prologue_matches<T>(
     observed: Option<[u8; CAPACITY_PROLOGUE_LEN]>,
     install: impl FnOnce() -> Result<T, String>,
@@ -86,12 +92,14 @@ fn install_capacity_if_prologue_matches<T>(
     install()
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Text {
     bytes: [u8; MAX_TEXT],
     len: u8,
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 impl Default for Text {
     fn default() -> Self {
         Self {
@@ -101,6 +109,7 @@ impl Default for Text {
     }
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 impl Text {
     fn escaped(&self) -> String {
         format!(
@@ -110,6 +119,7 @@ impl Text {
     }
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Capacity {
     first: Option<Text>,
@@ -117,6 +127,7 @@ struct Capacity {
     result: i32,
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Candidate {
     ordinal: u32,
@@ -126,6 +137,7 @@ struct Candidate {
     entity: Option<i32>,
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Callback {
     game_time: u32,
@@ -136,6 +148,7 @@ struct Callback {
     truncated: bool,
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 impl Callback {
     const fn new(game_time: u32, seed: u64) -> Self {
         Self {
@@ -163,6 +176,7 @@ impl Callback {
         self.candidate_count += 1;
     }
 
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn candidate_mut(&mut self, ordinal: u32) -> Option<&mut Candidate> {
         self.candidates[..self.candidate_count]
             .iter_mut()
@@ -211,6 +225,7 @@ impl Callback {
 
 /// Fixed-size handoff between native callbacks and the formatting/logger
 /// worker. Producers never allocate, format strings, or touch hook.log.
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 struct TraceQueue {
     records: [Option<Callback>; QUEUE_CAPACITY],
     head: usize,
@@ -220,6 +235,7 @@ struct TraceQueue {
     limit_reached: bool,
 }
 
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 impl TraceQueue {
     const fn new() -> Self {
         Self {
