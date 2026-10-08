@@ -1,6 +1,6 @@
 [package]
 name = "tpf3mp-nativemods"
-description = "Native mods (proposed D29): the signed index, package resolution, the installer and what the hook enables"
+description = "Native mods (D29): the signed index, package resolution, the installer and what the hook enables"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

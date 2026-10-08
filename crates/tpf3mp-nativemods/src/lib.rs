@@ -1,7 +1,7 @@
 //! Native mods: mods that are more than Lua, managed the way CKAN manages
-//! Kerbal mods, but only from the project's signed index. **Proposed (D29 in
-//! `docs/DECISIONS.md`), not decided**; [docs/NATIVE_MODS.md] describes the
-//! whole design.
+//! Kerbal mods, but only from the project's signed index. D29 in
+//! `docs/DECISIONS.md` approves this policy; [docs/NATIVE_MODS.md] describes
+//! the design and the parts still to be built.
 //!
 //! A native mod (Big Maps is the first) needs code in the game: hook
 //! patches behind switches, targets in the build's hook profile, a served

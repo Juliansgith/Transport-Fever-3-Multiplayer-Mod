@@ -1199,7 +1199,7 @@ async fn launch_game(
     if session.is_none() {
         renew_unused_link(&config.link, game, idle)?;
     }
-    // The native mods the player enabled, for this build (proposed D29).
+    // The native mods the player enabled, for this build (D29).
     let native_mods = match setup::data_dir() {
         Ok(data) => crate::native_mods::game_env(&data, &exe)?,
         Err(_) => None,

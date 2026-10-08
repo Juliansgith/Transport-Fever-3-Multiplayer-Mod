@@ -168,7 +168,7 @@ impl Manifest {
     /// The manifest in `json`, if `signature` is one of `keys`' signature
     /// of it.
     pub fn verified(json: &[u8], signature: &[u8], keys: &[Vec<u8>]) -> Result<Self, UpdateError> {
-        // The same check as the native-mods index's (D7, proposed D29).
+        // The same check as the native-mods index's (D7, D29).
         if !signed::verify(json, signature, keys) {
             return Err(UpdateError::BadSignature);
         }
