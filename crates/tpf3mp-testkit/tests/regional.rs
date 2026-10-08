@@ -268,8 +268,23 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
     .unwrap();
     let cat_page = Page::of(&cat);
     cat_page
-        .act(json!({ "action": "connect", "server": "", "name": "Cat" }))
+        // An explicit listed address connects without waiting for every
+        // lookout, so the next action can arrive while US is still starting.
+        .act(json!({ "action": "connect", "server": eu.clone(), "name": "Cat" }))
         .await;
+    cat_page
+        .act(json!({ "action": "list_rooms", "page": 0 }))
+        .await;
+    let state = cat_page.state().await;
+    let rooms = state["rooms"]["rooms"].as_array().unwrap();
+    assert_eq!(
+        rooms.len(),
+        1,
+        "a connecting region is not silently omitted: {state}"
+    );
+    assert_eq!(rooms[0]["name"], "transatlantic");
+    assert_eq!(rooms[0]["server"], "US");
+
     let (status, body) = cat_page
         .try_act(&json!({
             "action": "join", "invite": format!("evil.example.org:29470 {invite}"), "password": null,
@@ -277,22 +292,8 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
         .await;
     assert_eq!(status, 409, "{body}");
     assert!(body.to_string().contains("does not vouch for"), "{body}");
-    let state = cat_page
-        .wait_for("Cat's lookout on US", |state| {
-            state["servers"]
-                .as_array()
-                .is_some_and(|rows| rows.len() == 2 && rows[1]["reachable"] == true)
-        })
-        .await;
-    assert_eq!(state["server"], eu);
-    cat_page
-        .act(json!({ "action": "list_rooms", "page": 0 }))
-        .await;
     let state = cat_page.state().await;
-    let rooms = state["rooms"]["rooms"].as_array().unwrap();
-    assert_eq!(rooms.len(), 1, "{state}");
-    assert_eq!(rooms[0]["name"], "transatlantic");
-    assert_eq!(rooms[0]["server"], "US");
+    assert_eq!(state["server"], eu);
     assert!(rooms[0]["ping_ms"].is_u64(), "{state}");
     cat_page
         .act(json!({
@@ -313,6 +314,42 @@ async fn rooms_go_to_the_closest_server_and_are_found_on_every_one() {
                 .is_some_and(|members| members.len() == 3)
         })
         .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_list_refuses_to_hide_a_region_that_is_still_connecting() {
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let (eu, _stop_eu) = start_server(identity);
+    // Keep a UDP socket bound but unread so the lookout stays Connecting
+    // throughout its bounded probe instead of receiving a quick refusal.
+    let silent_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let silent = silent_socket.local_addr().unwrap().to_string();
+
+    let launcher = Launcher::start(launcher_config(
+        root.path(),
+        "partial-list",
+        &trust,
+        &[("EU", &eu), ("US", &silent)],
+    ))
+    .await
+    .unwrap();
+    let page = Page::of(&launcher);
+    page.act(json!({ "action": "connect", "server": eu, "name": "Player" }))
+        .await;
+
+    let (status, body) = page
+        .try_act(&json!({ "action": "list_rooms", "page": 0 }))
+        .await;
+    assert_eq!(status, 409, "a partial list must be refused: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("incomplete") && error.contains("retry")),
+        "the response must explain that the list is incomplete and retryable: {body}"
+    );
+    drop(silent_socket);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

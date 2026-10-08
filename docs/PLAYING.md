@@ -225,6 +225,10 @@ not typed a server of your own in Settings:
   lowest ping, and Settings lists every server with its ping;
 - **Public rooms** shows the rooms of every server, each card with its
   server and ping (`US · 110 ms`); a click joins it on its server;
+- if a listed server is still connecting when you open **Public rooms**,
+  the launcher waits up to five seconds for every region to respond. If a
+  server is still connecting or unavailable, **Public rooms** reports an
+  incomplete list and asks you to retry;
 - a room you host goes to the closest server;
 - an invite code works whatever server its room is on: the launcher finds
   it. An invite that names a server TPF3-MP does not list is refused.

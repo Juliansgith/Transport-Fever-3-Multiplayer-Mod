@@ -528,13 +528,15 @@ For each further server:
 4. **Release**: only packages built with the variable know the server.
    Launchers of earlier releases keep playing on the default server alone.
 
-A server that is down is passed over: rooms are hosted on the others and
-its rooms are missing from the list until it answers again (launchers
-look again every 30 seconds). Each connected launcher holds one quiet
-session on every listed server, so every server's session count includes
-the players connected to the others; they join no room there and send no
-diagnostics. Taking a server off the list takes a release; until then,
-launchers find it down.
+A server that is down is passed over for hosting. When a player opens the
+public room list, the launcher waits up to five seconds for every listed
+server; if one is still connecting or unavailable, it reports that the list
+is incomplete and asks the player to retry instead of silently presenting
+the rooms from only the responding regions. Launchers look again every 30
+seconds. Each connected launcher holds one quiet session on every listed
+server, so every server's session count includes the players connected to
+the others; they join no room there and send no diagnostics. Taking a server
+off the list takes a release; until then, launchers find it down.
 
 ## Releases
 

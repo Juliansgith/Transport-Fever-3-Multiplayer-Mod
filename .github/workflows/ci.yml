@@ -105,6 +105,7 @@ jobs:
       - run: python tools/probe/test_compare_runs.py
       # The Discord release announcement (announce.yml).
       - run: python tools/github/test_announce_release.py
+      - run: python tools/github/test_release_server_validation.py
 
   page:
     name: launcher page

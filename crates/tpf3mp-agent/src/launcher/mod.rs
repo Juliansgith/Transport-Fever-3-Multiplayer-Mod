@@ -2043,6 +2043,14 @@ async fn global_room_page(
     home: &servers::ListedServer,
     page: u16,
 ) -> Result<(api::RoomList, Vec<(String, String)>), String> {
+    let lookouts = shared
+        .lookouts
+        .all_up(&config.servers, &home.address)
+        .await
+        .ok_or_else(|| {
+            "the public room list is incomplete because a listed server is unavailable or still connecting; retry when it is reachable"
+                .to_owned()
+        })?;
     {
         let mut cache = shared
             .room_pages
@@ -2068,15 +2076,12 @@ async fn global_room_page(
         true,
     )];
     sources.extend(
-        shared
-            .lookouts
-            .up(&config.servers)
+        lookouts
             .into_iter()
             .map(|(server, requests, ping)| (server, Some(ping), requests, false)),
     );
 
     let mut fetched: Vec<(servers::ListedServer, Option<Duration>, u16, RoomPage)> = Vec::new();
-    let mut unknown_more = false;
     for (server, ping, requests, is_home) in sources {
         let mut local_pages = Vec::new();
         for page_index in 0..=page {
@@ -2110,10 +2115,10 @@ async fn global_room_page(
                         return Err("the server did not return its room list".into());
                     }
                     None => {
-                        unknown_more |= local_pages
-                            .last()
-                            .is_some_and(|previous: &RoomPage| previous.more);
-                        break;
+                        return Err(
+                            "the public room list became incomplete because a listed server stopped answering; retry in a moment"
+                                .into(),
+                        );
                     }
                 },
             };
@@ -2147,8 +2152,7 @@ async fn global_room_page(
             page: listed,
         })
         .collect();
-    let (mut list, _) = servers::merge(page, &merging);
-    list.more |= unknown_more;
+    let (list, _) = servers::merge(page, &merging);
     let routes = fetched
         .iter()
         .flat_map(|(server, _, _, page)| {
@@ -2851,6 +2855,7 @@ mod tests {
             server_fixed: false,
             default_server: None,
             server_name: None,
+            servers: Vec::new(),
             trust: ServerTrust::WebPki,
             identity: Arc::new(identity),
             name: "renderer recovery test".into(),

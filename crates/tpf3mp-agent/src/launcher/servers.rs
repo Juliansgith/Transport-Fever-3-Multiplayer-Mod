@@ -339,6 +339,27 @@ pub enum Seen {
     Down,
 }
 
+/// Waits up to `timeout` for every lookout to stop connecting. Lookouts run
+/// concurrently, so this is one bound for the whole trusted server list,
+/// rather than one bound per region.
+async fn wait_until_settled(mut lookouts: Vec<watch::Receiver<Seen>>, timeout: Duration) -> bool {
+    tokio::time::timeout(timeout, async move {
+        for mut watched in lookouts.drain(..) {
+            if matches!(*watched.borrow(), Seen::Connecting)
+                && watched
+                    .wait_for(|seen| !matches!(seen, Seen::Connecting))
+                    .await
+                    .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// How lookouts connect: as the player, quietly.
 #[derive(Clone)]
 pub struct Quiet {
@@ -544,6 +565,41 @@ impl Lookouts {
             .collect()
     }
 
+    /// Waits up to [`PROBE_WAIT`] for every non-home listed server to answer,
+    /// then returns one stable set of request handles. A room list must not
+    /// silently omit a region that is connecting or down.
+    pub(crate) async fn all_up(
+        &self,
+        servers: &[ListedServer],
+        home: &str,
+    ) -> Option<Vec<(ListedServer, Requests, Duration)>> {
+        let seen = self.seen();
+        let mut lookouts = Vec::new();
+        for server in servers {
+            if super::same_server(home, &server.address) {
+                continue;
+            }
+            let (_, watched) = seen
+                .iter()
+                .find(|(listed, _)| super::same_server(&listed.address, &server.address))?;
+            lookouts.push((server.clone(), watched.clone()));
+        }
+        let waiting = lookouts
+            .iter()
+            .map(|(_, watched)| watched.clone())
+            .collect();
+        if !wait_until_settled(waiting, PROBE_WAIT).await {
+            return None;
+        }
+        lookouts
+            .iter()
+            .map(|(server, watched)| match watched.borrow().clone() {
+                Seen::Up { requests, ping } => Some((server.clone(), requests, ping)),
+                Seen::Connecting | Seen::Down => None,
+            })
+            .collect()
+    }
+
     /// What the lookout on `address` knows now; `None` without one.
     pub(crate) fn of(&self, address: &str) -> Option<Seen> {
         self.watching()
@@ -665,6 +721,27 @@ mod tests {
 
     fn eu_us() -> Vec<ListedServer> {
         parse_list("EU=eu.example.org:29470,US=us.example.org:29470").unwrap()
+    }
+
+    #[tokio::test]
+    async fn waits_for_connecting_lookouts_as_one_bounded_list() {
+        let (first, first_seen) = watch::channel(Seen::Connecting);
+        let (second, second_seen) = watch::channel(Seen::Connecting);
+        let waiting = tokio::spawn(wait_until_settled(
+            vec![first_seen, second_seen],
+            Duration::from_secs(1),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        first.send_replace(Seen::Down);
+        second.send_replace(Seen::Down);
+        assert!(waiting.await.unwrap(), "all trusted lookouts settled");
+
+        let (_still_connecting, pending) = watch::channel(Seen::Connecting);
+        assert!(
+            !wait_until_settled(vec![pending], Duration::from_millis(10)).await,
+            "an unsettled lookout makes the list incomplete"
+        );
     }
 
     #[test]
