@@ -224,7 +224,136 @@ fn a_room_is_joined_with_its_code() {
         actions(&window),
         [Action::Join {
             invite: "K7QM2X".into(),
+            server: None,
             password: None,
+        }]
+    );
+}
+
+#[test]
+fn an_invite_can_be_joined_on_a_picked_region_or_automatically() {
+    use tpf3mp_agent::launcher::ServerRow;
+    let servers = vec![
+        ServerRow {
+            name: "EU".into(),
+            ping_ms: Some(24),
+            here: true,
+            reachable: true,
+        },
+        ServerRow {
+            name: "US".into(),
+            ping_ms: Some(110),
+            here: false,
+            reachable: true,
+        },
+    ];
+    let state = || State {
+        name: "Ann".into(),
+        connection: Connection::Connected,
+        regional: true,
+        servers: servers.clone(),
+        ..State::default()
+    };
+
+    let mut automatic = window(state());
+    automatic.get_by_label("Join with an invite").click();
+    automatic.run_steps(4);
+    typed(&mut automatic, "INVITE", "K7QM2X");
+    automatic.get_by_label("Join room").click();
+    automatic.run_steps(4);
+    assert_eq!(
+        actions(&automatic),
+        [Action::Join {
+            invite: "K7QM2X".into(),
+            server: None,
+            password: None,
+        }]
+    );
+
+    let mut picked = window(state());
+    picked.get_by_label("Join with an invite").click();
+    picked.run_steps(4);
+    picked.get_by_role(Role::ComboBox).hover();
+    picked.run_steps(2);
+    picked.get_by_role(Role::ComboBox).click();
+    picked.run_steps(4);
+    picked.get_by_label("US").click();
+    picked.run_steps(2);
+    typed(&mut picked, "INVITE", "K7QM2X");
+    picked.get_by_label("Join room").click();
+    picked.run_steps(4);
+    assert_eq!(
+        actions(&picked),
+        [Action::Join {
+            invite: "K7QM2X".into(),
+            server: Some("US".into()),
+            password: None,
+        }]
+    );
+
+    let mut after_server_change = window(state());
+    after_server_change
+        .get_by_label("Join with an invite")
+        .click();
+    after_server_change.run_steps(4);
+    after_server_change.get_by_role(Role::ComboBox).hover();
+    after_server_change.run_steps(2);
+    after_server_change.get_by_role(Role::ComboBox).click();
+    after_server_change.run_steps(4);
+    after_server_change.get_by_label("US").click();
+    after_server_change.run_steps(2);
+    after_server_change
+        .state()
+        .backend()
+        .state
+        .borrow_mut()
+        .server = Some("us.example.org:29470".into());
+    after_server_change.run_steps(4);
+    typed(&mut after_server_change, "INVITE", "K7QM2X");
+    after_server_change.get_by_label("Join room").click();
+    after_server_change.run_steps(4);
+    assert_eq!(
+        actions(&after_server_change),
+        [Action::Join {
+            invite: "K7QM2X".into(),
+            server: None,
+            password: None,
+        }],
+        "a choice made for another server does not follow the form"
+    );
+}
+
+#[test]
+fn a_regional_settings_card_only_offers_reset_for_a_pinned_trusted_server() {
+    use tpf3mp_launcher::app::ServerSetting;
+    let mut window = window(State {
+        server: Some("us.example.org:29470".into()),
+        server_name: Some("US".into()),
+        server_default: Some("eu.example.org:29470".into()),
+        regional: true,
+        ..State::default()
+    });
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    assert!(window.query_by_label("SERVER ADDRESS").is_none());
+    assert!(window.query_by_label("Use this server").is_none());
+    assert!(
+        !ServerSetting::of(
+            "evil.example.org:29470",
+            &window.state().backend().state.borrow()
+        )
+        .can_apply
+    );
+    let reset = window.get_by_role_and_label(Role::Button, "Reset to default");
+    assert!(!reset.accesskit_node().is_disabled());
+    reset.hover();
+    window.run_steps(2);
+    window.get_by_label("Reset to default").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::SetServer {
+            server: String::new()
         }]
     );
 }
@@ -681,4 +810,43 @@ fn the_server_setting_checks_what_was_typed() {
         ..on_the_relay()
     };
     assert!(ServerSetting::of("", &elsewhere).can_reset);
+}
+
+#[test]
+fn on_the_releases_servers_settings_name_each_with_its_ping() {
+    use tpf3mp_agent::launcher::ServerRow;
+    use tpf3mp_launcher::app::{ServerSetting, server_setting_line, servers_line};
+    let state = State {
+        // Played on the farther server, after a room there: still the
+        // default, so nothing to reset.
+        server: Some("us.example.org:29470".into()),
+        servers: vec![
+            ServerRow {
+                name: "EU".into(),
+                ping_ms: Some(24),
+                here: false,
+                reachable: true,
+            },
+            ServerRow {
+                name: "US".into(),
+                ping_ms: Some(110),
+                here: true,
+                reachable: true,
+            },
+            ServerRow {
+                name: "Asia".into(),
+                ping_ms: None,
+                here: false,
+                reachable: false,
+            },
+        ],
+        ..on_the_relay()
+    };
+    assert_eq!(
+        servers_line(&state).as_deref(),
+        Some("EU · 24 ms, US · 110 ms (you are here), Asia · not answering")
+    );
+    assert!(server_setting_line(&state).contains("Rooms you host go to the closest"));
+    assert!(!ServerSetting::of("", &state).can_reset);
+    assert_eq!(servers_line(&on_the_relay()), None, "one server: as before");
 }

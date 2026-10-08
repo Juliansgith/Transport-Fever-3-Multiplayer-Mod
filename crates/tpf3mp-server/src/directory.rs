@@ -11,8 +11,8 @@ use std::{
 use ring::hmac;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tpf3mp_proto::{
-    BoundedVec, Code, CreateRoom, FixedBytes, Invite, ListedRoom, MAX_ROOM_MEMBERS, ROOMS_PER_PAGE,
-    RequestError, RoomId, RoomPage, RoomPhase, RoomView, RulesOffer,
+    BoundedVec, Code, CreateRoom, FixedBytes, Invite, ListedRoom, MAX_ROOM_MEMBERS, PlayerId,
+    ROOMS_PER_PAGE, RequestError, RoomId, RoomPage, RoomPhase, RoomView, RulesOffer, Text,
 };
 use tracing::{info, warn};
 
@@ -265,6 +265,27 @@ impl Directory {
             .by_id
             .get(id)
             .map(|registered| registered.handle.clone())
+    }
+
+    /// Checks an invite and optional room password at the matching room,
+    /// without joining it. A room that closes between lookup and check is
+    /// indistinguishable from an unknown invite.
+    pub(crate) async fn resolve_invite(
+        &self,
+        player: PlayerId,
+        invite: Invite,
+        password: Option<Text<64>>,
+    ) -> Result<(), RequestError> {
+        let handle = self.find(&invite).ok_or(RequestError::BadInvite)?;
+        handle
+            .request(|reply| crate::room::RoomCommand::ResolveInvite {
+                player,
+                invite,
+                password,
+                reply,
+            })
+            .await
+            .map_err(|_| RequestError::BadInvite)
     }
 
     /// Stops every room once its connections are gone: without the

@@ -196,23 +196,50 @@ menu instead** puts it back.
 
 ### Changing the server
 
-TPF3-MP plays on the project's relay (**EU**) unless you choose another
-server. *This follows a proposed change to the project's decisions (D12),
-which the owner has yet to approve.*
+In a one-server playtest, the launcher can connect to a server you type. A
+multi-region release routes only to the trusted servers it was built with.
 
-1. Open **Settings** (top right). The **Server** card says which server you
-   play on, and whether it is the default.
-2. Type the other server's address as `host:port`, such as
-   `tpf3mp.example.org:29470`, and press **Use this server** (or Enter).
-   Anything else is refused and the card says why.
-3. If you were connected, the launcher disconnects and connects to the new
-   server under the same name. It remembers the server for next time.
-4. **Reset to default** goes back to the relay.
+1. Open **Settings** (top right). The **Server** card says where you play.
+2. In a one-server playtest, type a server address as `host:port` and press
+   **Use this server**. If you were connected, the launcher reconnects under
+   the same name and remembers the choice.
+3. In a multi-region release, Settings lists the trusted regions and their
+   pings. A saved trusted-region pin can be cleared with **Reset to default**;
+   the launcher then routes automatically again.
 
-You cannot change the server while in a room: leave it first. An invite
-never switches servers: an invite to a room on another server is refused,
-so friends who play elsewhere all set the same server here. The browser
-page (`--browser`) has the same setting, under **Settings: server**.
+You cannot change a server while in a room: leave it first. On a
+multi-region release, a region in the trusted list can be chosen on the
+invite form; without that choice, a six-character invite is resolved across
+every listed region. An address pasted beside an invite is ignored. The
+browser page (`--browser`) follows the same trusted-region rules under
+**Settings: server**.
+
+### When TPF3-MP has several servers
+
+Under D12 (approved 2026-10-08), a release may come with more than one
+server, such as **EU** and **US**. Then, unless you have pinned one of those
+listed regions:
+
+- the launcher connects to the server closest to you, the one with the
+  lowest ping, and Settings lists every server with its ping;
+- **Public rooms** shows the rooms of every server, each card with its
+  server and ping (`US · 110 ms`); a click joins it on its server;
+- if a listed server is still connecting when you open **Public rooms**,
+  the launcher waits up to five seconds for every region to respond. If a
+  server is still connecting or unavailable, **Public rooms** reports an
+  incomplete list and asks you to retry;
+- a room you host goes to the closest server;
+- a six-character invite code works on any listed server. The launcher
+  checks the code and password on all regions without joining; exactly one
+  match is required before it joins. If multiple regions accept the same
+  code and credentials, choose the intended listed region. Wrong
+  passwords and absent invites give the same generic response. If a
+  region is unavailable or times out, the lookup fails closed and asks you
+  to retry. A public-room card and an explicit region choice go directly
+  to that listed region.
+
+A multi-region release accepts only its compiled trusted servers;
+**Reset to default** returns a pinned launcher to automatic regional play.
 
 ## Playing from the game's Multiplayer button
 
@@ -237,8 +264,9 @@ window too.
    on by its name, marked (default) when it is the launcher's own (the
    window never shows a server's address, but in this field); type another
    (`host:port`) and **Use this server**, or **Reset to default**.
-   Changing it disconnects you and connects to the new one, and an
-   invite only joins rooms on your own server. Not while in a room.
+   Changing it disconnects you and connects to the new one. A one-server
+   setup keeps invites on that server; a regional release resolves invites
+   across its listed regions. Not while in a room.
    **Your banner**, next to it, picks the picture the others see on your
    card in a room, from the game's own pictures; **Default** goes back to
    the one chosen for you. Under **Characters** you can pick one of the
@@ -732,10 +760,13 @@ before sharing it publicly if you want to be sure.
   same, mod by mod, and installs what you lack from Mod Hub.
 - **"too many players are connected from this network"**: the server
   limits connections per network. Close another game, or ask the operator.
-- **"that invite is for another server"**: an invite never takes you to
-  another server. Ask for an invite to a room on yours, or, if your friends
-  play elsewhere, change the server in **Settings** (see "Changing the
-  server") and join again.
+- **"that invite is for another server"**: this is the one-server or
+  explicitly selected-server behavior. On a regional release, a bare code
+  is checked against every listed region; choose a listed region if the
+  invite is ambiguous.
+- **"invite lookup is incomplete"**: one trusted region was unavailable,
+  timed out or rate-limited its check. No room was joined. Check the
+  connection and retry, or choose a listed region explicitly.
 - **"the invite or password is not valid"**: the room closed, the code
   is mistyped, or the password is wrong.
 - **"too many requests; try again in a moment"** when joining: too many

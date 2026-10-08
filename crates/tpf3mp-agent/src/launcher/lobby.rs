@@ -13,10 +13,10 @@
 use std::time::{Duration, Instant};
 use tpf3mp_bridge::{
     BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyHave, LobbyLine, LobbyMember, LobbyMod,
-    LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules, LobbyStart,
-    LobbyUpload, LobbyView, LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS,
-    MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName, ToAgent, ToHook,
-    check_version, decode, encode,
+    LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules,
+    LobbyServer, LobbyStart, LobbyUpload, LobbyView, LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_MODS,
+    MAX_LOBBY_ROOM_MODS, MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName,
+    ToAgent, ToHook, check_version, decode, encode,
 };
 
 use tpf3mp_proto::{BoundedVec, Text};
@@ -130,6 +130,7 @@ fn whole_view(state: &State) -> LobbyView {
         ),
         server_address: Text::lossy(state.server.as_deref().unwrap_or_default()),
         server_default: Text::lossy(state.server_default.as_deref().unwrap_or_default()),
+        servers: lobby_servers(&state.servers),
         name: Text::lossy(&state.name),
         error: state.error.as_deref().map(Text::lossy),
         // The newest notice meant for the game: the one that says the
@@ -263,12 +264,39 @@ fn whole_view(state: &State) -> LobbyView {
                         year: room.year,
                         companies: room.companies,
                         competitive: room.competitive,
+                        server: Text::lossy(room.server.as_deref().unwrap_or_default()),
+                        ping_ms: room.ping_ms.map_or(0, ping_ms),
                     })
                     .collect(),
             )
             .unwrap_or_default(),
+            servers: lobby_servers(&state.servers),
         }),
     }
+}
+
+fn lobby_servers(
+    servers: &[api::ServerRow],
+) -> BoundedVec<LobbyServer, { tpf3mp_bridge::MAX_LOBBY_SERVERS }> {
+    BoundedVec::new(
+        servers
+            .iter()
+            .take(tpf3mp_bridge::MAX_LOBBY_SERVERS)
+            .map(|server| LobbyServer {
+                name: Text::lossy(&server.name),
+                ping_ms: server.ping_ms.map_or(0, ping_ms),
+                here: server.here,
+                reachable: server.reachable,
+            })
+            .collect(),
+    )
+    .unwrap_or_default()
+}
+
+/// A ping as the game's window carries it, in milliseconds: at most
+/// `u16::MAX`.
+fn ping_ms(ms: u32) -> u16 {
+    u16::try_from(ms).unwrap_or(u16::MAX)
 }
 
 /// A save's name as the window lists it; a name too long to name whole is
@@ -285,8 +313,9 @@ fn count(rows: &[api::RoomModRow], have: ModHave) -> u16 {
 }
 
 /// The launcher action a button of the menu's window stands for. Connect
-/// goes to the server the launcher plays on (D12): the window names none.
-/// The server setting changes that server, as in the launcher's window.
+/// carries no arbitrary address: the launcher's one-server or compiled-list
+/// policy chooses the primary. The server setting changes that choice, as
+/// in the launcher's window.
 pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
     match action {
         LobbyAction::Connect { name } => Action::Connect {
@@ -315,8 +344,13 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
             competitive,
         },
         LobbyAction::ListRooms { page } => Action::ListRooms { page },
-        LobbyAction::Join { invite, password } => Action::Join {
+        LobbyAction::Join {
+            invite,
+            server,
+            password,
+        } => Action::Join {
             invite: invite.as_str().to_owned(),
+            server: server.map(|server| server.as_str().to_owned()),
             password: password.map(|password| password.as_str().to_owned()),
         },
         LobbyAction::Ready { ready } => Action::Ready { ready },

@@ -508,6 +508,7 @@ fn a_room_is_joined_with_a_code_from_its_popup() {
         sent(&lua),
         [LobbyAction::Join {
             invite: Text::new("K7QM2X").unwrap(),
+            server: None,
             password: Some(Text::new("pw").unwrap()),
         }]
     );
@@ -1550,6 +1551,8 @@ fn public_room(name: &str, map: &str, players: u8, password: bool) -> LobbyPubli
         year: 1873,
         companies: 2,
         competitive: false,
+        server: Text::new("").unwrap(),
+        ping_ms: 0,
     }
 }
 
@@ -1559,6 +1562,7 @@ fn browsing(rooms: Vec<LobbyPublicRoom>, page: u16, more: bool) -> LobbyView {
             page,
             rooms: BoundedVec::new(rooms).unwrap(),
             more,
+            servers: BoundedVec::empty(),
         }),
         ..online()
     }
@@ -1657,6 +1661,7 @@ fn the_window_asks_for_the_room_list_and_shows_each_room_as_a_card() {
         sent(&lua),
         [LobbyAction::Join {
             invite: Text::new("INV7").unwrap(),
+            server: None,
             password: None,
         }]
     );
@@ -1665,14 +1670,9 @@ fn the_window_asks_for_the_room_list_and_shows_each_room_as_a_card() {
 #[test]
 fn a_room_with_a_password_asks_for_it_and_pages_move_on() {
     let lua = menu();
-    show(
-        &lua,
-        Some(&browsing(
-            vec![public_room("Snowy", "subarctic", 1, true)],
-            1,
-            false,
-        )),
-    );
+    let mut snowy = public_room("Snowy", "subarctic", 1, true);
+    snowy.server = Text::new("US").unwrap();
+    show(&lua, Some(&browsing(vec![snowy], 1, false)));
     open(&lua, Some("join"));
     sent_all(&lua);
     assert!(enabled(&lua, "Previous") && !enabled(&lua, "Next"));
@@ -1691,6 +1691,7 @@ fn a_room_with_a_password_asks_for_it_and_pages_move_on() {
         sent(&lua),
         [LobbyAction::Join {
             invite: Text::new("INV5").unwrap(),
+            server: Some(Text::new("US").unwrap()),
             password: Some(Text::new("pw").unwrap()),
         }]
     );
@@ -2308,6 +2309,64 @@ fn a_rooms_play_style_shows_in_the_room_and_the_list() {
 }
 
 #[test]
+fn rooms_from_several_servers_show_their_server_and_ping() {
+    let lua = menu();
+    let mut near = public_room("Near", "dry", 2, false);
+    let duplicated_invite = near.invite.clone();
+    near.server = Text::new("EU").unwrap();
+    near.ping_ms = 24;
+    let mut far = public_room("Far away", "temperate", 1, false);
+    far.invite = duplicated_invite.clone();
+    far.server = Text::new("US").unwrap();
+    far.ping_ms = 110;
+    let mut view = browsing(vec![near, far], 0, false);
+    view.rooms.as_mut().unwrap().servers = BoundedVec::new(vec![
+        tpf3mp_bridge::LobbyServer {
+            name: Text::new("EU").unwrap(),
+            ping_ms: 24,
+            here: true,
+            reachable: true,
+        },
+        tpf3mp_bridge::LobbyServer {
+            name: Text::new("US").unwrap(),
+            ping_ms: 110,
+            here: false,
+            reachable: true,
+        },
+    ])
+    .unwrap();
+    show(&lua, Some(&view));
+    open(&lua, Some("join"));
+    call(&lua, "tick", ());
+    let shown = cards(&lua);
+    let text: String = shown[1].get("text").unwrap();
+    assert!(text.contains("US · 110 ms"), "{text}");
+    let detail: String = shown[0].get("tooltip").unwrap();
+    assert!(detail.contains("On EU · 24 ms"), "{detail}");
+    let all = texts(&lua);
+    assert!(
+        all.contains("Public rooms on EU (24 ms) and US (110 ms)"),
+        "{all}"
+    );
+    // Even with the same six-character code on EU, the card carries its own
+    // listed server so clicking the US room cannot join the EU room.
+    shown[1]
+        .get::<Function>("click")
+        .unwrap()
+        .call::<()>(())
+        .unwrap();
+    call(&lua, "render", ());
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Join {
+            invite: duplicated_invite,
+            server: Some(Text::new("US").unwrap()),
+            password: None,
+        }]
+    );
+}
+
+#[test]
 fn friend_join_connects_with_typed_name_then_joins_exactly_once() {
     let lua = menu();
     let mut view = LobbyView {
@@ -2343,6 +2402,7 @@ fn friend_join_connects_with_typed_name_then_joins_exactly_once() {
         sent_all(&lua),
         [LobbyAction::Join {
             invite: Text::new("K7QM2X").unwrap(),
+            server: None,
             password: Some(Text::new("secret").unwrap())
         }]
     );
@@ -2350,6 +2410,40 @@ fn friend_join_connects_with_typed_name_then_joins_exactly_once() {
     assert!(
         sent_all(&lua).is_empty(),
         "no duplicate joins or unsolicited room listing"
+    );
+}
+
+#[test]
+fn friend_join_sends_the_selected_trusted_region() {
+    let lua = menu();
+    let mut view = online();
+    view.servers = BoundedVec::new(vec![
+        tpf3mp_bridge::LobbyServer {
+            name: Text::new("EU").unwrap(),
+            ping_ms: 24,
+            here: true,
+            reachable: true,
+        },
+        tpf3mp_bridge::LobbyServer {
+            name: Text::new("US").unwrap(),
+            ping_ms: 110,
+            here: false,
+            reachable: true,
+        },
+    ])
+    .unwrap();
+    show(&lua, Some(&view));
+    open(&lua, Some("friend"));
+    call(&lua, "choose", ("Region (optional)", "US"));
+    call(&lua, "type_into", ("K7QM2X", "K7QM2X"));
+    click(&lua, "Join room");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Join {
+            invite: Text::new("K7QM2X").unwrap(),
+            server: Some(Text::new("US").unwrap()),
+            password: None,
+        }]
     );
 }
 

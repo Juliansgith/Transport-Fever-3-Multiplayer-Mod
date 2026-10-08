@@ -56,6 +56,9 @@ enum Command {
     // add flags to a package's script.
     #[command(args_override_self = true)]
     Launcher(WebLauncherArgs),
+    /// Validate the built-in release server list with the launcher's parser.
+    #[command(hide = true)]
+    ValidateReleaseServers,
     /// Join a room with an invite and follow it until Ctrl-C.
     Join {
         #[command(flatten)]
@@ -264,6 +267,19 @@ async fn run(command: Command) -> Result<()> {
             play(client, events, &game, rejoin).await?;
         }
         Command::Launcher(args) => launch(args).await?,
+        Command::ValidateReleaseServers => {
+            let default = std::env::var("TPF3MP_DEFAULT_SERVER").ok();
+            let name = std::env::var("TPF3MP_SERVER_NAME").ok();
+            let more = std::env::var("TPF3MP_SERVERS").ok();
+            let servers = launcher::setup::listed_servers(
+                None,
+                default.as_deref(),
+                name.as_deref(),
+                more.as_deref(),
+            )
+            .context("the release's built-in server list")?;
+            println!("validated {} listed server(s)", servers.len());
+        }
         Command::Join {
             server,
             game,

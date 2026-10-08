@@ -258,6 +258,26 @@ local function serverName(state)
 end
 lobby.serverName = serverName
 
+-- The release's servers the room list comes from, as "EU (24 ms) and US
+-- (110 ms)"; nil when it comes from one server.
+function lobby.listedServers(list)
+	local servers = list and list.servers or {}
+	if #servers < 2 then return nil end
+	local named = {}
+	for _i, server in ipairs(servers) do
+		local ping = tonumber(server.ping) or 0
+		if not server.reachable then
+			named[#named + 1] = string.format(_("%s (not answering)"), server.name)
+		elseif ping > 0 then
+			named[#named + 1] = string.format(_("%s (%d ms)"), server.name, ping)
+		else
+			named[#named + 1] = server.name
+		end
+	end
+	if #named == 2 then return string.format(_("%s and %s"), named[1], named[2]) end
+	return table.concat(named, ", ")
+end
+
 -- `text` with any server address in it (an IP address, host:port) put as
 -- "the server": the window names servers, never their addresses.
 local function hideAddress(text)
@@ -271,8 +291,8 @@ local function hideAddress(text)
 end
 lobby.hideAddress = hideAddress
 
--- A room's invite code alone: without its own server, the launcher puts
--- the server's address before the code.
+-- The room's six-character invite code (D13); region routing stays in the
+-- release's trusted launcher UI, never in the copied code.
 local function inviteCode(invite)
 	if type(invite) ~= "string" then return "" end
 	return invite:match("(%S+)%s*$") or invite
@@ -994,6 +1014,12 @@ end
 
 -- One public room of the list, as a card in the game's own style: the
 -- picture of its map, its name, and players, companies and year under it.
+-- A server as the room list names it: its name and ping, as "EU · 24 ms".
+function lobby.serverLine(name, ping)
+	if (tonumber(ping) or 0) > 0 then return string.format(_("%s · %d ms"), name, ping) end
+	return name
+end
+
 function lobby.roomCard(listed, onClick, enabled)
 	local title = listed.name
 	local line = string.format(_("%d/%d players · %d %s · %s"), listed.players, listed.max_players,
@@ -1001,6 +1027,15 @@ function lobby.roomCard(listed, onClick, enabled)
 		listed.year > 0 and tostring(listed.year) or _("year unknown"))
 	local right = (listed.competitive and _("Competitive") or _("Co-op")) .. " · "
 		.. (listed.running and _("Playing") or lobby.climateName(listed.map))
+	-- With rooms from the release's several servers: which one, and how far.
+	local server = type(listed.server) == "string" and listed.server ~= ""
+		and lobby.serverLine(listed.server, listed.ping) or nil
+	local sub = string.format(_("%d/%d players · %s"),
+		listed.players, listed.max_players, listed.competitive and _("Competitive") or _("Co-op"))
+	if server then
+		sub = sub .. " · " .. server
+		right = right .. " · " .. string.format(_("On %s"), server)
+	end
 	local lock = listed.has_password and builtin.FloatingLayoutChild{
 		h = 0.95,
 		v = 0.06,
@@ -1012,8 +1047,7 @@ function lobby.roomCard(listed, onClick, enabled)
 	local card
 	if cards then
 		card = cards.CardButton{
-			bottomComponent = cards.makeCardLabelBottomComponent(title, string.format(_("%d/%d players · %s"),
-				listed.players, listed.max_players, listed.competitive and _("Competitive") or _("Co-op")), nil, nil, false),
+			bottomComponent = cards.makeCardLabelBottomComponent(title, sub, nil, nil, false),
 			onClick = onClick,
 			tooltip = title .. "\n" .. line .. "\n" .. right .. "\n"
 				.. (listed.has_password and _("Has a password") or _("Join this room")),
@@ -1134,6 +1168,7 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 	local invite = react.useRef("")
 	local createPassword = react.useRef(kept.password or "")
 	local joinPassword = react.useRef("")
+	local joinServerS = react.useState("")
 	local chatText = react.useRef("")
 	local playersS = react.useState(kept.players or DEFAULT_PLAYERS)
 	local rulesS = react.useState(kept.rules)
@@ -1393,6 +1428,24 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 	end, POLL, false)
 
 	local state = stateS:old()
+	local function selectedJoinServer()
+		local server = joinServerS:old()
+		return server and server ~= "" and server or nil
+	end
+	local function joinServerChoice()
+		local servers = state.servers or {}
+		if #servers < 2 then return nil end
+		local items = { { "", _("Find automatically across all regions") } }
+		for _i, server in ipairs(servers) do
+			items[#items + 1] = {
+				server.name,
+				server.reachable and server.name or (server.name .. _(" (unavailable)")),
+			}
+		end
+		return choice(_("Region (optional)"), joinServerS:old() or "", items, function(value)
+			joinServerS:set(value)
+		end, _("Leave automatic selected unless your friend chose a region."))
+	end
 
 	-- Sends an action, and shows `doing` until the launcher answers.
 	local function send(fields, doing)
@@ -2018,14 +2071,20 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 			if not code:match("^[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]$") then
 				refusedS:set(_("Enter the six-character invite code your friend sent you.")); return
 			end
-			connectedAction({ action = "join", invite = code, password = joinPassword:get() or "" }, _("Joining the room..."))
+			connectedAction({
+				action = "join", invite = code, server = selectedJoinServer(),
+				password = joinPassword:get() or "",
+			}, _("Joining the room..."))
 		end
+		local fields = {
+			field(_("Your name"), name, state.name ~= "" and state.name or _("Your name"), { maxLength = 32 }),
+			field(_("Invite code"), invite, "K7QM2X", { maxLength = 16 }),
+			field(_("Password (optional)"), joinPassword, "", { password = true, maxLength = 64 }),
+		}
+		local region = joinServerChoice()
+		if region then fields[#fields + 1] = region end
 		return frame(_("Join a friend"), status, row({
-			native.card(_("Join a friend"), { column({
-				field(_("Your name"), name, state.name ~= "" and state.name or _("Your name"), { maxLength = 32 }),
-				field(_("Invite code"), invite, "K7QM2X", { maxLength = 16 }),
-				field(_("Password (optional)"), joinPassword, "", { password = true, maxLength = 64 }),
-			}, style{ size = { SIZE.ROOM_RIGHT - 24, AUTO } }) }),
+			native.card(_("Join a friend"), { column(fields, style{ size = { SIZE.ROOM_RIGHT - 24, AUTO } }) }),
 		}), footerOf({}, { native.foot(_("Join room"), joinFriend, "primary", canAct and not busy) }))
 	end
 
@@ -2078,14 +2137,14 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 		)
 	end
 
-	local function joinBy(code, password)
+	local function joinBy(code, password, server)
 		code = (code or ""):gsub("%s", ""):upper()
 		if code == "" then
 			refusedS:set(_("Type the invite code a friend sent you."))
 			return
 		end
 		joiningS:set(nil)
-		send({ action = "join", invite = code, password = password or "" }, _("Joining the room..."))
+		send({ action = "join", invite = code, server = server, password = password or "" }, _("Joining the room..."))
 	end
 
 	-- Join: the public rooms, as cards, and an invite.
@@ -2111,10 +2170,11 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 		local shown = {}
 		for _i, listed in ipairs(found) do
 			shown[#shown + 1] = lobby.roomCard(listed, function()
+				local server = type(listed.server) == "string" and listed.server ~= "" and listed.server or nil
 				if listed.has_password then
-					joiningS:set({ invite = listed.invite, name = listed.name })
+					joiningS:set({ invite = listed.invite, name = listed.name, server = server })
 				else
-					joinBy(listed.invite, "")
+					joinBy(listed.invite, "", server)
 				end
 			end, canAct and not busy)
 		end
@@ -2157,15 +2217,15 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 				gap(8),
 				input(joinPassword, _("Password"), 220, {
 					password = true, maxLength = 64,
-					onEnter = function(value) joinBy(joining.invite, value) end,
+					onEnter = function(value) joinBy(joining.invite, value, joining.server) end,
 				}),
 				gap(8),
-				primary(_("Join"), function() joinBy(joining.invite, joinPassword:get()) end, canAct and not busy),
+				primary(_("Join"), function() joinBy(joining.invite, joinPassword:get(), joining.server) end, canAct and not busy),
 				gap(6),
 				button(_("Cancel"), function() joiningS:set(nil) end),
 			})
 		end
-		local body = native.card(string.format(_("Public rooms on %s"), serverName(state)), { column(children) })
+		local body = native.card(string.format(_("Public rooms on %s"), lobby.listedServers(list) or serverName(state)), { column(children) })
 		local right = { native.foot(_("Join with code"), function()
 			joiningS:set(nil)
 			codeS:set(true)
@@ -2177,9 +2237,10 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 		if codeS:old() then
 			local function join()
 				codeS:set(false)
-				joinBy(invite:get(), joinPassword:get())
+				joinBy(invite:get(), joinPassword:get(), selectedJoinServer())
 			end
-			local tall = SIZE.PREVIEW_HEIGHT + SIZE.PLAYERS_HEIGHT + 46
+			local region = joinServerChoice()
+			local tall = SIZE.PREVIEW_HEIGHT + SIZE.PLAYERS_HEIGHT + (region and 154 or 46)
 			local picture = pictureCard(lobby.fullPicture("::/gui/menu/images/m05_ingame.tga"), _("Join with code"),
 				_("Six letters and digits, on the room's page of whoever hosts it"), nil, nil, true,
 				SIZE.ROOM_LEFT - 24, tall, nil, "bottom-left")
@@ -2193,27 +2254,32 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 				onValueChange = function(value) invite:set(value) end,
 				onTyping = function(value) invite:set(value) end,
 			}
+			local inviteFields = {
+				column({
+					note(_("Invite code")),
+					gap(4),
+					code,
+				}, style{ size = { SIZE.ROOM_RIGHT - 44, 100 } }),
+				gap(12),
+				note(_("Password (if the room has one)")),
+				gap(4),
+				input(joinPassword, "", SIZE.ROOM_RIGHT - 44, { password = true, maxLength = 64 }),
+			}
+			if region then
+				inviteFields[#inviteFields + 1] = gap(12)
+				inviteFields[#inviteFields + 1] = region
+			end
+			inviteFields[#inviteFields + 1] = gap(12)
+			inviteFields[#inviteFields + 1] = native.entry(_("Server"), label(serverName(state), "font-scale-body"))
+			inviteFields[#inviteFields + 1] = native.entry(_("You join as"), label(state.name ~= "" and state.name or "?", "font-scale-body"))
+			inviteFields[#inviteFields + 1] = gui_react_util.makeVerticalSpacer()
 			body = row({
 				column({ native.card(_("Room"), { picture }) }, style{ size = { SIZE.ROOM_LEFT, AUTO } }),
 				gap(16),
 				column({
 					-- From the top: the code, its password, then where it joins;
 					-- what is left below.
-					native.card(_("Invite"), { column({
-						column({
-							note(_("Invite code")),
-							gap(4),
-							code,
-						}, style{ size = { SIZE.ROOM_RIGHT - 44, 100 } }),
-						gap(12),
-						note(_("Password (if the room has one)")),
-						gap(4),
-						input(joinPassword, "", SIZE.ROOM_RIGHT - 44, { password = true, maxLength = 64 }),
-						gap(24),
-						native.entry(_("Server"), label(serverName(state), "font-scale-body")),
-						native.entry(_("You join as"), label(state.name ~= "" and state.name or "?", "font-scale-body")),
-						gui_react_util.makeVerticalSpacer(),
-					}, style{ size = { SIZE.ROOM_RIGHT - 24, tall } }) }),
+					native.card(_("Invite"), { column(inviteFields, style{ size = { SIZE.ROOM_RIGHT - 24, tall } }) }),
 				}, style{ size = { SIZE.ROOM_RIGHT, AUTO } }),
 			})
 			right = {

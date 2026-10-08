@@ -106,7 +106,10 @@ A game Steam started has no hook and keeps the plain menu.
     New Game card's), name, players/limit, companies, year and a lock for
     a password; a click joins, asking for a password first. The page asks
     for the list when shown and every 10 seconds; **Previous**, **Next**,
-    **Refresh**. **Join with code** opens a page laid out as Host's: the
+    **Refresh**. A launcher on its release's several servers (D12's
+    approved regional amendment) lists the rooms of all of them:
+    each card adds its server and ping (`EU · 24 ms`), the title names
+    the servers with theirs, and a click joins on the room's server. **Join with code** opens a page laid out as Host's: the
     picture of joining on the left; on the right the invite code, large
     (as the room's page shows it), the room's password, and the server
     and name it joins with; **Cancel** and **Join**;
@@ -302,7 +305,37 @@ players see it (`server`, its name or address), its address
 back to the default: the launcher refuses anything but a `host:port`, and
 any change while in a room, with why; otherwise it remembers the server,
 and if connected it disconnects and connects there under the same name.
-An invite never changes the server. Bridge version 15.
+In a one-server setup an invite stays on that server; regional releases use
+the resolution described below. Bridge version 15.
+
+**Several servers** (D12, approved 2026-10-08). A release may list servers
+besides its default (`TPF3MP_SERVERS`; `--more-servers`). A launcher
+playing on its default then plays on all of them: Connect goes to the
+closest that answers, by the round trip of its QUIC connection, and keeps
+a quiet connection, a *lookout*, to every other (`launcher::servers`): no
+content, no room, no diagnostics. `ListRooms` gathers each server's pages
+from zero through the requested global page, merges and sorts their rooms
+together (lobbies first, then fuller, then by name), and returns 20 at a
+time. Earlier server pages are cached while paging; page zero starts a
+fresh browse. Each room carries its server's name and ping (`server`,
+`ping_ms`; in the game's lobby `server`, `ping`). Create first moves to
+the closest server (pings within 10 ms count as equal: the current stays,
+else the first listed).
+
+Each room card passes its trusted server name with the code. A typed
+six-character invite checks every listed region concurrently with the
+optional password using protocol-19 `ResolveInvite`. It joins only after
+every region answers and exactly one accepts; absent invites, wrong
+passwords and bans share the generic `BadInvite` response. Multiple
+matches ask the player to choose a listed region. If a region is
+unavailable, times out or rate-limits the check, the launcher reports an
+incomplete lookup and asks for a retry without joining or switching its
+primary server. A unique match is followed by one authoritative join that
+rechecks the credentials and eligibility. No failed join falls through to
+another server. Pasted server addresses are ignored as routing authority.
+The state carries the servers (`servers`: name, `ping_ms`, `here`,
+`reachable`) before browsing as well as in room lists; bridge version 28.
+With one server or `--server`, the lobby behaves as before.
 
 **The start save.** The lobby lists the player's saves, newest first, by
 name: those `steam::find_save` finds by that name, in the save folder of

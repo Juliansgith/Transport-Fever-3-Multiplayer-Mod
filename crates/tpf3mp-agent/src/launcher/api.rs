@@ -14,8 +14,8 @@ pub(crate) struct View {
     /// The banner this player picked, if any.
     pub(crate) banner: Option<String>,
     pub(crate) server: Option<String>,
-    /// The server is the one this launcher plays on: no invite goes
-    /// elsewhere (D12).
+    /// Whether this launcher is fixed to one server rather than playing on
+    /// the compiled regional list. A regional invite may resolve elsewhere.
     pub(crate) server_fixed: bool,
     /// The launcher's default server, which "Reset to default" goes back to.
     pub(crate) server_default: Option<String>,
@@ -58,6 +58,16 @@ pub(crate) struct View {
     pub(crate) room_params: Vec<ParamRow>,
     /// The page of public rooms last asked for, while connected.
     pub(crate) rooms: Option<RoomList>,
+    /// The servers the release vouches for, its default first; empty or
+    /// one when it plays on one server alone (D12's approved regional
+    /// amendment).
+    pub(crate) listed: Vec<super::servers::ListedServer>,
+    /// Whether the launcher plays on `listed`, two or more: rooms are
+    /// listed from all and hosted on the closest. Not with `--server` nor
+    /// with a server of the player's own in Settings.
+    pub(crate) on_list: bool,
+    /// The round trip to the server played on, last read.
+    pub(crate) home_ping: Option<std::time::Duration>,
 }
 
 /// Something the player asks for.
@@ -98,6 +108,9 @@ pub enum Action {
     },
     Join {
         invite: String,
+        /// The region chosen by a public room card or invite form.
+        #[serde(default)]
+        server: Option<String>,
         password: Option<String>,
     },
     Ready {
@@ -221,6 +234,11 @@ pub struct RoomList {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PublicRoom {
     pub invite: String,
+    /// The name of the room's server, such as `EU`, when the launcher
+    /// lists rooms from several; `None` with one server.
+    pub server: Option<String>,
+    /// That server's ping, in milliseconds, when known.
+    pub ping_ms: Option<u32>,
     pub name: String,
     pub rules: String,
     pub players: u8,
@@ -243,6 +261,8 @@ impl RoomList {
                 .iter()
                 .map(|room| PublicRoom {
                     invite: room.invite.to_string(),
+                    server: None,
+                    ping_ms: None,
                     name: room.name.as_str().to_owned(),
                     rules: room.rules.as_str().to_owned(),
                     players: room.players,
@@ -259,6 +279,19 @@ impl RoomList {
     }
 }
 
+/// One of the servers the release vouches for, as the player sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ServerRow {
+    /// Its name, such as `EU`.
+    pub name: String,
+    /// Its round trip from here, in milliseconds, when known.
+    pub ping_ms: Option<u32>,
+    /// The launcher plays on it now: rooms it creates go there.
+    pub here: bool,
+    /// It answers.
+    pub reachable: bool,
+}
+
 /// Everything a launcher front end shows: the web page reads it as JSON,
 /// the native window as it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -269,11 +302,13 @@ pub struct State {
     /// This player's short ID, as others see it.
     pub player: Option<String>,
     pub server: Option<String>,
-    /// Whether `server` is the server this launcher plays on (D12, as
-    /// amended): Connect then asks for no server, invites join on it and an
-    /// invite to another is refused; the server setting
-    /// ([`Action::SetServer`]) changes it.
+    /// Whether this launcher is fixed to one server (rather than playing on
+    /// the release's compiled regional list). An invite's pasted address
+    /// does not override either route.
     pub server_fixed: bool,
+    /// Whether this release has a compiled list of multiple trusted
+    /// servers, including while this launcher is pinned to one of them.
+    pub regional: bool,
     /// The launcher's default server, `host:port`: the package's, or the
     /// project's relay. "Reset to default" goes back to it.
     pub server_default: Option<String>,
@@ -320,8 +355,14 @@ pub struct State {
     /// another: the launcher's `--start-save`, or the one last picked.
     pub start_save: Option<String>,
     /// The page of the server's public rooms last asked for
-    /// ([`Action::ListRooms`]).
+    /// ([`Action::ListRooms`]): every listed server's, labelled, when the
+    /// launcher plays on several ([`State::servers`]).
     pub rooms: Option<RoomList>,
+    /// The servers the release vouches for, with their pings, while the
+    /// launcher plays on them (two or more; D12's approved regional
+    /// amendment): rooms are listed from all, and a room this player
+    /// creates goes to the closest. Empty when it plays on one server.
+    pub servers: Vec<ServerRow>,
     /// The mods this player has installed, those they may choose first
     /// ([`Action::ChooseMod`]; docs/MODS.md).
     pub mods: Vec<ModRow>,
@@ -539,7 +580,7 @@ pub struct Room {
     pub name: String,
     pub rules: String,
     pub phase: Phase,
-    /// What to send friends: the server and the room's invite.
+    /// The room's six-character invite code to send friends.
     pub invite: Option<String>,
     pub you_own: bool,
     pub max_players: u8,
@@ -697,15 +738,24 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         player: you.map(|player| player.to_string()),
         server: view.server.clone(),
         server_fixed: view.server_fixed,
+        regional: view.listed.len() > 1,
         server_default: view.server_default.clone(),
-        // The name is the default server's: another shows its address.
-        server_name: view.server_name.clone().filter(|_| {
-            match (&view.server_default, &view.server) {
-                (Some(default), Some(server)) => super::same_server(default, server),
-                (Some(_), None) => false,
-                (None, _) => true,
-            }
-        }),
+        // The name is the default server's, or another listed server's:
+        // any other shows its address.
+        server_name: view
+            .server
+            .as_deref()
+            .and_then(|server| super::servers::find(&view.listed, server))
+            .map(|listed| listed.name.clone())
+            .or_else(|| {
+                view.server_name
+                    .clone()
+                    .filter(|_| match (&view.server_default, &view.server) {
+                        (Some(default), Some(server)) => super::same_server(default, server),
+                        (Some(_), None) => false,
+                        (None, _) => true,
+                    })
+            }),
         server_version: view.server_version.clone(),
         support_id: status
             .session
@@ -760,6 +810,8 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         room_mods: view.room_mods.clone(),
         room_params: view.room_params.clone(),
         rooms: view.rooms.clone().filter(|_| view.connected),
+        // The lookouts know the other servers: `Shared::snapshot` adds them.
+        servers: Vec::new(),
         start: status
             .room
             .as_ref()
@@ -783,6 +835,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
 }
 
 /// The state the page shows, as JSON.
+#[cfg(test)]
 pub(crate) fn render(view: &View, status: &Status) -> String {
     serde_json::to_string(&snapshot(view, status)).unwrap_or_else(|_| "{}".to_owned())
 }
@@ -836,7 +889,20 @@ mod tests {
             action,
             Action::Join {
                 invite: "K7QM2X".into(),
+                server: None,
                 password: None
+            }
+        );
+        let action: Action = serde_json::from_str(
+            r#"{"action":"join","invite":"K7QM2X","server":"US","password":null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            action,
+            Action::Join {
+                invite: "K7QM2X".into(),
+                server: Some("US".into()),
+                password: None,
             }
         );
         let action: Action = serde_json::from_str(

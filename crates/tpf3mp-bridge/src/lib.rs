@@ -76,8 +76,15 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// choice of the room's mods and their settings
 /// ([`LobbyAction::ChooseRoomMods`]), finding the installed mods again
 /// ([`LobbyAction::RescanMods`]), and the room's settings of its mods in
-/// [`ModLists`] (protocol 18).
-pub const BRIDGE_VERSION: u32 = 25;
+/// [`ModLists`] (protocol 18); 26 the release's servers in the room list
+/// ([`LobbyRoomList::servers`]) and each public room's server and ping
+/// ([`LobbyPublicRoom::server`], [`LobbyPublicRoom::ping_ms`]); 27 the
+/// listed server in [`LobbyAction::Join`]; 28 the release's trusted servers
+/// in [`LobbyView::servers`] before a room list
+/// is fetched, so the game's invite form can ask for an explicit region.
+pub const BRIDGE_VERSION: u32 = 28;
+/// Most servers the room list names ([`LobbyRoomList::servers`]).
+pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -187,6 +194,9 @@ pub struct LobbyView {
     /// The launcher's default server, `host:port`, which the setting's
     /// "Reset to default" goes back to; empty without one.
     pub server_default: Text<128>,
+    /// The release's trusted regions, available before rooms are listed so
+    /// an invite can name one explicitly when several regions match.
+    pub servers: BoundedVec<LobbyServer, MAX_LOBBY_SERVERS>,
     /// The banner this player picked, if any: one of
     /// `tpf3mp_proto::BANNERS` or of [`LobbyView::portraits`].
     pub banner: Option<tpf3mp_proto::BannerId>,
@@ -315,6 +325,22 @@ pub struct LobbyRoomList {
     pub rooms: BoundedVec<LobbyPublicRoom, { tpf3mp_proto::ROOMS_PER_PAGE }>,
     /// A later page has more.
     pub more: bool,
+    /// The servers the rooms come from, when the launcher plays on its
+    /// release's several servers; empty with one.
+    pub servers: BoundedVec<LobbyServer, MAX_LOBBY_SERVERS>,
+}
+
+/// One of the release's servers, as the room list names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyServer {
+    /// Its name, such as `EU`.
+    pub name: Text<24>,
+    /// Its round trip, in milliseconds; 0 unknown.
+    pub ping_ms: u16,
+    /// The launcher plays on it: rooms this player creates go there.
+    pub here: bool,
+    /// It answers.
+    pub reachable: bool,
 }
 
 /// One public room, as the room browser shows it.
@@ -333,6 +359,11 @@ pub struct LobbyPublicRoom {
     pub year: u16,
     pub companies: u8,
     pub competitive: bool,
+    /// The name of the room's server, such as `EU`, when the list has
+    /// several servers'; empty with one.
+    pub server: Text<24>,
+    /// That server's round trip, in milliseconds; 0 unknown.
+    pub ping_ms: u16,
 }
 
 /// What a public room's list entry says of its world.
@@ -373,6 +404,7 @@ impl Default for LobbyView {
             server: Text::lossy(""),
             server_address: Text::lossy(""),
             server_default: Text::lossy(""),
+            servers: BoundedVec::empty(),
             banner: None,
             portraits: BoundedVec::empty(),
             name: Text::lossy(""),
@@ -482,7 +514,8 @@ pub struct LobbyLine {
 
 /// What the player asks for in the main menu's Multiplayer window: the
 /// launcher's own actions (D17). The launcher carries them out as if its
-/// window had asked, on the server it plays on (D12).
+/// window had asked, under the same one-server or compiled-region policy
+/// (D12).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LobbyAction {
     Connect {
@@ -510,6 +543,11 @@ pub enum LobbyAction {
     },
     Join {
         invite: Text<128>,
+        /// The trusted listed region shown on a public room card. Absent
+        /// for a typed invite, which the launcher resolves across every
+        /// listed region before joining.
+        #[serde(default)]
+        server: Option<Text<24>>,
         password: Option<Text<64>>,
     },
     Ready {
@@ -533,7 +571,8 @@ pub enum LobbyAction {
     /// The player's server setting: play on `server`, a `host:port`, from
     /// now on; empty goes back to the launcher's default. The launcher
     /// checks it, remembers it, and reconnects there if connected. Refused
-    /// in a room. Invites never change the server: only this does (D12).
+    /// in a room. Regional invite routing is limited to the release's
+    /// compiled server list (D12).
     SetServer {
         server: Text<128>,
     },
@@ -807,6 +846,7 @@ mod tests {
             server: Text::new("s".repeat(128)).unwrap(),
             server_address: Text::new("a".repeat(128)).unwrap(),
             server_default: Text::new("d".repeat(128)).unwrap(),
+            servers: BoundedVec::empty(),
             banner: Some(Text::new("b".repeat(32)).unwrap()),
             portraits: BoundedVec::new(vec![
                 Text::new("p".repeat(32)).unwrap();
@@ -906,11 +946,23 @@ mod tests {
                         year: u16::MAX,
                         companies: u8::MAX,
                         competitive: true,
+                        server: Text::new("s".repeat(24)).unwrap(),
+                        ping_ms: u16::MAX,
                     };
                     tpf3mp_proto::ROOMS_PER_PAGE
                 ])
                 .unwrap(),
                 more: true,
+                servers: BoundedVec::new(vec![
+                    LobbyServer {
+                        name: Text::new("s".repeat(24)).unwrap(),
+                        ping_ms: u16::MAX,
+                        here: true,
+                        reachable: true,
+                    };
+                    MAX_LOBBY_SERVERS
+                ])
+                .unwrap(),
             }),
         }));
         let bytes = encode(&view).unwrap();

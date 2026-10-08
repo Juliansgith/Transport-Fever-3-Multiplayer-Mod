@@ -213,6 +213,12 @@ fn room_digest(room: &RoomMods) -> [u8; 32] {
 pub(crate) type Reply<T = ()> = oneshot::Sender<Result<T, RequestError>>;
 
 pub(crate) enum RoomCommand {
+    ResolveInvite {
+        player: PlayerId,
+        invite: Invite,
+        password: Option<Text<64>>,
+        reply: Reply,
+    },
     Join {
         member: NewMember,
         invite: Invite,
@@ -1372,6 +1378,15 @@ impl Room {
 
     fn handle(&mut self, command: RoomCommand) {
         match command {
+            RoomCommand::ResolveInvite {
+                player,
+                invite,
+                password,
+                reply,
+            } => {
+                let result = self.resolve_invite(player, &invite, password.as_ref());
+                let _ = reply.send(result);
+            }
             RoomCommand::Join {
                 member,
                 invite,
@@ -1554,6 +1569,23 @@ impl Room {
             return Err(RequestError::GameRunning);
         }
         self.member_mut(player).ok_or(RequestError::NotInRoom)
+    }
+
+    /// Checks an invite and password without changing room state. Banned
+    /// players get the same answer as an invalid invite, as on join.
+    fn resolve_invite(
+        &self,
+        player: PlayerId,
+        invite: &Invite,
+        password: Option<&Text<64>>,
+    ) -> Result<(), RequestError> {
+        if self.banned.contains(&player) {
+            return Err(RequestError::BadInvite);
+        }
+        match self.secrets.check(&self.id, invite, password) {
+            Admittance::Admitted => Ok(()),
+            Admittance::WrongPassword | Admittance::WrongInvite => Err(RequestError::BadInvite),
+        }
     }
 
     fn join(

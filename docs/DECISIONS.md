@@ -403,8 +403,10 @@ Rejected:
 
 ## D12 (2026-09-27): the launcher plays on the project's server alone
 
-*A proposed amendment below, not decided, lets players change the server in
-the launcher's settings; invites still never switch servers.*
+*The 2026-09-30 server-setting amendment below remains proposed. The
+regional amendment proposed 2026-10-06 was approved on 2026-10-08; for
+regional releases it supersedes this original one-server limit and the
+earlier no-invite-routing rule.*
 
 A package's launcher plays on the one server it was built for, the
 project's own (D4), set when the release is built
@@ -475,6 +477,89 @@ drafts no release without `TPF3MP_DEFAULT_SERVER`, so each release names
 its server on purpose; the relay in the code is the fallback for builds
 without it.
 
+### D12 amendment (approved 2026-10-08): several operated servers, rooms hosted on the closest
+
+The owner approved the regional-server proposal and automatic typed-invite
+lookup. D12's trust boundary remains: a release may route only to servers it
+lists, and text pasted beside a six-character invite is never routing
+authority. For multi-server releases this replaces earlier D12 text that
+said invites never change servers; one-server behavior remains as before.
+
+Asked by a contributor (silver2127), who runs a second server on a VPS:
+"set up the server on the VPS as well and add in to the game that hosts
+pick the closest server but players can see games on both." D12 already
+says regional servers "come later through the launcher itself, never
+through what an invite says"; this is that step:
+
+- **A release lists its servers.** The default server
+  (`TPF3MP_DEFAULT_SERVER`, named by `TPF3MP_SERVER_NAME`) comes first,
+  then the others the release vouches for (`TPF3MP_SERVERS`, such as
+  `US=us.example.org:29470`, names and `host:port`s separated by commas).
+  The list is built in, as the default server is: players still never
+  type a server to meet, and a list that does not read stops the
+  launcher rather than guessing.
+- **Rooms are hosted on the closest server.** The launcher connects to
+  the closest listed server that answers, by the round trip of the QUIC
+  connection it already opens, and before creating a room it moves to the
+  closest again. Pings within 10 ms of the lowest count as equal: the
+  server played on stays, else the one listed first. A server that does
+  not answer is passed over; when none answers, connecting fails as it
+  always did.
+- **Players see the rooms of every server.** While connected, the
+  launcher keeps a quiet connection to each other listed server (no
+  content declared, no room, no diagnostics). It gathers each server's
+  pages from zero through the requested global page, sorts the rooms
+  together, and returns 20 at a time; earlier local pages are cached while
+  browsing. Each room card carries the listed server name through Join, so
+  equal invite codes on different servers still select the clicked room.
+- **Invites stay six-character codes.** A room card carries its compiled,
+  trusted region as well as its code. A typed or pasted code is checked on
+  every listed region, concurrently, with a read-only `ResolveInvite`
+  request carrying the optional password. It returns no room details. The
+  launcher joins only when every region answered and exactly one accepts
+  the credentials. No match, a wrong password, and a banned player have
+  the same `BadInvite` result; multiple matches require the player to
+  choose a listed region. An unavailable, timed-out, or rate-limited region
+  makes the lookup incomplete and retryable. Until a unique match exists,
+  the launcher neither promotes a connection nor sends `JoinRoom`. It
+  then joins once, and `JoinRoom` rechecks credentials, capacity and
+  eligibility; a refusal never falls through to another region. Choosing a
+  region or clicking its public room card routes only to that
+  release-listed server. A pasted server-looking prefix is ignored. This
+  keeps a hidden private room that shares a code with a public room from
+  being mistaken for a unique public match.
+- **Trust is unchanged** (D4): every listed server needs a certificate
+  from a public authority, as the relay's. Each server keeps its own
+  `invite.key`, rooms and logs; nothing passes between servers.
+- **Protocol and rollout are coordinated.** `ResolveInvite` changes the
+  protocol to version 19, so every client and every regional server in a
+  release must be upgraded together. The launcher uses its already-open
+  trusted connections; it does not rely on a global room registry. A
+  release that lists only its default server behaves as before.
+- **The operator chooses the rollout.** `--server` still plays on one
+  server alone for a playtest; a release's compiled server list is the
+  routing authority. This decision and implementation do not configure or
+  deploy additional servers or change the live relay.
+
+Trade-offs: each launcher holds one idle connection per other server
+while connected (keep-alives only, while idle), and every server
+sees each connected player's session, not only the one they play on. Every
+typed invite probes every listed region; a miss consumes that server's
+normal wrong-invite budget, so one guess against an eight-server release
+counts against all eight budgets. Loading a later global page may need one
+request per preceding local page, but those pages are kept for the current
+browse.
+
+Rejected:
+
+- **Invites naming their server** (longer codes, or `EU-K7QM2X`): D13's
+  six characters stay what players read out; the launcher finds the room.
+- **Choosing the closest by geography or by the player's region
+  setting**: a measured round trip needs no setting and follows the
+  network players actually have.
+- **Servers syncing rooms with each other**: every server stays on its
+  own, and the launchers do the listing.
+
 ## D13 (2026-09-27): invites and support codes are six letters and digits
 
 A room's invite is a code such as `K7QM2X`, and so is a player's support
@@ -497,8 +582,11 @@ in a public support channel.
   could not be guessed; a code can, given enough tries. An address may
   try 20 wrong invites (or passwords) in 10 minutes, and is then refused
   every join until the window ends: about 2,900 tries a day against 740
-  million codes. A room's password still guards it on top, and its owner
-  can kick anyone who gets in.
+  million codes. A cross-region typed invite checks each listed server,
+  and every negative code/password pair consumes that server's same
+  per-address budget; if any server rate-limits the lookup, the launcher
+  does not guess around it. A room's password still guards it on top, and
+  its owner can kick anyone who gets in.
 - **Logs name invites by key.** A six-character code cannot be spotted in
   a log line as `TPF3MP1.…` could. Code that logs one writes
   `invite=<code>`, which redaction hides, and `Invite`'s `Debug` never

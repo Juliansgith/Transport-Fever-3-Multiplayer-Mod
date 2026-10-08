@@ -90,8 +90,9 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// room's mods with what players are told of them and their settings
 /// ([`Request::DeclareRoom`]), tells every member the room's mods
 /// ([`ServerMessage::RoomMods`]) and how each member's game differs
-/// ([`MemberView::differs`]).
-pub const PROTOCOL_VERSION: u32 = 18;
+/// ([`MemberView::differs`]); version 19 checks an invite on a server without
+/// joining its room ([`Request::ResolveInvite`], [`Response::InviteMatch`]).
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -373,6 +374,33 @@ mod tests {
         let response = ServerMessage::Response {
             id: 3,
             result: Err(RequestError::BadInvite),
+        };
+        let frame = encode_frame(&response, CONTROL_MAX_FRAME).unwrap();
+        assert_eq!(
+            decode_frame::<ServerMessage>(payload(&frame)).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn invite_resolution_round_trips_at_protocol_19() {
+        assert_eq!(PROTOCOL_VERSION, 19);
+        let request = ClientMessage::Request {
+            id: 7,
+            request: Request::ResolveInvite {
+                invite: Invite(Code::random()),
+                password: Some(Text::new("secret").unwrap()),
+            },
+        };
+        let frame = encode_frame(&request, CONTROL_MAX_FRAME).unwrap();
+        assert_eq!(
+            decode_frame::<ClientMessage>(payload(&frame)).unwrap(),
+            request
+        );
+
+        let response = ServerMessage::Response {
+            id: 7,
+            result: Ok(Response::InviteMatch),
         };
         let frame = encode_frame(&response, CONTROL_MAX_FRAME).unwrap();
         assert_eq!(

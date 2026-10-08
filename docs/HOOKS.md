@@ -449,7 +449,15 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (`server_default`), for the server setting. Since version 23 it
     carries the launcher's log session (`log_session`, empty while
     diagnostics are off), which the window shows with a Copy on its first
-    page and its Server page (approved D10 amendment).
+    page and its Server page (approved D10 amendment). Since version 26
+    the room list carries the release's servers when the launcher plays
+    on several (`servers`: name, ping, here, reachable) and each room its
+    server's name and ping (`server`, `ping_ms`; LOBBY.md, "Several
+    servers"). Since bridge version 27 a room-card Join also carries the
+    listed server name, so duplicate invite codes still select the card the
+    player clicked. Bridge version 28 adds the release's trusted servers to
+    the top-level lobby view before room browsing, for region choices on
+    typed invites.
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
@@ -511,7 +519,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     `SetServer { server }` is the player's server setting: a `host:port`,
     or empty for the launcher's default; the launcher checks, remembers
     and reconnects, and refuses it in a room (D12, proposed amendment).
-    Connect still names no server, and an invite never switches it.
+    Connect still names no arbitrary server. On a regional release, a typed
+    invite is resolved across the compiled trusted servers; a pasted server
+    prefix is not routing authority.
     Since version 20, `ChooseStart { save, map, year }` is the room
     owner's pick of the save the room starts from, in its lobby (empty
     for none; LOBBY.md, "Changing the start save in the room"), and the

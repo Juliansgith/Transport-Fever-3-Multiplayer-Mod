@@ -25,8 +25,8 @@ use std::{
 
 use serde::Deserialize;
 use tpf3mp_bridge::{
-    LobbyAction, LobbyConnection, LobbyHave, LobbyListing, LobbyModClass, LobbyRoomList, LobbyView,
-    LobbyWorld, ModName,
+    LobbyAction, LobbyConnection, LobbyHave, LobbyListing, LobbyModClass, LobbyRoomList,
+    LobbyServer, LobbyView, LobbyWorld, ModName,
 };
 use tpf3mp_proto::{FixedBytes, PlayerId, Text};
 
@@ -173,6 +173,8 @@ pub struct LobbyState {
     /// The launcher's default server, which `set_server` with an empty
     /// server goes back to; empty without one.
     pub server_default: String,
+    /// The release's trusted regions, also available before room browsing.
+    pub servers: Vec<LobbyServer>,
     /// The banner this player picked: empty for their default.
     pub banner: String,
     /// The campaign portraits this game can show, by id
@@ -267,6 +269,8 @@ enum WindowAction {
     },
     Join {
         invite: String,
+        #[serde(default)]
+        server: Option<String>,
         #[serde(default)]
         password: String,
     },
@@ -457,9 +461,13 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
         WindowAction::ListRooms { page } => LobbyAction::ListRooms { page },
         WindowAction::Join {
             invite,
+            server,
             password: given,
         } => LobbyAction::Join {
             invite: text(&invite, "invite")?,
+            server: server
+                .map(|server| text::<24>(&server, "server name"))
+                .transpose()?,
             password: password(&given)?,
         },
         WindowAction::Ready { ready } => LobbyAction::Ready { ready },
@@ -612,6 +620,7 @@ impl LobbyState {
             server: String::new(),
             server_address: String::new(),
             server_default: String::new(),
+            servers: Vec::new(),
             banner: String::new(),
             portraits: Vec::new(),
             name: String::new(),
@@ -656,6 +665,7 @@ impl LobbyState {
             server: view.server.as_str().to_owned(),
             server_address: view.server_address.as_str().to_owned(),
             server_default: view.server_default.as_str().to_owned(),
+            servers: view.servers.iter().cloned().collect(),
             banner: view
                 .banner
                 .as_ref()
@@ -838,6 +848,17 @@ impl LobbyState {
         out.push_str(&lua_str(&self.server_address));
         out.push_str(", server_default = ");
         out.push_str(&lua_str(&self.server_default));
+        out.push_str(", servers = {");
+        for server in &self.servers {
+            out.push_str(&format!(
+                " {{ name = {}, ping = {}, here = {}, reachable = {} }},",
+                lua_str(server.name.as_str()),
+                server.ping_ms,
+                server.here,
+                server.reachable
+            ));
+        }
+        out.push_str(" }");
         out.push_str(", banner = ");
         out.push_str(&lua_str(&self.banner));
         out.push_str(", portraits = {");
@@ -883,7 +904,7 @@ impl LobbyState {
                 ));
                 for room in list.rooms.iter() {
                     out.push_str(&format!(
-                        " {{ invite = {}, name = {}, rules = {}, players = {}, max_players = {}, has_password = {}, running = {}, map = {}, year = {}, companies = {}, competitive = {} }},",
+                        " {{ invite = {}, name = {}, rules = {}, players = {}, max_players = {}, has_password = {}, running = {}, map = {}, year = {}, companies = {}, competitive = {}, server = {}, ping = {} }},",
                         lua_str(room.invite.as_str()),
                         lua_str(room.name.as_str()),
                         lua_str(room.rules.as_str()),
@@ -894,7 +915,20 @@ impl LobbyState {
                         lua_str(room.map.as_str()),
                         room.year,
                         room.companies,
-                        room.competitive
+                        room.competitive,
+                        lua_str(room.server.as_str()),
+                        room.ping_ms
+                    ));
+                }
+                // The release's servers, when the list has several's rooms.
+                out.push_str(" }, servers = {");
+                for server in list.servers.iter() {
+                    out.push_str(&format!(
+                        " {{ name = {}, ping = {}, here = {}, reachable = {} }},",
+                        lua_str(server.name.as_str()),
+                        server.ping_ms,
+                        server.here,
+                        server.reachable
                     ));
                 }
                 out.push_str(" } }");
@@ -1202,6 +1236,15 @@ mod tests {
             parse_action(r#"{"action":"join","invite":"K7QM2X","password":"pw"}"#),
             Ok(LobbyAction::Join {
                 invite: Text::new("K7QM2X").unwrap(),
+                server: None,
+                password: Some(Text::new("pw").unwrap()),
+            })
+        );
+        assert_eq!(
+            parse_action(r#"{"action":"join","invite":"K7QM2X","server":"US","password":"pw"}"#),
+            Ok(LobbyAction::Join {
+                invite: Text::new("K7QM2X").unwrap(),
+                server: Some(Text::new("US").unwrap()),
                 password: Some(Text::new("pw").unwrap()),
             })
         );
@@ -1268,6 +1311,13 @@ mod tests {
             server: Text::new("EU").unwrap(),
             server_address: Text::new("eu.example.org:29470").unwrap(),
             server_default: Text::new("relay.example.org:29470").unwrap(),
+            servers: BoundedVec::new(vec![LobbyServer {
+                name: Text::new("EU").unwrap(),
+                ping_ms: 24,
+                here: true,
+                reachable: true,
+            }])
+            .unwrap(),
             banner: None,
             portraits: BoundedVec::new(vec![
                 Text::new("andrew").unwrap(),
@@ -1371,6 +1421,15 @@ mod tests {
                     year: 1850,
                     companies: 1,
                     competitive: false,
+                    server: Text::new("EU").unwrap(),
+                    ping_ms: 24,
+                }])
+                .unwrap(),
+                servers: BoundedVec::new(vec![tpf3mp_bridge::LobbyServer {
+                    name: Text::new("EU").unwrap(),
+                    ping_ms: 24,
+                    here: true,
+                    reachable: true,
                 }])
                 .unwrap(),
             }),
@@ -1415,6 +1474,10 @@ mod tests {
             state.get::<String>("server_address").unwrap(),
             "eu.example.org:29470"
         );
+        let servers: mlua::Table = state.get("servers").unwrap();
+        let first_server: mlua::Table = servers.get(1).unwrap();
+        assert_eq!(first_server.get::<String>("name").unwrap(), "EU");
+        assert!(first_server.get::<bool>("reachable").unwrap());
         assert_eq!(
             state.get::<String>("server_default").unwrap(),
             "relay.example.org:29470"

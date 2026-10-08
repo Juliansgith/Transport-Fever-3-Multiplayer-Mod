@@ -139,6 +139,7 @@ fn launcher_config(
         server_fixed: false,
         default_server: None,
         server_name: None,
+        servers: Vec::new(),
         tunnel: TunnelChoice::Off,
         remember: None,
         trust: trust.clone(),
@@ -661,6 +662,7 @@ async fn a_launcher_with_its_own_server_plays_there_alone() {
     let refused = handle
         .act(Action::Join {
             invite: foreign.clone(),
+            server: None,
             password: None,
         })
         .await
@@ -721,6 +723,7 @@ async fn a_launcher_with_its_own_server_plays_there_alone() {
     let refused = handle
         .act(Action::Join {
             invite: format!("{server_address} {code}"),
+            server: None,
             password: None,
         })
         .await
@@ -1008,6 +1011,7 @@ async fn a_guest_with_its_own_mods_learns_the_rooms_and_the_room_starts() {
     gus_handle
         .act(Action::Join {
             invite,
+            server: None,
             password: None,
         })
         .await

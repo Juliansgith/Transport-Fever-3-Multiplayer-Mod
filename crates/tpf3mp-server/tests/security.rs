@@ -19,8 +19,8 @@ use tpf3mp_net::{
     Identity, client_config, read_message, read_preamble, write_message, write_preamble,
 };
 use tpf3mp_proto::{
-    CONTROL_MAX_FRAME, ClientMessage, EventBody, FRAME_HEADER_LEN, FixedBytes, Hello,
-    IntentRejection, JoinRoom, LaneDigest, PROTOCOL_VERSION, Payload, Platform, PlayerId,
+    CONTROL_MAX_FRAME, ClientMessage, Code, EventBody, FRAME_HEADER_LEN, FixedBytes, Hello,
+    IntentRejection, Invite, JoinRoom, LaneDigest, PROTOCOL_VERSION, Payload, Platform, PlayerId,
     RejectReason, Request, RequestError, Response, RoomSettings, Seal, Secret, ServerMessage,
     Signature, Text, TurnMessage, decode_frame,
 };
@@ -366,6 +366,56 @@ async fn a_room_password_cannot_be_guessed_at_line_rate() {
          connection); the password is {found:?}",
         f64::from(guesses) / elapsed.as_secs_f64()
     );
+}
+
+/// FINDING: an invite-resolution request might skip the join-specific
+/// per-connection gate when several frames are pipelined. Six requests on a
+/// fresh connection must still receive only the five-request join burst.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pipelined_invite_resolution_uses_the_join_rate_gate() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let (invite, _) = ann.client.create_room(room("table", FAST)).await.unwrap();
+    let unknown = loop {
+        let candidate = Invite(Code::random());
+        if candidate != invite {
+            break candidate;
+        }
+    };
+
+    let mallory = new_identity();
+    let (_endpoint, _connection, mut send, mut recv) = raw_session(&server, &mallory).await;
+    let mut burst = Vec::new();
+    for id in 0..6 {
+        let request = ClientMessage::Request {
+            id,
+            request: Request::ResolveInvite {
+                invite: unknown,
+                password: None,
+            },
+        };
+        burst.extend(tpf3mp_proto::encode_frame(&request, CONTROL_MAX_FRAME).unwrap());
+    }
+    send.write_all(&burst).await.unwrap();
+
+    let mut bad_invites = 0;
+    let mut rate_limited = 0;
+    for _ in 0..6 {
+        let response = read_message::<ServerMessage>(&mut recv, CONTROL_MAX_FRAME)
+            .await
+            .unwrap();
+        if let ServerMessage::Response { result, .. } = response {
+            match result {
+                Err(RequestError::BadInvite) => bad_invites += 1,
+                Err(RequestError::RateLimited) => rate_limited += 1,
+                other => panic!("unexpected pipelined resolution response: {other:?}"),
+            }
+        }
+    }
+    server.shut_down().await;
+
+    assert_eq!(bad_invites, 5);
+    assert_eq!(rate_limited, 1);
 }
 
 // ---------------------------------------------------------------------------

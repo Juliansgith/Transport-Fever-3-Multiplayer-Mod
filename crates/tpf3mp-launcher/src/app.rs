@@ -136,6 +136,11 @@ pub struct LauncherApp<B> {
     rules: Option<String>,
     join_invite: String,
     join_password: String,
+    /// The trusted region chosen for an invite, or `None` to find it across
+    /// all listed regions. Kept only while the join form is open.
+    join_server: Option<String>,
+    /// The server and room state under which `join_server` was chosen.
+    join_server_context: Option<(Option<String>, bool)>,
     chat: String,
     /// Whether the server and name fields took the launcher's first offer.
     offered: bool,
@@ -178,6 +183,8 @@ impl<B: Backend> LauncherApp<B> {
             rules: None,
             join_invite: String::new(),
             join_password: String::new(),
+            join_server: None,
+            join_server_context: None,
             chat: String::new(),
             offered: false,
             open_form: None,
@@ -220,6 +227,11 @@ impl<B: Backend> LauncherApp<B> {
             return;
         };
         let state = self.backend.state();
+        let join_server_context = (state.server.clone(), state.room.is_some());
+        if self.join_server_context.as_ref() != Some(&join_server_context) {
+            self.join_server = None;
+            self.join_server_context = Some(join_server_context);
+        }
         if !self.offered {
             // The server and name remembered from last time, or given.
             self.server = state.server.clone().unwrap_or_default();
@@ -647,7 +659,7 @@ impl<B: Backend> LauncherApp<B> {
         let submitted = match form {
             Some(Form::Connect) => self.connect_form(ui, state),
             Some(Form::Create) => self.create_form(ui, state),
-            Some(Form::Join) => self.join_form(ui),
+            Some(Form::Join) => self.join_form(ui, state),
             None => false,
         };
         let joining = form == Some(Form::Join);
@@ -866,7 +878,7 @@ impl<B: Backend> LauncherApp<B> {
         submit
     }
 
-    fn join_form(&mut self, ui: &mut Ui) -> bool {
+    fn join_form(&mut self, ui: &mut Ui, state: &State) -> bool {
         let mut submit = labelled_field(
             ui,
             "Invite",
@@ -874,6 +886,46 @@ impl<B: Backend> LauncherApp<B> {
             theme::text_field(&mut self.join_invite, "K7QM2X", true).char_limit(6),
         );
         self.join_invite = self.join_invite.to_uppercase();
+        if state.servers.len() > 1 {
+            ui.add_space(12.0);
+            let selected = self
+                .join_server
+                .as_deref()
+                .filter(|name| state.servers.iter().any(|server| server.name == *name))
+                .unwrap_or("");
+            let mut picked = selected.to_owned();
+            theme::select(ui, |ui| {
+                ComboBox::from_id_salt("join-region")
+                    .icon(theme::chevron)
+                    .selected_text(theme::text(
+                        if picked.is_empty() {
+                            "Find automatically across regions"
+                        } else {
+                            picked.as_str()
+                        },
+                        theme::body(13.0),
+                        theme::TEXT,
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut picked,
+                            String::new(),
+                            "Find automatically across regions",
+                        );
+                        for server in &state.servers {
+                            let label = if server.reachable {
+                                server.name.clone()
+                            } else {
+                                format!("{} (unavailable)", server.name)
+                            };
+                            ui.selectable_value(&mut picked, server.name.clone(), label);
+                        }
+                    });
+            });
+            self.join_server = (!picked.is_empty()).then_some(picked);
+        } else {
+            self.join_server = None;
+        }
         ui.add_space(12.0);
         submit |= labelled_field(
             ui,
@@ -923,8 +975,13 @@ impl<B: Backend> LauncherApp<B> {
             Form::Join => {
                 self.backend.act(Action::Join {
                     invite: self.join_invite.trim().to_uppercase(),
+                    server: self.join_server.clone().filter(|name| {
+                        state.servers.len() > 1
+                            && state.servers.iter().any(|server| server.name == *name)
+                    }),
                     password: non_empty(&self.join_password),
                 });
+                self.join_server = None;
                 self.open_form = None;
             }
         }
@@ -1332,9 +1389,9 @@ impl<B: Backend> LauncherApp<B> {
         });
     }
 
-    /// The server setting (D12, as amended): the server played on, a field
-    /// to change it, and a way back to the default. Changing it leaves the
-    /// server and connects to the new one; invites stay on it.
+    /// The server setting (D12, as amended): one-server builds may enter a
+    /// server address. A multi-region release shows its trusted routes and
+    /// can return a pinned route to automatic regional play.
     fn server_settings(&mut self, ui: &mut Ui, state: &State) {
         group(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1349,44 +1406,66 @@ impl<B: Backend> LauncherApp<B> {
                 theme::MUTED,
             ));
             ui.add_space(14.0);
-            let hint = state.server_default.as_deref().unwrap_or("host:port");
-            let entered = labelled_field(
-                ui,
-                "Server address",
-                Some("host:port"),
-                theme::text_field(&mut self.server_setting, hint, false).char_limit(128),
-            );
+            let regional = state.regional || state.servers.len() > 1;
             let setting = ServerSetting::of(&self.server_setting, state);
-            if let Some(problem) = &setting.problem {
-                ui.add_space(6.0);
-                status_line(ui, problem, Tone::Error);
-            }
-            ui.add_space(14.0);
-            let mut chosen = None;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let apply =
-                    theme::primary_small(ui, setting.can_apply, None, "Use this server", false);
-                if apply.clicked() || (entered && setting.can_apply) {
-                    chosen = Some(self.server_setting.trim().to_owned());
+            if !regional {
+                let hint = state.server_default.as_deref().unwrap_or("host:port");
+                let entered = labelled_field(
+                    ui,
+                    "Server address",
+                    Some("host:port"),
+                    theme::text_field(&mut self.server_setting, hint, false).char_limit(128),
+                );
+                if let Some(problem) = &setting.problem {
+                    ui.add_space(6.0);
+                    status_line(ui, problem, Tone::Error);
                 }
+                ui.add_space(14.0);
+                let mut chosen = None;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let apply =
+                        theme::primary_small(ui, setting.can_apply, None, "Use this server", false);
+                    if apply.clicked() || (entered && setting.can_apply) {
+                        chosen = Some(self.server_setting.trim().to_owned());
+                    }
+                    let reset = theme::quiet_button(
+                        ui,
+                        setting.can_reset,
+                        Some("refresh"),
+                        "Reset to default",
+                        Quiet::new(),
+                    );
+                    if reset.clicked() {
+                        chosen = Some(String::new());
+                    }
+                });
+                if let Some(server) = chosen {
+                    self.backend.act(Action::SetServer { server });
+                }
+            } else if setting.can_reset {
                 let reset = theme::quiet_button(
                     ui,
-                    setting.can_reset,
+                    true,
                     Some("refresh"),
                     "Reset to default",
                     Quiet::new(),
                 );
                 if reset.clicked() {
-                    chosen = Some(String::new());
+                    self.backend.act(Action::SetServer {
+                        server: String::new(),
+                    });
                 }
-            });
-            if let Some(server) = chosen {
-                self.backend.act(Action::SetServer { server });
             }
             ui.add_space(10.0);
             let note = if state.room.is_some() {
                 "Leave the room to change the server."
+            } else if regional && state.servers.is_empty() {
+                "This release routes only to its trusted servers. Reset to default returns to \
+                 automatic regional play."
+            } else if regional {
+                "Rooms go to the closest listed server. Invites are checked across these trusted \
+                 regions; choose one on the join form if a code is ambiguous."
             } else {
                 "Changing the server disconnects you and connects to the new one. Invites join \
                  rooms on your server only: to play with friends on another server, all of you \
@@ -1848,11 +1927,16 @@ impl ServerSetting {
             .flatten();
         let free = state.room.is_none();
         Self {
-            can_apply: free
+            can_apply: !state.regional
+                && state.servers.len() <= 1
+                && free
                 && !typed.is_empty()
                 && problem.is_none()
                 && !state.server.as_deref().is_some_and(|now| same(now, typed)),
+            // On the release's servers the launcher is on its default
+            // already, wherever it plays.
             can_reset: free
+                && state.servers.is_empty()
                 && state.server_default.as_deref().is_some_and(|default| {
                     !state
                         .server
@@ -1864,9 +1948,40 @@ impl ServerSetting {
     }
 }
 
+/// The release's servers, with their pings, as "EU · 24 ms (you are
+/// here), US · 110 ms"; `None` when the launcher plays on one server.
+pub fn servers_line(state: &State) -> Option<String> {
+    if state.servers.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = state
+        .servers
+        .iter()
+        .map(|server| {
+            let ping = match (server.reachable, server.ping_ms) {
+                (false, _) => " · not answering".to_owned(),
+                (true, Some(ms)) => format!(" · {ms} ms"),
+                (true, None) => String::new(),
+            };
+            let here = if server.here { " (you are here)" } else { "" };
+            format!("{}{ping}{here}", server.name)
+        })
+        .collect();
+    Some(named.join(", "))
+}
+
 /// What the server setting says of the server played on.
 pub fn server_setting_line(state: &State) -> String {
+    if let Some(servers) = servers_line(state) {
+        return format!(
+            "You play on TPF3-MP's servers: {servers}. Rooms you host go to the closest, and \
+             the room list shows the rooms of all of them."
+        );
+    }
     let Some(server) = &state.server else {
+        if state.regional {
+            return "You play across TPF3-MP's trusted servers automatically.".to_owned();
+        }
         return "No server is set: type one below.".to_owned();
     };
     let default = state
@@ -1876,6 +1991,12 @@ pub fn server_setting_line(state: &State) -> String {
     match (&state.server_name, default) {
         (Some(name), true) => format!("You play on {name} ({server}), the default server."),
         (None, true) => format!("You play on {server}, the default server."),
+        (Some(name), false) if state.regional => format!(
+            "You play on trusted server {name} ({server}). Reset to default for automatic regional play."
+        ),
+        (None, false) if state.regional => format!(
+            "You play on trusted server {server}. Reset to default for automatic regional play."
+        ),
         (_, false) => format!("You play on {server}."),
     }
 }

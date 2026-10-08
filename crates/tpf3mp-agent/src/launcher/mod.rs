@@ -15,9 +15,11 @@ mod api;
 mod http;
 pub mod instance;
 pub(crate) mod lobby;
+pub mod servers;
 pub mod setup;
 
 use std::{
+    collections::HashMap,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -30,22 +32,23 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, watch},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::MissedTickBehavior,
 };
 use tpf3mp_bridge::{LobbyAction, LobbyView};
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{
-    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase,
-    RoomSettings, StartSave, Text,
+    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, Request, RequestError, Response,
+    RoomPage, RoomPhase, RoomSettings, StartSave, Text,
 };
 use tracing::{info, warn};
 
 pub use self::api::{
     Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent,
-    ModClass, ModHave, ModRow, Phase, Room, RoomModRow, RoomStart, RulesChoice, StartProgress,
-    State, World,
+    ModClass, ModHave, ModRow, Phase, PublicRoom, Room, RoomList, RoomModRow, RoomStart,
+    RulesChoice, ServerRow, StartProgress, State, World,
 };
+pub use self::servers::ListedServer;
 use self::{api::View, http::Page, lobby::IdleLink};
 use crate::{
     Client, ClientError, ClientEvent, ConnectOptions, Events, TunnelChoice, Worlds,
@@ -76,6 +79,8 @@ const SAVES_TICK: Duration = Duration::from_secs(5);
 /// How long the launcher watches a game link it finds already made for
 /// another launcher's heartbeat, before taking it.
 const LINK_HELD_WAIT: Duration = Duration::from_millis(350);
+/// How long each trusted region has to answer a non-mutating invite lookup.
+const INVITE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the hook of a game this launcher did not start may fall silent
 /// before the game counts as closed, once its process is gone too: a game
 /// that followed the link from a launcher that closed ([`instance`]), which
@@ -110,6 +115,13 @@ pub struct LauncherConfig {
     /// What players see of that server, such as `EU`, in place of its
     /// address.
     pub server_name: Option<String>,
+    /// The servers the release vouches for, the default first
+    /// ([`servers::release_list`]). With two or more, a launcher playing
+    /// on its default plays on all of them: it lists every one's rooms and
+    /// creates rooms on the closest (D12's approved regional amendment).
+    /// Empty or one: the one server alone, as before; so with
+    /// `--server`.
+    pub servers: Vec<ListedServer>,
     /// How to trust servers.
     pub trust: ServerTrust,
     pub identity: Arc<Identity>,
@@ -299,7 +311,7 @@ impl LauncherHandle {
     pub fn state(&self) -> State {
         // A room session's bridge may have learned the room's mods.
         self.shared.show_mods();
-        api::snapshot(&self.shared.view(), &self.shared.status())
+        self.shared.snapshot()
     }
 }
 
@@ -312,6 +324,15 @@ struct LobbyEnds {
     actions: mpsc::UnboundedReceiver<LobbyAction>,
 }
 
+/// The server-local pages collected for the current public-room browse.
+/// Keeping earlier pages avoids repeating rate-limited lookups while the
+/// player moves through the globally merged list.
+#[derive(Default)]
+struct RoomPageCache {
+    home: Option<String>,
+    pages: HashMap<(String, u16), RoomPage>,
+}
+
 /// What the front ends and the controller share.
 pub(crate) struct Shared {
     view: Mutex<View>,
@@ -321,6 +342,22 @@ pub(crate) struct Shared {
     lobby: LobbyLink,
     /// The player's mods, when the launcher found them itself.
     picker: Option<Arc<Mutex<crate::picker::Mods>>>,
+    /// The quiet connections to the other listed servers, while the
+    /// launcher plays on its release's servers.
+    lookouts: servers::Lookouts,
+    room_pages: Mutex<RoomPageCache>,
+}
+
+/// Whether a launcher set up as `config` starts on its release's servers:
+/// it has two or more, and plays on its default, not on a server of the
+/// player's own.
+fn starts_on_list(config: &LauncherConfig) -> bool {
+    config.servers.len() >= 2
+        && config.server_fixed
+        && config
+            .server
+            .as_deref()
+            .is_some_and(|server| same_server(server, &config.servers[0].address))
 }
 
 impl Shared {
@@ -347,6 +384,8 @@ impl Shared {
                     .as_ref()
                     .map(|recorder| recorder.run().to_string()),
                 start_save: config.start_save.as_deref().and_then(save_name),
+                listed: config.servers.clone(),
+                on_list: starts_on_list(config),
                 ..View::default()
             }),
             status: SharedStatus::default(),
@@ -356,6 +395,8 @@ impl Shared {
                 actions: lobby_actions,
             },
             picker: config.picker.clone().map(|mods| Arc::new(Mutex::new(mods))),
+            lookouts: servers::Lookouts::default(),
+            room_pages: Mutex::new(RoomPageCache::default()),
         });
         shared.show_mods();
         let lobby = LobbyEnds {
@@ -367,6 +408,46 @@ impl Shared {
 
     fn view(&self) -> std::sync::MutexGuard<'_, View> {
         self.view.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// What the front ends show now, the listed servers' pings included.
+    fn snapshot(&self) -> State {
+        let mut state = api::snapshot(&self.view(), &self.status());
+        let (on_list, listed, home, ping) = {
+            let view = self.view();
+            (
+                view.on_list,
+                view.listed.clone(),
+                // Played on while connected or in a room.
+                view.server
+                    .clone()
+                    .filter(|_| view.connected || view.in_room),
+                view.home_ping,
+            )
+        };
+        // Keep the trusted region names available to the launcher's and
+        // game's explicit invite selectors even before connecting. A row
+        // without a live connection is marked unreachable.
+        if on_list {
+            state.servers = self.lookouts.rows(&listed, home.as_deref(), ping);
+        }
+        state
+    }
+
+    /// Whether the launcher plays on its release's servers now.
+    fn on_list(&self) -> bool {
+        self.view().on_list
+    }
+
+    /// Watches the listed servers but `home`, where the launcher now plays,
+    /// as `name`; while on its release's servers only.
+    async fn watch_others(&self, config: &LauncherConfig, home: &str, name: &Text<32>) {
+        if self.on_list() {
+            self.lookouts
+                .watch(&config.servers, Some(home), &quiet_as(config, name));
+        } else {
+            self.lookouts.stop().await;
+        }
     }
 
     fn status(&self) -> std::sync::MutexGuard<'_, Status> {
@@ -616,7 +697,11 @@ async fn control(
             }
             _ = tick.tick() => {
                 shared.show_mods();
-                let view = lobby::view(&api::snapshot(&shared.view(), &shared.status()));
+                // The round trip to the server played on, for its row.
+                if let Some(current) = &connected {
+                    shared.view().home_ping = Some(current.client.rtt());
+                }
+                let view = lobby::view(&shared.snapshot());
                 lobby.views.send_if_modified(|told| {
                     let changed = *told != view;
                     if changed {
@@ -774,7 +859,7 @@ async fn lobby_act(
     game: &mut Option<tpf3mp_launch::Started>,
     idle: &mut Idle,
 ) {
-    let state = api::snapshot(&shared.view(), &shared.status());
+    let state = shared.snapshot();
     let action = lobby::action(asked, &state);
     // The kind only: a join carries its invite, which is not logged bare
     // (D13).
@@ -821,10 +906,33 @@ async fn act(
 ) -> Result<(), String> {
     match action {
         Action::Connect { server, name } => {
-            // A whole invite, as "Copy invite" gives it, connects and joins;
-            // one to another server is refused, in a room or not.
+            // A whole invite, as "Copy invite" gives it, connects and joins.
             let passed = passed_invite(&server);
-            let server = server_for(fixed_server(shared).as_deref(), &server, passed.as_ref())?;
+            let on_list = shared.on_list();
+            let target = if on_list {
+                // On a multi-region release, the server text in a pasted
+                // message is not routing authority. A bare code is resolved
+                // across every trusted region after connecting, and a
+                // non-invite server address is not a region selector.
+                if passed.is_some()
+                    || server.trim().is_empty()
+                    // The game's Connect action echoes the launcher state,
+                    // which includes its current trusted address. Accept it
+                    // as context only; `connect_closest` still picks the
+                    // primary and an arbitrary address is never accepted.
+                    || servers::find(&config.servers, &server).is_some()
+                {
+                    None
+                } else {
+                    return Err("that is not an invite".into());
+                }
+            } else {
+                Some(server_for(
+                    fixed_server(shared).as_deref(),
+                    &server,
+                    passed.as_ref(),
+                )?)
+            };
             if session.is_some() {
                 return Err("leave the room first".into());
             }
@@ -832,20 +940,44 @@ async fn act(
             if name.as_str().is_empty() {
                 return Err("choose a name".into());
             }
-            connect_to(shared, config, connected, &server, name).await?;
+            // Keep the current primary in place until a typed invite has a
+            // unique positive lookup. When starting disconnected, the
+            // closest trusted region is only the temporary connection used
+            // to issue the read-only probes.
+            if !(on_list && passed.is_some() && connected.is_some()) {
+                match target {
+                    Some(server) => connect_to(shared, config, connected, &server, name).await?,
+                    None => connect_closest(shared, config, connected, name).await?,
+                }
+            }
             match passed {
                 Some(passed) => {
-                    renew_unused_link(&config.link, game, idle)?;
-                    join(
-                        shared,
-                        config,
-                        connected,
-                        session,
-                        idle,
-                        passed.invite,
-                        None,
-                    )
-                    .await
+                    if on_list {
+                        join_on_list(
+                            shared,
+                            config,
+                            connected,
+                            session,
+                            idle,
+                            passed.invite,
+                            None,
+                            None,
+                            game,
+                        )
+                        .await
+                    } else {
+                        renew_unused_link(&config.link, game, idle)?;
+                        join(
+                            shared,
+                            config,
+                            connected,
+                            session,
+                            idle,
+                            passed.invite,
+                            None,
+                        )
+                        .await
+                    }
                 }
                 None => Ok(()),
             }
@@ -871,6 +1003,7 @@ async fn act(
             if let Some(connected) = connected.take() {
                 connected.client.close().await;
             }
+            shared.lookouts.stop().await;
             let mut view = shared.view();
             view.connected = false;
             view.in_room = false;
@@ -886,6 +1019,13 @@ async fn act(
             listing,
             competitive,
         } => {
+            if connected.is_none() {
+                return Err("connect to a server first".into());
+            }
+            // On the release's servers, a room goes to the closest.
+            if shared.on_list() {
+                move_to_closest(shared, config, connected).await?;
+            }
             let current = connected.as_ref().ok_or("connect to a server first")?;
             let rules = match rules.as_deref().map(str::trim) {
                 None | Some("") => None,
@@ -982,8 +1122,37 @@ async fn act(
             choose_room_mods(shared, config, session, start, &mods, &params).await
         }
         Action::RescanMods => rescan_mods(shared, config, connected, session).await,
-        Action::Join { invite, password } => {
+        Action::Join {
+            invite,
+            server,
+            password,
+        } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
+            if shared.on_list() {
+                // Only the region field supplied by an explicit choice or a
+                // verified public-room card is routing authority. A server
+                // token pasted beside the code is ignored: private rooms
+                // are not listed, so a cached public match cannot prove
+                // uniqueness.
+                let selected = servers::selected_room_target(&config.servers, server.as_deref())?;
+                let _current = connected.as_ref().ok_or("connect to a server first")?;
+                let password = password_text(password)?;
+                return join_on_list(
+                    shared,
+                    config,
+                    connected,
+                    session,
+                    idle,
+                    passed.invite,
+                    password,
+                    selected,
+                    game,
+                )
+                .await;
+            }
+            if server.is_some() {
+                return Err("that room card names a server this launcher does not play on".into());
+            }
             // An invite to another server is refused, connected or not.
             if let (Some(fixed), Some(other)) = (fixed_server(shared), &passed.server)
                 && !same_server(&fixed, other)
@@ -1054,12 +1223,19 @@ async fn act(
         }
         Action::ListRooms { page } => {
             let current = connected.as_ref().ok_or("connect to a server first")?;
-            let page = current
-                .client
-                .list_rooms(page)
-                .await
-                .map_err(|error| error.to_string())?;
-            shared.view().rooms = Some(api::RoomList::of(&page));
+            let here = shared.view().server.clone().unwrap_or_default();
+            let home = servers::find(&config.servers, &here).filter(|_| shared.on_list());
+            let Some(home) = home else {
+                let own = current
+                    .client
+                    .list_rooms(page)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                shared.view().rooms = Some(api::RoomList::of(&own));
+                return Ok(());
+            };
+            let list = global_room_page(shared, config, current, home, page).await?;
+            shared.view().rooms = Some(list);
             Ok(())
         }
         Action::SetBanner { banner } => {
@@ -1221,7 +1397,7 @@ async fn launch_game(
         .collect(),
         ready_wait: tpf3mp_launch::HOOK_READY_WAIT,
     };
-    let view = lobby::view(&api::snapshot(&shared.view(), &shared.status()));
+    let view = lobby::view(&shared.snapshot());
     let started = wait_for_launch(
         tokio::task::spawn_blocking(move || tpf3mp_launch::start(&launch)),
         idle,
@@ -1648,12 +1824,11 @@ fn begin_session(
     });
     {
         let mut view = shared.view();
-        // With a server of its own, the code is all friends need; otherwise
-        // they need the server too, and "Copy invite" gives both.
-        view.invite = Some(match &view.server {
-            Some(server) if !view.server_fixed => format!("{server} {invite}"),
-            _ => invite.to_string(),
-        });
+        view.invite = Some(invite_for_copy(
+            &invite,
+            view.server.as_deref(),
+            config.server_fixed || config.servers.len() >= 2,
+        ));
         view.in_room = true;
         view.error = None;
     }
@@ -1664,6 +1839,18 @@ fn begin_session(
         game_closed: false,
     });
     Ok(())
+}
+
+/// Fixed-server and regional launchers copy a bare invite code. A dynamic
+/// one-server playtest names its server so another launcher can connect too.
+fn invite_for_copy(invite: &Invite, server: Option<&str>, code_only: bool) -> String {
+    if code_only {
+        invite.to_string()
+    } else if let Some(server) = server.filter(|server| !server.is_empty()) {
+        format!("{server} {invite}")
+    } else {
+        invite.to_string()
+    }
 }
 
 async fn forward(session: &Option<Session>, control: Control) -> Result<(), String> {
@@ -1722,7 +1909,17 @@ async fn connect_to(
     name: Text<32>,
 ) -> Result<(), String> {
     let options = connect_options(config, server, name).await?;
-    *connected = None;
+    let previous_server = connected
+        .as_ref()
+        .and_then(|_| shared.view().server.clone());
+    let on_list = shared.on_list();
+    if servers::find(&config.servers, server).is_some() {
+        // A target lookout already uses one per-address session. Stop it
+        // fully before opening the primary connection, or the server's
+        // default eight-session cap can reject the promotion.
+        shared.lookouts.stop_at(server).await;
+    }
+    let previous = connected.take();
     {
         let mut view = shared.view();
         view.connecting = true;
@@ -1743,18 +1940,37 @@ async fn connect_to(
             Err(error.for_player())
         }
     };
-    let mut view = shared.view();
-    view.connecting = false;
-    let (client, events) = result?;
-    view.connected = true;
-    view.outdated = false;
-    view.tunneled = client.tunneled();
-    view.error = None;
-    view.name = options.name.as_str().to_owned();
-    view.server_version = Some(client.welcome().server_version.as_str().to_owned());
-    view.session = Some(client.welcome().session_id.to_string());
-    view.rules = client.welcome().rules.clone();
-    drop(view);
+    let (client, events) = match result {
+        Ok(connected) => connected,
+        Err(error) => {
+            *connected = previous;
+            {
+                let mut view = shared.view();
+                view.connecting = false;
+                view.connected = connected.is_some();
+                view.server.clone_from(&previous_server);
+            }
+            if on_list {
+                let quiet = quiet_as(config, &options.name);
+                shared
+                    .lookouts
+                    .watch(&config.servers, previous_server.as_deref(), &quiet);
+            }
+            return Err(error);
+        }
+    };
+    {
+        let mut view = shared.view();
+        view.connecting = false;
+        view.connected = true;
+        view.outdated = false;
+        view.tunneled = client.tunneled();
+        view.error = None;
+        view.name = options.name.as_str().to_owned();
+        view.server_version = Some(client.welcome().server_version.as_str().to_owned());
+        view.session = Some(client.welcome().session_id.to_string());
+        view.rules = client.welcome().rules.clone();
+    }
     if let Some(file) = &config.remember {
         let mut remembered = Remembered::load(file);
         remembered.server = Some(server.to_owned());
@@ -1763,12 +1979,375 @@ async fn connect_to(
             warn!(%error, "cannot remember the server and name for next time");
         }
     }
+    // The other listed servers, watched from here on.
+    drop(previous);
+    shared.watch_others(config, server, &options.name).await;
     *connected = Some(Connected {
         options: options.again_after(&client),
         client,
         events,
     });
     Ok(())
+}
+
+/// How lookouts connect to the other listed servers: as `name`.
+fn quiet_as(config: &LauncherConfig, name: &Text<32>) -> servers::Quiet {
+    servers::Quiet {
+        trust: config.trust.clone(),
+        identity: Arc::clone(&config.identity),
+        tunnel: config.tunnel.clone(),
+        name: name.clone(),
+    }
+}
+
+/// Connects to the closest of the release's servers as `name`: every one
+/// is looked at, the lowest ping wins ([`servers::fastest`]), the default
+/// when none answers, which then fails as connecting always did.
+async fn connect_closest(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    connected: &mut Option<Connected>,
+    name: Text<32>,
+) -> Result<(), String> {
+    shared.view().connecting = true;
+    shared
+        .lookouts
+        .watch(&config.servers, None, &quiet_as(config, &name));
+    let pings = shared.lookouts.pings(&config.servers, None).await;
+    let best = servers::fastest(&pings, None).unwrap_or(0);
+    info!(
+        server = %config.servers[best].name,
+        pings = ?pings.iter().map(|ping| ping.map(servers::millis)).collect::<Vec<_>>(),
+        "playing on the closest listed server"
+    );
+    let result = connect_to(
+        shared,
+        config,
+        connected,
+        &config.servers[best].address,
+        name,
+    )
+    .await;
+    shared.view().connecting = false;
+    result
+}
+
+/// Builds page `page` of the globally merged public-room list. Each server's
+/// first `page + 1` local pages may contribute to it, so earlier results are
+/// cached while the player pages through the combined list.
+async fn global_room_page(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    current: &Connected,
+    home: &servers::ListedServer,
+    page: u16,
+) -> Result<api::RoomList, String> {
+    let lookouts = shared
+        .lookouts
+        .all_up(&config.servers, &home.address)
+        .await
+        .ok_or_else(|| {
+            "the public room list is incomplete because a listed server is unavailable or still connecting; retry when it is reachable"
+                .to_owned()
+        })?;
+    {
+        let mut cache = shared
+            .room_pages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if page == 0
+            || cache
+                .home
+                .as_deref()
+                .is_none_or(|cached| !same_server(cached, &home.address))
+        {
+            *cache = RoomPageCache {
+                home: Some(home.address.clone()),
+                pages: HashMap::new(),
+            };
+        }
+    }
+
+    let mut sources = vec![(
+        home.clone(),
+        Some(current.client.rtt()),
+        current.client.requests(),
+        true,
+    )];
+    sources.extend(
+        lookouts
+            .into_iter()
+            .map(|(server, requests, ping)| (server, Some(ping), requests, false)),
+    );
+
+    let mut fetched: Vec<(servers::ListedServer, Option<Duration>, u16, RoomPage)> = Vec::new();
+    for (server, ping, requests, is_home) in sources {
+        let mut local_pages = Vec::new();
+        for page_index in 0..=page {
+            if local_pages
+                .last()
+                .is_some_and(|previous: &RoomPage| !previous.more)
+            {
+                break;
+            }
+            let key = (server.address.clone(), page_index);
+            let cached = shared
+                .room_pages
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pages
+                .get(&key)
+                .cloned();
+            let listed = match cached {
+                Some(listed) => listed,
+                None => match servers::list(&requests, page_index).await {
+                    Some(listed) => {
+                        shared
+                            .room_pages
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .pages
+                            .insert(key, listed.clone());
+                        listed
+                    }
+                    None if is_home => {
+                        return Err("the server did not return its room list".into());
+                    }
+                    None => {
+                        return Err(
+                            "the public room list became incomplete because a listed server stopped answering; retry in a moment"
+                                .into(),
+                        );
+                    }
+                },
+            };
+            let has_more = listed.more;
+            local_pages.push(listed);
+            if !has_more {
+                break;
+            }
+        }
+        fetched.extend(
+            local_pages
+                .into_iter()
+                .enumerate()
+                .map(|(page_index, listed)| {
+                    (
+                        server.clone(),
+                        ping,
+                        u16::try_from(page_index).unwrap_or(u16::MAX),
+                        listed,
+                    )
+                }),
+        );
+    }
+
+    let merging: Vec<servers::Page<'_>> = fetched
+        .iter()
+        .map(|(server, ping, page_index, listed)| servers::Page {
+            server,
+            ping: *ping,
+            page_index: *page_index,
+            page: listed,
+        })
+        .collect();
+    Ok(servers::merge(page, &merging))
+}
+
+/// Before a room is created on the release's servers: moves to the closest
+/// of them, if that is not the one played on. Pings within
+/// [`servers::TIE_MARGIN`] keep the one played on. Should the closest not
+/// take the connection, the player is back where they were.
+async fn move_to_closest(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    connected: &mut Option<Connected>,
+) -> Result<(), String> {
+    let Some(current) = connected.as_ref() else {
+        return Err("connect to a server first".into());
+    };
+    let here = shared.view().server.clone().unwrap_or_default();
+    let name = current.options.name.clone();
+    let ping = current.client.rtt();
+    // Lookouts run, as the player is connected; started if they did not.
+    shared.watch_others(config, &here, &name).await;
+    let pings = shared
+        .lookouts
+        .pings(&config.servers, Some((&here, ping)))
+        .await;
+    let at = config
+        .servers
+        .iter()
+        .position(|server| same_server(&server.address, &here));
+    let Some(best) = servers::fastest(&pings, at) else {
+        return Ok(());
+    };
+    if Some(best) == at {
+        return Ok(());
+    }
+    let closest = &config.servers[best];
+    info!(
+        server = %closest.name,
+        pings = ?pings.iter().map(|ping| ping.map(servers::millis)).collect::<Vec<_>>(),
+        "the room goes to the closest listed server"
+    );
+    if let Err(error) = connect_to(shared, config, connected, &closest.address, name.clone()).await
+    {
+        warn!(%error, server = %closest.name, "the closest listed server would not take the room");
+        connect_to(shared, config, connected, &here, name).await?;
+    }
+    Ok(())
+}
+
+/// Joins the room of `invite` on the release's servers. An explicit card or
+/// region choice names one trusted target; otherwise every region must
+/// answer the credential-aware lookup and exactly one must match before
+/// the launcher switches or sends JoinRoom.
+#[allow(clippy::too_many_arguments)]
+async fn join_on_list(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    connected: &mut Option<Connected>,
+    session: &mut Option<Session>,
+    idle: &mut Idle,
+    invite: Invite,
+    password: Option<Text<64>>,
+    selected: Option<servers::ListedServer>,
+    game: &mut Option<tpf3mp_launch::Started>,
+) -> Result<(), String> {
+    // A clicked public room or an explicit region selection is already a
+    // trusted route. A bare code must pass the all-region credential check
+    // before the launcher promotes a lookout or sends JoinRoom.
+    let target = match selected {
+        Some(server) => server,
+        None => resolve_invite_target(shared, config, connected, invite, password.clone()).await?,
+    };
+    let current = connected.as_ref().ok_or("connect to a server first")?;
+    let here = shared.view().server.clone();
+    if !here.is_some_and(|here| same_server(&here, &target.address)) {
+        let name = current.options.name.clone();
+        connect_to(shared, config, connected, &target.address, name).await?;
+    }
+    renew_unused_link(&config.link, game, idle)?;
+    // JoinRoom rechecks the code and password, as well as current capacity
+    // and build eligibility. A change after ResolveInvite is a normal join
+    // refusal; it must not trigger a fallback to another region.
+    join(shared, config, connected, session, idle, invite, password).await
+}
+
+/// Asks every trusted region whether it can admit `invite` with `password`.
+/// The response contains no room details. No region is joined, and the
+/// primary connection is left alone, until exactly one positive answer has
+/// arrived and every other answer is a generic no-match.
+async fn resolve_invite_target(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    connected: &Option<Connected>,
+    invite: Invite,
+    password: Option<Text<64>>,
+) -> Result<servers::ListedServer, String> {
+    let current = connected.as_ref().ok_or("connect to a server first")?;
+    let here = shared
+        .view()
+        .server
+        .clone()
+        .ok_or("connect to a listed server first")?;
+    let home = servers::find(&config.servers, &here)
+        .ok_or("the current server is not in this release's trusted list")?;
+    let lookouts = shared
+        .lookouts
+        .all_up(&config.servers, &home.address)
+        .await
+        .ok_or_else(|| {
+            "invite lookup is incomplete because a trusted region is unavailable; retry when every listed server is reachable"
+                .to_owned()
+        })?;
+
+    let candidates = std::iter::once((home.clone(), current.client.requests())).chain(
+        lookouts
+            .into_iter()
+            .map(|(server, requests, _ping)| (server, requests)),
+    );
+    let mut checks = JoinSet::new();
+    for (server, requests) in candidates {
+        let request = Request::ResolveInvite {
+            invite,
+            password: password.clone(),
+        };
+        checks.spawn(async move {
+            (
+                server,
+                requests
+                    .request_with_timeout(request, INVITE_RESOLVE_TIMEOUT)
+                    .await,
+            )
+        });
+    }
+
+    let mut probes = Vec::with_capacity(config.servers.len());
+    let mut incomplete = false;
+    let mut rate_limited = false;
+    while let Some(answer) = checks.join_next().await {
+        match answer {
+            Ok((server, response)) => {
+                let (result, limited) = invite_probe(response);
+                incomplete |= result == servers::InviteProbe::Incomplete;
+                rate_limited |= limited;
+                probes.push((server, result));
+            }
+            Err(error) => {
+                warn!(%error, "a trusted region's invite lookup task failed");
+                incomplete = true;
+            }
+        }
+    }
+    if incomplete {
+        return Err(if rate_limited {
+            "a trusted region is busy checking invites; wait briefly and retry".into()
+        } else {
+            "invite lookup is incomplete because a trusted region did not answer; check the connection and retry"
+                .into()
+        });
+    }
+    servers::select_invite_target(probes).map_err(invite_target_error)
+}
+
+fn invite_target_error(error: servers::InviteTargetError) -> String {
+    match error {
+        servers::InviteTargetError::NoMatch => {
+            ClientError::Refused(RequestError::BadInvite).to_string()
+        }
+        servers::InviteTargetError::Ambiguous(matches) => {
+            let regions = matches
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "more than one trusted region accepts that invite and password ({regions}); choose a region and retry"
+            )
+        }
+        servers::InviteTargetError::Incomplete => {
+            "invite lookup is incomplete because a trusted region did not answer; check the connection and retry"
+                .into()
+        }
+    }
+}
+
+/// Which non-mutating probe result a server response represents. Only the
+/// intentionally generic BadInvite is a negative match; every other error
+/// leaves the cross-region answer incomplete.
+fn invite_probe(response: Result<Response, ClientError>) -> (servers::InviteProbe, bool) {
+    match response {
+        Ok(Response::InviteMatch) => (servers::InviteProbe::Match, false),
+        Err(ClientError::Refused(RequestError::BadInvite)) => {
+            (servers::InviteProbe::NoMatch, false)
+        }
+        Err(ClientError::Refused(RequestError::RateLimited)) => {
+            (servers::InviteProbe::Incomplete, true)
+        }
+        _ => (servers::InviteProbe::Incomplete, false),
+    }
 }
 
 /// With the picker, the room this player creates starts from `save`: its
@@ -1831,12 +2410,7 @@ async fn set_server(
         return Err("leave the room first: the server changes between rooms".into());
     }
     let default = config.default_server.clone();
-    // The default typed out is the default: the setting then follows it.
-    let chosen = match typed.trim() {
-        "" => None,
-        typed => Some(server_address(typed)?)
-            .filter(|chosen| !default.as_deref().is_some_and(|d| same_server(d, chosen))),
-    };
+    let chosen = server_setting_choice(config, typed)?;
     let server = chosen
         .clone()
         .or(default)
@@ -1852,22 +2426,53 @@ async fn set_server(
     if let Some(connected) = connected.take() {
         connected.client.close().await;
     }
+    // Back on the default, a release with several servers plays on all
+    // of them again; a server of the player's own is played on alone.
+    let on_list = chosen.is_none() && config.servers.len() >= 2;
     let name = {
         let mut view = shared.view();
         view.server = Some(server.clone());
         view.server_fixed = true;
+        view.on_list = on_list;
         view.connected = false;
         view.rooms = None;
         view.server_version = None;
         view.session = None;
         view.name.clone()
     };
-    info!(%server, chosen = chosen.is_some(), "the player set the server");
+    shared.lookouts.stop().await;
+    info!(%server, chosen = chosen.is_some(), on_list, "the player set the server");
     if was_connected {
         let name = Text::new(name.trim()).map_err(|_| "that name is too long".to_owned())?;
-        connect_to(shared, config, connected, &server, name).await?;
+        if on_list {
+            connect_closest(shared, config, connected, name).await?;
+        } else {
+            connect_to(shared, config, connected, &server, name).await?;
+        }
     }
     Ok(())
+}
+
+/// Resolves a settings value before any remembered or connection state is
+/// changed. A release with multiple trusted regions accepts only addresses
+/// from that compiled list; a developer's `--server` build has no such list.
+fn server_setting_choice(config: &LauncherConfig, typed: &str) -> Result<Option<String>, String> {
+    let default = config.default_server.as_deref();
+    let chosen = match typed.trim() {
+        "" => None,
+        typed => Some(server_address(typed)?)
+            .filter(|chosen| !default.is_some_and(|server| same_server(server, chosen))),
+    };
+    if config.servers.len() < 2 {
+        return Ok(chosen);
+    }
+    chosen
+        .map(|address| {
+            servers::find(&config.servers, &address)
+                .map(|server| server.address.clone())
+                .ok_or_else(|| "this release can use only its trusted servers".to_owned())
+        })
+        .transpose()
 }
 
 /// A server as the player typed it for the setting, as `host:port`: the
@@ -2176,8 +2781,12 @@ fn names_a_server(token: &str) -> bool {
     })
 }
 
-async fn connect_options(
-    config: &LauncherConfig,
+/// How to reach `server` as `name`, trusted as `trust`, by the `tunnel`
+/// choice: what every connection to a server shares.
+pub(crate) async fn base_options(
+    trust: &ServerTrust,
+    identity: &Arc<Identity>,
+    tunnel: &TunnelChoice,
     server: &str,
     name: Text<32>,
 ) -> Result<ConnectOptions, String> {
@@ -2189,17 +2798,24 @@ async fn connect_options(
     let address = crate::resolve(server)
         .await
         .map_err(|error| format!("cannot find {server}: {error}"))?;
-    let mut options = ConnectOptions::new(
-        address,
-        host,
-        config.trust.clone(),
-        Arc::clone(&config.identity),
+    let mut options = ConnectOptions::new(address, host, trust.clone(), Arc::clone(identity), name);
+    options.route = tunnel.route(host).map_err(|error| error.to_string())?;
+    Ok(options)
+}
+
+async fn connect_options(
+    config: &LauncherConfig,
+    server: &str,
+    name: Text<32>,
+) -> Result<ConnectOptions, String> {
+    let mut options = base_options(
+        &config.trust,
+        &config.identity,
+        &config.tunnel,
+        server,
         name,
-    );
-    options.route = config
-        .tunnel
-        .route(host)
-        .map_err(|error| error.to_string())?;
+    )
+    .await?;
     // Every connection sends the recorder's lines, the rejoins' too.
     options.diagnostics.clone_from(&config.diagnostics);
     // And shows the player's banner, the rejoins too.
@@ -2314,6 +2930,7 @@ mod tests {
             server_fixed: false,
             default_server: None,
             server_name: None,
+            servers: Vec::new(),
             trust: ServerTrust::WebPki,
             identity: Arc::new(identity),
             name: "renderer recovery test".into(),
@@ -2331,6 +2948,103 @@ mod tests {
             game_env: Vec::new(),
             start_save: None,
         }
+    }
+
+    #[tokio::test]
+    async fn a_regional_server_setting_refuses_unlisted_hosts_before_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let remember = root.path().join("launcher.json");
+        Remembered::default().save(&remember).unwrap();
+        let eu = "eu.example.org:29470";
+        let us = "us.example.org:29470";
+        let mut config = local_config(root.path());
+        config.remember = Some(remember.clone());
+        config.server = Some(eu.into());
+        config.server_fixed = true;
+        config.default_server = Some(eu.into());
+        config.server_name = Some("EU".into());
+        config.servers = vec![
+            ListedServer {
+                name: "EU".into(),
+                address: eu.into(),
+            },
+            ListedServer {
+                name: "US".into(),
+                address: us.into(),
+            },
+        ];
+        let (shared, _, _) = Shared::new(&config);
+        let mut connected = None;
+        let session = None;
+        let error = set_server(
+            &shared,
+            &config,
+            "outside.example.org:29470",
+            &mut connected,
+            &session,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("trusted servers"), "{error}");
+        assert!(connected.is_none(), "no connection was promoted or closed");
+        assert_eq!(shared.view().server.as_deref(), Some(eu));
+        assert!(shared.view().on_list, "the regional route is unchanged");
+        assert_eq!(
+            Remembered::load(&remember).chosen_server,
+            None,
+            "the refused choice is not remembered"
+        );
+
+        set_server(&shared, &config, us, &mut connected, &session)
+            .await
+            .unwrap();
+        assert_eq!(shared.view().server.as_deref(), Some(us));
+        assert!(!shared.view().on_list, "a listed region may be pinned");
+        assert_eq!(
+            Remembered::load(&remember).chosen_server.as_deref(),
+            Some(us),
+            "trusted listed choices remain supported by the backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_server_development_launcher_keeps_its_override() {
+        let root = tempfile::tempdir().unwrap();
+        let remember = root.path().join("launcher.json");
+        let mut config = local_config(root.path());
+        config.remember = Some(remember);
+        config.server = Some("127.0.0.1:29470".into());
+        config.server_fixed = true;
+        config.default_server = Some("eu.example.org:29470".into());
+        let (shared, _, _) = Shared::new(&config);
+        let mut connected = None;
+        let session = None;
+        set_server(
+            &shared,
+            &config,
+            "other.example.org:29470",
+            &mut connected,
+            &session,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            shared.view().server.as_deref(),
+            Some("other.example.org:29470")
+        );
+    }
+
+    #[test]
+    fn copied_invites_name_a_server_only_for_dynamic_single_server_playtests() {
+        let invite = Invite("K7QM2X".parse().unwrap());
+        assert_eq!(
+            invite_for_copy(&invite, Some("play.example:29470"), true),
+            "K7QM2X"
+        );
+        assert_eq!(
+            invite_for_copy(&invite, Some("play.example:29470"), false),
+            "play.example:29470 K7QM2X"
+        );
     }
 
     #[tokio::test]
@@ -2399,6 +3113,45 @@ mod tests {
 
     fn invite() -> Invite {
         Invite("K7QM2X".parse().unwrap())
+    }
+
+    #[test]
+    fn invite_lookup_counts_only_generic_bad_invite_as_a_negative_answer() {
+        assert_eq!(
+            invite_probe(Ok(Response::InviteMatch)),
+            (servers::InviteProbe::Match, false)
+        );
+        assert_eq!(
+            invite_probe(Err(ClientError::Refused(RequestError::BadInvite))),
+            (servers::InviteProbe::NoMatch, false)
+        );
+        assert_eq!(
+            invite_probe(Err(ClientError::Refused(RequestError::RateLimited))),
+            (servers::InviteProbe::Incomplete, true)
+        );
+        assert_eq!(
+            invite_probe(Err(ClientError::Timeout)),
+            (servers::InviteProbe::Incomplete, false)
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_invite_tells_the_player_which_trusted_regions_to_choose() {
+        let message = invite_target_error(servers::InviteTargetError::Ambiguous(vec![
+            servers::ListedServer {
+                name: "EU".into(),
+                address: "eu.example.org:29470".into(),
+            },
+            servers::ListedServer {
+                name: "US".into(),
+                address: "us.example.org:29470".into(),
+            },
+        ]));
+        assert!(
+            message.contains("EU") && message.contains("US"),
+            "{message}"
+        );
+        assert!(message.contains("choose a region and retry"), "{message}");
     }
 
     #[tokio::test]
