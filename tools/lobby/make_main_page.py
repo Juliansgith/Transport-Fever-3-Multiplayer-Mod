@@ -3,10 +3,10 @@
 
 The mod's copy is the game's main_page.tl plus the Multiplayer entry
 (docs/LOBBY.md): a column of two cards right of the game's own
-(Multiplayer, and Join a friend), a top-bar button and the window they
-open. Each addition is applied at an anchor that must match exactly once,
-so a game patch that moves things fails loudly here rather than in the
-game.
+(Multiplayer, and Join a friend), a top-bar button and the in-page lobby
+they open. The page routes to the game's own Load Game and Mod Hub pages.
+Each addition is applied at an anchor that must match exactly once, so a
+game patch that moves things fails loudly here rather than in the game.
 
     python tools/lobby/make_main_page.py <the game's gui/menu/main_page.tl> [--install <mods folder>]
 
@@ -32,28 +32,38 @@ HEADER = '''-- TPF3-MP: the game's gui/menu/main_page.tl with a Multiplayer entr
 -- absolute ("::/") so the copy resolves the game's files from the mod's folder.
 '''
 
-LOBBY_WINDOW = '''-- TPF3-MP: the Multiplayer window, opened from the main menu into the menu's
--- own window container (as DeluxeContentWindow is). Its content is the mod's
--- gui/menu/lobby.lua: the lobby, talking to the hook.
+LOBBY_PAGE = '''-- TPF3-MP: the Multiplayer page, shown over the main menu while this is
+-- set: { focus }, "join" putting joining by invite first. A page as the
+-- game's own (load_game_page.tl), with its top bar, not a window. The
+-- menu's cards stay, hidden as the game hides them under its windows
+-- (title-icon-only): their node refs must stay attached, or the game
+-- stops ("Could not initialize all node refs", 2026-10-04).
 local record LobbyModule
 	prepareNewWorld : function()
-	content : function(onClose : function(), focus : string, onNewGame : function()) : TreeNodeId
+	content : function(onClose : function(), focus : string, onNewGame : function(), onPick : function(), onModHub : function(), commonParams : CommonMenuParams) : TreeNodeId
+	beginPick : function(setPage : any) : boolean
+	endPick : function() : boolean
+	leaveFor : function(again : boolean)
+	takeReopen : function() : boolean
 	CardLine : function(params : any) : TreeNodeId
 	joinLine : function(state : any) : string
 end
 local lobby = ug_require "tpf3mp_1::/gui/menu/lobby.lua" as LobbyModule
 
-local record Tpf3mpLobbyWindowParam
+local record Tpf3mpLobbyPageParam
 	onNewGame : function()
+	onPick : function()
+	onModHub : function()
 	onClose : function()
-	pos : Vec2f
 	focus : string
+	commonParams : CommonMenuParams
 end
 
--- TPF3-MP: the lobby's content, or, should its Lua fail, the error and a way
--- out - never a window that cannot be closed.
-local function safeContent(onClose : function(), focus : string, onNewGame : function()) : TreeNodeId
-	local ok, result = pcall(lobby.content, onClose, focus, onNewGame)
+-- TPF3-MP: the lobby's page, or, should its Lua fail, the error and a way
+-- out - never a page that cannot be left.
+local Tpf3mpLobbyPage = react.RegisterRecipe("Tpf3mpLobbyPage", function(param : Tpf3mpLobbyPageParam) : TreeNodeId
+	local ok, result = pcall(lobby.content, param.onClose, param.focus, param.onNewGame, param.onPick,
+		param.onModHub, param.commonParams)
 	if ok then
 		return result as TreeNodeId
 	end
@@ -66,57 +76,41 @@ local function safeContent(onClose : function(), focus : string, onNewGame : fun
 			builtin.Button{
 				meta = { class = "secondary" },
 				content = builtin.TextView{ text = _("Close") },
-				onClick = onClose,
+				onClick = param.onClose,
 			},
 		},
-	}
-end
-
-local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", builtin.Window, function(param : Tpf3mpLobbyWindowParam) : TreeNodeId
-	-- Centred on the screen at any resolution, as the game centres its mod
-	-- validation report (mod_manager_react_util.tl): by that window's class,
-	-- whose rule in the game's style sheet (mod_browser.css.lua,
-	-- "Window!validation-report-dialog") sets anchorPoint and gravity to
-	-- 0.5, 0.5 and nothing else. A wrapper recipe may pass meta only for its
-	-- class: a styleSheet with anchorPoint made the game assert and close
-	-- ("Wrapper recipe must return child", 2026-09-30). initialX and
-	-- initialY are shares of the screen for the window's anchor point, so
-	-- none is given: the class's gravity places it.
-	return builtin.Window{
-		title = _("Multiplayer"),
-		id = "window.tpf3mp.lobby",
-		meta = { class = "fade-in, validation-report-dialog" },
-		movable = false,
-		closable = true,
-		onClose = param.onClose,
-		content = safeContent(param.onClose, param.focus, param.onNewGame),
 	}
 end)
 
 '''
 
-SHOW = '''	-- TPF3-MP: open the Multiplayer window, as showDeluxeContent opens its
-	-- window; `focus` "join" puts joining by invite first.
+SHOW = '''	-- TPF3-MP: the Multiplayer page, shown over the main menu while this is
+	-- set: { focus }, "join" putting joining by invite first. A page as the
+	-- game's own (load_game_page.tl), with its top bar, not a window. The
+	-- menu's cards stay, hidden as the game hides them under its windows
+	-- (title-icon-only): their node refs must stay attached, or the game
+	-- stops ("Could not initialize all node refs", 2026-10-04).
+	local lobbyState : ReactStateT<{string:string}> = react.useState(nil)
 	local showMultiplayer = function(focus : string)
-		local pos = api.type.Vec2f.new(0.5, 0.5)
 		titleIconOnlyState:set(true)
-		local wc = mainPageParams.commonParams.windowContainer:get():getApi()
-		wc.addSingletonWindow(Tpf3mpLobbyWindow, {
-			onNewGame = function()
-				lobby.prepareNewWorld()
-				wc.removeAllWindows(Tpf3mpLobbyWindow)
-				mainPageParams.commonParams.setPage("NewGame", { map = false })
-			end,
-			onClose = function()
-				titleIconOnlyState:set(false)
-				fastFadeInState:set(true)
-				cardsFadeInStartTimeRef:set(api.util.getApplicationTime())
-				mainPageParams.commonParams.windowContainer:get():getApi().removeAllWindows(Tpf3mpLobbyWindow)
-			end,
-			pos = pos,
-			focus = focus,
-		})
+		lobbyState:set({ focus = focus })
 	end
+	local closeMultiplayer = function()
+		lobbyState:set(nil)
+		titleIconOnlyState:set(false)
+		fastFadeInState:set(true)
+		cardsFadeInStartTimeRef:set(api.util.getApplicationTime())
+	end
+
+	-- TPF3-MP: back from a page the Multiplayer window sent the player to
+	-- (the room's save and mods, Mod Hub): the window again. A pick under
+	-- way ends here whichever way the player came back.
+	react.onMount(function()
+		local picking = lobby.endPick()
+		if lobby.takeReopen() or picking then
+			showMultiplayer(nil)
+		end
+	end)
 
 	if titleIconOnlyState:old() then
 		react.setStyleClasses("title-icon-only")'''
@@ -242,7 +236,7 @@ CARD = '''	-- TPF3-MP: the Multiplayer cards, a column right of the game's own c
 
 
 def build(source_text):
-    """The mod's main_page.tl from the game's."""
+    """Build the mod's current Multiplayer page into the game's main_page.tl."""
     text = source_text
 
     def edit(anchor, new, count=1):
@@ -261,7 +255,7 @@ def build(source_text):
     edit('ug_require "configs/deluxe_content.lua"', 'ug_require "::/gui/menu/configs/deluxe_content.lua"')
     edit('ug_require "releasenotes_window.tl"', 'ug_require "::/gui/menu/releasenotes_window.tl"')
     edit('local GameEditionTextMainPage = react.RegisterRecipe(',
-         LOBBY_WINDOW + 'local GameEditionTextMainPage = react.RegisterRecipe(')
+         LOBBY_PAGE + 'local GameEditionTextMainPage = react.RegisterRecipe(')
     edit('	if titleIconOnlyState:old() then\n		react.setStyleClasses("title-icon-only")', SHOW)
     edit('	local settings = button_react_util.makeIconButton(nil, "::/gui/menu/icons/settings_50.tga", function()',
          TOPBAR_BUTTON)
@@ -276,6 +270,63 @@ def build(source_text):
     edit('			campaignCard\n		}, "level1"),\n	}, "card-wrap", cardWrapRef)',
          '			campaignCard\n		}, "level1"),\n		}), multiplayerColumn }), -- TPF3-MP\n	}, "card-wrap", cardWrapRef)')
 
+    edit('''\t\tmenu_util.EditionLogo{
+\t\t\tgameEditionText = gameEditionParamState:old(),
+\t\t},''', '''\t\t-- TPF3-MP: no logo under the Multiplayer page, whose top bar has its
+\t\t-- title there; each its own key, so one is never turned into the other.
+\t\tlobbyState:old() and builtin.Component{
+\t\t\tmeta = { localKey = "tpf3mp-no-logo" },
+\t\t} or menu_util.EditionLogo{
+\t\t\tmeta = { localKey = "edition-logo" },
+\t\t\tgameEditionText = gameEditionParamState:old(),
+\t\t},''')
+    edit('''\t\tbuiltin.FloatingLayoutChild{
+\t\t\th = 1.0,
+\t\t\tv = 1.0,
+\t\t\titem = builtin.TextView{
+\t\t\t\tmeta = {
+\t\t\t\t\tclass = "version-string, font-scale-body",
+\t\t\t\t},
+\t\t\t\ttext = api.util.getBuildVersionString(),
+\t\t\t},
+\t\t},''', '''\t\tbuiltin.FloatingLayoutChild{
+\t\t\th = 1.0,
+\t\t\tv = 1.0,
+\t\t\titem = builtin.TextView{
+\t\t\t\tmeta = {
+\t\t\t\t\tclass = "version-string, font-scale-body",
+\t\t\t\t},
+\t\t\t\ttext = api.util.getBuildVersionString(),
+\t\t\t},
+\t\t},
+\t\t-- TPF3-MP: the Multiplayer page over the hidden cards, its own key.
+\t\tlobbyState:old() and builtin.FloatingLayoutChild{
+\t\t\tlocalKey = "tpf3mp-lobby",
+\t\t\th = -1,
+\t\t\tv = -1,
+\t\t\titem = Tpf3mpLobbyPage{
+\t\t\t\tfocus = lobbyState:old().focus,
+\t\t\t\tcommonParams = mainPageParams.commonParams,
+\t\t\t\tonClose = closeMultiplayer,
+\t\t\t\t-- The room's save and mods, on the game's own Load Game
+\t\t\t\t-- page (gui/menu/roommods.lua); back here when it is done.
+\t\t\t\tonPick = function()
+\t\t\t\t\tif lobby.beginPick(mainPageParams.commonParams.setPage) then
+\t\t\t\t\t\tmainPageParams.commonParams.setPage("LoadGame", { map = false })
+\t\t\t\t\tend
+\t\t\t\tend,
+\t\t\t\t-- The game's Mod Hub, to sign in; back here from it.
+\t\t\t\tonModHub = function()
+\t\t\t\t\tlocal setPage = mainPageParams.commonParams.setPage
+\t\t\t\t\tlobby.leaveFor(true)
+\t\t\t\t\tsetPage("ModManager", { back = function() setPage("Main", nil) end })
+\t\t\t\tend,
+\t\t\t\tonNewGame = function()
+\t\t\t\t\tlobby.prepareNewWorld()
+\t\t\t\t\tmainPageParams.commonParams.setPage("NewGame", { map = false })
+\t\t\t\tend,
+\t\t\t},
+\t\t} or nil,''')
     # A leading-slash path is resolved against the requiring file's root, which
     # for the mod's copy is tpf3mp_1::/; name the game's root explicitly.
     text = re.sub(r'"/(gui|scripts|base|mission)/', lambda m: '"::/' + m.group(1) + '/', text)

@@ -382,6 +382,10 @@ room page in the game (`tpf3mp/banners.lua`, `portraitOf`).
 
 ## The mod's copies
 
+When changing the main-page generator, run
+`python tools/lobby/test_make_main_page.py`. It guards the in-page lobby and
+its routes to the game's Load Game and Mod Hub pages.
+
 `mod/tpf3mp_1/content/gui/menu/main_page.tl` is a copy of the game's file.
 Every change is marked `TPF3-MP:`; the relative requires and asset paths are
 made absolute (`::/...`), because a leading-slash path is resolved against
