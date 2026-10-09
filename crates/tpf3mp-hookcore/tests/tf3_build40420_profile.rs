@@ -63,6 +63,9 @@ const PE_TIMESTAMP: u32 = 0x6ac5_0427;
 const TARGETS: &[(&str, u64)] = &[
     ("GameSim::Step", 0x1593d0),
     ("CGame::Step", 0x11f3f0),
+    // The batch interval (crates/tpf3mp-hook/src/interval.rs).
+    ("CGame::Sync", 0x11f690),
+    ("CGame::Step/Sync call", 0x11f446),
     ("CGameTime::GetSpeed", 0x2a95e0),
     ("GameSim::Step/GetSpeed call", 0x15942e),
     ("UI::CMenuUI::StartSavegame", 0x6a2740),
@@ -251,8 +254,8 @@ fn profile_pins_public_steam_build_40420_and_all_target_names() {
     assert_eq!(profile.build.size, Some(SIZE));
     assert_eq!(profile.build.pe_timestamp, Some(PE_TIMESTAMP));
     assert_eq!(profile.image_base, Some(0x0001_4000_0000));
-    assert_eq!(profile.targets.len(), 153);
-    assert_eq!(TARGETS.len(), 153);
+    assert_eq!(profile.targets.len(), 155);
+    assert_eq!(TARGETS.len(), 155);
     for &(name, _) in TARGETS {
         assert!(
             profile.targets.iter().any(|target| target.name == name),

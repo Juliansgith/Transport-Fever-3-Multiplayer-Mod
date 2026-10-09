@@ -87,9 +87,11 @@ pub const LAYOUT_40408: Layout = Layout {
     gui_frame_time: 0x218,
 };
 
-/// The layout of the build a profile names, where it was verified.
+/// The layout of the build a profile names, where it was verified: 40408
+/// (2026-10-08) and 40420 (2026-10-09, the same offsets in `CGame::Step`
+/// and `RunGameSimLoop`).
 pub fn layout_for(profile: &str) -> Option<Layout> {
-    profile.contains("Build 40408").then_some(LAYOUT_40408)
+    (profile.contains("Build 40408") || profile.contains("Build 40420")).then_some(LAYOUT_40408)
 }
 
 /// The updates a call runs at the room's pace with the game's own 200 ms
@@ -740,6 +742,22 @@ pub fn writable(_address: usize, _len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_verified_builds_have_a_layout() {
+        assert_eq!(
+            layout_for("Transport Fever 3 Build 40408 (Steam, Windows x64)"),
+            Some(LAYOUT_40408)
+        );
+        assert_eq!(
+            layout_for("Transport Fever 3 Build 40420 (Steam, Windows x64)"),
+            Some(LAYOUT_40408)
+        );
+        assert_eq!(
+            layout_for("Transport Fever 3 Build 40418 Preview (Steam, Windows x64)"),
+            None
+        );
+    }
 
     #[test]
     fn the_nominal_count_is_the_rooms_pace_over_the_games_batch() {

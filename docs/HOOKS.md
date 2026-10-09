@@ -915,7 +915,8 @@ lock held is dropped). The wrapper is `extern "C-unwind"`: an exception
 Sync throws reaches the game's own handlers as without it. A begin, every load and a hold start a
 new epoch: nothing published before times anything after.
 
-Fail closed: only on the profile whose layout was verified (40408), only
+Fail closed: only on the profiles whose layout was verified (40408 and
+40420: the same offsets), only
 with both targets, even steps on and the per-update detour installed
 (without it no batch's real count is known, and even steps measure
 again); before writing, the wrapper checks
