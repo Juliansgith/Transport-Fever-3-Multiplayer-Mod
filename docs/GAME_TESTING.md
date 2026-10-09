@@ -107,6 +107,12 @@ mended by loading it with the mod added to its mods and saving it again
 - `tpf3mp_fixture3`: a loan, a road depot, two bus stations, Line 1, and
   no bus yet (the default).
 
+For tutorial recovery, `fixture.ps1 -Tutorial -Name <fresh-name>` loads
+the built-in tutorial with TPF3-MP in single player and saves it before
+quitting. Start that save with `room.ps1 -Fixture <fresh-name>`. Verify
+the native tutorial cleanup and unlocked construction/finance in both
+games, then place a build and take a loan through the ordinary UI.
+
 To make one by hand: set the world up, then run this in its console:
 
 ```lua

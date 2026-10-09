@@ -295,6 +295,11 @@ window too.
      **Mods** tab and its settings on **Gameplay Settings**, as you would
      to load it, and press **Use for the room**: the room starts from that
      save, with exactly those mods and settings in every player's game.
+     An active tutorial is quit automatically on the first simulation update
+     in a multiplayer room (unpause if needed), using the game's normal Quit Tutorial cleanup on
+     every replica. This releases the tutorial's construction and finance
+     restrictions; playing through the tutorial together is not supported.
+     Single-player tutorials and campaign missions are not auto-quit.
      The first tile, **New world**, starts the room from a world you
      create: the game opens its normal setup screens for climate, map and
      settings once the room is made. TPF3-MP is always among the room's

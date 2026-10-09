@@ -2628,6 +2628,71 @@ const DEPOT: &str = "{ BuildConstruction = { \
     name = 'Depot' } }";
 
 #[test]
+fn tutorial_cleanup_runs_in_each_rooms_simulation() {
+    // Three independent worlds, not a GUI-only unlock. The command is the
+    // native Quit Tutorial event; its handler marks isComplete=false before
+    // the mission script's next postUpdate removes tasks and restrictions.
+    for _ in 0..3 {
+        let (lua, _) = engine();
+        lua.load(
+            r#"
+            MISSION = { isTutorialActive = true }
+            api.type.ComponentType.GAME_SCRIPT = 100
+            api.engine.system.gameScriptSystem = {
+                getEntityForGameScript = function(name)
+                    if name == '::/mission/mission.gs' then return 777 end
+                    return -1
+                end
+            }
+            api.engine.getComponent = function(entity, kind)
+                if entity == 777 and kind == 100 then return { state = MISSION } end
+            end
+            local send = api.cmd.sendCommand
+            QUITS = 0
+            api.cmd.sendCommand = function(command, callback)
+                if command.event and command.event.name == 'abortMission' then
+                    assert(PHASE == 'post')
+                    assert(command.event.src == '' and command.event.id == 'MissionWindow')
+                    assert(command.event.param == true)
+                    QUITS = QUITS + 1
+                    MISSION.isComplete = false
+                end
+                send(command, callback)
+            end
+            -- An installed mod must leave a single-player tutorial alone.
+            HOOK.room = false
+            UPDATE({}, STATE, 0.2)
+            assert(QUITS == 0 and MISSION.isComplete == nil)
+            HOOK.room = true
+            WORK = SCRIPT.update({}, STATE, 0.2)
+            assert(QUITS == 0 and WORK.quitTutorial == true)
+            PHASE = 'post'
+            SCRIPT.postUpdate({}, STATE, 0.2, WORK)
+            PHASE = nil
+            assert(QUITS == 1 and MISSION.isComplete == false)
+            UPDATE({}, STATE, 0.2)
+            assert(QUITS == 1) -- false means quitting, not still active
+            MISSION = { isComplete = true, tasks = {} }
+            UPDATE({}, STATE, 0.2)
+            assert(QUITS == 1)
+            -- Campaign and ordinary saves must not be aborted.
+            MISSION = { tasks = {} }
+            UPDATE({}, STATE, 0.2)
+            assert(QUITS == 1)
+            -- Stale work cannot quit a tutorial after leaving the room.
+            MISSION = { isTutorialActive = true }
+            WORK = SCRIPT.update({}, STATE, 0.2)
+            HOOK.room = false
+            SCRIPT.postUpdate({}, STATE, 0.2, WORK)
+            assert(QUITS == 1)
+        "#,
+        )
+        .exec()
+        .unwrap();
+    }
+}
+
+#[test]
 fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
     let (lua, _script) = engine();
     // No action ordered: nothing sent, and nothing for postUpdate.
