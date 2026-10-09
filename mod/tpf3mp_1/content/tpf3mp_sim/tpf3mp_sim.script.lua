@@ -448,6 +448,25 @@ function data()
 		end
 	end
 
+	-- A tutorial save can lock construction and finance behind local mission
+	-- UI events, which the multiplayer guard correctly refuses. Quit only an
+	-- active tutorial through the game's own cleanup, in the simulation on
+	-- every replica. Do not grant arbitrary mission events a local bypass.
+	-- Build 40420: mission/mission_sim.script.tl and the Quit Tutorial button
+	-- in mission/mission_framework/mission_framework_react.tl.
+	local function tutorialActive()
+		local ok, active = pcall(function()
+			local entity = api.engine.system.gameScriptSystem.getEntityForGameScript("::/mission/mission.gs")
+			if type(entity) ~= "number" or entity < 0 then return false end
+			local component = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+			local mission = component and component.state
+			return type(mission) == "table" and mission.isTutorialActive == true
+				and mission.isComplete == nil
+		end)
+		return ok and active == true
+	end
+	local tutorialError
+
 	local script
 	script = {
 		update = function(_params, state, _dt)
@@ -468,6 +487,7 @@ function data()
 			-- the registry gained a kind.
 			local saved = state and state.get and state:get()
 			local begin = l:room() and (type(saved) ~= "table" or registry.incomplete(saved.registry))
+			local quitTutorial = l:room() and tutorialActive()
 			-- A month begun since the companies' loans were last charged.
 			local month = companies.monthNow(api)
 			local monthly = l:room() and type(saved) == "table" and companies.due(saved.companies, month)
@@ -488,18 +508,31 @@ function data()
 			-- The entities the hook's edge watch reads in this update.
 			local watch = l:edgewatch()
 			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies
-				and not loanInit and not loanRefresh
+				and not loanInit and not loanRefresh and not quitTutorial
 				and not watch and not scanStep then
 				return nil
 			end
 			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint, scanStep = scanStep,
 				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
-				subsidies = subsidies and day or nil, loanInit = loanInit, loanRefresh = loanRefresh, watch = watch }
+				subsidies = subsidies and day or nil, loanInit = loanInit, loanRefresh = loanRefresh, watch = watch,
+				quitTutorial = quitTutorial }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
+			if work.quitTutorial and l:room() and tutorialActive() then
+				local ok, why = pcall(function()
+					apply.send(api.cmd.makeScriptingSendEventCmd("", "MissionWindow", "abortMission", true))
+				end)
+				if ok then
+					tutorialError = nil
+					l:log("tutorial: requested the game's Quit Tutorial cleanup for multiplayer")
+				elseif tutorialError ~= tostring(why) then
+					tutorialError = tostring(why)
+					l:log("tutorial: Quit Tutorial cleanup failed: " .. tutorialError)
+				end
+			end
 			if work.actions or work.begin or work.monthly or work.sample or work.loanInit or work.loanRefresh then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end

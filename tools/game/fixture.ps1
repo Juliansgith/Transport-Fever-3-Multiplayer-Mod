@@ -11,6 +11,8 @@
 # host's save for the room unanswered, and the guests never join.
 #
 #   fixture.ps1 [-Name tpf3mp_fixture] [-Seed tpf3mp] [-Tiles 16] [-NoInstall]
+# -Tutorial loads the game's built-in tutorial with the mod, rather than
+# generating a map (small generated maps may lack required industries).
 #
 # Needs the game's console (debugMode = true in settings.lua) and Steam
 # running. Refuses while any game runs, never stops one, and never
@@ -24,6 +26,7 @@ param(
   [int]$WorldWait = 300,
   [int]$SaveWait = 120,
   [int]$QuitWait = 60,
+  [switch]$Tutorial,
   [switch]$NoInstall
 )
 $ErrorActionPreference = "Stop"
@@ -95,10 +98,21 @@ Wait-For "Main menu is ready" $MenuWait "the main menu"
 Start-Sleep -Seconds 8
 
 $g = "$PSScriptRoot\gamewin.ps1"
-$start = 'local p = api.type.StartGameParams.new() p.numTiles = api.type.Vec2i.new(' + $Tiles + ', ' + $Tiles + ') ' +
-  'p.seed = "' + $Seed + '" p.mods = { "tpf3mp_1" } p.modParams = { [""] = { ["guideSystemConfig.tutorial"] = 1 } } ' +
-  'print("@@fixture starting") app.startGame(p)'
-& $g console $start -GamePid $proc.Id -Open | Out-Null
+if ($Tutorial) {
+  $read = 'TPF3MP_TUTORIAL_ID=api.type.SavegameId.new() TPF3MP_TUTORIAL_ID.path="" TPF3MP_TUTORIAL_ID.saveGameNamespace=app.SaveGameNamespace.getSavegame() TPF3MP_TUTORIAL_ID.saveGameName="::/savegames/tutorial_temperate_1.sav" TPF3MP_TUTORIAL_INFO=app.getSavegameInfo(TPF3MP_TUTORIAL_ID)'
+  & $g console $read -GamePid $proc.Id -Open | Out-Null
+  $load = 'if TPF3MP_TUTORIAL_INFO:isCompleted() then local d=TPF3MP_TUTORIAL_INFO:get() assert(d and d.info) local i=api.type.SaveGameDetails.new(d.info) local m=api.type.ModId.new() m.name="tpf3mp_1" local mods={} for _,v in ipairs(i.mods or {}) do mods[#mods+1]=v end mods[#mods+1]=m i.mods=mods i.modParams={[""]={["guideSystemConfig.tutorial"]=2}} print("@@fixture starting") app.loadGame(TPF3MP_TUTORIAL_ID,false,i,true) end'
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    Start-Sleep -Seconds 2
+    & $g console $load -GamePid $proc.Id | Out-Null
+  } while (-not (Log-Says '@@fixture starting') -and (Get-Date) -lt $deadline)
+} else {
+  $start = 'local p = api.type.StartGameParams.new() p.numTiles = api.type.Vec2i.new(' + $Tiles + ', ' + $Tiles + ') ' +
+    'p.seed = "' + $Seed + '" p.mods = { "tpf3mp_1" } p.modParams = { [""] = { ["guideSystemConfig.tutorial"] = 1 } } ' +
+    'print("@@fixture starting") app.startGame(p)'
+  & $g console $start -GamePid $proc.Id -Open | Out-Null
+}
 Wait-For "@@fixture starting" 20 "the console's echo of the start"
 Wait-For "Game is ready" $WorldWait "the new world"
 Start-Sleep -Seconds 10
