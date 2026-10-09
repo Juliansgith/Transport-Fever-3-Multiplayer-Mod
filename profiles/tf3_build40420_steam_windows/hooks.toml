@@ -35,14 +35,183 @@ offset = 0
 prologue = "40 55 41 56 48 83 EC 48 4C 8B F2 48 8B E9"
 required = true
 
-# CGame::Step (TPF2 0x118e90; here 0x11f3b0): the main-thread pacing entry.
-# Two shared assert strings; game/game.cpp.
+# CGame::Step (TPF2 0x118e90; here 0x11f3f0): the main-thread pacing entry.
+# The preceding 0x11f3b0 bytes contain an assert; the function starts at
+# 0x11f3f0. Two shared assert strings; game/game.cpp.
 [[target]]
 name = "CGame::Step"
 signature = "40 53 48 83 EC 20 48 8B 81 F0 01 00 00 48 8B D9"
 offset = 0
 prologue = "40 53 48 83 EC 20 48 8B 81 F0 01 00 00 48 8B D9"
 required = true
+
+# CGame::Sync (0x11f690): CGame::Step calls it at 0x11f446. Whether worker
+# simulation has completed when Sync returns is sampled at runtime, not
+# assumed. The opt-in wrapper runs on the CGame thread before Step commits
+# its cached lastSyncTime. Its verified entry prologue is straight-line for
+# 14 bytes.
+[[target]]
+name = "CGame::Sync"
+signature = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 40 4C 8B F2 48 8B D9"
+offset = 0
+prologue = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56"
+required = false
+
+# CGame::Step's call of Sync (0x11f446). Redirecting this call alone keeps
+# the wrapper on the main CGame thread and leaves all other Sync callers
+# unchanged. The wrapper forwards the original boolean result unchanged.
+[[target]]
+name = "CGame::Step/Sync call"
+signature = "48 8B CB 48 03 BA A8 01 00 00 48 8B D6 E8 ?? ?? ?? ?? 84 C0 74 ??"
+offset = 13
+prologue = "E8"
+required = false
+
+# CGame::Sync's ComputeFrameTime call, redirected only by the opt-in smooth
+# scheduler so the current Sync and CGame::Step alpha use the same period.
+# CallRedirect verifies this site still calls the resolved function below.
+[[target]]
+name = "CGame::Sync/ComputeFrameTime call"
+signature = "48 8B 06 8B 90 90 01 00 00 03 90 70 01 00 00 44 0F B6 83 98 02 00 00 E8 BF D8 FF FF 48 8B 0E 89 81 18 02 00 00"
+offset = 23
+prologue = "E8"
+required = false
+
+# Function called at the exact Sync site above. It still runs for normal
+# bookkeeping; smooth pacing overrides only its returned scheduler interval.
+[[target]]
+name = "CGame::ComputeFrameTime"
+signature = "44 88 44 24 18 89 54 24 10 53 48 83 EC 50 48 8D 54 24 68 48 8B D9"
+offset = 0
+prologue = "44 88 44 24 18 89 54 24 10 53 48 83 EC 50"
+required = false
+
+# Observe-only renderer feasibility sites. These are opt-in via
+# TPF3MP_HOOK_RENDER_PROBE=1 together with the five-second timeline watcher;
+# no renderer return or ECS storage is changed by these hooks.
+[[target]]
+name = "CRenderer::NewUpdate"
+signature = "48 89 5C 24 10 48 89 74 24 18 57 41 54 41 55 41 56 41 57 B8 80 14 00 00"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 74 24 18 57 41 54 41 55"
+required = false
+
+[[target]]
+name = "CRenderer::NewUpdate/ModelInstanceList index call"
+signature = "48 8B 9C 24 80 00 00 00 48 8D 4B 48 48 8D 05 ?? ?? ?? ?? 48 89 84 24 40 04 00 00 48 8D 94 24 40 04 00 00 E8 ?? ?? ?? ??"
+offset = 35
+prologue = "E8"
+required = false
+
+[[target]]
+name = "CRenderer::NewUpdate/Lambda7 dispatch call"
+signature = "C5 F8 10 84 24 40 01 00 00 C5 F9 7F 84 24 E0 07 00 00 C6 44 24 30 00 0F B6 4C 24 50 88 4C 24 28 48 8B 4C 24 60 48 89 4C 24 20 41 B9 08 00 00 00 48 8D 94 24 E0 07 00 00 48 8B C8 E8 ?? ?? ?? ??"
+offset = 59
+prologue = "E8"
+required = false
+
+[[target]]
+name = "CRenderer::NewUpdate/ModelInstanceList index function"
+signature = "48 89 5C 24 10 57 48 81 EC 90 00 00 00 48 8B FA"
+offset = 0
+prologue = "48 89 5C 24 10 57 48 81 EC 90 00 00 00 48 8B FA"
+required = false
+
+[[target]]
+name = "RenderModelInstance::_Do_call"
+signature = "48 8B C4 53 56 57 41 54 41 55 41 56 41 57 48 81 EC 50 07 00 00"
+offset = 0
+prologue = "48 8B C4 53 56 57 41 54 41 55 41 56 41 57 48 81 EC 50 07 00 00"
+required = false
+
+[[target]]
+name = "RenderModelInstance/GetInstance call"
+signature = "4C 63 C1 49 C1 E0 04 4D 03 41 18 48 98 48 6B C8 38 49 03 08 4C 8D 84 24 10 06 00 00 41 8B 55 08 E8 ?? ?? ?? ??"
+offset = 32
+prologue = "E8"
+required = false
+
+[[target]]
+name = "ModelInstanceList::GetInstance"
+signature = "40 53 48 81 EC F0 00 00 00 4C 63 CA 49 8B D8"
+offset = 0
+prologue = "40 53 48 81 EC F0 00 00 00 4C 63 CA 49 8B D8"
+required = false
+
+[[target]]
+name = "RenderModelInstance::transformator slot call"
+signature = "48 8B 06 4C 8D 8C 24 00 03 00 00 4C 8D 84 24 28 01 00 00 48 8D 94 24 D8 02 00 00 48 8B CE FF 50 18"
+offset = 30
+prologue = "FF 50 18"
+required = false
+
+# Road-vehicle transformator and its two renderer-local calls. The probe adds
+# observers only while a timeline capture is active; every call target is
+# checked again at installation before any call redirect is patched.
+[[target]]
+name = "RoadVehicleTransformator::vf3"
+signature = "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 68 FA FF FF 48 81 EC 58 06 00 00 C5 F8 29 70 A8 C5 F8 29 78 98 C5 78 29 40 88 48 8B 05 ?? ?? ?? ??"
+offset = 0
+prologue = "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57"
+required = false
+
+[[target]]
+name = "RoadVehicleTransformator::path helper call"
+signature = "C5 FA 11 74 24 28 48 8B 4D 90 48 89 4C 24 20 4C 8B 4D 88 44 8B C3 48 8B D0 48 8D 4D B0 E8 ?? ?? ?? ??"
+offset = 29
+prologue = "E8"
+required = false
+
+[[target]]
+name = "RoadVehicleTransformator::user transforms call"
+signature = "4C 8B 4D A8 C5 FA 10 95 30 01 00 00 48 8D 54 24 78 49 8B CC E8 ?? ?? ?? ??"
+offset = 20
+prologue = "E8"
+required = false
+
+# Native CGameTime interpolation, reached only from RoadVehicleTransformator::vf3.
+# The wrapper preserves the call arguments and original return; its nested getter
+# redirects are scoped to this one interpolation call.
+[[target]]
+name = "RoadVehicleTransformator::vf3/CGameTime interpolation call"
+signature = "C5 F8 28 CE 48 8B C8 E8 ?? ?? ?? ?? 48 89 45 00"
+offset = 7
+prologue = "E8"
+required = false
+
+# These two calls are inside CGameTime interpolation at 0xc456d0. They are the
+# only current/prior reads observed by this diagnostic; no global getter hook
+# or additional render-side getter call is installed.
+[[target]]
+name = "CGameTime interpolation/current getter call"
+signature = "48 8B D9 C5 F8 28 F1 E8 ?? ?? ?? ?? 48 8D 54 24 20"
+offset = 7
+prologue = "E8"
+required = false
+
+[[target]]
+name = "CGameTime interpolation/previous getter call"
+signature = "48 8B CB 48 8B F8 E8 ?? ?? ?? ?? 80 7C 24 28 00"
+offset = 6
+prologue = "E8"
+required = false
+
+# Snapshot lineage and selected-entity incarnation invalidation for the
+# separately opted-in private road-history experiment. Both wrappers forward
+# every native argument and the incidental RAX value unchanged.
+[[target]]
+name = "GameState::Replicate"
+signature = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 50 41 8B E8"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18"
+required = false
+
+[[target]]
+name = "ecs::Engine::RemoveEntity"
+signature = "48 89 5C 24 10 44 88 44 24 18 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 70"
+offset = 0
+prologue = "48 89 5C 24 10 44 88 44 24 18 55 56 57"
+required = false
 
 # CGameTime::GetSpeed (TPF2 0x2877a0; here 0x2a95a0): the speed GameSim::Step
 # reads, in updates per call (GameSpeed.speedup). Not matched by name: it is

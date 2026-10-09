@@ -58,11 +58,40 @@ const SHA256: &str = "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5f
 const SIZE: u64 = 69_755_832;
 const PE_TIMESTAMP: u32 = 0x6ac5_0427;
 
-/// All 153 profile targets, including optional targets, at their RVAs in the
+/// All 173 profile targets, including optional targets, at their RVAs in the
 /// public build 25754343 executable (image base 0x140000000).
 const TARGETS: &[(&str, u64)] = &[
     ("GameSim::Step", 0x1593d0),
     ("CGame::Step", 0x11f3f0),
+    ("CGame::Sync", 0x11f690),
+    ("CGame::Step/Sync call", 0x11f446),
+    ("CGame::Sync/ComputeFrameTime call", 0x11f9cc),
+    ("CGame::ComputeFrameTime", 0x11d290),
+    ("CRenderer::NewUpdate", 0x2ffc60),
+    (
+        "CRenderer::NewUpdate/ModelInstanceList index call",
+        0x3003b2,
+    ),
+    ("CRenderer::NewUpdate/Lambda7 dispatch call", 0x301b3c),
+    (
+        "CRenderer::NewUpdate/ModelInstanceList index function",
+        0xa4c80,
+    ),
+    ("RenderModelInstance::_Do_call", 0x2f5d90),
+    ("RenderModelInstance/GetInstance call", 0x2f617e),
+    ("ModelInstanceList::GetInstance", 0x2fdb80),
+    ("RenderModelInstance::transformator slot call", 0x2f640d),
+    ("RoadVehicleTransformator::vf3", 0xc8ff70),
+    ("RoadVehicleTransformator::path helper call", 0xc90391),
+    ("RoadVehicleTransformator::user transforms call", 0xc91371),
+    (
+        "RoadVehicleTransformator::vf3/CGameTime interpolation call",
+        0xc9040f,
+    ),
+    ("CGameTime interpolation/current getter call", 0xc456e7),
+    ("CGameTime interpolation/previous getter call", 0xc456f7),
+    ("GameState::Replicate", 0x255e60),
+    ("ecs::Engine::RemoveEntity", 0x2bbc700),
     ("CGameTime::GetSpeed", 0x2a95e0),
     ("GameSim::Step/GetSpeed call", 0x15942e),
     ("UI::CMenuUI::StartSavegame", 0x6a2740),
@@ -251,8 +280,8 @@ fn profile_pins_public_steam_build_40420_and_all_target_names() {
     assert_eq!(profile.build.size, Some(SIZE));
     assert_eq!(profile.build.pe_timestamp, Some(PE_TIMESTAMP));
     assert_eq!(profile.image_base, Some(0x0001_4000_0000));
-    assert_eq!(profile.targets.len(), 153);
-    assert_eq!(TARGETS.len(), 153);
+    assert_eq!(profile.targets.len(), 173);
+    assert_eq!(TARGETS.len(), 173);
     for &(name, _) in TARGETS {
         assert!(
             profile.targets.iter().any(|target| target.name == name),
@@ -455,7 +484,7 @@ fn assert_native_data(image: &[u8], pe: &PeHeaders, text: &[u8], text_rva: u64) 
 }
 
 #[test]
-fn supplied_40420_executable_has_the_exact_identity_and_all_153_sites() {
+fn supplied_40420_executable_has_the_exact_identity_and_runtime_resolves_all_173_sites() {
     let Some(exe) = std::env::var_os(EXE_ENV).map(PathBuf::from) else {
         eprintln!("skipping executable resolution: set {EXE_ENV} to the archived 40420 executable");
         return;
@@ -516,8 +545,104 @@ fn supplied_40420_executable_has_the_exact_identity_and_all_153_sites() {
             spec.name
         );
     }
+    // Hook startup scans the mapped .text virtual-size span and rejects any
+    // ambiguous optional target. Rebuild that exact contiguous view from the
+    // PE section's raw bytes (zero-fill the loader's virtual tail), then use
+    // the same resolver rather than only checking each signature at its
+    // expected address.
+    let virtual_size = usize::try_from(text.virtual_size).unwrap();
+    let mut loaded_text = vec![0; virtual_size];
+    let loaded_bytes = text_bytes.len().min(loaded_text.len());
+    loaded_text[..loaded_bytes].copy_from_slice(&text_bytes[..loaded_bytes]);
+    let resolved = tpf3mp_hookcore::profile::resolve(&profile, &loaded_text, text_rva)
+        .expect("runtime's profile resolver must uniquely resolve the mapped .text");
+    assert_eq!(
+        resolved
+            .get("RoadVehicleTransformator::vf3")
+            .expect("road vf3 target")
+            .address,
+        target_rva("RoadVehicleTransformator::vf3"),
+    );
     for &(name, rva) in TARGETS {
         assert_eq!(target_rva(name), rva, "{name} expected RVA changed");
     }
     assert_native_data(&image, &pe, text_bytes, text_rva);
+}
+
+#[test]
+fn supplied_40420_executable_uniquely_resolves_native_time_probe_callsites() {
+    let Some(exe) = std::env::var_os(EXE_ENV).map(PathBuf::from) else {
+        eprintln!("skipping executable resolution: set {EXE_ENV} to the archived 40420 executable");
+        return;
+    };
+    let profile = Profile::from_toml(PROFILE).unwrap();
+    let identity = BuildIdentity::of_file(&exe)
+        .unwrap_or_else(|error| panic!("read {}: {error}", exe.display()));
+    profile
+        .verify_identity(&identity)
+        .expect("the supplied executable must match the pinned Steam 40420 profile");
+    let image =
+        std::fs::read(&exe).unwrap_or_else(|error| panic!("read {}: {error}", exe.display()));
+    let pe = PeHeaders::parse(&image).expect("a PE32+ executable");
+    let text = pe.section(".text").expect("the executable has .text");
+    let text_bytes = text.raw(&image).expect(".text raw bytes");
+    let text_rva = u64::from(text.virtual_address);
+    let mut loaded_text = vec![0; usize::try_from(text.virtual_size).unwrap()];
+    let copied = text_bytes.len().min(loaded_text.len());
+    loaded_text[..copied].copy_from_slice(&text_bytes[..copied]);
+
+    let names = [
+        "RoadVehicleTransformator::vf3/CGameTime interpolation call",
+        "CGameTime interpolation/current getter call",
+        "CGameTime interpolation/previous getter call",
+    ];
+    let mut focused = profile.clone();
+    focused
+        .targets
+        .retain(|target| names.contains(&target.name.as_str()));
+    assert_eq!(focused.targets.len(), names.len());
+    let resolved = tpf3mp_hookcore::profile::resolve(&focused, &loaded_text, text_rva)
+        .expect("all three exact 40420 callsites must resolve uniquely in mapped .text");
+    for (name, rva) in [
+        (names[0], 0xc9040f),
+        (names[1], 0xc456e7),
+        (names[2], 0xc456f7),
+    ] {
+        assert_eq!(resolved.get(name).unwrap().address, rva, "{name}");
+    }
+}
+
+#[test]
+fn supplied_40420_executable_uniquely_resolves_road_history_writer_targets() {
+    let Some(exe) = std::env::var_os(EXE_ENV).map(PathBuf::from) else {
+        eprintln!("skipping executable resolution: set {EXE_ENV} to the archived 40420 executable");
+        return;
+    };
+    let profile = Profile::from_toml(PROFILE).unwrap();
+    let identity = BuildIdentity::of_file(&exe)
+        .unwrap_or_else(|error| panic!("read {}: {error}", exe.display()));
+    profile
+        .verify_identity(&identity)
+        .expect("the supplied executable must match the pinned Steam 40420 profile");
+    let image =
+        std::fs::read(&exe).unwrap_or_else(|error| panic!("read {}: {error}", exe.display()));
+    let pe = PeHeaders::parse(&image).expect("a PE32+ executable");
+    let text = pe.section(".text").expect("the executable has .text");
+    let text_bytes = text.raw(&image).expect(".text raw bytes");
+    let text_rva = u64::from(text.virtual_address);
+    let mut loaded_text = vec![0; usize::try_from(text.virtual_size).unwrap()];
+    let copied = text_bytes.len().min(loaded_text.len());
+    loaded_text[..copied].copy_from_slice(&text_bytes[..copied]);
+
+    let names = ["GameState::Replicate", "ecs::Engine::RemoveEntity"];
+    let mut focused = profile.clone();
+    focused
+        .targets
+        .retain(|target| names.contains(&target.name.as_str()));
+    assert_eq!(focused.targets.len(), names.len());
+    let resolved = tpf3mp_hookcore::profile::resolve(&focused, &loaded_text, text_rva)
+        .expect("both exact 40420 writer hooks must resolve uniquely in mapped .text");
+    for (name, rva) in [(names[0], 0x255e60), (names[1], 0x2bbc700)] {
+        assert_eq!(resolved.get(name).unwrap().address, rva, "{name}");
+    }
 }

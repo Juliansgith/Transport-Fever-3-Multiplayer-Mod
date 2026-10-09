@@ -97,6 +97,12 @@ pub trait RoomGate {
     fn next_step(&self) -> u64;
     /// After `poll_step` said Run: the steps that may run as one batch.
     fn batch(&mut self, game: &mut HookGame, max: u32) -> Result<u32, SessionError>;
+    /// Looks ahead within sealed releases, stopping at a checkpoint or the
+    /// first ordered action, save, load or end. Implementations that cannot
+    /// look beyond their current view may use their bounded batch operation.
+    fn lookahead(&mut self, game: &mut HookGame, max: u32) -> Result<u32, SessionError> {
+        self.batch(game, max)
+    }
     fn after_step(&mut self, game: &mut HookGame) -> Result<u64, SessionError>;
     fn loaded(&mut self, next_step: u64) -> Result<(), SessionError>;
     fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError>;
@@ -250,6 +256,9 @@ impl RoomGate for Session {
     fn batch(&mut self, game: &mut HookGame, max: u32) -> Result<u32, SessionError> {
         Session::batch(self, game, max)
     }
+    fn lookahead(&mut self, game: &mut HookGame, max: u32) -> Result<u32, SessionError> {
+        Session::lookahead(self, game, max)
+    }
     fn after_step(&mut self, game: &mut HookGame) -> Result<u64, SessionError> {
         Session::after_step(self, game)
     }
@@ -331,7 +340,21 @@ impl Game for HookGame {
         {
             let own = (self.me == Some(*player)).then_some(*client_seq);
             match Action::from_payload(payload) {
-                Ok(action) => self.actions.push((action, own, *player, *seal)),
+                Ok(action) => {
+                    crate::timeline::record_with(
+                        crate::timeline::Kind::RoomActionQueued,
+                        0,
+                        || crate::timeline::Fields {
+                            arg_a: own.map_or(0, |seq| usize::try_from(seq).unwrap_or(usize::MAX)),
+                            command_number_known: own.is_some(),
+                            event_seq: event.seq,
+                            event_step: event.step,
+                            action_class: crate::timeline::Fields::action_class_name(action.kind()),
+                            ..crate::timeline::Fields::default()
+                        },
+                    );
+                    self.actions.push((action, own, *player, *seal));
+                }
                 Err(error) => {
                     self.fault.get_or_insert(format!(
                         "the room ordered an action this game cannot read (event {}): {error}",
@@ -395,6 +418,11 @@ pub trait StepHandler: Send {
     /// In the room's game: the game's speed is then the room's, and one call
     /// of the game's step must be one update.
     fn in_room(&self) -> bool;
+    /// Enables the optional exact-build scheduler after its native hooks
+    /// were installed successfully.
+    fn enable_smooth_pacing(&mut self) {}
+    /// Enables the separate opt-in two-update mode at 3x/4x.
+    fn enable_smooth_pacing_batch_two(&mut self) {}
     /// The speed the player picked in the game's speed row (the game's own
     /// speed: 0 paused, 1 for 1x, ...).
     fn chosen_speed(&mut self, speedup: u64);
@@ -427,6 +455,12 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn in_room(&self) -> bool {
         StepDriver::in_room(self)
+    }
+    fn enable_smooth_pacing(&mut self) {
+        StepDriver::enable_smooth_pacing(self);
+    }
+    fn enable_smooth_pacing_batch_two(&mut self) {
+        StepDriver::enable_smooth_pacing_batch_two(self);
     }
     fn chosen_speed(&mut self, speedup: u64) {
         StepDriver::chosen_speed(self, speedup);
@@ -462,6 +496,39 @@ pub enum Phase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outcome {
     pub updates: Updates,
+}
+
+/// Evidence for the diagnostic observer only; it never changes room execution.
+/// A successful return with a skipped/repeated report cannot label native time.
+#[derive(Debug, Clone, Copy)]
+struct NativeReportProof {
+    first: u64,
+    expected: u32,
+    reported: u32,
+    contiguous: bool,
+}
+
+impl NativeReportProof {
+    fn new(first: Option<u64>, updates: Updates) -> Option<Self> {
+        let (Some(first), Updates::Exactly(expected)) = (first, updates) else {
+            return None;
+        };
+        (first > 0).then_some(Self {
+            first,
+            expected,
+            reported: 0,
+            contiguous: true,
+        })
+    }
+
+    fn observe(&mut self, step: u64) {
+        self.contiguous &= self.first.checked_add(u64::from(self.reported)) == Some(step);
+        self.reported = self.reported.saturating_add(1);
+    }
+
+    fn complete(&self) -> bool {
+        self.contiguous && self.reported == self.expected
+    }
 }
 
 /// One call of the game's step, as the driver plans it.
@@ -531,6 +598,34 @@ pub struct StepDriver<G> {
     chosen: Option<u64>,
     /// Steps between checkpoints, from the room's `Begin`.
     checkpoint_interval: u64,
+    /// Experimental scheduler, enabled only after exact native hooks install.
+    smooth_pacing: bool,
+    /// Optional two-update mode; the default experimental path stays at one.
+    smooth_pacing_batch_two: bool,
+    /// Authoritative room speed from `Notice::Speed`, never the local speed row.
+    room_speed: Speed,
+    /// Last authoritative non-paused speed, used to drain already-released
+    /// work while the room is paused.
+    previous_room_speed: Speed,
+    /// Room simulation rate from `Begin`.
+    room_steps_per_second: u16,
+    /// Whether the scheduler has established its startup lead. Checkpoints
+    /// and ordered actions do not reset it; real starvation and world/speed
+    /// changes do.
+    pacing_primed: bool,
+    pacing_starved_since: Option<Instant>,
+    /// Latest bounded queue observation, published with the atomic room-rate
+    /// snapshot for the native cadence controller.
+    pacing_sealed_ahead: u16,
+    /// The last bounded lookahead saturated its cap, so its count is a lower bound.
+    pacing_lookahead_capped: bool,
+    pacing_checkpoint_limited: bool,
+    pacing_fallback_reported: bool,
+    pacing_fault_reported: bool,
+    /// A nonblocking post-batch poll may discover a boundary operation while
+    /// staging actions for the next exact step. Defer that operation until
+    /// the staged replay has been acknowledged.
+    pending_gate: Option<StepGate>,
     /// The batch chosen last ends at a checkpoint step, this one.
     lanes_due: bool,
     checkpoint_step: u64,
@@ -579,6 +674,19 @@ impl<G: RoomGate> StepDriver<G> {
             phase: Phase::BeforeBegin,
             chosen: None,
             checkpoint_interval: u64::MAX,
+            smooth_pacing: false,
+            smooth_pacing_batch_two: false,
+            room_speed: Speed::NORMAL,
+            previous_room_speed: Speed::NORMAL,
+            room_steps_per_second: 0,
+            pacing_primed: false,
+            pacing_starved_since: None,
+            pacing_sealed_ahead: 0,
+            pacing_lookahead_capped: false,
+            pacing_checkpoint_limited: false,
+            pacing_fallback_reported: false,
+            pacing_fault_reported: false,
+            pending_gate: None,
             lanes_due: false,
             checkpoint_step: 0,
             why: "-",
@@ -600,6 +708,20 @@ impl<G: RoomGate> StepDriver<G> {
     /// [`lanedump::ENV`]).
     pub fn set_lane_dumps(&mut self, dumps: LaneDumps) {
         self.dumps = dumps;
+    }
+
+    /// Enables the exact-build scheduler after both native pacing hooks
+    /// were installed successfully. The default and every unsupported rate
+    /// continue to use the legacy batching path.
+    pub fn enable_smooth_pacing(&mut self) {
+        self.smooth_pacing = true;
+    }
+
+    /// Enables the separate two-update experiment after the exact native
+    /// hooks install. `pacing_snapshot` carries this setting atomically.
+    pub fn enable_smooth_pacing_batch_two(&mut self) {
+        self.smooth_pacing = true;
+        self.smooth_pacing_batch_two = true;
     }
 
     /// The main menu's Multiplayer window (D17): hands the launcher the
@@ -731,6 +853,19 @@ impl<G: RoomGate> StepDriver<G> {
     /// the game's own step, exactly once, with the updates given. Ordered
     /// actions finish in the engine event phase before updates are released.
     pub fn on_step(&mut self, commands: Vec<Handed>, run: &mut RunStep<'_>) -> Outcome {
+        self.pacing_sealed_ahead = 0;
+        self.pacing_lookahead_capped = false;
+        self.pacing_checkpoint_limited = false;
+        if self.smooth_pacing && !crate::pacing::runtime_healthy() {
+            self.smooth_pacing = false;
+            if !self.pacing_fault_reported {
+                self.log.push(
+                    "the smooth scheduler failed a runtime layout check; using legacy room pacing"
+                        .into(),
+                );
+                self.pacing_fault_reported = true;
+            }
+        }
         // A world is up: the next time the menu drives, the game came back
         // to it.
         self.at_menu = false;
@@ -782,15 +917,34 @@ impl<G: RoomGate> StepDriver<G> {
             first_step: released,
             dump: dump.as_ref(),
         };
+        let native_time_enabled = crate::renderprobe::native_time_probe_enabled();
+        let native_first = native_time_enabled.then(|| self.gate.next_step());
+        let native_world_before = native_time_enabled.then(|| self.control.world_mark());
+        let mut native_reports = native_time_enabled
+            .then(|| NativeReportProof::new(native_first, updates))
+            .flatten();
+        if native_time_enabled {
+            crate::renderprobe::native_time_observe_world(
+                native_world_before
+                    .filter(|mark| self.phase == Phase::Running && self.room_world == Some(*mark)),
+            );
+        }
+        let mut native_run_succeeded = false;
         crate::seeds::before_updates(released, updates);
         match run(&batch) {
             Ok(lanes) => {
+                if self.smooth_pacing
+                    && let Updates::Exactly(steps) = updates
+                {
+                    self.record_paced_consumption(steps);
+                }
                 if batch.lanes {
                     match lanes {
                         Some(lanes) => self.game.lanes = Some(lane_digests(&lanes)),
                         // The steps ran, but the room cannot hear whether the
                         // world is still its own: none is reported.
                         None => {
+                            crate::renderprobe::commit_native_step(None, None, false);
                             self.hold(format!(
                                 "the game did not read the world's lanes at the checkpoint after step {}",
                                 self.gate.next_step().saturating_add(u64::from(match updates {
@@ -798,25 +952,66 @@ impl<G: RoomGate> StepDriver<G> {
                                     Updates::Own => 0,
                                 })).saturating_sub(1)
                             ));
+                            self.publish_pacing();
                             return Outcome { updates };
                         }
                     }
                 }
+                let mut all_steps_reported = true;
                 if let Updates::Exactly(steps) = updates {
                     for _ in 0..steps {
                         match self.gate.after_step(&mut self.game) {
-                            Ok(step) => self.next_step = Some(step + 1),
+                            Ok(step) => {
+                                self.next_step = Some(step + 1);
+                                if let Some(proof) = &mut native_reports {
+                                    proof.observe(step);
+                                }
+                            }
                             Err(error) => {
                                 self.hold(format!("reporting a step: {error}"));
+                                all_steps_reported = false;
                                 break;
                             }
                         }
                     }
                 }
+                native_run_succeeded = all_steps_reported;
+                if self.smooth_pacing
+                    && (self.pacing_lookahead_capped || self.pacing_checkpoint_limited)
+                    && matches!(updates, Updates::Exactly(steps) if steps > 0)
+                    && self.phase == Phase::Running
+                    && let Err(error) = self.refresh_paced_observation_after_batch()
+                {
+                    self.hold(format!(
+                        "refreshing sealed room releases after the paced batch: {error}"
+                    ));
+                }
+                if all_steps_reported
+                    && matches!(updates, Updates::Exactly(steps) if steps > 0)
+                    && self.phase == Phase::Running
+                    && self.smooth_pacing
+                {
+                    self.stage_room_actions_after_batch();
+                }
             }
             // A failed update batch is not reported; the world holds.
             Err(reason) => self.hold(format!("the game did not follow the room's step: {reason}")),
         }
+        if native_time_enabled {
+            let native_world_after = self.control.world_mark();
+            let same_world = native_world_before == Some(native_world_after)
+                && self.room_world == Some(native_world_after);
+            let reports_ok = native_run_succeeded
+                && self.phase == Phase::Running
+                && same_world
+                && native_reports.is_some_and(|proof| proof.complete());
+            crate::renderprobe::commit_native_step(
+                native_first,
+                same_world.then_some(native_world_after),
+                reports_ok,
+            );
+        }
+        self.publish_pacing();
         Outcome { updates }
     }
 
@@ -918,6 +1113,17 @@ impl<G: RoomGate> StepDriver<G> {
             match self.gate.command(payload, secret) {
                 Ok(number) => {
                     self.tickets.insert(number, ticket);
+                    crate::timeline::record_with(
+                        crate::timeline::Kind::NativeCommandHandedOver,
+                        0,
+                        || crate::timeline::Fields {
+                            arg_a: usize::try_from(ticket).unwrap_or(usize::MAX),
+                            arg_b: usize::try_from(number).unwrap_or(usize::MAX),
+                            command_number_known: true,
+                            action_class: crate::timeline::Fields::action_class_name(kind),
+                            ..crate::timeline::Fields::default()
+                        },
+                    );
                     self.log.push(format!(
                         "handed the player's action {number} ({kind}) to the room"
                     ));
@@ -943,6 +1149,302 @@ impl<G: RoomGate> StepDriver<G> {
             self.why = "own";
         }
         updates
+    }
+
+    fn pacing_snapshot(&self, active: bool) -> crate::pacing::Snapshot {
+        crate::pacing::Snapshot {
+            active,
+            steps_per_second: self.room_steps_per_second,
+            speed: self.room_speed,
+            previous_speed: self.previous_room_speed,
+            sealed_ahead: self.pacing_sealed_ahead,
+            lookahead_capped: self.pacing_lookahead_capped,
+            checkpoint_limited: self.pacing_checkpoint_limited,
+            batch_two: self.smooth_pacing_batch_two,
+        }
+    }
+
+    fn publish_pacing(&self) {
+        if !crate::pacing::installed() {
+            return;
+        }
+        let snapshot = self.pacing_snapshot(
+            self.smooth_pacing
+                && self.phase == Phase::Running
+                && crate::pacing::plan(self.pacing_snapshot(true)).is_some(),
+        );
+        crate::pacing::publish(snapshot);
+    }
+
+    /// Advances the bounded queue estimate after these sealed steps actually
+    /// ran. Keep a checkpoint-truncated marker until the next lookahead gives
+    /// a fresh observation beyond that boundary.
+    fn record_paced_consumption(&mut self, steps: u32) {
+        let consumed = u16::try_from(steps).unwrap_or(u16::MAX);
+        self.pacing_sealed_ahead = self.pacing_sealed_ahead.saturating_sub(consumed);
+    }
+
+    /// Polls once at the exact next step after the positive batch has been
+    /// reported. This is a nonblocking read only: it never runs a save, load,
+    /// end or native event callback. Boundary operations are deferred until
+    /// any staged action replay is acknowledged.
+    fn stage_room_actions_after_batch(&mut self) {
+        if self.replaying.is_some() || self.phase != Phase::Running {
+            return;
+        }
+        if let Some(why) = self.foreign_world() {
+            self.hold(why);
+            return;
+        }
+        let gate = match self.gate.poll_step(&mut self.game) {
+            Ok(gate) => gate,
+            Err(error) => {
+                self.hold(format!("polling the room after a completed batch: {error}"));
+                return;
+            }
+        };
+        self.refresh_room_speed();
+        if let Some(fault) = self.game.fault.take() {
+            self.hold(fault);
+            return;
+        }
+        if matches!(
+            &gate,
+            StepGate::Save(_) | StepGate::Load(_) | StepGate::Ended
+        ) {
+            self.pending_gate = Some(gate);
+        }
+        if self.game.actions.is_empty() {
+            return;
+        }
+
+        self.invalidate_road_history_for_actions();
+
+        let actions = self.take_ordered_actions();
+        let step = self.gate.next_step();
+        match self.control.request_replay(step, &actions) {
+            Ok(()) => {
+                self.replaying = Some(Instant::now());
+                crate::timeline::record_with(crate::timeline::Kind::ReplayStaged, 0, || {
+                    crate::timeline::Fields {
+                        replay_step: step,
+                        replay_action_count: u32::try_from(actions.len()).unwrap_or(u32::MAX),
+                        ..crate::timeline::Fields::default()
+                    }
+                });
+            }
+            Err(why) => self.hold(format!("starting the room's actions: {why}")),
+        }
+    }
+
+    fn take_ordered_actions(&mut self) -> Vec<Ordered> {
+        std::mem::take(&mut self.game.actions)
+            .into_iter()
+            .map(|(action, own, player, seal)| Ordered {
+                action,
+                ticket: own.and_then(|seq| self.tickets.remove(&seq)),
+                player,
+                seal,
+            })
+            .collect()
+    }
+
+    fn invalidate_road_history_for_actions(&self) {
+        if !crate::renderprobe::road_history_capture_active() {
+            return;
+        }
+        let only_verified_cosmetics = self.game.actions.iter().all(|(action, ..)| {
+            matches!(
+                action,
+                Action::NotificationSeen { .. }
+                    | Action::Rename {
+                        what: tpf3mp_proto::action::Renamed::Town(_),
+                        ..
+                    }
+            )
+        });
+        if !only_verified_cosmetics {
+            crate::road_history::invalidate();
+        }
+    }
+
+    /// Re-samples the queue after an experimental multi-update batch. The
+    /// pre-run bounded count is only a lower bound when saturated; subtracting
+    /// a batch from that lower bound cannot distinguish a drained queue from
+    /// a deeper backlog. RoomGate::lookahead preserves ordered-action and
+    /// checkpoint boundaries without consuming a simulation update.
+    fn refresh_paced_observation_after_batch(&mut self) -> Result<(), SessionError> {
+        let Some(pace) = crate::pacing::plan(self.pacing_snapshot(true)) else {
+            return Ok(());
+        };
+        let ahead = self.gate.lookahead(&mut self.game, pace.lookahead_limit)?;
+        if self.refresh_room_speed() {
+            self.pacing_sealed_ahead = 0;
+            self.pacing_lookahead_capped = false;
+            self.pacing_checkpoint_limited = false;
+            return Ok(());
+        }
+
+        let first = self.gate.next_step();
+        let interval = self.checkpoint_interval.max(1);
+        let checkpoint_distance = (interval - first % interval) % interval + 1;
+        self.pacing_sealed_ahead = u16::try_from(ahead).unwrap_or(u16::MAX);
+        self.pacing_lookahead_capped = ahead >= pace.lookahead_limit;
+        self.pacing_checkpoint_limited = u64::from(ahead) == checkpoint_distance;
+        crate::pacing::record_sealed_lookahead(ahead, pace.lookahead_limit);
+        Ok(())
+    }
+
+    /// Consumes every authoritative room-speed notice already read from the
+    /// bridge. `chosen_speed` remains a request only and never sets this rate.
+    fn refresh_room_speed(&mut self) -> bool {
+        let mut changed = false;
+        for notice in &self.game.window {
+            let Notice::Speed(speed) = notice else {
+                continue;
+            };
+            if self.room_speed == *speed {
+                continue;
+            }
+            self.room_speed = *speed;
+            if !speed.is_paused() {
+                self.previous_room_speed = *speed;
+            }
+            self.pacing_primed = false;
+            self.pacing_starved_since = None;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Counts a real release starvation only after 200 ms beyond one
+    /// expected update period. An action/checkpoint or a short jitter gap
+    /// therefore cannot repeatedly force the startup lead to refill.
+    fn note_pacing_starvation(&mut self, pace: crate::pacing::Plan) {
+        if self.room_speed.is_paused() {
+            return;
+        }
+        let since = *self.pacing_starved_since.get_or_insert_with(Instant::now);
+        let threshold =
+            crate::pacing::RECOVERY_DEBT + Duration::from_micros(u64::from(pace.interval_micros));
+        if since.elapsed() >= threshold {
+            self.pacing_primed = false;
+        }
+    }
+
+    fn choose_paced_batch(&mut self) -> Updates {
+        if !crate::pacing::runtime_healthy() {
+            if !self.pacing_fault_reported {
+                self.log.push(
+                    "smooth scheduler failed a native layout check; using legacy room pacing"
+                        .into(),
+                );
+                self.pacing_fault_reported = true;
+            }
+            self.smooth_pacing = false;
+            return self.choose_legacy_batch();
+        }
+        let pace_snapshot = self.pacing_snapshot(true);
+        let Some(pace) = crate::pacing::plan(pace_snapshot) else {
+            if !self.pacing_fallback_reported {
+                self.log.push(format!(
+                    "smooth scheduler does not support room speed {}% at {} steps a second; using legacy room pacing",
+                    self.room_speed.0, self.room_steps_per_second
+                ));
+                self.pacing_fallback_reported = true;
+            }
+            return self.choose_legacy_batch();
+        };
+
+        let first = self.gate.next_step();
+        let interval = self.checkpoint_interval.max(1);
+        let checkpoint_distance = (interval - first % interval) % interval + 1;
+        let paused = self.room_speed.is_paused();
+        let ahead = match self.gate.lookahead(&mut self.game, pace.lookahead_limit) {
+            Ok(ahead) => ahead,
+            Err(error) => {
+                self.hold(format!("looking ahead at sealed room steps: {error}"));
+                return Updates::Exactly(0);
+            }
+        };
+        self.pacing_sealed_ahead = u16::try_from(ahead).unwrap_or(u16::MAX);
+        self.pacing_lookahead_capped = ahead >= pace.lookahead_limit;
+        self.pacing_checkpoint_limited = u64::from(ahead) == checkpoint_distance;
+
+        if self.refresh_room_speed() {
+            self.pacing_sealed_ahead = 0;
+            self.pacing_lookahead_capped = false;
+            self.pacing_checkpoint_limited = false;
+            self.why = "speed";
+            return Updates::Exactly(0);
+        }
+        crate::pacing::record_sealed_lookahead(ahead, pace.lookahead_limit);
+        if ahead == 0 {
+            self.note_pacing_starvation(pace);
+            self.why = "wait";
+            return Updates::Exactly(0);
+        }
+        self.pacing_starved_since = None;
+
+        let checkpoint_distance = u32::try_from(checkpoint_distance).unwrap_or(u32::MAX);
+        let maximum_updates = crate::pacing::max_batch_updates(pace_snapshot);
+        let startup_ahead = crate::pacing::startup_ahead(pace, pace_snapshot);
+        let checkpoint_limited_prime = !self.pacing_primed
+            && crate::pacing::checkpoint_limits_prime_with_max(
+                ahead,
+                checkpoint_distance,
+                pace,
+                maximum_updates,
+            );
+        if !paused && (ahead >= startup_ahead || checkpoint_limited_prime) {
+            self.pacing_primed = true;
+        }
+        let selected = crate::pacing::batch_limit_with_max(
+            ahead,
+            checkpoint_distance,
+            pace,
+            self.pacing_primed,
+            paused,
+            maximum_updates,
+        );
+        if selected == 0 {
+            self.why = "prime";
+            return Updates::Exactly(0);
+        }
+        let steps = match self.gate.batch(&mut self.game, selected) {
+            Ok(steps) => steps.min(selected),
+            Err(error) => {
+                self.hold(format!("reading the steps released: {error}"));
+                return Updates::Exactly(0);
+            }
+        };
+        if steps == 0 {
+            self.why = "wait";
+            return Updates::Exactly(0);
+        }
+        let last = first.saturating_add(u64::from(steps) - 1);
+        self.lanes_due = last.is_multiple_of(interval);
+        self.checkpoint_step = last;
+        self.why = "run";
+        Updates::Exactly(steps)
+    }
+
+    fn choose_legacy_batch(&mut self) -> Updates {
+        let first = self.gate.next_step();
+        match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
+            Ok(steps) => {
+                let steps = steps.clamp(1, MAX_STEPS_PER_CALL);
+                let last = first.saturating_add(u64::from(steps) - 1);
+                self.lanes_due = last.is_multiple_of(self.checkpoint_interval.max(1));
+                self.checkpoint_step = last;
+                self.why = "run";
+                Updates::Exactly(steps)
+            }
+            Err(error) => {
+                self.hold(format!("reading the steps released: {error}"));
+                Updates::Exactly(0)
+            }
+        }
     }
 
     /// Why the last call of the step ran the updates it did: `run`, `wait`
@@ -1004,19 +1506,18 @@ impl<G: RoomGate> StepDriver<G> {
             }
         }
         loop {
-            let gate = self.gate.poll_step(&mut self.game);
+            let cached_gate = self.pending_gate.is_some();
+            let gate = if let Some(gate) = self.pending_gate.as_ref() {
+                Ok(gate.clone())
+            } else {
+                self.gate.poll_step(&mut self.game)
+            };
+            let speed_changed = self.smooth_pacing && self.refresh_room_speed();
             // Apply before any release, save, load or end that follows these
             // events. Even a paused world receives commands on its sim thread.
             if gate.is_ok() && self.game.fault.is_none() && !self.game.actions.is_empty() {
-                let actions: Vec<_> = std::mem::take(&mut self.game.actions)
-                    .into_iter()
-                    .map(|(action, own, player, seal)| Ordered {
-                        action,
-                        ticket: own.and_then(|seq| self.tickets.remove(&seq)),
-                        player,
-                        seal,
-                    })
-                    .collect();
+                self.invalidate_road_history_for_actions();
+                let actions = self.take_ordered_actions();
                 match self.control.request_replay(self.gate.next_step(), &actions) {
                     Ok(()) => self.replaying = Some(Instant::now()),
                     Err(why) => self.hold(format!("starting the room's actions: {why}")),
@@ -1024,25 +1525,27 @@ impl<G: RoomGate> StepDriver<G> {
                 self.why = "actions";
                 return Updates::Exactly(0);
             }
+            if speed_changed {
+                self.why = "speed";
+                return Updates::Exactly(0);
+            }
+            if cached_gate {
+                self.pending_gate = None;
+            }
             match gate {
                 Ok(StepGate::Run) => {
-                    let first = self.gate.next_step();
-                    return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
-                        Ok(steps) => {
-                            self.why = "run";
-                            let steps = steps.max(1);
-                            let last = first.saturating_add(u64::from(steps) - 1);
-                            self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
-                            self.checkpoint_step = last;
-                            Updates::Exactly(steps)
-                        }
-                        Err(error) => {
-                            self.hold(format!("reading the steps released: {error}"));
-                            Updates::Exactly(0)
-                        }
+                    return if self.smooth_pacing {
+                        self.choose_paced_batch()
+                    } else {
+                        self.choose_legacy_batch()
                     };
                 }
                 Ok(StepGate::Wait) => {
+                    if self.smooth_pacing
+                        && let Some(pace) = crate::pacing::plan(self.pacing_snapshot(true))
+                    {
+                        self.note_pacing_starvation(pace);
+                    }
                     self.why = "wait";
                     return Updates::Exactly(0);
                 }
@@ -1098,6 +1601,14 @@ impl<G: RoomGate> StepDriver<G> {
             begin.checkpoint_interval
         ));
         self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
+        self.room_steps_per_second = begin.steps_per_second;
+        self.room_speed = Speed::NORMAL;
+        self.previous_room_speed = Speed::NORMAL;
+        self.pacing_primed = false;
+        self.pacing_starved_since = None;
+        self.pacing_sealed_ahead = 0;
+        self.pacing_lookahead_capped = false;
+        self.pacing_checkpoint_limited = false;
         self.game.me = Some(begin.player);
         self.control.set_me(begin.player);
         match &begin.mods {
@@ -1239,7 +1750,13 @@ impl<G: RoomGate> StepDriver<G> {
     /// The room's world is loaded and runs `next_step` next: the reseed and
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
+        self.pending_gate = None;
         self.next_step = Some(next_step);
+        self.pacing_primed = false;
+        self.pacing_starved_since = None;
+        self.pacing_sealed_ahead = 0;
+        self.pacing_lookahead_capped = false;
+        self.pacing_checkpoint_limited = false;
         self.room_world = Some(self.control.world_mark());
         crate::order::measure::room_step(next_step);
     }
@@ -1296,11 +1813,16 @@ impl<G: RoomGate> StepDriver<G> {
     /// - a load without a file (the owner's own world) and a save need a
     ///   world up: the menu leaves them to the step, and logs so once.
     pub fn on_menu(&mut self) {
+        crate::renderprobe::native_time_observe_world(None);
+        self.pacing_sealed_ahead = 0;
+        self.pacing_lookahead_capped = false;
+        self.pacing_checkpoint_limited = false;
         // The world is closed. A wake queued for it must never reach a new
         // world, even if the player leaves or reconnects before it arrives.
         if self.replaying.take().is_some() {
             self.control.cancel_replay();
         }
+        self.pending_gate = None;
         if self.menu_departing {
             match self.gate.poll_departure() {
                 Ok(true) => {
@@ -1316,6 +1838,7 @@ impl<G: RoomGate> StepDriver<G> {
         }
         if self.phase == Phase::Ended && self.gate.return_to_lobby() {
             self.phase = Phase::BeforeBegin;
+            self.pending_gate = None;
             self.saving = None;
             self.loading = None;
             self.tickets.clear();
@@ -1328,6 +1851,10 @@ impl<G: RoomGate> StepDriver<G> {
             self.at_menu = true;
             self.menus += 1;
         }
+        // Keep the native cadence snapshot current while the room's save is
+        // requested from the menu. An authoritative Speed notice read below
+        // must be visible before the loaded world enters CGame::Step.
+        self.publish_pacing();
         if self.phase == Phase::BeforeBegin {
             match self.gate.try_begin() {
                 Ok(Some(begin)) => self.began(&begin, " while this game is at its main menu"),
@@ -1381,6 +1908,8 @@ impl<G: RoomGate> StepDriver<G> {
             Ok(StepGate::Run | StepGate::Wait) => {}
             Err(error) => self.hold(error.to_string()),
         }
+        self.refresh_room_speed();
+        self.publish_pacing();
         for notice in self.game.notices.drain(..) {
             self.log.push(format!("the room says: {notice}"));
         }
@@ -1416,6 +1945,7 @@ impl<G: RoomGate> StepDriver<G> {
         if self.replaying.take().is_some() {
             self.control.cancel_replay();
         }
+        self.pending_gate = None;
         self.log
             .push(format!("holding the world (fail closed): {reason}"));
         self.phase = Phase::Holding(reason);
@@ -1440,6 +1970,54 @@ pub(crate) mod tests {
     use tpf3mp_proto::{FixedBytes, PlayerId, RulesName};
 
     use super::*;
+
+    #[test]
+    fn native_time_report_proof_requires_every_exact_contiguous_report() {
+        let mut proof = NativeReportProof::new(Some(17), Updates::Exactly(2)).unwrap();
+        assert!(!proof.complete());
+        proof.observe(17);
+        assert!(
+            !proof.complete(),
+            "a partial successful batch is not accepted"
+        );
+        proof.observe(18);
+        assert!(proof.complete());
+
+        let mut skipped = NativeReportProof::new(Some(17), Updates::Exactly(2)).unwrap();
+        skipped.observe(17);
+        skipped.observe(19);
+        assert!(
+            !skipped.complete(),
+            "a skipped report cannot label native time"
+        );
+        let mut repeated = NativeReportProof::new(Some(17), Updates::Exactly(2)).unwrap();
+        repeated.observe(17);
+        repeated.observe(17);
+        assert!(!repeated.complete());
+    }
+
+    #[test]
+    fn native_time_report_proof_refuses_unknown_or_overflowed_step_ranges() {
+        assert!(NativeReportProof::new(None, Updates::Exactly(1)).is_none());
+        assert!(NativeReportProof::new(Some(1), Updates::Own).is_none());
+        assert!(NativeReportProof::new(Some(0), Updates::Exactly(0)).is_none());
+        let mut proof = NativeReportProof::new(Some(u64::MAX), Updates::Exactly(2)).unwrap();
+        proof.observe(u64::MAX);
+        proof.observe(0);
+        assert!(!proof.complete());
+    }
+
+    #[test]
+    fn native_time_zero_report_proof_still_requires_an_exact_next_step() {
+        assert!(
+            NativeReportProof::new(Some(17), Updates::Exactly(0))
+                .unwrap()
+                .complete()
+        );
+        assert!(NativeReportProof::new(None, Updates::Exactly(0)).is_none());
+        // This proves no report was required; the observer separately requires
+        // the unchanged native timestamp to match an already accepted endpoint.
+    }
     use crate::lua::tests::depot_build;
 
     /// A room that answers from a script.
@@ -1462,6 +2040,8 @@ pub(crate) mod tests {
         pub(crate) saves: Vec<Result<(), String>>,
         /// Steps between checkpoints, from the begin handed out.
         pub(crate) interval: u64,
+        /// Next step numbers whose nonblocking gate poll answered Wait.
+        pub(crate) waits: Vec<u64>,
         /// The lanes reported, by checkpoint step.
         pub(crate) checkpoints: Vec<(u64, Vec<LaneDigest>)>,
         /// What the player said to the room.
@@ -1523,7 +2103,13 @@ pub(crate) mod tests {
                 Some(StepGate::Run) => Ok(StepGate::Run),
                 Some(StepGate::Save(order)) => Ok(StepGate::Save(order.clone())),
                 Some(StepGate::Load(load)) => Ok(StepGate::Load(load.clone())),
-                _ => Ok(self.gates.pop_front().unwrap_or(StepGate::Wait)),
+                _ => {
+                    let gate = self.gates.pop_front().unwrap_or(StepGate::Wait);
+                    if gate == StepGate::Wait {
+                        self.waits.push(self.next_step());
+                    }
+                    Ok(gate)
+                }
             }
         }
         /// The Runs in a row at the front of the script are one batch, up to
@@ -1563,6 +2149,7 @@ pub(crate) mod tests {
                 matches!(self.gates.pop_front(), Some(StepGate::Load(_))),
                 "a world nobody ordered was loaded"
             );
+            self.ran = next_step.saturating_sub(1);
             self.loaded.push(next_step);
             Ok(())
         }
@@ -1770,6 +2357,18 @@ pub(crate) mod tests {
         outcome.updates
     }
 
+    fn smooth_call(
+        driver: &mut StepDriver<Script>,
+        seen: &mut Vec<(Updates, Option<u64>, bool)>,
+    ) -> Updates {
+        driver
+            .on_step(Vec::new(), &mut |batch| {
+                seen.push((batch.updates, batch.first_step, batch.lanes));
+                Ok(batch.lanes.then(Vec::new))
+            })
+            .updates
+    }
+
     /// One call, recording the actions the game was handed; the game
     /// applies them unless `applies` says not.
     fn call_applying(
@@ -1845,6 +2444,220 @@ pub(crate) mod tests {
             checkpoint_interval: interval,
             ..begin()
         }
+    }
+
+    fn post_batch_action_driver(
+        boundary: StepGate,
+        actions: Vec<Event>,
+        staged_speed: Option<Speed>,
+    ) -> (
+        StepDriver<Script>,
+        std::sync::Arc<std::sync::Mutex<ControlState>>,
+    ) {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(2)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script
+            .gates
+            .extend([StepGate::Run, StepGate::Run, boundary]);
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 4));
+        script
+            .events
+            .extend([Vec::new(), Vec::new(), Vec::new(), actions]);
+        script.notices.extend([
+            vec![Notice::Speed(Speed(400))],
+            Vec::new(),
+            Vec::new(),
+            staged_speed.map_or_else(Vec::new, |speed| vec![Notice::Speed(speed)]),
+        ]);
+
+        let control = FakeControl::default();
+        let state = std::sync::Arc::clone(&control.state);
+        state.lock().unwrap().replay_wait = true;
+        let mut driver = StepDriver::new(script, Box::new(control));
+        driver.enable_smooth_pacing_batch_two();
+        (driver, state)
+    }
+
+    #[test]
+    fn smooth_pacing_stages_multiple_actions_after_the_reported_checkpoint_batch() {
+        let actions = vec![
+            command_event(11, 3, &depot_build()),
+            command_event(12, 3, &depot_build()),
+        ];
+        let (mut driver, state) = post_batch_action_driver(StepGate::Run, actions, None);
+        let mut seen = Vec::new();
+
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(0));
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(2));
+        assert_eq!(driver.gate.ran, 2);
+        assert_eq!(driver.gate.checkpoints[0].0, 2);
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.replay_requests.len(), 1);
+            assert_eq!(state.replay_requests[0].0, 3);
+            assert_eq!(state.replay_requests[0].1.len(), 2);
+        }
+
+        assert_eq!(
+            smooth_call(&mut driver, &mut seen),
+            Updates::Exactly(0),
+            "a staged replay with no acknowledgment keeps the next step held"
+        );
+        assert_eq!(driver.gate.ran, 2);
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(2));
+        assert_eq!(driver.gate.ran, 4);
+        assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+    }
+
+    #[test]
+    fn smooth_staging_defers_save_load_and_end_after_actions_and_keeps_speed_notices() {
+        let boundaries = [
+            StepGate::Save(SaveOrder {
+                event: 8,
+                file: PathBuf::from("room-save.sav"),
+            }),
+            StepGate::Load(Load {
+                file: Some(PathBuf::from("next-world.sav")),
+                next_step: 3,
+            }),
+            StepGate::Ended,
+        ];
+        for boundary in boundaries {
+            let actions = vec![command_event(21, 3, &depot_build())];
+            let (mut driver, state) =
+                post_batch_action_driver(boundary.clone(), actions, Some(Speed(200)));
+            let mut seen = Vec::new();
+
+            assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(0));
+            assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(2));
+            assert_eq!(driver.room_speed, Speed(200));
+            assert_eq!(driver.pending_gate, Some(boundary.clone()));
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.replay_requests.len(), 1);
+                assert_eq!(state.replay_requests[0].0, 3);
+                assert_eq!(state.save_requests.len(), 0);
+                assert_eq!(state.load_requests.len(), 0);
+            }
+            assert_eq!(driver.phase(), &Phase::Running);
+
+            assert_eq!(
+                smooth_call(&mut driver, &mut seen),
+                Updates::Exactly(0),
+                "pending replay acknowledgment still holds the world"
+            );
+            assert!(
+                state
+                    .lock()
+                    .unwrap()
+                    .room_notices
+                    .contains(&Notice::Speed(Speed(200)))
+            );
+            state.lock().unwrap().replay_answer = Some(Ok(()));
+
+            let updates = smooth_call(&mut driver, &mut seen);
+            match boundary {
+                StepGate::Save(_) => {
+                    assert_eq!(updates, Updates::Exactly(0));
+                    assert_eq!(state.lock().unwrap().save_requests.len(), 1);
+                }
+                StepGate::Load(_) => {
+                    assert_eq!(updates, Updates::Exactly(0));
+                    assert_eq!(state.lock().unwrap().load_requests.len(), 1);
+                }
+                StepGate::Ended => {
+                    assert_eq!(updates, Updates::Own);
+                    assert_eq!(driver.phase(), &Phase::Ended);
+                }
+                StepGate::Run | StepGate::Wait => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_staging_keeps_empty_release_waits_and_skips_after_report_failure() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(2)));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        script.events.extend([
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![command_event(41, 3, &depot_build())],
+        ]);
+        script.notices.push_back(vec![Notice::Speed(Speed(400))]);
+        let (mut empty, empty_state) = driver_with(script);
+        empty.enable_smooth_pacing_batch_two();
+        let mut seen = Vec::new();
+        assert_eq!(smooth_call(&mut empty, &mut seen), Updates::Exactly(0));
+        assert_eq!(smooth_call(&mut empty, &mut seen), Updates::Exactly(2));
+        assert_eq!(smooth_call(&mut empty, &mut seen), Updates::Exactly(0));
+        assert!(empty_state.lock().unwrap().replay_requests.is_empty());
+        assert_eq!(
+            smooth_call(&mut empty, &mut seen),
+            Updates::Exactly(0),
+            "an action that arrived after the staging poll still takes the original hold path"
+        );
+        let state = empty_state.lock().unwrap();
+        assert_eq!(state.replay_requests.len(), 1);
+        assert_eq!(state.replay_requests[0].0, 3);
+        assert_eq!(state.replay_requests[0].1.len(), 1);
+        drop(state);
+
+        let actions = vec![command_event(31, 3, &depot_build())];
+        let (mut failed, failed_state) = post_batch_action_driver(StepGate::Run, actions, None);
+        failed.gate.fail_after = true;
+        let mut failed_seen = Vec::new();
+        assert_eq!(
+            smooth_call(&mut failed, &mut failed_seen),
+            Updates::Exactly(0)
+        );
+        assert_eq!(
+            smooth_call(&mut failed, &mut failed_seen),
+            Updates::Exactly(2)
+        );
+        assert!(matches!(failed.phase(), Phase::Holding(_)));
+        assert!(failed_state.lock().unwrap().replay_requests.is_empty());
+    }
+
+    #[test]
+    fn smooth_staging_rechecks_room_world_after_the_native_batch() {
+        let actions = vec![command_event(51, 3, &depot_build())];
+        let (mut driver, state) = post_batch_action_driver(StepGate::Run, actions, None);
+        let mut seen = Vec::new();
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(0));
+
+        let outcome = driver.on_step(Vec::new(), &mut |batch| {
+            assert_eq!(batch.updates, Updates::Exactly(2));
+            // The world may change while the native step runs. Its identity
+            // must be checked again before the post-batch action poll.
+            state.lock().unwrap().mark = mark(1, 1);
+            Ok(batch.lanes.then(Vec::new))
+        });
+
+        assert_eq!(outcome.updates, Updates::Exactly(2));
+        assert_eq!(driver.gate.ran, 2);
+        assert!(
+            matches!(driver.phase(), Phase::Holding(why) if why.contains("room's world closed"))
+        );
+        assert!(state.lock().unwrap().replay_requests.is_empty());
+        assert_eq!(driver.game.actions.len(), 0);
+        assert_eq!(driver.gate.events.front().unwrap().len(), 1);
     }
 
     #[test]
@@ -1993,6 +2806,82 @@ pub(crate) mod tests {
             "each lane its own digest"
         );
         assert_eq!(d.phase(), &Phase::Running);
+    }
+
+    #[test]
+    fn smooth_priming_survives_the_regular_checkpoint_when_post_batch_poll_waits() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(50)));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 49,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+            StepGate::Run,
+        ]);
+        let (mut driver, _) = driver(script);
+        driver.enable_smooth_pacing();
+        let mut seen = Vec::new();
+        assert_eq!(
+            smooth_call(&mut driver, &mut seen),
+            Updates::Exactly(1),
+            "step 49 runs on cadence"
+        );
+        assert_eq!(
+            smooth_call(&mut driver, &mut seen),
+            Updates::Exactly(1),
+            "step 50 reports its checkpoint"
+        );
+        assert_eq!(driver.gate.checkpoints.len(), 1);
+        assert_eq!(driver.gate.checkpoints[0].0, 50);
+        assert_eq!(
+            smooth_call(&mut driver, &mut seen),
+            Updates::Exactly(1),
+            "step 51 uses the retained prime after the post-batch poll observed Wait"
+        );
+        assert!(driver.gate.waits.contains(&51));
+        assert_eq!(driver.gate.ran, 51);
+        assert_eq!(
+            driver.gate.checkpoints.len(),
+            1,
+            "no checkpoint was crossed"
+        );
+        assert_eq!(
+            seen,
+            [
+                (Updates::Exactly(1), Some(49), false),
+                (Updates::Exactly(1), Some(50), true),
+                (Updates::Exactly(1), Some(51), false),
+            ]
+        );
+        assert_eq!(driver.phase(), &Phase::Running);
+    }
+
+    #[test]
+    fn smooth_pacing_never_turns_a_sealed_backlog_into_a_multi_update_call() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(50)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 40));
+        let (mut driver, _) = driver(script);
+        driver.enable_smooth_pacing();
+
+        let mut seen = Vec::new();
+        for step in 1..=10 {
+            assert_eq!(
+                smooth_call(&mut driver, &mut seen),
+                Updates::Exactly(1),
+                "sealed work stays ordered and is dispatched one update at a time"
+            );
+            assert_eq!(seen.last().unwrap().1, Some(step));
+        }
+        assert_eq!(driver.gate.ran, 10);
     }
 
     /// Every call of the room's game says so, its paused ones included (they
@@ -2448,6 +3337,216 @@ pub(crate) mod tests {
             Some(&Speed::MAX),
             "capped at the room's fastest"
         );
+    }
+
+    #[test]
+    fn a_speed_notice_at_the_menu_sets_the_room_period_before_its_world_loads() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(50)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: Some(PathBuf::from("room.sav")),
+            next_step: 1,
+        }));
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 3));
+        script.notices.push_back(vec![Notice::Speed(Speed(400))]);
+        let (mut driver, state) = driver_with(script);
+        driver.enable_smooth_pacing();
+
+        driver.on_menu();
+        assert_eq!(driver.room_speed, Speed(400));
+        assert_eq!(driver.previous_room_speed, Speed(400));
+        assert_eq!(
+            crate::pacing::plan(driver.pacing_snapshot(true))
+                .unwrap()
+                .interval_micros,
+            50_000,
+            "the menu notice must replace Begin's default before loading"
+        );
+        assert_eq!(
+            state.lock().unwrap().room_notices,
+            [Notice::Speed(Speed(400))],
+            "refreshing pace does not suppress the window notice"
+        );
+
+        state.lock().unwrap().load_done = true;
+        let mut seen = Vec::new();
+        assert_eq!(
+            smooth_call(&mut driver, &mut seen),
+            Updates::Exactly(1),
+            "the first loaded-world callback consumes only one sealed update"
+        );
+        assert_eq!(seen[0].1, Some(1));
+        assert_eq!(driver.room_speed, Speed(400), "no later notice is needed");
+    }
+
+    #[test]
+    fn smooth_pacing_publishes_post_consumption_ahead_at_a_checkpoint() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(2)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 6));
+        let (mut driver, _) = driver_with(script);
+        driver.enable_smooth_pacing();
+        let mut seen = Vec::new();
+
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(1));
+        let snapshot = driver.pacing_snapshot(true);
+        assert_eq!(snapshot.sealed_ahead, 1);
+        assert!(snapshot.checkpoint_limited);
+        assert_eq!(seen[0].1, Some(1));
+    }
+
+    #[test]
+    fn batch_two_at_three_x_consumes_only_the_safe_capped_lookahead_and_enters_recovery() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(100)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 20));
+        script.notices.push_back(vec![Notice::Speed(Speed(300))]);
+        let (mut driver, _) = driver_with(script);
+        driver.enable_smooth_pacing_batch_two();
+        let mut seen = Vec::new();
+
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(0));
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(2));
+        assert_eq!(driver.room_speed, Speed(300));
+        assert_eq!(
+            driver.gate.gates.len(),
+            18,
+            "the true queue exceeds the 7-step lookahead cap"
+        );
+
+        let snapshot = driver.pacing_snapshot(true);
+        let pace = crate::pacing::plan(snapshot).unwrap();
+        assert_eq!(snapshot.sealed_ahead, pace.lookahead_limit as u16);
+        assert!(
+            snapshot.lookahead_capped,
+            "post-consumption lookahead confirms the remaining queue still exceeds its cap"
+        );
+        assert!(!snapshot.checkpoint_limited);
+        let cadence = crate::pacing::next_cadence(
+            snapshot,
+            crate::pacing::Cadence {
+                nominal_interval_micros: pace.interval_micros,
+                interval_micros: pace.interval_micros,
+                catching_up: false,
+            },
+            1,
+        )
+        .unwrap();
+        assert!(
+            cadence.catching_up,
+            "a saturated lookahead remains above the 2-update startup lead: {snapshot:?}, plan={pace:?}, startup={}, cadence={cadence:?}",
+            crate::pacing::startup_ahead(pace, snapshot)
+        );
+        assert_eq!(
+            cadence.interval_micros,
+            pace.interval_micros - (pace.interval_micros / 100).max(1)
+        );
+    }
+
+    #[test]
+    fn one_update_mode_rechecks_a_saturated_four_x_queue_after_consumption() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(100)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 20));
+        script.notices.push_back(vec![Notice::Speed(Speed(400))]);
+        let (mut driver, _) = driver_with(script);
+        driver.enable_smooth_pacing();
+        let mut seen = Vec::new();
+
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(0));
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(1));
+        let snapshot = driver.pacing_snapshot(true);
+        let pace = crate::pacing::plan(snapshot).unwrap();
+        assert_eq!(snapshot.speed, Speed(400), "room notice supplies the rate");
+        assert_eq!(snapshot.sealed_ahead, pace.lookahead_limit as u16);
+        assert!(snapshot.lookahead_capped);
+        assert!(
+            crate::pacing::next_cadence(
+                snapshot,
+                crate::pacing::Cadence {
+                    nominal_interval_micros: pace.interval_micros,
+                    interval_micros: pace.interval_micros,
+                    catching_up: false,
+                },
+                1,
+            )
+            .unwrap()
+            .catching_up,
+            "the post-consumption lookahead must expose the still-saturated queue"
+        );
+    }
+
+    #[test]
+    fn batch_two_at_four_x_rechecks_a_saturated_queue_after_consumption() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(100)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 20));
+        script.notices.push_back(vec![Notice::Speed(Speed(400))]);
+        let (mut driver, _) = driver_with(script);
+        driver.enable_smooth_pacing_batch_two();
+        let mut seen = Vec::new();
+
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(0));
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(2));
+        let snapshot = driver.pacing_snapshot(true);
+        let pace = crate::pacing::plan(snapshot).unwrap();
+        assert_eq!(snapshot.speed, Speed(400), "room notice supplies the rate");
+        assert_eq!(snapshot.sealed_ahead, pace.lookahead_limit as u16);
+        assert!(snapshot.lookahead_capped);
+        assert!(
+            crate::pacing::next_cadence(
+                snapshot,
+                crate::pacing::Cadence {
+                    nominal_interval_micros: pace.interval_micros,
+                    interval_micros: pace.interval_micros,
+                    catching_up: false,
+                },
+                1,
+            )
+            .unwrap()
+            .catching_up,
+            "the post-consumption lookahead must expose the still-saturated queue"
+        );
+    }
+
+    #[test]
+    fn two_update_mode_keeps_an_exact_checkpoint_cap_after_consuming_its_batch() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(2)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script.gates.extend(std::iter::repeat_n(StepGate::Run, 4));
+        script.notices.push_back(vec![Notice::Speed(Speed(400))]);
+        let (mut driver, _) = driver_with(script);
+        driver.enable_smooth_pacing_batch_two();
+        let mut seen = Vec::new();
+
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(0));
+        assert_eq!(smooth_call(&mut driver, &mut seen), Updates::Exactly(2));
+        assert_eq!(driver.checkpoint_step, 2);
+        assert_eq!(driver.gate.ran, 2);
+        let snapshot = driver.pacing_snapshot(true);
+        assert_eq!(snapshot.sealed_ahead, 2);
+        assert!(snapshot.checkpoint_limited);
+        assert!(!snapshot.lookahead_capped);
     }
 
     #[test]

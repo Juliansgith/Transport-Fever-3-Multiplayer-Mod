@@ -534,6 +534,47 @@ impl Session {
         }
     }
 
+    /// Looks ahead through already ordered releases without crossing the
+    /// next checkpoint or any action/save/load/end boundary. Informational
+    /// notices are applied as usual; a speed notice stops the scan so the
+    /// caller can recalculate its room-authoritative scheduler rate. Other
+    /// boundary messages stay in `peeked` for the next `poll_step`.
+    pub fn lookahead(&mut self, game: &mut impl Game, max: u32) -> Result<u32, SessionError> {
+        let max = u64::from(max);
+        loop {
+            let steps = self.gate.batch(max, self.checkpoint_interval);
+            let interval = self.checkpoint_interval.max(1);
+            let to_checkpoint = (interval - self.gate.next_step() % interval) % interval + 1;
+            if steps == 0
+                || steps >= max
+                || steps >= to_checkpoint
+                || steps < self.gate.released_ahead()
+            {
+                return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
+            }
+            let Some(message) = self.try_recv()? else {
+                return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
+            };
+            match message {
+                ToHook::Speed(speed) => {
+                    self.handle(ToHook::Speed(speed), game)?;
+                    return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
+                }
+                ToHook::Release { .. }
+                | ToHook::Chat { .. }
+                | ToHook::Room(_)
+                | ToHook::Lobby(_)
+                | ToHook::Preview { .. }
+                | ToHook::Refused { .. }
+                | ToHook::Diverged { .. } => self.handle(message, game)?,
+                other => {
+                    self.peeked = Some(other);
+                    return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
+                }
+            }
+        }
+    }
+
     /// Records that the game ran its next step and reports it, with the
     /// world's lanes at checkpoint steps. Returns the step.
     pub fn after_step(&mut self, game: &mut impl Game) -> Result<u64, SessionError> {
@@ -831,7 +872,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use tpf3mp_ipc::Config;
-    use tpf3mp_proto::{FixedBytes, PlayerId};
+    use tpf3mp_proto::{EventBody, FixedBytes, PlayerId};
 
     use super::*;
 
@@ -1319,6 +1360,137 @@ mod tests {
         }
         assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
         assert_eq!(session.batch(&mut world, 16).unwrap(), 2, "11 and 12");
+    }
+
+    #[test]
+    fn lookahead_stops_at_checkpoint_and_keeps_later_releases_sealed() {
+        let (mut session, agent, mut world) = playing("lookahead-checkpoint", 5);
+        say(&agent, &ToHook::Release { through: 12 });
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(
+            session.lookahead(&mut world, 16).unwrap(),
+            5,
+            "the current lookahead ends at checkpoint 5"
+        );
+        for step in 1..=5 {
+            assert_eq!(session.after_step(&mut world).unwrap(), step);
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(
+            session.lookahead(&mut world, 16).unwrap(),
+            5,
+            "already-sealed steps resume at the next checkpoint"
+        );
+    }
+
+    #[test]
+    fn lookahead_preserves_the_next_ordered_action_until_its_step() {
+        let (mut session, agent, mut world) = playing("lookahead-action", 50);
+        for through in 1..=3 {
+            say(&agent, &ToHook::Release { through });
+        }
+        say(
+            &agent,
+            &ToHook::Apply(Event {
+                seq: 4,
+                step: 4,
+                body: EventBody::PlayerLeft {
+                    player: PlayerId(FixedBytes([1; 32])),
+                    kicked: false,
+                },
+            }),
+        );
+        say(&agent, &ToHook::Release { through: 4 });
+
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(session.lookahead(&mut world, 8).unwrap(), 3);
+        for step in 1..=3 {
+            assert_eq!(session.after_step(&mut world).unwrap(), step);
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(world.applied, [4], "the event is applied before step 4");
+    }
+
+    #[test]
+    fn lookahead_applies_speed_notice_and_stops_before_new_rate_releases() {
+        let (mut session, agent, mut world) = playing("lookahead-speed", 50);
+        say(&agent, &ToHook::Release { through: 1 });
+        say(&agent, &ToHook::Release { through: 2 });
+        say(&agent, &ToHook::Speed(Speed(200)));
+        say(&agent, &ToHook::Release { through: 3 });
+
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(session.lookahead(&mut world, 8).unwrap(), 2);
+        assert_eq!(world.notices, [Notice::Speed(Speed(200))]);
+        assert_eq!(session.gate.released_ahead(), 2, "release 3 stays unread");
+        session.after_step(&mut world).unwrap();
+        session.after_step(&mut world).unwrap();
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(session.lookahead(&mut world, 8).unwrap(), 1);
+    }
+
+    #[test]
+    fn lookahead_preserves_save_load_and_end_boundaries() {
+        let (mut saving, save_agent, mut save_world) = playing("lookahead-save", 50);
+        for through in 1..=3 {
+            say(&save_agent, &ToHook::Release { through });
+        }
+        say(
+            &save_agent,
+            &ToHook::Apply(Event {
+                seq: 9,
+                step: 4,
+                body: EventBody::Save,
+            }),
+        );
+        say(&save_agent, &ToHook::Release { through: 4 });
+        assert_eq!(saving.poll_step(&mut save_world).unwrap(), StepGate::Run);
+        assert_eq!(saving.lookahead(&mut save_world, 8).unwrap(), 3);
+        for _ in 0..3 {
+            saving.after_step(&mut save_world).unwrap();
+        }
+        assert!(matches!(
+            saving.poll_step(&mut save_world).unwrap(),
+            StepGate::Save(_)
+        ));
+
+        let (mut loading, load_agent, mut load_world) = playing("lookahead-load", 50);
+        for through in 1..=3 {
+            say(&load_agent, &ToHook::Release { through });
+        }
+        say(
+            &load_agent,
+            &ToHook::Load {
+                file: None,
+                next_step: 100,
+            },
+        );
+        assert_eq!(loading.poll_step(&mut load_world).unwrap(), StepGate::Run);
+        assert_eq!(loading.lookahead(&mut load_world, 8).unwrap(), 3);
+        for _ in 0..3 {
+            loading.after_step(&mut load_world).unwrap();
+        }
+        assert!(matches!(
+            loading.poll_step(&mut load_world).unwrap(),
+            StepGate::Load(Load { next_step: 100, .. })
+        ));
+
+        let (mut ending, end_agent, mut end_world) = playing("lookahead-end", 50);
+        for through in 1..=3 {
+            say(&end_agent, &ToHook::Release { through });
+        }
+        say(
+            &end_agent,
+            &ToHook::End {
+                reason: Text::new("finished").unwrap(),
+            },
+        );
+        assert_eq!(ending.poll_step(&mut end_world).unwrap(), StepGate::Run);
+        assert_eq!(ending.lookahead(&mut end_world, 8).unwrap(), 3);
+        for _ in 0..3 {
+            ending.after_step(&mut end_world).unwrap();
+        }
+        assert_eq!(ending.poll_step(&mut end_world).unwrap(), StepGate::Ended);
     }
 
     /// The next message the hook sent, past the hellos and loads.

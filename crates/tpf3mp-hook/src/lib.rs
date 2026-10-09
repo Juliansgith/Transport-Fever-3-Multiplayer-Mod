@@ -60,12 +60,18 @@ pub mod order;
 /// executable and run in the test process.
 #[cfg(all(test, windows, target_arch = "x86_64"))]
 pub(crate) mod original;
+/// Opt-in scheduler pacing for the exact TF3 Steam 40420 build.
+pub mod pacing;
 pub mod perf;
 pub mod persons;
 mod platform;
 pub mod previewcancel;
 pub mod previews;
 pub mod probe;
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod renderprobe;
+/// Bounded, owned road-pose history used by the exact-build local experiment.
+pub mod road_history;
 pub mod roadtrace;
 pub mod savefast;
 pub mod seeds;
@@ -76,6 +82,7 @@ pub mod stoptool;
 pub mod streettrace;
 pub mod terrain;
 pub mod ticks;
+mod timeline;
 pub mod toolplayer;
 pub mod townfield;
 pub mod towntrace;
@@ -137,7 +144,12 @@ pub fn bootstrap() {
             if let Some(reason) = native_mods::decide(&profiles, &profile.build.sha256, &mut log) {
                 log.line(&format!("multiplayer disabled (fail-closed): {reason}"));
             } else {
-                match install::install(&profile, &link_name, Logger::open(data_dir.as_deref())) {
+                match install::install(
+                    &profile,
+                    &link_name,
+                    Logger::open(data_dir.as_deref()),
+                    data_dir.as_deref(),
+                ) {
                     install::Installed::Yes { step_rva } => log.line(&format!(
                         "step gate installed on {} at {step_rva:#x}; the session is attached to {link_name:?}",
                         install::STEP_TARGET

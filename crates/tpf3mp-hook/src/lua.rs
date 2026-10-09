@@ -265,6 +265,65 @@ struct Replay {
     result: Option<Result<(), String>>,
 }
 
+/// Scalar replay state for the explicitly armed native timeline. It contains
+/// no action payload, seals, or player identity and never consumes the result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReplayTraceState {
+    pub token: u64,
+    pub step: u64,
+    pub action_count: u32,
+    /// 0 none, 1 pending wake, 2 taken, 3 completed successfully, 4 failed,
+    /// 5 snapshot skipped because the diagnostic lock was busy.
+    pub state: u8,
+}
+
+fn replay_state(replay: &Replay) -> u8 {
+    match replay.result.as_ref() {
+        Some(Ok(())) => 3,
+        Some(Err(_)) => 4,
+        None if replay.taken => 2,
+        None => 1,
+    }
+}
+
+fn replay_trace_state(replay: &Replay) -> ReplayTraceState {
+    ReplayTraceState {
+        token: replay.token.parse().unwrap_or(0),
+        step: replay.step,
+        action_count: u32::try_from(replay.tickets.len()).unwrap_or(u32::MAX),
+        state: replay_state(replay),
+    }
+}
+
+/// Captures replay progress without waiting for the game or GUI thread's
+/// replay lock. State 5 means this optional diagnostic sample was contended.
+pub(crate) fn replay_trace_snapshot_nonblocking() -> ReplayTraceState {
+    replay_trace_snapshot_nonblocking_for(None)
+}
+
+fn replay_trace_snapshot_nonblocking_for(token: Option<u64>) -> ReplayTraceState {
+    let shared = match SHARED.try_lock() {
+        Ok(shared) => shared,
+        Err(std::sync::TryLockError::Poisoned(poison)) => poison.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return ReplayTraceState {
+                state: 5,
+                ..ReplayTraceState::default()
+            };
+        }
+    };
+    shared
+        .replay
+        .as_ref()
+        .filter(|replay| token.is_none_or(|token| replay.token.parse::<u64>().ok() == Some(token)))
+        .map(replay_trace_state)
+        .unwrap_or_default()
+}
+
+fn replay_trace_snapshot_for(token: u64) -> ReplayTraceState {
+    replay_trace_snapshot_nonblocking_for(Some(token))
+}
+
 /// What the table's functions share with the step gate.
 /// The batch of updates the game's step is running.
 struct Batch {
@@ -490,6 +549,17 @@ pub fn request_replay(step: u64, actions: &[Ordered]) -> Result<(), String> {
         result: None,
     });
     s.request = Some(Request::Replay(token));
+    let replay_token = s.next_replay;
+    drop(s);
+    crate::timeline::record_with(crate::timeline::Kind::ReplayRequested, 0, || {
+        crate::timeline::Fields {
+            replay_token,
+            replay_step: step,
+            replay_action_count: u32::try_from(actions.len()).unwrap_or(u32::MAX),
+            replay_state: 1,
+            ..crate::timeline::Fields::default()
+        }
+    });
     Ok(())
 }
 
@@ -1028,7 +1098,7 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
     .unwrap_or_else(|_| Err("the hook failed reading the action".into()));
     // SAFETY: as above.
     unsafe { (api.settop)(l, top) };
-    let queued = read.and_then(|(payload, secret)| {
+    let queued = read.and_then(|(payload, secret, action_class)| {
         let mut shared = shared();
         if shared.commands.len() >= MAX_WAITING {
             return Err(format!(
@@ -1038,12 +1108,21 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
         let ticket = shared.next_ticket;
         shared.next_ticket += 1;
         shared.commands.push_back((ticket, payload, secret));
-        Ok(ticket)
+        Ok((ticket, action_class))
     });
     // SAFETY: as above; a C function's call has room for its results.
     unsafe {
         match queued {
-            Ok(ticket) => {
+            Ok((ticket, action_class)) => {
+                crate::timeline::record_with(
+                    crate::timeline::Kind::NativeCommandAccepted,
+                    0,
+                    || crate::timeline::Fields {
+                        arg_a: usize::try_from(ticket).unwrap_or(usize::MAX),
+                        action_class: crate::timeline::Fields::action_class_name(action_class),
+                        ..crate::timeline::Fields::default()
+                    },
+                );
                 (api.pushboolean)(l, 1);
                 #[allow(clippy::cast_precision_loss)]
                 (api.pushnumber)(l, ticket as f64);
@@ -1061,7 +1140,10 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
 /// # Safety
 ///
 /// Lua's own state, on its thread.
-unsafe fn command_from(api: &LuaApi, l: State) -> Result<(Payload, Option<Secret>), String> {
+unsafe fn command_from(
+    api: &LuaApi,
+    l: State,
+) -> Result<(Payload, Option<Secret>, &'static str), String> {
     // SAFETY: the caller's.
     unsafe {
         if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != TTABLE {
@@ -1075,7 +1157,7 @@ unsafe fn command_from(api: &LuaApi, l: State) -> Result<(Payload, Option<Secret
             .map(|password| secret_for(&action, password))
             .transpose()?;
         let payload = action.to_payload().map_err(|error| error.to_string())?;
-        Ok((payload, secret))
+        Ok((payload, secret, action.kind()))
     }
 }
 
@@ -1233,6 +1315,16 @@ unsafe extern "C-unwind" fn native_take_replay(l: State) -> c_int {
     };
     // SAFETY: Lua's live state, on its own thread.
     let token = unsafe { string_arg(api, l, 1, 32) };
+    let replay_token = token
+        .as_deref()
+        .and_then(|token| token.parse::<u64>().ok())
+        .unwrap_or(0);
+    crate::timeline::record_with(crate::timeline::Kind::ReplayTakeEntered, 0, || {
+        crate::timeline::Fields {
+            replay_token,
+            ..crate::timeline::Fields::default()
+        }
+    });
     let mut s = shared();
     let Some(r) = s
         .replay
@@ -1280,6 +1372,19 @@ unsafe extern "C-unwind" fn native_take_replay(l: State) -> c_int {
         r.actions = None;
         r.taken = true;
         r.previous_step = crate::seeds::command_step(Some(r.step));
+        let trace = crate::timeline::active().then(|| replay_trace_state(r));
+        drop(s);
+        if let Some(trace) = trace {
+            crate::timeline::record_with(crate::timeline::Kind::ReplayTaken, 0, || {
+                crate::timeline::Fields {
+                    replay_token: trace.token,
+                    replay_step: trace.step,
+                    replay_action_count: trace.action_count,
+                    replay_state: trace.state,
+                    ..crate::timeline::Fields::default()
+                }
+            });
+        }
         return 3;
     }
     unsafe {
@@ -1302,7 +1407,13 @@ unsafe extern "C-unwind" fn native_replayed(l: State) -> c_int {
             string_arg(api, l, 3, MAX_LOG_LINE),
         )
     };
+    let replay_token = token
+        .as_deref()
+        .and_then(|token| token.parse::<u64>().ok())
+        .unwrap_or(0);
     let mut s = shared();
+    let mut trace = ReplayTraceState::default();
+    let mut accepted = false;
     if let Some(r) = s
         .replay
         .as_mut()
@@ -1319,6 +1430,24 @@ unsafe extern "C-unwind" fn native_replayed(l: State) -> c_int {
             crate::seeds::command_step(r.previous_step);
         }
         r.result = Some(result);
+        if crate::timeline::active() {
+            trace = replay_trace_state(r);
+        }
+        accepted = true;
+    }
+    drop(s);
+    if crate::timeline::active() {
+        crate::timeline::record_with(crate::timeline::Kind::ReplayAcknowledged, 0, || {
+            crate::timeline::Fields {
+                replay_token,
+                replay_step: trace.step,
+                replay_action_count: trace.action_count,
+                replay_state: trace.state,
+                replay_ack_accepted: accepted,
+                result_byte: u8::from(ok),
+                ..crate::timeline::Fields::default()
+            }
+        });
     }
     0
 }
@@ -1336,6 +1465,10 @@ unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
             shared.started = Some(shared.worlds);
         }
         request
+    };
+    let replay_token = match request.as_ref() {
+        Some(Request::Replay(token)) => token.parse::<u64>().ok(),
+        _ => None,
     };
     let table = match request {
         None => LuaValue::Nil,
@@ -1355,12 +1488,28 @@ unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
         // SAFETY: as above.
         unsafe { push(api, l, &table, 0) }
     }));
-    if !matches!(pushed, Ok(Ok(()))) {
+    let delivered = matches!(&pushed, Ok(Ok(())));
+    if !delivered {
         // SAFETY: as above.
         unsafe {
             (api.settop)(l, top);
             (api.pushnil)(l);
         }
+    }
+    if delivered
+        && crate::timeline::active()
+        && let Some(replay_token) = replay_token
+    {
+        let trace = replay_trace_snapshot_for(replay_token);
+        crate::timeline::record_with(crate::timeline::Kind::ReplayGuiPoll, 0, || {
+            crate::timeline::Fields {
+                replay_token,
+                replay_step: trace.step,
+                replay_action_count: trace.action_count,
+                replay_state: trace.state,
+                ..crate::timeline::Fields::default()
+            }
+        });
     }
     1
 }
@@ -3074,6 +3223,11 @@ pub(crate) mod tests {
             ],
         )
         .unwrap();
+        let pending = replay_trace_snapshot_nonblocking();
+        assert_ne!(pending.token, 0);
+        assert_eq!(pending.step, 42);
+        assert_eq!(pending.action_count, 2);
+        assert_eq!(pending.state, 1);
         lua.run("TOKEN = tpf3mp_native.poll().replay").unwrap();
         assert_eq!(
             lua.run("return tpf3mp_native.takeReplay('wrong')"),
@@ -3085,6 +3239,9 @@ pub(crate) mod tests {
             lua.run("local a,p = tpf3mp_native.takeReplay(TOKEN) return #a, #p"),
             Ok("2|2".into())
         );
+        let taken = replay_trace_snapshot_nonblocking();
+        assert_eq!(taken.token, pending.token);
+        assert_eq!(taken.state, 2, "take is observable");
         assert_eq!(crate::seeds::current_step(), Some(42));
         assert_eq!(
             lua.run("return tpf3mp_native.takeReplay(TOKEN)"),
@@ -3096,7 +3253,17 @@ pub(crate) mod tests {
             tpf3mp_native.applied(2, false, nil, 'collision') tpf3mp_native.replayed(TOKEN, true)",
         )
         .unwrap();
+        let acknowledged = replay_trace_snapshot_nonblocking();
+        assert_eq!(acknowledged.token, pending.token);
+        assert_eq!(
+            acknowledged.state, 3,
+            "ack readiness is observable without consuming it"
+        );
         assert_eq!(take_replay_result(), Some(Ok(())));
+        assert_eq!(
+            replay_trace_snapshot_nonblocking(),
+            ReplayTraceState::default()
+        );
         assert_eq!(crate::seeds::current_step(), previous);
         assert_eq!(
             lua.run("local r=tpf3mp_native.results() return #r,r[1].ticket,r[1].entity"),
@@ -3125,6 +3292,13 @@ pub(crate) mod tests {
         request_replay(1, &[ordered(depot_build(), None)]).unwrap();
         lua.run("local token=tpf3mp_native.poll().replay tpf3mp_native.replayed(token, false, 'wake failed')").unwrap();
         assert_eq!(take_replay_result(), Some(Err("wake failed".into())));
+    }
+
+    #[test]
+    fn replay_trace_skips_a_contended_lock_instead_of_waiting() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let _shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(replay_trace_snapshot_nonblocking().state, 5);
     }
 
     #[test]

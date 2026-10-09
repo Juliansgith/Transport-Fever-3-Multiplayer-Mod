@@ -778,12 +778,393 @@ call of the speed getter, as TPF2MP's speed hook
   resets a room's speed. What the room says back (its speed, a refusal, the
   end) goes to the hook's log.
 
-Measured in TF3 build 40408 on release day (the rig with one player,
+#### Opt-in smooth cadence prototype (Steam build 40420)
+
+The environment variable `TPF3MP_SMOOTH_PACING=1` opts a development run into
+the experimental native cadence controller. It is off by default. The hook
+installs this path only for the exact 40420 executable SHA-256 in the native
+profile and only when `CGame::Step` at RVA `0x11f3f0`, its data layout, its
+`Sync` call at `0x11f446` to `CGame::Sync` at `0x11f690`, and the `Sync` call
+to `ComputeFrameTime` at `0x11f9cc` resolving to `0x11d290` all match. Any
+missing or unexpected target leaves the existing step gate and native
+cadence in place. `TPF3MP_SMOOTH_PACING_TRACE=1` enables an optional per-frame
+diagnostic line; the ordinary telemetry is aggregated every ten seconds.
+At the main menu, the driver applies any room `Speed` notice before it drains
+the notice for the multiplayer window and publishes the room-derived period
+before the room's save is loaded. `Begin` still supplies the room's step rate;
+the local speed row never overrides the room's authoritative speed.
+
+`Begin.steps_per_second` and the room's `Speed` notice determine the native
+period. At five room steps a second the measured stock buttons correspond to
+200,000 microseconds at 1x, 100,000 at 2x, and 50,000 at 4x; 3x is available
+only as a diagnostic rate. The default prototype leaves `GameSim::Step`'s
+update count and `CGameTime::GetSpeed` contract intact and runs at most one
+sealed room step per GameSim callback, including when releases are backed up.
+The additional `TPF3MP_SMOOTH_PACING_BATCH=2` opt-in allows up to two updates
+per callback only above 2x; 1x, 2x, and pause retain the one-update limit.
+Both modes keep the same exact-build, room-authoritative rate and boundary
+checks. The native loop can make several bounded Sync attempts in one outer
+`CGame::Step` when multiple native periods are due. Since Sync may return
+before an asynchronous worker completes, this attempt limit does not establish
+that a low render rate can sustain the room's requested cadence; that needs a
+live throughput measurement. Before starting, it waits for a bounded lead of
+100 ms' worth of releases rounded up, plus the entire update batch it will
+consume; after that batch, the rounded lead remains. It never invents an
+update. A nearer checkpoint can shorten that startup lead: the gate reports
+the checkpoint exactly and keeps its primed cadence across the report.
+Lookahead stops at the next checkpoint and before ordered actions, saves,
+loads, ends, or a speed change. Events are still applied before their ordered
+step, including while this initial lead is being established.
+
+The driver measures sealed releases through a bounded lookahead of the
+retained lead plus 200 ms of expected work. At the 4x, five-step rate, that
+horizon is seven releases; reaching it starts a phase-preserving cadence
+recovery. The native period shortens gradually, by at most 1% of the nominal
+period per successful Sync, to a maximum 10% update-rate increase. It returns
+to the nominal period gradually once the observed queue is back at the
+batch-aware startup lead (three releases at 4x in the default mode, four in
+batch-two mode). A checkpoint-truncated lookahead holds the current recovery
+state until the next observation. After a batch, the driver subtracts the
+updates it ran from the prior observation. If that observation was capped or
+checkpoint-limited, it re-runs the same bounded lookahead from the next step
+before publishing pacing state; this distinguishes a still-deep queue from a
+queue that drained exactly to the cap and preserves the next checkpoint
+boundary. A queue reached at the lookahead cap remains a lower bound and is
+reported as such. Neither mode crosses an action or checkpoint boundary,
+invents an update, or discards sealed room work.
+
+In batch-two mode, the driver publishes the exact completed update count only
+after the worker finishes the batch. The native `ComputeFrameTime` wrapper
+adopts that count at the verified post-snapshot-swap callsite. The next
+`CGame::Step` uses the previously presented count to keep the threshold and
+alpha period consistent through Sync; a zero-completion callback holds the
+last positive presentation interval. The native caller still commits its
+cached pre-Sync timer timestamp, and speed changes remap phase at the next
+outer-step entry. The opt-in mode has focused unit and bridge-boundary tests;
+those tests do not prove that two-update interpolation is visually correct in
+the game.
+
+The presentation interval describes the batch whose completed snapshot is
+currently being shown, not the batch the worker is expected to select next.
+For example, a completed two-update batch at 2x is presented over 200 ms even
+if the next callback is capped to one update and is expected to take 100 ms.
+The new count becomes authoritative only after the snapshot swap, with phase
+remapped at the next outer-step entry. The 4x-to-2x live transition still
+needs acceptance testing.
+
+The outer CGame loop allows at most 16 Sync attempts and a soft 25 ms of
+CGame::Step elapsed wall time. This bounds catch-up work per outer call; it
+does not prove throughput when Sync declines a new asynchronous dispatch or
+render rate falls below the room's target. The 10% recovery headroom also
+cannot drain a backlog that continues growing beyond it, so slow-client and
+sustained-deficit behavior still require live throughput and latency evidence.
+After
+a native stall, the Sync wrapper may shed whole overdue timer intervals on
+the CGame thread, after a successful Sync and before `CGame::Step` commits its
+cached last timestamp; it preserves the fractional phase and records the
+discarded timer intervals as scheduling debt. A false Sync result does not
+change the timer, and released simulation work is never dropped. Sync is not
+assumed to wait for a GameSim update. Completed room-update counts and
+`GameSim::Step` elapsed wall time use cumulative worker-thread counters;
+the CGame thread samples their deltas later, so a late completion is counted
+once rather than lost when an outer frame ends. The worker wall measurement
+includes waits and parallel work and is not processor CPU time. The active
+worker-call count reports detoured GameSim calls executing now, not queued
+work.
+Pause holds at the prior room period and drains already-released steps one at
+a time without refilling. Speed transitions remap the current normalized
+phase, and a loaded world primes again. If the native `CGame` or its scheduler
+data object changes, the controller discards cached catch-up and successful
+Sync history, then remaps the new object's live phase once to the authoritative
+room period. The native timer and render-alpha fields are accessed only from
+the verified main-thread `CGame::Step`/`Sync` call path; the step driver
+publishes a single atomic room-rate snapshot.
+
+Ten-second telemetry reports outer `CGame::Step` call counts and average/
+maximum elapsed wall time, completed room updates and their elapsed
+`GameSim::Step` wall-time sum/average, maximum observed sealed lookahead and
+how often the horizon was reached, active worker calls, reserve size, `Sync`
+and `ComputeFrameTime` counts, scheduler debt, and period/render-phase bounds.
+The lookahead is capped and may understate a deeper queue; reaching its cap is
+reported explicitly. Compare actual update throughput and process CPU/copy
+cost in ordinary rooms before treating this prototype as ready for general
+use. This one-update cadence does not yet define a queue-drain policy for a
+persistent release backlog; removing multi-update bursts alone is not proof
+that ordinary jitter or a slow client stays within the intended latency. Its pacing design
+draws on silver2127's TPF2 `speedhook.cpp`: commit
+`77a4e75` scales the simulation interval for fractional speed, and earlier
+commit `222ca62` implements count dithering. The TF3 controller is an
+independent implementation checked against the 40420 executable.
+
+For a short causal capture, set `TPF3MP_HOOK_PACING_TIMELINE=watch` in the
+game's environment. With `TPF3MP_SMOOTH_PACING=1`, this observes the active
+prototype. With smooth pacing unset or set to `0`, the exact CGame wrappers
+install in observe-only mode for a stock-scheduler comparison: the room gate
+keeps its legacy batch policy and native interval/Sync returns pass through
+unchanged. This starts one background watcher; with the timeline variable
+unset there is no watcher thread or file access from this diagnostic. The
+watcher checks the hook's data directory
+for `pacing-timeline.request` every 500 ms. Replace its contents with a fresh
+1–64 character ASCII nonce using only letters, digits, `-` or `_` (for example,
+`run-20261009-a`). It ignores an existing request at startup and repeated
+nonces. A new nonce captures a fixed five-second window into a preallocated
+4,096-event buffer. The hook records fixed-size events without waiting on a
+busy buffer; any event lost to contention or a full buffer is counted in the
+output. It writes one `pacing-timeline-<process id>-<capture>.tsv` file after
+the window ends, under the same data directory as `hook.log`.
+
+The header keeps `capture_start_ns` in the same `Instant`-relative nanosecond
+domain as event `t_ns`. On Windows it also records `capture_qpc_frequency`,
+`capture_qpc_before`, and `capture_qpc_after`; the two QPC reads bracket the
+`ACTIVE_GENERATION` store that opens the capture. `capture_qpc_bracket_ticks`
+gives that uncertainty in QPC ticks, and `capture_qpc_valid` is false if the
+frequency or bracket could not be read. For Windows.Graphics.Capture
+timestamps in 100-nanosecond units, convert an absolute QPC counter value using
+`qpc_ticks * 10,000,000 / qpc_frequency`. Anchor event `t_ns` to the reported
+capture-start value and retain the QPC bracket width when comparing captures;
+do not treat the anchor as a point sample more precise than that bracket.
+
+Each row has a shared monotonic timestamp, a sequence number, the Windows
+thread ID, event kind, and call/parent IDs. The timeline includes raw and
+post-cadence `CGame::Step` entry, raw exit before its sampler runs, `Sync`
+entry, native-return and post-policy state, and the `GameSim::Step` detour and
+native run-step entry/exit. Main-thread CGame events contain `this`, data
+pointer, `now`, `last`, interval and unclamped alpha in thousandths; the outer
+step's raw ABI arguments are kept as hexadecimal bits. `ComputeFrameTime`
+rows contain its two raw arguments, original return and applied return, and
+are linked to the Sync call that invoked them. Worker rows include the
+selected update count and room flag, current room-speed snapshot, bounded
+sealed-queue observation, cumulative completed-update total and worker-call
+count. Native GameSim rows also record guarded scalar GameState and Engine
+pointer values from the worker's own `this` object; those values are for
+correlation only. CGame phase-field reads remain on the verified main-thread
+path. The capture is diagnostic only and does not alter pacing decisions.
+
+Armed captures also include `native_command_accepted` when the Lua command
+interface accepts a player's action into its local queue, and
+`native_command_handed_over` when the room accepts it and assigns a command
+number. Both carry the public action variant name and the local opaque ticket
+in `arg_a`; the handover row carries the room command number in `arg_b`.
+`room_action_queued` records the decoded room event sequence, step and public
+action variant name. For the local player's event, `arg_a` carries its client
+sequence number and `command_number_known` is true; for other players those
+fields are left unset. Together these scalar markers can trace a local action
+from the hook queue through room ordering without recording its payload, seal
+or player identity.
+
+Captures also include `replay_requested`,
+`replay_gui_poll`, `replay_take_entered`, `replay_taken`,
+`replay_acknowledged`, `replay_state_after_zero` and `replay_staged`. A staged
+marker records the exact next step and action count after a positive batch's
+successful step reports; it can be paired with the neighboring request row.
+Replay rows correlate by
+numeric token and include target step, action count and state: 0 means no
+matching replay, 1 pending wake, 2 taken, 3 acknowledged successfully, 4
+failed, and 5 means the non-consuming sample skipped a contended replay lock.
+`replay_gui_poll` means the native poll result was successfully pushed to Lua;
+it does not claim the game's event handler consumed it. The zero-step sample
+reads status without taking actions or consuming the result. These rows contain
+no action payloads, seals or player identities, and the instrumentation is
+inactive unless a five-second timeline capture is armed.
+
+For a bounded renderer feasibility sample on the exact Steam 40420 build, set
+`TPF3MP_HOOK_RENDER_PROBE=1` **and** keep
+`TPF3MP_HOOK_PACING_TIMELINE=watch`. Before requesting a capture, write the
+target entity IDs to `render-probe.entities` in the hook's data directory, one
+positive decimal ID per line. The file is read once on the background watcher
+before that capture opens; it must contain 1–128 unique IDs and be at most
+2,048 bytes. A missing, empty, oversized or malformed file disables pose
+sampling for that capture. The first `render_probe_config` row reports its
+status and accepted ID count (`1` ready, `2` missing, `3` oversized,
+`4` malformed, `5` empty); there is no fallback to arbitrary render objects.
+
+The probe installs only when its exact NewUpdate, Lambda7 dispatch, worker-body
+and GetInstance signatures and call targets resolve. It records NewUpdate
+epochs and threads, the captured GameState/Engine/ModelInstanceList type index,
+the actual Lambda7 context and join-scoped task/thread counts, plus at most four
+moving fat ModelInstance keys drawn from the explicit entity list. It discovers
+candidate poses only when the native valid byte is set and the current and
+previous matrices differ. Discovery has at most 512 full-pose inspections per
+capture, then selected keys use a separate 4,096-inspection budget. Selected
+keys are sampled once per dispatch even when current and previous matrices
+become equal, so a collapsed pair remains visible in the trace. If a selected
+key's native valid byte later clears, its row is still emitted with that byte
+set to zero; the invalid previous matrix is never used to select a key.
+Repeated calls for a key within a dispatch are deduplicated. The TSV reports
+discovery and selected inspection counts separately, along with skipped and
+dropped records.
+
+Sample rows include hashes and all 16 raw IEEE-754 words from both current and
+previous matrices at native offsets `+0x04` and `+0x44`; the valid byte is at
+`+0x84`. The 16-word layout is preserved as bits without assuming a row/column
+or translation convention.
+
+This is observation only: it forwards all original return values, writes no
+renderer or ECS memory, and never dereferences Engine's entity-generation
+vector. It copies the short entity/component/slot record while the native body
+is active, and uses the actual lambda-context pointer only until the native
+dispatch helper returns after joining its work. Entity generations are not
+captured, so repeated entity/component/slot keys are tentative within the
+five-second sample and cannot justify a persistent render-history cache.
+`render_probe_refused`, the dispatch `render_invalid` field, skipped sample
+counts and the timeline's `events_dropped` count disclose incomplete
+instrumentation. The inspection budgets reset for each capture; skipped-sample
+and context-miss totals accumulate for the process. Duplicate or invalid
+dispatch contexts are not eligible for pose reads after invalidation. This
+feasibility trace can show pose changes and work ownership; it does not
+demonstrate that a render-only history is safe or that motion is smoother.
+
+The captured ModelInstance path is not yet tied to a vehicle's root/world
+transform. On the 40420 build, the probe observes only the Lambda7 GetInstance
+call at `0x2f617e`, and only samples fat instances. The same helper has a
+second direct call at `0x2f0cc7` in `CRenderer::NewUpdate`'s Lambda5; both
+callers can select thin or fat storage. Two five-second captures with explicit
+allowlists of the 72 carriage entities and, separately, their 72 owning
+transport-vehicle entities produced no eligible pose inspections. Those
+captures therefore do not establish whether vehicle entries use the thin
+branch, the unobserved Lambda5 callsite, or another root-transform path. The
+native ModelInstance current/previous copy and renderer consumer are confirmed
+for the observed instance path, but vehicle-root motion and its interpolation
+inputs remain unproven. Do not infer a vehicle bypass or a smoothing result
+from the zero-inspection captures.
+
+The opt-in road-vehicle seam probe narrows that question on this same exact
+build. It resolves `RoadVehicleTransformator::vf3` (`0xc8ff70`), its path
+helper call (`0xc90391`), and its user-transforms call (`0xc91371`), then
+accepts rows only when the active Lambda7 body, its fresh `GetInstance`
+result, the child entity, the owning transport-vehicle ID, and the captured
+Engine all match. For this probe, `render-probe.entities` must list the owning
+`TRANSPORT_VEHICLE` entity IDs; carriage-child IDs alone do not select rows.
+It samples at most two owners, one row per owner and dispatch, and at most
+four bounded 24-byte position/direction records from the user-transforms
+call's input vector. Road rows are capped at 512 per capture and stop before
+the timeline buffer's final 512 slots, leaving capacity for later control and
+simulation markers. The TSV preserves the path's before/after current and
+previous words, validity byte, returned 12-byte tuple, alpha, call arguments,
+world-vector input words, native return values, and the complete `vf3` call
+duration in the shared timeline clock. The finalizer's R9 output struct is
+not read, so these inputs are not proof of its output matrices or the visible
+vehicle root transform. The path and callback evidence is emitted only when
+each expected call occurs exactly once and every bounded identity/range check
+passes; refusals and truncated vectors remain explicit.
+
+Use `native_engine` and the sampled vehicle `render_engine` with the shared
+start/duration timestamps to discard any row whose complete `vf3` span
+overlaps a `GameSim::Step` on the same Engine. The probe retains no native
+pointers after the call, follows no ECS generation vector, and writes no
+native memory. It is a bounded seam-feasibility sample, not a renderer-history
+implementation or evidence of smoother motion. A useful result still needs
+the allowlisted owner and carriage mapping, finite world positions matching a
+visible moving vehicle, and non-overlapping same-Engine writer spans; until
+then, vehicle-root interpolation inputs remain unproven.
+
+For a narrowly scoped visual-causality experiment, set
+`TPF3MP_HOOK_ROAD_OFFSET_PROBE=1` and
+`TPF3MP_HOOK_PACING_TIMELINE=watch`. The ordinary renderer observer does not
+translate anything unless this separate exact opt-in is present. Before the
+five-second capture, `render-probe.entities` must contain exactly one owning
+`TRANSPORT_VEHICLE` ID. During an eligible current road-transform call, the
+hook copies a complete vector of one to four finite position/direction records
+to 32-byte-aligned stack storage and adds exactly 5.0 world-X units to each
+position's X component. It preserves the vector count and order, every other
+record word, alpha, definition, output argument and native return value. No
+simulation, camera, API position, original input buffer, native object or ECS
+memory is changed.
+
+The `road_offset_applied` timeline row reports the shifted words and fixed
+offset only when the cloned vector is actually forwarded. A missing or
+multi-owner allowlist, stale or invalid scope, missing path, malformed,
+empty, truncated or non-finite vector, translated overflow, contended or full
+timeline buffer all keep the original native arguments unchanged and produce
+no applied row. Translation uses the same bounded event reserve as road sample
+rows; inability to record its applied marker disables that call's translation.
+This probe tests whether that controlled input change affects visible
+rendering. It does not establish root-transform identity, a safe history key,
+or a production interpolation design.
+
+For an additional observe-only timestamp label, set
+`TPF3MP_HOOK_NATIVE_TIME_PROBE=1` together with
+`TPF3MP_HOOK_RENDER_PROBE=1` and
+`TPF3MP_HOOK_PACING_TIMELINE=watch`. It installs only the three verified
+40420 callsite observers inside `RoadVehicleTransformator::vf3` and its
+`CGameTime` interpolation routine. Each native current/prior getter is called
+once with its original arguments and return; the native interpolation result
+is unchanged. The timeline records the returned times, alpha, validity byte,
+clock entity and Engine keys, and a reason when it cannot attach room-step
+labels.
+
+The label map learns endpoints only from completed room `GameSim::Step`
+callbacks whose selected update count matches both the native-time delta
+(`frame_time_micros / 1000` per update; normally 200) and the native
+update-count delta. The original frame-time argument is recorded in
+`native_time_step.arg_a_raw`. It publishes only after the room reports succeed,
+the world mark is unchanged, and the observed per-Engine
+writer span is stable. A zero-update callback verifies an already mapped time
+without creating an endpoint; the first observed pre-step time is left
+unlabelled. Road rows receive labels only when their current and previous
+native times both map in the same capture, world, GameState, Engine and clock
+entity, their time/step gap agrees, alpha is finite and in range, the native
+interpolator return agrees within one time unit, and no writer overlaps the
+getter interval. The writer counter covers the observed `GameSim::Step`
+detour; it does not establish that no other native or replication writer
+exists. Treat these labels as correlation evidence, not proof of immutable
+publication or a safe render-history design. With the extra variable unset,
+the native clock callsites are not redirected and no native-time sampling is
+performed.
+
+The bounded Candidate N road-pose history experiment has a separate
+`TPF3MP_HOOK_ROAD_HISTORY=1` opt-in. It requires
+`TPF3MP_HOOK_RENDER_PROBE=1`, `TPF3MP_HOOK_NATIVE_TIME_PROBE=1`,
+`TPF3MP_HOOK_PACING_TIMELINE=watch`, and `TPF3MP_SMOOTH_PACING=1`; it cannot
+be combined with `TPF3MP_HOOK_ROAD_OFFSET_PROBE=1`. Before arming a capture,
+`render-probe.entities` must contain exactly one verified owning
+`TRANSPORT_VEHICLE` ID. The experiment is inactive outside that explicit
+five-second capture and keeps only a bounded one-second private ring of up to
+four finite road-transform records. It waits for two accepted samples that
+bracket the target; it does not extrapolate or invent a missing endpoint. The
+first capture therefore includes history warm-up and may contain fallback
+rows until the bracket is available.
+
+`GameState::Replicate` blocks native-time labels for its destination while
+lineage is checked. A copied endpoint is accepted only after the destination's
+first local callback reads back the source's exact CGameTime entity/type,
+time, tick and update counts, then its own callback, contiguous room reports,
+world mark and vehicle incarnation all pass. The replication guard accounts
+for both the native writer-enter and writer-exit version advances before it
+accepts the completed copy. A verified zero-update callback
+may retain that copied timestamp without creating a new one; an unknown zero
+callback cannot seed history. If lineage or timeline publication is
+contended, the destination remains ineligible until a later exact local step
+rebuilds its time map. `Engine::RemoveEntity` changes the selected vehicle
+incarnation before native removal, and other room actions, world changes, or
+discontinuous pose records advance a separate invalidation epoch even when the
+bounded ring lock is busy.
+
+`road_history_sample` rows are emitted after the full native road-transform
+call returns and the observed same-Engine writer, world and identity checks
+still match. `road_history_applied` reports the target/lower/upper room-step
+positions and exact private record words when the aligned clone is actually
+forwarded through the native callback; `road_history_fallback` reports why the
+original arguments were kept. A dropped required marker prevents the override.
+The hook supplies a private stack clone to the normal native rendering call;
+it never writes the original world vector, ECS component, simulation state or
+persistent renderer buffer. Its final nonblocking epoch-lease CAS orders the
+forwarding decision against invalidation: invalidation that wins first forces
+the exact original vector, while a native finalizer call already authorized
+by an earlier lease may finish without making simulation or entity-removal
+writers wait. This is a time-limited one-owner visual experiment, not evidence
+of general vehicle coverage, persistent-history safety, or accepted
+smoothness; the ordinary-start live comparison must still verify motion,
+exact update rate/order, action replay and replica consistency.
+
+An earlier 40408 rig check (one player,
 `app.startGame()` from the console, the game's speed set with
 `makeGameSetSpeedCmd` as the speed row does, `GameTime.updateCount` read
-before and after): 4.97 updates a second at 1x, 20.34 at 4x, 10.02 at 2x,
+before and after) measured 4.97 updates a second at 1x, 20.34 at 4x, 10.02 at 2x,
 none paused, 4.98 back at 1x, the room confirming each change within a
-second, and no assertion in several minutes of play.
+second, and no assertion in several minutes of play. This predates the 40420
+native controller and is not evidence that this prototype meets its live
+throughput or motion acceptance checks.
 
 The hook installs the detours from its bootstrap thread while the game
 starts, before any world is loaded, so no thread is inside the step when
@@ -946,9 +1327,14 @@ every game between the same two simulation steps, including while paused:
 1. The mod hands the action to `tpf3mp_native.command`. The step gate
    sends it to the room.
 2. The room orders it as an event for step `s`. After step `s - 1`,
-   `StepDriver` gives the ordered actions to `lua::request_replay` and
-   holds updates. This applies to running rooms too, so every replica uses
-   the same engine phase regardless of when the resume arrives.
+  `StepDriver` gives the ordered actions to `lua::request_replay` and
+  holds updates. This applies to running rooms too, so every replica uses
+  the same engine phase regardless of when the resume arrives. With the
+  opt-in smooth scheduler, a nonblocking poll after a successfully reported
+  positive batch may stage actions at the exact next step before the worker
+  publishes that batch; the same replay acknowledgment still gates later
+  updates. If the action has not arrived yet, or its wake is still pending,
+  the existing zero-update hold path remains in effect.
 3. The GUI polls a `replay` token (Lua contract version 13) and sends only
    that token in the existing `tpf3mp/command` scripting event (a string
    token, rather than an action table, so older saves already subscribe).

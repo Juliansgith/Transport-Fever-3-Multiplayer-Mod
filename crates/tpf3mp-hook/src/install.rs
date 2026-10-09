@@ -15,6 +15,7 @@
 
 use std::{
     ffi::c_int,
+    path::Path,
     sync::{
         Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -36,6 +37,30 @@ pub const STEP_TARGET: &str = "GameSim::Step";
 pub const SPEED_TARGET: &str = "CGameTime::GetSpeed";
 /// The profile's name for the step's own call of the speed getter.
 pub const SPEED_CALL_TARGET: &str = "GameSim::Step/GetSpeed call";
+/// Exact-build native scheduler sites for the opt-in smooth pacing path.
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_CGAME_STEP_TARGET: &str = "CGame::Step";
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_CGAME_SYNC_TARGET: &str = "CGame::Sync";
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_STEP_SYNC_CALL_TARGET: &str = "CGame::Step/Sync call";
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_SYNC_TIME_CALL_TARGET: &str = "CGame::Sync/ComputeFrameTime call";
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_TIME_FUNCTION_TARGET: &str = "CGame::ComputeFrameTime";
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_BUILD_SHA256: &str =
+    "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5fa602e4";
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_CGAME_STEP_RVA: u64 = 0x11f3f0;
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_CGAME_SYNC_RVA: u64 = 0x11f690;
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_STEP_SYNC_CALL_RVA: u64 = 0x11f446;
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_TIME_CALL_RVA: u64 = 0x11f9cc;
+#[cfg(all(windows, target_arch = "x86_64"))]
+const SMOOTH_TIME_FUNCTION_RVA: u64 = 0x11d290;
 /// The profile's name for Lua's `print`.
 pub const PRINT_TARGET: &str = "luaB_print";
 /// The command queue's add and the simulation's apply of a build: without
@@ -71,6 +96,12 @@ unsafe extern "C-unwind" fn print_detour(l: lua::State) -> c_int {
 
 /// The game's own step, reached through the detour's trampoline.
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(windows, target_arch = "x86_64"))]
+static SMOOTH_CGAME_STEP_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(windows, target_arch = "x86_64"))]
+static SMOOTH_CGAME_SYNC_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(windows, target_arch = "x86_64"))]
+static SMOOTH_TIME_FUNCTION_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 /// The driver the detour hands each call to.
 static DRIVER: Mutex<Option<Box<dyn StepHandler>>> = Mutex::new(None);
 /// Set when the detour itself failed (a panic): from then on it runs
@@ -375,6 +406,7 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
 /// is the only pause. Otherwise the game's own answer.
 unsafe extern "C" fn step_speed(this: usize, a: usize, b: usize, c: usize) -> u64 {
     GAME_TIME.store(this, Ordering::Release);
+    crate::renderprobe::native_step_before(this);
     // SAFETY: the getter's detour, called with the arguments the step passed.
     let own = unsafe { speed_detour(this, a, b, c) };
     match UPDATES.load(Ordering::Acquire) {
@@ -388,6 +420,14 @@ unsafe extern "C" fn step_speed(this: usize, a: usize, b: usize, c: usize) -> u6
 /// transparent whatever the game's step takes in them.
 type StepFn = unsafe extern "C" fn(usize, usize, usize, usize);
 
+#[derive(Clone, Copy)]
+struct StepArgs {
+    this: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+}
+
 /// Runs the game's own step once, with `updates` answered to its call of
 /// the speed getter; `room` says the call is the room's game's, so its
 /// paused path leaves the game's tickCount alone ([`crate::ticks`]).
@@ -399,10 +439,8 @@ unsafe fn run_step(
     original: StepFn,
     updates: Updates,
     room: bool,
-    this: usize,
-    a: usize,
-    b: usize,
-    c: usize,
+    args: StepArgs,
+    pacing_active: bool,
 ) {
     let answer = match updates {
         Updates::Own => OWN_SPEED,
@@ -416,10 +454,76 @@ unsafe fn run_step(
     let perf = crate::perf::start();
     let started = crate::steptrace::step_timer(perf, crate::steptrace::enabled());
     // The free-id trace learns which engine this game simulates.
-    crate::persons::freed_ids::trace::note_step(this as u64, room);
+    crate::persons::freed_ids::trace::note_step(args.this as u64, room);
     crate::order::set_in_step(true);
+    let run_step_call =
+        crate::timeline::record_with(crate::timeline::Kind::RunStepEntry, 0, || {
+            let mut fields = crate::timeline::Fields::pacing_snapshot();
+            fields.this = args.this;
+            fields.arg_a = args.a;
+            fields.arg_b = args.b;
+            fields.arg_c = args.c;
+            fields.selected_updates = answer;
+            fields.selected_known = true;
+            fields.room = room;
+            fields
+        });
+    let pacing_started = pacing_active.then(Instant::now);
+    let mut run_wall_nanos = 0;
+    if pacing_active && room {
+        crate::pacing::worker_call_started();
+    }
+    let native_time_scope =
+        crate::renderprobe::NativeStepScope::enter(args.this, updates, room, args.a);
     // SAFETY: the caller's.
-    unsafe { original(this, a, b, c) };
+    unsafe { original(args.this, args.a, args.b, args.c) };
+    if let Some(scope) = native_time_scope {
+        scope.finish();
+    }
+    if room && matches!(updates, Updates::Exactly(0)) {
+        crate::timeline::record_with(crate::timeline::Kind::ReplayStateAfterZero, 0, || {
+            let replay = crate::lua::replay_trace_snapshot_nonblocking();
+            crate::timeline::Fields {
+                replay_token: replay.token,
+                replay_step: replay.step,
+                replay_action_count: replay.action_count,
+                replay_state: replay.state,
+                ..crate::timeline::Fields::default()
+            }
+        });
+    }
+    if let Some(pacing_started) = pacing_started {
+        let updates = if room {
+            match updates {
+                Updates::Exactly(updates) => updates,
+                Updates::Own => 0,
+            }
+        } else {
+            0
+        };
+        let wall_nanos = u64::try_from(pacing_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        run_wall_nanos = wall_nanos;
+        crate::pacing::record_worker_completion(updates, wall_nanos);
+        if room {
+            crate::pacing::worker_call_finished();
+        }
+    }
+    crate::timeline::record_with(
+        crate::timeline::Kind::RunStepExit,
+        run_step_call.unwrap_or(0),
+        || {
+            let mut fields = crate::timeline::Fields::pacing_snapshot();
+            fields.this = args.this;
+            fields.arg_a = args.a;
+            fields.arg_b = args.b;
+            fields.arg_c = args.c;
+            fields.selected_updates = answer;
+            fields.selected_known = true;
+            fields.room = room;
+            fields.elapsed_nanos = run_wall_nanos;
+            fields
+        },
+    );
     crate::order::set_in_step(false);
     if let Some(started) = started {
         let nanos = crate::perf::nanos_since(started);
@@ -482,15 +586,51 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
     let started = crate::perf::start();
     let traced_at = crate::steptrace::enabled().then(Instant::now);
+    let pacing_active = crate::pacing::installed() && crate::pacing::current().active;
+    let args = StepArgs { this, a, b, c };
+    let trace_call =
+        crate::timeline::record_with(crate::timeline::Kind::GameSimStepEntry, 0, || {
+            let mut fields = crate::timeline::Fields::pacing_snapshot();
+            fields.this = this;
+            fields.arg_a = a;
+            fields.arg_b = b;
+            fields.arg_c = c;
+            (fields.native_game_state, fields.native_engine) =
+                crate::timeline::native_world_fields(this);
+            let answer = UPDATES.load(Ordering::Acquire);
+            fields.selected_updates = answer;
+            fields.selected_known = answer != OWN_SPEED;
+            fields.room = IN_ROOM.load(Ordering::Acquire);
+            fields
+        });
+    let _trace_scope = crate::timeline::WorkerCallScope::enter(trace_call);
     STEP_GAME_NANOS.store(0, Ordering::Relaxed);
     LAST_STEP.store(now_ms(), Ordering::Release);
     // The step's speed call sets it again for this call.
     GAME_TIME.store(0, Ordering::Release);
     if BROKEN.load(Ordering::Acquire) {
+        crate::renderprobe::native_time_observe_world(None);
         // SAFETY: the game's step on its paused path: the world stands still.
-        unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        unsafe { run_step(original, Updates::Exactly(0), false, args, pacing_active) };
         crate::perf::step_call(false, Some(0), started);
         finish_perf(started);
+        crate::timeline::record_with(
+            crate::timeline::Kind::GameSimStepExit,
+            trace_call.unwrap_or(0),
+            || {
+                let mut fields = crate::timeline::Fields::pacing_snapshot();
+                fields.this = this;
+                fields.arg_a = a;
+                fields.arg_b = b;
+                fields.arg_c = c;
+                (fields.native_game_state, fields.native_engine) =
+                    crate::timeline::native_world_fields(this);
+                fields.selected_updates = 0;
+                fields.selected_known = true;
+                fields.room = false;
+                fields
+            },
+        );
         return;
     }
     let mut ran = false;
@@ -501,11 +641,12 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
+            crate::renderprobe::native_time_observe_world(None);
             ran = true;
             answered = Some((Updates::Own, false));
             selected = Some((Updates::Own, false));
             // SAFETY: the game's own step, called as the game called it.
-            unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
+            unsafe { run_step(original, Updates::Own, false, args, pacing_active) };
             return;
         };
         // SAFETY: as above, once per call, with the updates the driver chose;
@@ -520,7 +661,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             };
             match lua::begin_batch(&[], updates, batch.lanes, batch.dump) {
                 Ok(()) => {
-                    unsafe { run_step(original, batch.updates, batch.room, this, a, b, c) };
+                    unsafe { run_step(original, batch.updates, batch.room, args, pacing_active) };
                     if let Some(first) = batch.first_step {
                         log_counters(first, updates, batch.lanes);
                     }
@@ -528,7 +669,15 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                 }
                 Err(reason) => {
                     selected = Some((Updates::Exactly(0), batch.room));
-                    unsafe { run_step(original, Updates::Exactly(0), batch.room, this, a, b, c) };
+                    unsafe {
+                        run_step(
+                            original,
+                            Updates::Exactly(0),
+                            batch.room,
+                            args,
+                            pacing_active,
+                        )
+                    };
                     Err(reason)
                 }
             }
@@ -561,12 +710,13 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         }
     }));
     if result.is_err() {
+        crate::renderprobe::commit_native_step(None, None, false);
         BROKEN.store(true, Ordering::Release);
         UPDATES.store(OWN_SPEED, Ordering::Release);
         if !ran {
             selected = Some((Updates::Exactly(0), false));
             // SAFETY: as above.
-            unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+            unsafe { run_step(original, Updates::Exactly(0), false, args, pacing_active) };
         }
     }
     if let Some((updates, room)) = selected {
@@ -591,6 +741,204 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         }
     }
     finish_perf(started);
+    crate::timeline::record_with(
+        crate::timeline::Kind::GameSimStepExit,
+        trace_call.unwrap_or(0),
+        || {
+            let mut fields = crate::timeline::Fields::pacing_snapshot();
+            fields.this = this;
+            fields.arg_a = a;
+            fields.arg_b = b;
+            fields.arg_c = c;
+            (fields.native_game_state, fields.native_engine) =
+                crate::timeline::native_world_fields(this);
+            if let Some((updates, room)) = selected {
+                fields.selected_known = true;
+                fields.room = room;
+                fields.selected_updates = match updates {
+                    Updates::Exactly(updates) => u64::from(updates),
+                    Updates::Own => OWN_SPEED,
+                };
+            }
+            fields
+        },
+    );
+    if crate::pacing::current().batch_two {
+        let completed_updates = match selected {
+            Some((Updates::Exactly(updates), true)) => updates,
+            _ => 0,
+        };
+        crate::pacing::publish_completed_batch(completed_updates);
+    }
+}
+
+/// The exact 40420 CGame scheduler entry. Its phase fields are changed only
+/// around this same-thread call; the simulation thread publishes atomic room
+/// pacing state and never writes native scheduler memory.
+#[cfg(all(windows, target_arch = "x86_64"))]
+unsafe extern "C" fn smooth_cgame_step_detour(this: usize, a: usize, b: usize, c: usize) {
+    let original = SMOOTH_CGAME_STEP_ORIGINAL.load(Ordering::Acquire);
+    if original == 0 {
+        return;
+    }
+    let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
+    let trace_call =
+        crate::timeline::record_with(crate::timeline::Kind::CGameStepEntryRaw, 0, || {
+            smooth_timeline_fields(this, a, b, c, 0)
+        });
+    let _trace_scope = crate::timeline::OuterCallScope::enter(trace_call);
+    unsafe { crate::pacing::native::begin_step(this) };
+    crate::timeline::record_with(
+        crate::timeline::Kind::CGameStepEntryPrepared,
+        trace_call.unwrap_or(0),
+        || smooth_timeline_fields(this, a, b, c, 0),
+    );
+    let started = Instant::now();
+    unsafe { original(this, a, b, c) };
+    let elapsed = started.elapsed();
+    crate::timeline::record_with(
+        crate::timeline::Kind::CGameStepExitRaw,
+        trace_call.unwrap_or(0),
+        || {
+            smooth_timeline_fields(
+                this,
+                a,
+                b,
+                c,
+                elapsed.as_nanos().try_into().unwrap_or(u64::MAX),
+            )
+        },
+    );
+    let sample = unsafe { crate::pacing::native::end_step() };
+    if let Some(report) = crate::pacing::native::record_outer_step(elapsed, sample) {
+        log_line(&format!(
+            "smooth pacing 10s: CGame::Step {} calls, {} completed room updates, GameSim::Step wall sum/avg {} / {} us per update, sealed lookahead max {} (cap hits {}), active GameSim::Step calls max {}, reserve max {} steps, {} Sync calls, {} ComputeFrameTime calls, {} timer intervals of scheduling debt; CGame::Step wall avg/max {} / {} us; period min/max {} / {} us; phase min/max {} / {} per mille",
+            report.outer_steps,
+            report.room_updates,
+            report.worker_step_wall_micros,
+            report.average_worker_update_wall_micros,
+            report.maximum_sealed_lookahead,
+            report.lookahead_cap_hits,
+            report.maximum_active_worker_calls,
+            report.maximum_reserve_steps,
+            report.sync_calls,
+            report.compute_frame_calls,
+            report.scheduler_debt,
+            report.average_outer_wall_micros,
+            report.maximum_outer_wall_micros,
+            report.minimum_period_micros,
+            report.maximum_period_micros,
+            report.minimum_phase_per_mille,
+            report.maximum_phase_per_mille,
+        ));
+    }
+    if crate::pacing::native::trace_enabled() && sample.active {
+        log_line(&format!(
+            "smooth frame: CGameStepWall={}us completedWorkerUpdates={} GameSimStepWall={}us sealedLookaheadMax={} capHits={} activeWorkerCalls={} reserveSteps={} Sync={} ComputeFrameTime={} period={}us alpha={}/1000 scheduler-debt={}",
+            u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+            sample.frame_updates,
+            sample.worker_step_wall_nanos / 1_000,
+            sample.sealed_lookahead,
+            sample.lookahead_cap_hits,
+            sample.active_worker_calls,
+            sample.reserve_steps,
+            sample.sync_calls,
+            sample.compute_frame_calls,
+            sample.interval_micros,
+            sample.phase_per_mille,
+            sample.scheduler_debt,
+        ));
+    }
+}
+
+/// Builds a lazy timeline row from native phase values. Its only call sites
+/// are the profile-verified CGame::Step and CGame::Step/Sync wrappers on the
+/// owning main thread; the GameSim worker path never calls this helper.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn smooth_timeline_fields(
+    this: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+    elapsed_nanos: u64,
+) -> crate::timeline::Fields {
+    let native = unsafe { crate::pacing::native::trace_fields(this) };
+    let mut fields = crate::timeline::Fields::pacing_snapshot();
+    fields.this = native.cgame;
+    fields.data = native.data;
+    fields.now = native.now;
+    fields.last = native.last;
+    fields.interval_micros = native.interval_micros;
+    fields.alpha_milli = native.alpha_milli;
+    fields.arg_a = a;
+    fields.arg_b = b;
+    fields.arg_c = c;
+    fields.elapsed_nanos = elapsed_nanos;
+    fields
+}
+
+/// Redirected only from the exact ComputeFrameTime call inside CGame::Sync.
+/// The original still computes its ordinary bookkeeping value; the scheduler
+/// wrapper substitutes one stable room-derived interval for this frame.
+#[cfg(all(windows, target_arch = "x86_64"))]
+unsafe extern "C" fn smooth_compute_frame_time_detour(this: usize, b: u32, c: u32) -> i32 {
+    let original = SMOOTH_TIME_FUNCTION_ORIGINAL.load(Ordering::Acquire);
+    if original == 0 {
+        return 0;
+    }
+    let (legacy, applied) =
+        unsafe { crate::pacing::native::compute_frame_time(original, this, b, c) };
+    crate::timeline::record_with(crate::timeline::Kind::ComputeFrameTime, 0, || {
+        let mut fields = crate::timeline::Fields::pacing_snapshot();
+        fields.this = this;
+        fields.arg_a = b as usize;
+        fields.arg_b = c as usize;
+        fields.legacy_return = legacy;
+        fields.applied_return = applied;
+        fields.interval_micros = applied;
+        fields
+    });
+    applied
+}
+
+/// Redirected only from CGame::Step's verified call of CGame::Sync. It
+/// samples whatever worker completions are visible at that point; it does
+/// not assume Sync waits for a simulation update. Any native clock clamp
+/// stays on the CGame owner thread before Step commits its cached last.
+#[cfg(all(windows, target_arch = "x86_64"))]
+unsafe extern "C" fn smooth_sync_call_detour(this: usize, arg: usize) -> u8 {
+    let original = SMOOTH_CGAME_SYNC_ORIGINAL.load(Ordering::Acquire);
+    if original == 0 {
+        return 0;
+    }
+    let original: unsafe extern "C" fn(usize, usize) -> u8 =
+        unsafe { std::mem::transmute::<usize, _>(original) };
+    let trace_call = crate::timeline::record_with(crate::timeline::Kind::SyncEntryRaw, 0, || {
+        smooth_timeline_fields(this, arg, 0, 0, 0)
+    });
+    let _trace_scope = crate::timeline::SyncCallScope::enter(trace_call);
+    unsafe { crate::pacing::native::before_sync(this) };
+    let succeeded = unsafe { original(this, arg) };
+    crate::timeline::record_with(
+        crate::timeline::Kind::SyncExitRaw,
+        trace_call.unwrap_or(0),
+        || {
+            let mut fields = smooth_timeline_fields(this, arg, 0, 0, 0);
+            fields.result_byte = succeeded;
+            fields
+        },
+    );
+    unsafe { crate::pacing::native::after_sync(this, succeeded != 0) };
+    crate::timeline::record_with(
+        crate::timeline::Kind::SyncExitPolicy,
+        trace_call.unwrap_or(0),
+        || {
+            let mut fields = smooth_timeline_fields(this, arg, 0, 0, 0);
+            fields.result_byte = succeeded;
+            fields
+        },
+    );
+    succeeded
 }
 
 /// The main menu's Multiplayer window asks (crate::menu_entry): its actions
@@ -647,16 +995,25 @@ pub enum Installed {
 
 /// Resolves the profile in the running image, attaches the session and
 /// detours the step. Any failure installs nothing.
-pub fn install(profile: &Profile, link_name: &str, log: crate::Logger) -> Installed {
+pub fn install(
+    profile: &Profile,
+    link_name: &str,
+    log: crate::Logger,
+    data_dir: Option<&Path>,
+) -> Installed {
     *LOG.lock().unwrap_or_else(|p| p.into_inner()) = Some(log);
-    match install_inner(profile, link_name) {
+    match install_inner(profile, link_name, data_dir) {
         Ok(step_rva) => Installed::Yes { step_rva },
         Err(reason) => Installed::No(reason),
     }
 }
 
 #[cfg(all(windows, target_arch = "x86_64"))]
-fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
+fn install_inner(
+    profile: &Profile,
+    link_name: &str,
+    data_dir: Option<&Path>,
+) -> Result<u64, String> {
     use std::time::Duration;
 
     use tpf3mp_hookcore::{pe::PeHeaders, profile};
@@ -802,6 +1159,74 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     .map_err(|error| format!("detouring {STEP_TARGET}: {error}"))?;
     ORIGINAL.store(step, Ordering::Release);
+
+    let timeline_watch =
+        crate::timeline::watch_requested(std::env::var(crate::timeline::ENV).ok().as_deref());
+    if crate::renderprobe::requested() && !timeline_watch {
+        log_line(&format!(
+            "renderer feasibility probe ignored: set {}=watch as well as {}=1",
+            crate::timeline::ENV,
+            crate::renderprobe::ENV
+        ));
+    }
+    let hook_mode =
+        crate::timeline::HookMode::from_options(crate::pacing::requested(), timeline_watch);
+    let batch_two_requested = hook_mode.changes_pacing() && crate::pacing::batch_two_requested();
+    if hook_mode.installs_observers() {
+        // SAFETY: the game is still suspended; the helper refuses every
+        // build/site except the verified 40420 addresses and ABIs. Observe-only
+        // mode leaves the pacing switch off and forwards native results.
+        match unsafe {
+            install_smooth_pacing(
+                base,
+                profile,
+                &resolved,
+                data_dir,
+                hook_mode.changes_pacing(),
+            )
+        } {
+            Ok(()) => {
+                if hook_mode.changes_pacing() {
+                    if let Some(driver) = DRIVER
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .as_mut()
+                    {
+                        if batch_two_requested {
+                            driver.enable_smooth_pacing_batch_two();
+                        } else {
+                            driver.enable_smooth_pacing();
+                        }
+                    }
+                    if batch_two_requested {
+                        log_line(
+                            "opt-in smooth scheduler with two-update batches above 2x installed for the exact Steam 40420 sites",
+                        );
+                    } else {
+                        log_line(
+                            "opt-in smooth scheduler installed for the exact Steam 40420 sites",
+                        );
+                    }
+                } else {
+                    log_line(
+                        "smooth-pacing timeline observers installed; native timing and legacy room batches remain unchanged",
+                    );
+                }
+            }
+            Err(reason) => {
+                crate::pacing::set_installed(false);
+                if hook_mode.changes_pacing() {
+                    log_line(&format!(
+                        "opt-in smooth scheduler unavailable ({reason}); legacy room pacing remains active"
+                    ));
+                } else {
+                    log_line(&format!(
+                        "smooth-pacing timeline observers unavailable ({reason}); legacy room pacing remains active"
+                    ));
+                }
+            }
+        }
+    }
 
     // The build tools through the room, where the profile has what they
     // need; without it they stay refused in the room's game.
@@ -951,6 +1376,145 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     Ok(step_rva)
 }
 
+/// Installs the opt-in native cadence only when the exact profile/build and
+/// all three measured scheduler sites agree. The call redirect is held until
+/// the entry detour succeeds, so a partial install restores the original call.
+#[cfg(all(windows, target_arch = "x86_64"))]
+unsafe fn install_smooth_pacing(
+    base: usize,
+    profile: &Profile,
+    resolved: &tpf3mp_hookcore::profile::ResolvedProfile,
+    data_dir: Option<&Path>,
+    enable_pacing: bool,
+) -> Result<(), String> {
+    if profile.build.sha256 != SMOOTH_BUILD_SHA256 {
+        return Err(format!(
+            "profile build {} is not the exact 40420 build",
+            profile.build.sha256
+        ));
+    }
+    let address = |name: &str| -> Result<u64, String> {
+        resolved
+            .get(name)
+            .map(|target| target.address)
+            .ok_or_else(|| format!("the profile did not resolve {name}"))
+    };
+    let step_rva = address(SMOOTH_CGAME_STEP_TARGET)?;
+    let sync_rva = address(SMOOTH_CGAME_SYNC_TARGET)?;
+    let step_sync_call_rva = address(SMOOTH_STEP_SYNC_CALL_TARGET)?;
+    let call_rva = address(SMOOTH_SYNC_TIME_CALL_TARGET)?;
+    let function_rva = address(SMOOTH_TIME_FUNCTION_TARGET)?;
+    for (name, actual, expected) in [
+        (SMOOTH_CGAME_STEP_TARGET, step_rva, SMOOTH_CGAME_STEP_RVA),
+        (SMOOTH_CGAME_SYNC_TARGET, sync_rva, SMOOTH_CGAME_SYNC_RVA),
+        (
+            SMOOTH_STEP_SYNC_CALL_TARGET,
+            step_sync_call_rva,
+            SMOOTH_STEP_SYNC_CALL_RVA,
+        ),
+        (SMOOTH_SYNC_TIME_CALL_TARGET, call_rva, SMOOTH_TIME_CALL_RVA),
+        (
+            SMOOTH_TIME_FUNCTION_TARGET,
+            function_rva,
+            SMOOTH_TIME_FUNCTION_RVA,
+        ),
+    ] {
+        if actual != expected {
+            return Err(format!(
+                "{name} resolved to {actual:#x}, expected verified 40420 address {expected:#x}"
+            ));
+        }
+    }
+    let function = base + function_rva as usize;
+    let sync = base + sync_rva as usize;
+    // SAFETY: the verified CGame::Step callsite resolves to CGame::Sync;
+    // CallRedirect checks both the E8 opcode and its current target.
+    let sync_redirect = unsafe {
+        tpf3mp_hookcore::detour::CallRedirect::install(
+            (base + step_sync_call_rva as usize) as *mut u8,
+            sync,
+            smooth_sync_call_detour as *const u8,
+        )
+    }
+    .map_err(|error| format!("redirecting CGame::Step's verified Sync call: {error:?}"))?;
+    // SAFETY: the code is not running yet; CallRedirect also checks the E8
+    // instruction and that it currently targets this exact function.
+    let redirect = unsafe {
+        tpf3mp_hookcore::detour::CallRedirect::install(
+            (base + call_rva as usize) as *mut u8,
+            function,
+            smooth_compute_frame_time_detour as *const u8,
+        )
+    }
+    .map_err(|error| format!("redirecting the verified Sync timing call: {error:?}"))?;
+    // SAFETY: exact target RVA and profile prologue were resolved; no game
+    // thread has run this entry since installation begins during startup.
+    let trampoline = unsafe {
+        detour_forever(
+            (base + step_rva as usize) as *mut u8,
+            smooth_cgame_step_detour as *const u8,
+        )
+    }
+    .map_err(|error| format!("detouring the verified CGame::Step: {error}"))?;
+    SMOOTH_CGAME_STEP_ORIGINAL.store(trampoline, Ordering::Release);
+    SMOOTH_CGAME_SYNC_ORIGINAL.store(sync, Ordering::Release);
+    SMOOTH_TIME_FUNCTION_ORIGINAL.store(function, Ordering::Release);
+    std::mem::forget(redirect);
+    std::mem::forget(sync_redirect);
+    crate::pacing::set_trace_enabled(matches!(
+        std::env::var("TPF3MP_SMOOTH_PACING_TRACE").as_deref(),
+        Ok("1" | "true" | "yes" | "on")
+    ));
+    crate::pacing::set_installed(enable_pacing);
+    let timeline_requested =
+        crate::timeline::watch_requested(std::env::var(crate::timeline::ENV).ok().as_deref());
+    let mut timeline_available = false;
+    if timeline_requested {
+        match data_dir {
+            Some(dir) => match crate::timeline::arm(dir) {
+                Ok(true) => {
+                    timeline_available = true;
+                    log_line("smooth pacing timeline watcher armed by explicit opt-in");
+                }
+                Ok(false) => timeline_available = true,
+                Err(reason) => log_line(&format!(
+                    "smooth pacing timeline watcher unavailable: {reason}"
+                )),
+            },
+            None => log_line(
+                "smooth pacing timeline watcher unavailable: the hook data directory is not set",
+            ),
+        }
+    }
+    if crate::renderprobe::requested() {
+        if !timeline_requested || !timeline_available {
+            log_line(&format!(
+                "renderer feasibility probe unavailable: set {}=watch and ensure the hook data directory is available",
+                crate::timeline::ENV
+            ));
+        } else {
+            // SAFETY: the game remains suspended during install; the probe
+            // independently checks exact-build RVAs, signatures, and call
+            // targets, and holds every patch until all hooks are ready.
+            match unsafe { crate::renderprobe::install(base, profile, resolved) } {
+                Ok(()) if crate::renderprobe::road_offset_enabled() => log_line(
+                    "road-offset renderer experiment enabled; it applies only during eligible five-second captures",
+                ),
+                Ok(()) if crate::renderprobe::road_history_enabled() => log_line(
+                    "road-pose history experiment enabled; renderer transforms change only during eligible explicitly armed five-second captures",
+                ),
+                Ok(()) => log_line(
+                    "observe-only renderer probe installed; captures remain fixed at five seconds",
+                ),
+                Err(reason) => log_line(&format!(
+                    "observe-only renderer probe unavailable: {reason}; native renderer behavior is unchanged"
+                )),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Lua 5.2's C API, from the addresses `at` gives for the profile's names.
 ///
 /// # Safety
@@ -998,7 +1562,11 @@ unsafe fn lua_api(at: &dyn Fn(&str) -> Result<usize, String>) -> Result<lua::Lua
 }
 
 #[cfg(not(all(windows, target_arch = "x86_64")))]
-fn install_inner(_profile: &Profile, _link_name: &str) -> Result<u64, String> {
+fn install_inner(
+    _profile: &Profile,
+    _link_name: &str,
+    _data_dir: Option<&Path>,
+) -> Result<u64, String> {
     Err("the step gate is installed on Windows x64 only so far".into())
 }
 
