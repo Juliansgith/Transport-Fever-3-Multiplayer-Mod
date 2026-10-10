@@ -133,6 +133,9 @@ function Find-Game {
             }
         }
         foreach ($library in $libraries) {
+            # A library on a drive that is gone (an unplugged disk) cannot
+            # be running the game, and Join-Path throws on a missing drive.
+            if (-not (Test-Path -LiteralPath $library -PathType Container)) { continue }
             $manifest = Join-Path $library "steamapps\appmanifest_$SteamApp.acf"
             if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { continue }
             foreach ($line in Get-Content -LiteralPath $manifest) {
