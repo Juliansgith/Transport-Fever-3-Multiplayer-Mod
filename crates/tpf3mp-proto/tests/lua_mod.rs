@@ -4786,9 +4786,9 @@ fn a_station_the_room_builds_names_its_group_as_the_tool_named_it() {
 /// configures the station's own entrance node -1, the new junction -2 its
 /// entrance joins, and the street's existing ends 8 and 9, each added and
 /// removed. Every game leaves out the entrance, which the station makes
-/// again itself, and with it the settings that name it: those at -1, and
-/// those at -2, whose turns lead into it. The settings at 8 and 9 name only
-/// the rebuilt street, and travel as the tool made them.
+/// again itself, and the originator the settings that name it: those at
+/// -1, and those at -2, whose turns lead into it. The settings at 8 and 9
+/// name only the rebuilt street, and travel as the tool made them.
 #[test]
 fn a_station_by_a_road_leaves_its_own_entrances_junction_settings_to_it() {
     let (lua, _script) = engine();
@@ -4814,7 +4814,7 @@ fn a_station_by_a_road_leaves_its_own_entrances_junction_settings_to_it() {
          local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
          ACTION = assert(capture.construction(PROPOSAL)) \
          assert(schema_check(ACTION)) \
-         assert(#ACTION.BuildConstruction.connection.junctions == 4, 'the four the tool proposed')"
+         assert(#ACTION.BuildConstruction.connection.junctions == 2, 'the two at the street ends; the entrance and its junction stay with the station')"
     ))
     .exec()
     .unwrap_or_else(|error| panic!("{error}"));
@@ -4851,8 +4851,8 @@ fn a_station_by_a_road_leaves_its_own_entrances_junction_settings_to_it() {
     );
     assert_eq!(removed, "8,9", "the settings they replace go");
     assert!(
-        hook_log(&lua).contains("left to the construction: 2 junction(s): Street(50.0,0.0)"),
-        "{}",
+        !hook_log(&lua).contains("left to the construction"),
+        "the originator left them out already: {}",
         hook_log(&lua)
     );
 }
@@ -4998,8 +4998,8 @@ fn a_rail_station_leaves_its_own_tracks_junction_settings_to_it() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(
-        carried, "3|Track(300,0)",
-        "the snapped track and its setting; nothing of the platform track the station builds"
+        carried, "3",
+        "the snapped track; no setting on the station's own track, which every game leaves to it"
     );
 }
 
@@ -5109,6 +5109,31 @@ fn a_construction_refused_on_a_track_end_is_joined_to_it_as_the_tool_joined_it()
         "{}",
         hook_log(&lua)
     );
+}
+
+/// A large station joined to a track end, whose tool configured the
+/// switches of its own tracks (2026-10-10, live: 144 settings, "the hook
+/// refused the action: ... at most 64 items"). Every game leaves those to
+/// the station (apply.ownJunctions), so the originator leaves them out too,
+/// and the station travels.
+#[test]
+fn a_large_station_joined_to_a_track_end_leaves_its_switch_settings_out() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_ON_TRACK_END).exec().unwrap();
+    let (ok, carried, links): (bool, usize, usize) = lua
+        .load(format!(
+            "PROPOSAL = {}              local s = PROPOSAL.proposal              s.nodeConfigsToAdd = {{}}              for i = 1, 70 do                  local node = -100 - i                  s.addedNodes[#s.addedNodes + 1] = {{ entity = node, comp = {{ position = {{ x = 300 + i, y = 10, z = 0 }} }} }}                  s.addedSegments[#s.addedSegments + 1] = {{ entity = -300 - i, type = 1, comp = {{ node0 = -2, node1 = node,                      type = 0, typeIndex = -1, tangent0 = {{ x = 1, y = 10, z = 0 }}, tangent1 = {{ x = 1, y = 10, z = 0 }},                      roadTemplate = '::/track/standard.track_template', roadStyle = '' }} }}                  s.nodeConfigsToAdd[i] = {{ entity = node, comp = {{ trafficLightPreference = 0, doubleSlipSwitch = false,                      userModifiedTrafficLightStates = false, laneConnections = {{}}, crosswalks = {{}},                      trafficLightConfig = {{ trafficLightType = -1, states = {{}} }} }} }}              end              local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')              local action, why = capture.construction(PROPOSAL)              if not action then error(why) end              local c = action.BuildConstruction.connection              return schema_check(action), #c.junctions, #c.links",
+            station_on_track_end()
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        links, 73,
+        "the station's own track, joined to the track end, as the tool made it"
+    );
+    assert_eq!(carried, 0, "no setting of the station's own switches");
+    assert!(ok, "the schema takes it");
 }
 
 /// As above, with the track piece's far end, node 21, joined on to track

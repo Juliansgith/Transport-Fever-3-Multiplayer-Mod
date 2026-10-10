@@ -742,6 +742,35 @@ function apply.ownStreets(polyline)
 	return links, skipped
 end
 
+-- The tool's settings at the construction's own streets' and tracks'
+-- nodes, or naming their edges (the entrance at the junction it joins), go
+-- with them (apply.ownStreets): they name what the build does not make
+-- (2026-10-02: a street station refused in every game, "the junction no
+-- longer exists"). The construction and its refresh give those junctions
+-- the game's own, alike in every game. Returns the settings that travel
+-- and those left to the construction. The originator's capture leaves them
+-- out already (capture.connection): a large station's own switches came to
+-- 144 settings, over the 64 an action holds (2026-10-10).
+function apply.ownJunctions(polyline)
+	local links, skipped = apply.ownStreets(polyline)
+	local keep, ownEdges, ownNodes = {}, {}, {}
+	for _, link in ipairs(links) do keep[link] = true end
+	local function place(i)
+		local p = arr(polyline.vertices[i + 1].pos)
+		return { x = p[1], y = p[2], z = p[3] }
+	end
+	for _, link in ipairs(polyline.links) do
+		if not keep[link] then
+			local net = link.kind and link.kind.network
+			ownEdges[#ownEdges + 1] = { network = net, ends = { a = place(link.from), b = place(link.to) } }
+			for _, i in ipairs({ link.from, link.to }) do
+				if skipped[i + 1] then ownNodes[#ownNodes + 1] = { network = net, at = place(i) } end
+			end
+		end
+	end
+	return junctions.without(polyline.junctions, ownNodes, ownEdges)
+end
+
 -- A construction whose own tracks the tool joined onto the ends of tracks
 -- that exist (2026-10-10: an underpass mod's eight tracks onto eight track
 -- ends beside a station, refused in every game though its tool built it,
@@ -934,29 +963,8 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	local settings = polyline.junctions
 	if dangling then
 		links, skipped = apply.ownStreets(polyline)
-		-- The tool's settings at the construction's own street's nodes, or
-		-- naming its own edges (the entrance at the junction it joins), go
-		-- with that street: they name what this build does not make
-		-- (2026-10-02: a street station refused in every game, "the
-		-- junction no longer exists"). The construction and its refresh
-		-- give those junctions the game's own, alike in every game.
-		local keep, ownEdges, ownNodes = {}, {}, {}
-		for _, link in ipairs(links) do keep[link] = true end
-		local function place(i)
-			local p = arr(polyline.vertices[i + 1].pos)
-			return { x = p[1], y = p[2], z = p[3] }
-		end
-		for _, link in ipairs(polyline.links) do
-			if not keep[link] then
-				local net = link.kind and link.kind.network
-				ownEdges[#ownEdges + 1] = { network = net, ends = { a = place(link.from), b = place(link.to) } }
-				for _, i in ipairs({ link.from, link.to }) do
-					if skipped[i + 1] then ownNodes[#ownNodes + 1] = { network = net, at = place(i) } end
-				end
-			end
-		end
 		local left
-		settings, left = junctions.without(settings, ownNodes, ownEdges)
+		settings, left = apply.ownJunctions(polyline)
 		if #left > 0 then
 			local ok, text = pcall(junctions.summary, { EditJunctions = { changes = left } })
 			log("left to the construction: " .. (ok and text or (#left .. " junction(s)")))

@@ -819,6 +819,10 @@ function capture.connection(proposal, con)
 	local action, why = module("roads").capture(part, engine.world())
 	if not action then return nil, why end
 	local build = action.BuildRoad or action.BuildTrack
+	-- The settings every game leaves to the construction (apply.ownJunctions)
+	-- stay here: a large station's own switches are more than an action holds.
+	local kept = module("apply").ownJunctions(build.polyline)
+	build.polyline.junctions = kept
 	return build.polyline
 end
 

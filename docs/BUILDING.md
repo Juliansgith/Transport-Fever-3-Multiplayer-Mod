@@ -329,9 +329,15 @@ because the tool had configured the switches of its other platform
 tracks, whose nodes no game's build has). A configuration whose node is
 one of those left-out nodes, or whose turns or crosswalks name one of
 those edges, does not travel. The station builds those tracks and their
-switches itself. It also carries fewer configurations: counted with its
-own switches, a large station's preview had 99, over the 64 an action
-holds.
+switches itself.
+
+The configurations on the construction's own tracks that are joined to
+something existing, which every game leaves to the construction as above
+(`apply.ownJunctions`), the originator leaves out as well
+(`capture.connection`): a large rail station joined to track ends came
+to 144 configurations, mostly its own switches, over the 64 an action
+holds, and the hook refused the build ("at most 64 items", 2026-10-10).
+What every game builds is the same either way.
 
 `lua_mod.rs` reproduces the recorded depot topology: before the fix its
 first build contains four duplicate nodes and edges; afterwards it contains
