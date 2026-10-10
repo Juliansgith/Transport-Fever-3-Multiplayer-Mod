@@ -5009,10 +5009,13 @@ fn a_rail_station_leaves_its_own_tracks_junction_settings_to_it() {
 /// the station alone is refused while node 20 stands where its track ends;
 /// built, it makes its own track end, node 30, there.
 const STATION_ON_TRACK_END: &str = "\
+    function TRACK_LANE(electric) \
+        local m = {} for i = 0, 15 do m[i] = false end m[4] = electric \
+        return { speed = 33, width = 4, height = 0, offset = 0, forward = true, transportModes = m } end \
     NODES[20], NODES[21] = { x = 400, y = 0, z = 0 }, { x = 450, y = 0, z = 0 } \
     EDGES[200] = { node0 = 21, node1 = 20, type = 0, tangent0 = { x = -50, y = 0, z = 0 }, \
-        tangent1 = { x = -50, y = 0, z = 0 }, objects = {}, \
-        roadTemplate = '::/track/standard.track_template', laneConfigs = { 'track lanes' } } \
+        tangent1 = { x = -50, y = 0, z = 0 }, objects = {}, edgeDecorations = {}, \
+        roadTemplate = '::/track/standard.track_template', laneConfigs = { TRACK_LANE(true) } } \
     TRACKS = { [20] = { 200 }, [21] = { 200 } } \
     local streets = api.engine.system.streetSystem \
     streets.getNode2TrackEdgeMap = function() local m = {} for n, e in pairs(TRACKS) do m[n] = e end return m end \
@@ -5021,17 +5024,19 @@ const STATION_ON_TRACK_END: &str = "\
     api.res.streetTemplateRep.find = function(n) \
         if n == '::/track/standard.track_template' then return 6 end return find(n) end \
     api.res.streetTemplateRep.get = function(id) \
-        if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '' } end return get(id) end";
+        if id == 6 then return { laneConfigs = { TRACK_LANE(false) }, streetStyle = '' } end return get(id) end";
 
 /// The game for STATION_ON_TRACK_END, once STATION_REFRESH is loaded: its
 /// verdict, and what a build does to the tracks.
 const TRACK_END_GAME: &str = "\
-    api.engine.util.proposal.makeProposalData = function(p) \
+    api.engine.util.proposal.makeProposalData = function(p, context) \
         local s = p.streetProposal or {} \
         local away = false \
         for _, n in ipairs(s.nodesToRemove or {}) do if n == 20 then away = true end end \
         if #(p.constructionsToAdd or {}) > 0 and NODES[20] and not away then \
             return { errorState = { critical = true, messages = { 'Construction Not Possible' } } } end \
+        if POOR and context ~= nil and #(p.constructionsToAdd or {}) == 0 then \
+            return { errorState = { critical = true, messages = { 'Not enough money' } } } end \
         return { errorState = { critical = false, messages = {} } } end \
     local send = api.cmd.sendCommand \
     api.cmd.sendCommand = function(cmd, ...) \
@@ -5101,6 +5106,14 @@ fn a_construction_refused_on_a_track_end_is_joined_to_it_as_the_tool_joined_it()
         again, "0|1|-2|30|1|-2|450",
         "the piece again, from a new node where its far end was onto the station's own track end"
     );
+    let electric: bool = lua
+        .load("return SENT[2].proposal.streetProposal.edgesToAdd[1].comp.laneConfigs[1].transportModes[5] == true")
+        .eval()
+        .unwrap();
+    assert!(
+        electric,
+        "its lanes as they were, not its template's: still electrified"
+    );
     assert!(
         hook_log(&lua).contains(
             "joining ::/stations/rail/rail_station.con onto track ends 20: \
@@ -5144,7 +5157,7 @@ fn a_construction_refused_on_a_track_end_lays_the_piece_again_from_its_far_end()
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(STATION_ON_TRACK_END).exec().unwrap();
     lua.load(
-        "NODES[22] = { x = 500, y = 0, z = 0 }          EDGES[199] = { node0 = 22, node1 = 21, type = 0, tangent0 = { x = -50, y = 0, z = 0 },              tangent1 = { x = -50, y = 0, z = 0 }, objects = {},              roadTemplate = '::/track/standard.track_template', laneConfigs = { 'track lanes' } }          TRACKS[21], TRACKS[22] = { 199, 200 }, { 199 }",
+        "NODES[22] = { x = 500, y = 0, z = 0 }          EDGES[199] = { node0 = 22, node1 = 21, type = 0, tangent0 = { x = -50, y = 0, z = 0 },              tangent1 = { x = -50, y = 0, z = 0 }, objects = {}, edgeDecorations = {},              roadTemplate = '::/track/standard.track_template', laneConfigs = { TRACK_LANE(false) } }          TRACKS[21], TRACKS[22] = { 199, 200 }, { 199 }",
     )
     .exec()
     .unwrap();
@@ -5171,6 +5184,124 @@ fn a_construction_refused_on_a_track_end_lays_the_piece_again_from_its_far_end()
     assert_eq!(
         again, "0|21|30",
         "the piece again, from its far end onto the station's track end"
+    );
+}
+
+/// As above, where the game refuses laying the piece again as the
+/// player's build (not enough money left after the station): it is laid
+/// again for free, as the game's refresh of a construction is, and logged.
+#[test]
+fn a_construction_refused_on_a_track_end_lays_the_piece_again_for_free_when_money_runs_out() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_ON_TRACK_END).exec().unwrap();
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = assert(capture.construction({}))",
+        station_on_track_end()
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load("POOR = true HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (ok, free): (bool, String) = lua
+        .load(
+            "local b = SENT[2] \
+             return HOOK.applied[1].ok == true, tostring(b and b.context) .. '|' \
+                 .. tostring(b and #b.proposal.streetProposal.edgesToAdd)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "{}", hook_log(&lua));
+    assert_eq!(free, "nil|1", "the piece again, with no player to pay");
+    assert!(
+        hook_log(&lua)
+            .contains("laid again for free: the game refuses the build: Not enough money"),
+        "{}",
+        hook_log(&lua)
+    );
+}
+
+/// As above, with another track's node 25 ten metres right above where
+/// the piece ended: the piece is laid again onto the station's own track
+/// end the replay found, by its entity, not onto the node above it.
+#[test]
+fn a_construction_refused_on_a_track_end_joins_the_piece_at_its_own_level() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_ON_TRACK_END).exec().unwrap();
+    lua.load("NODES[25] = { x = 400, y = 0, z = 10 } TRACKS[25] = { 250 }")
+        .exec()
+        .unwrap();
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = assert(capture.construction({}))",
+        station_on_track_end()
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (ok, onto): (bool, String) = lua
+        .load(
+            "local e = SENT[2] and SENT[2].proposal.streetProposal.edgesToAdd[1] \
+             return HOOK.applied[1].ok == true, tostring(e and e.comp.node1)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "{}", hook_log(&lua));
+    assert_eq!(
+        onto, "30",
+        "the station's own track end, not the node above"
+    );
+}
+
+/// As above, with the piece's far end, node 21, a junction of track 199
+/// whose traffic light the player set: the build stays refused, nothing is
+/// taken away, and the setting stays.
+#[test]
+fn a_construction_refused_on_a_track_end_keeps_a_junction_set_by_hand() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_ON_TRACK_END).exec().unwrap();
+    lua.load(
+        "NODES[22] = { x = 500, y = 0, z = 0 } \
+         EDGES[199] = { node0 = 22, node1 = 21, type = 0, tangent0 = { x = -50, y = 0, z = 0 }, \
+             tangent1 = { x = -50, y = 0, z = 0 }, objects = {}, edgeDecorations = {}, \
+             roadTemplate = '::/track/standard.track_template', laneConfigs = { TRACK_LANE(false) } } \
+         TRACKS[21], TRACKS[22] = { 199, 200 }, { 199 } \
+         local c = api.type.BaseNodeConfig.new() c.trafficLightPreference = 1 CONFIGS[21] = c",
+    )
+    .exec()
+    .unwrap();
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = assert(capture.construction({}))",
+        station_on_track_end()
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (ok, sent): (bool, usize) = lua
+        .load("return HOOK.applied[1].ok == true, #SENT")
+        .eval()
+        .unwrap();
+    assert!(!ok, "{}", hook_log(&lua));
+    assert_eq!(sent, 0, "nothing built, nothing taken away");
+    assert!(
+        hook_log(&lua).contains("(a junction set by hand where it joins)"),
+        "{}",
+        hook_log(&lua)
     );
 }
 

@@ -782,13 +782,20 @@ end
 -- track nodes, every game takes the track pieces at those nodes away and
 -- builds the construction in one proposal, then lays the pieces again at
 -- once, each ending on the construction's own track end where its old end
--- was: joined, as the tool joined them. A piece keeps its form, kind and
--- owner. A piece with a stop or signal on it, another company's, or a
--- junction set by hand at its far end, and the build is refused as the game
--- refused it. A junction's settings at a far end are left to the game, as
--- for the construction's own. Where the construction has no track end at
--- such a place, the piece comes back to a node of its own there, unjoined,
--- and hook.log says so. Returns what the build's command answered.
+-- was: joined, as the tool joined them. A piece keeps its form, kind,
+-- lanes, decorations and owner, all read before anything changes (the
+-- game's component of a removed edge is not to be read afterwards). A
+-- piece with a stop or signal on it, a bridge or tunnel, another company's
+-- piece, or a junction at its far end set by hand (its turns, its lights or
+-- a double slip), and the build is refused as the game refused it; the
+-- settings at a far end are the game's own otherwise, and go with the
+-- pieces. Where the construction has no track end at such a place, the
+-- piece comes back to a node of its own there, unjoined. The pieces are
+-- laid again as the player's build, and where the game refuses that (not
+-- enough money left after the construction) for free, as the game's
+-- refresh of a construction is; what still fails is logged with the
+-- places, the same in every game, and the construction stands. Returns
+-- what the build's command answered.
 function rejoinConstruction(build, entity, context, refused)
 	local polyline = build.connection
 	local kept = apply.ownStreets(polyline)
@@ -797,6 +804,7 @@ function rejoinConstruction(build, entity, context, refused)
 	end
 	local C = api.type.ComponentType
 	local streets = api.engine.system.streetSystem
+	local engine = module("engine")
 	local function count(ids) return ids and #ids or 0 end
 	-- The existing track nodes the connection joins, in its order.
 	local before = readNodes("Track")
@@ -815,7 +823,7 @@ function rejoinConstruction(build, entity, context, refused)
 		end
 	end
 	if #anchors == 0 then error(refused, 0) end
-	-- The pieces at those nodes, by id, each with its owner.
+	-- The pieces at those nodes, by id, each read whole now.
 	local pieces, taken = {}, {}
 	for _, node in ipairs(anchors) do
 		local ids = streets.getNodeTrackSegments(node)
@@ -830,17 +838,17 @@ function rejoinConstruction(build, entity, context, refused)
 	table.sort(pieces, function(a, b) return a.id < b.id end)
 	for _, p in ipairs(pieces) do
 		mine(p.id, "track")
-		p.comp = api.engine.getComponent(p.id, C.BASE_EDGE)
-		if p.comp == nil then error("no edge component on " .. tostring(p.id), 0) end
-		if #(p.comp.objects or {}) > 0 then error(refused .. " (a stop or signal on a track it joins)", 0) end
-		if p.comp.type ~= enum("BaseEdgeType").NORMAL then error(refused .. " (a bridge or tunnel it joins)", 0) end
+		local c = api.engine.getComponent(p.id, C.BASE_EDGE)
+		if c == nil then error("no edge component on " .. tostring(p.id), 0) end
+		if #(c.objects or {}) > 0 then error(refused .. " (a stop or signal on a track it joins)", 0) end
+		if c.type ~= enum("BaseEdgeType").NORMAL then error(refused .. " (a bridge or tunnel it joins)", 0) end
 		p.owner = require_companies().ownerOf(api, p.id)
-		-- What the piece is, read now as plain values: the game's component
-		-- may not outlive its edge.
-		p.n0, p.n1 = p.comp.node0, p.comp.node1
-		p.t0, p.t1 = arr(p.comp.tangent0), arr(p.comp.tangent1)
-		p.template, p.style = p.comp.roadTemplate, p.comp.roadStyle
-		p.locked = p.comp.roadDevelopmentLocked == true
+		p.n0, p.n1 = c.node0, c.node1
+		p.t0, p.t1 = arr(c.tangent0), arr(c.tangent1)
+		p.template, p.style = c.roadTemplate, c.roadStyle
+		p.locked = c.roadDevelopmentLocked == true
+		p.lanes = engine.lanesOf(c)
+		p.decorations = engine.decorationsOf(c)
 		for k, node in ipairs({ p.n0, p.n1 }) do
 			local n = api.engine.getComponent(node, C.BASE_NODE)
 			if n == nil then error("no node component on " .. tostring(node), 0) end
@@ -848,13 +856,15 @@ function rejoinConstruction(build, entity, context, refused)
 		end
 	end
 	-- The nodes that go: those, and a far end left with no edge; the
-	-- settings at a far end that stays go too, as they name the pieces.
+	-- settings at a far end that stays go too, as they name the pieces,
+	-- unless the player set them.
 	local gone, goneList = {}, {}
 	for _, node in ipairs(anchors) do
 		gone[node] = true
 		goneList[#goneList + 1] = node
 	end
-	local orphanAt, configs, seen = {}, {}, {}
+	local auto = enum("TrafficLightPreference").AUTO
+	local orphan, configs, seen = {}, {}, {}
 	for _, p in ipairs(pieces) do
 		for _, node in ipairs({ p.n0, p.n1 }) do
 			if not gone[node] and not seen[node] then
@@ -862,15 +872,20 @@ function rejoinConstruction(build, entity, context, refused)
 				local ids, left = streets.getNodeTrackSegments(node), count(streets.getNodeStreetSegments(node))
 				for i = 1, count(ids) do if not taken[ids[i]] then left = left + 1 end end
 				if left == 0 then
-					orphanAt[node] = true
+					orphan[node] = true
 					gone[node] = true
 					goneList[#goneList + 1] = node
 				else
 					local c = api.engine.getComponent(node, C.BASE_NODE_CONFIG)
 					if c ~= nil then
-						local byHand
-						pcall(function() byHand = c.userModifiedLaneConnections end)
-						if byHand == true then error(refused .. " (a junction set by hand where it joins)", 0) end
+						local set = {}
+						pcall(function()
+							set = { c.userModifiedLaneConnections == true, c.userModifiedTrafficLightStates == true,
+								c.doubleSlipSwitch == true, c.trafficLightPreference ~= auto }
+						end)
+						for _, by in ipairs(set) do
+							if by then error(refused .. " (a junction set by hand where it joins)", 0) end
+						end
 						configs[#configs + 1] = node
 					end
 				end
@@ -892,59 +907,61 @@ function rejoinConstruction(build, entity, context, refused)
 		.. ": its track pieces " .. table.concat(removed, ",") .. " laid again on it")
 	local built = run(api.cmd.makeWorldBuildProposalCmd(first, context, true, true))
 
-	-- The pieces again, as a track build lays them: each between the same
-	-- places, its tangents, template and owner as before. An end that was
-	-- one of those nodes ends on the construction's own new track node
-	-- there (the one track node within a few centimetres that did not exist
-	-- before); a far end that went comes back as a node of its own.
-	local existed = {}
-	for _, n in ipairs(before) do existed[n.id] = true end
-	local after = readNodes("Track")
-	local vertices, index, unjoined = {}, {}, {}
-	local function vertex(old, at)
-		if index[old] then return index[old] end
-		local resolve = { Node = "Track" }
-		if anchorAt[old] then
-			local found = 0
-			for _, n in ipairs(after) do
-				if not existed[n.id] and math.abs(n.pos[1] - at[1]) <= 0.05 and math.abs(n.pos[2] - at[2]) <= 0.05
-					and math.abs(n.pos[3] - at[3]) <= 0.5 then
-					found = found + 1
-				end
-			end
-			if found > 1 then error("two track ends of the new construction where track " .. old .. " ended", 0) end
-			if found == 0 then
-				unjoined[#unjoined + 1] = tostring(old)
-				resolve = "New"
-			end
-		elseif orphanAt[old] then
-			resolve = "New"
-		end
-		vertices[#vertices + 1] = { pos = { x = at[1], y = at[2], z = at[3] }, resolve = resolve }
-		index[old] = #vertices - 1
-		return index[old]
-	end
-	local links = {}
-	for _, p in ipairs(pieces) do
-		local function t(a) return { x = a[1], y = a[2], z = a[3] } end
-		links[#links + 1] = { from = vertex(p.n0, p.at0), to = vertex(p.n1, p.at1),
-			tangent0 = t(p.t0), tangent1 = t(p.t1), structure = "Ground", decorations = {},
-			locked = p.locked, owned = p.owner ~= nil, lanes = {},
-			kind = { network = "Track", template = p.template, style = p.style } }
-	end
-	if #unjoined > 0 then
-		log("the new " .. tostring(build.file) .. " has no track end where track " .. table.concat(unjoined, ",")
-			.. " ended: laid again there unjoined")
-	end
-	-- The construction stands, in every game alike, whatever comes of this;
-	-- what does not is logged, with the places it was to join.
+	-- The pieces again, as a track build lays them. An end that was one of
+	-- those nodes ends on the construction's own new track node there, by
+	-- its entity: the one track node within a few centimetres, height
+	-- included, that did not exist before. A far end that stays is itself;
+	-- one that went comes back as a node of its own. The construction
+	-- stands, in every game alike, whatever comes of this.
+	local vertices = {}
 	local laid, why = pcall(function()
+		local existed = {}
+		for _, n in ipairs(before) do existed[n.id] = true end
+		local after = readNodes("Track")
+		local index, unjoined = {}, {}
+		local function vertex(old, at)
+			if index[old] then return index[old] end
+			local resolve = "New"
+			if anchorAt[old] then
+				local found
+				for _, n in ipairs(after) do
+					if not existed[n.id] and math.abs(n.pos[1] - at[1]) <= 0.05 and math.abs(n.pos[2] - at[2]) <= 0.05
+						and math.abs(n.pos[3] - at[3]) <= 0.5 then
+						if found then error("two track ends of the new construction where track " .. old .. " ended", 0) end
+						found = n.id
+					end
+				end
+				if found then resolve = { Entity = found } else unjoined[#unjoined + 1] = tostring(old) end
+			elseif not orphan[old] then
+				resolve = { Entity = old }
+			end
+			vertices[#vertices + 1] = { pos = { x = at[1], y = at[2], z = at[3] }, resolve = resolve }
+			index[old] = #vertices - 1
+			return index[old]
+		end
+		local links = {}
+		for _, p in ipairs(pieces) do
+			local function t(a) return { x = a[1], y = a[2], z = a[3] } end
+			links[#links + 1] = { from = vertex(p.n0, p.at0), to = vertex(p.n1, p.at1),
+				tangent0 = t(p.t0), tangent1 = t(p.t1), structure = "Ground", decorations = p.decorations,
+				locked = p.locked, owned = p.owner ~= nil, lanes = p.lanes,
+				kind = { network = "Track", template = p.template, style = p.style } }
+		end
+		if #unjoined > 0 then
+			log("the new " .. tostring(build.file) .. " has no track end where track " .. table.concat(unjoined, ",")
+				.. " ended: laid again there unjoined")
+		end
 		local second = api.type.SimpleProposal.new()
 		networkInto(second, "Track", nil, nil, { vertices = vertices, links = links, removals = {},
 			removed_nodes = {}, junctions = {} })
 		local refused2 = refusal(second, context)
-		if refused2 then error(refused2, 0) end
-		run(api.cmd.makeWorldBuildProposalCmd(second, context, true, false))
+		if refused2 then
+			if refusal(second, nil) then error(refused2, 0) end
+			log("the track pieces at the new " .. tostring(build.file) .. " laid again for free: " .. refused2)
+			run(api.cmd.makeWorldBuildProposalCmd(second, nil, true, false))
+		else
+			run(api.cmd.makeWorldBuildProposalCmd(second, context, true, false))
+		end
 	end)
 	if not laid then
 		local places = {}
@@ -1047,6 +1064,10 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 			-- Left out, with its link.
 		elseif r == "New" then
 			ids[i] = addNode(p)
+		elseif type(r) == "table" and r.Entity then
+			-- A node by its entity: this game's own replay found it
+			-- (rejoinConstruction); never in an action.
+			ids[i] = r.Entity
 		elseif type(r) == "table" and r.Node then
 			local n = nearest(nodes(r.Node), p, NODE_TOLERANCE)
 			if n == nil then error("no " .. r.Node .. " node at vertex " .. i) end

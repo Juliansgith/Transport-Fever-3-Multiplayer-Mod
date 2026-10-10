@@ -373,19 +373,28 @@ joins it as the tool did (`rejoinConstruction` in `apply.lua`):
    pieces leave with no edge, and the junction settings at the far ends
    that stay, and builds the construction, in one proposal;
 2. it lays the pieces again at once, through the track build's own path:
-   each between the same places with its tangents, template and owner,
-   now ending on the construction's own new track node where its old end
-   was; a far end that went comes back as a node of its own;
+   each between the same places with its tangents, template, lanes (an
+   electrified piece stays electrified), decorations, lock and owner, now
+   ending on the construction's own new track node where its old end was,
+   named by its entity (the one track node within a few centimetres,
+   height included, that did not exist before), not looked up again by
+   position, which would take a node of a track right above it; a far
+   end that went comes back as a node of its own. They are laid as the
+   player's build, and where the game refuses that (not enough money left
+   after the construction) for free, as the game's refresh of a
+   construction is;
 3. the construction is refreshed as before.
 
 A piece with a stop or signal on it, a bridge or tunnel, another
-company's piece (D21), or a junction set by hand at a far end, and the
-build stays refused with the game's own reason. Where the construction
-has no track end at such a place, the piece comes back unjoined and
-hook.log says so. Once step 1 is built, the construction stands in every
-game alike; if step 2 cannot be laid, hook.log names the places, and the
-pieces are gone in every game alike. The values of the pieces are read
-before step 1: the first real-game try read them from the removed edges'
+company's piece (D21), or a junction at a far end set by hand (its turns,
+its lights, their phases or a double slip), and the build stays refused
+with the game's own reason; the far ends' settings are otherwise the
+game's own, and go with the pieces. Where the construction has no track
+end at such a place, the piece comes back unjoined and hook.log says so.
+Once step 1 is built, the construction stands in every game alike; if
+step 2 still cannot be laid, hook.log names the places, and the pieces
+are gone in every game alike. The values of the pieces are read before
+step 1: the first real-game try read them from the removed edges'
 components afterwards and step 2 failed in both games ("no Track node at
 vertex 1"), which the stand-in engine, whose components are copies, did
 not show. The eight-track placement then built, joined and refreshed alike
