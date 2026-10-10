@@ -206,6 +206,31 @@ fn recorded_mods(data: &Path) -> Option<PathBuf> {
         .flatten()
 }
 
+/// The mods folder as typed or pasted: Explorer's "Copy as path" adds quotes.
+fn typed_folder(text: &str) -> PathBuf {
+    PathBuf::from(text.trim().trim_matches('"').trim())
+}
+
+/// Why setup cannot install into this folder, said under the folder, or
+/// `None` when it can.
+fn folder_problem(text: &str) -> Option<&'static str> {
+    let folder = typed_folder(text);
+    if folder.as_os_str().is_empty() {
+        Some("Start the game through Steam once if its user folder hasn't been created yet.")
+    } else if !folder.is_absolute() {
+        Some("Enter the folder's full path, starting with its drive.")
+    } else if !folder
+        .file_name()
+        .is_some_and(|name| name == "staging_area")
+    {
+        Some(
+            r"Choose the folder named staging_area: <Steam>\userdata\<account>\3493540\local\staging_area.",
+        )
+    } else {
+        None
+    }
+}
+
 fn powershell(script: &Path) -> Command {
     let mut command = Command::new("powershell.exe");
     command
@@ -376,7 +401,7 @@ impl SetupApp {
         self.error = None;
         self.status = "Preparing…".into();
         let plan = self.plan.clone();
-        let mods = PathBuf::from(self.mods.trim());
+        let mods = typed_folder(&self.mods);
         let desktop = self.desktop;
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
@@ -464,7 +489,7 @@ impl SetupApp {
                             });
                         }
                         ui.add(egui::TextEdit::singleline(&mut self.mods).desired_width(f32::INFINITY).hint_text("Paste the staging_area folder if Steam wasn't found"));
-                        if self.mods.is_empty() { ui.label("Start the game through Steam once if its user folder hasn't been created yet."); }
+                        if let Some(problem) = folder_problem(&self.mods) { ui.label(problem); }
                         if self.plan.managed { ui.checkbox(&mut self.desktop, "Also add a desktop shortcut"); }
                     });
                 }
@@ -473,7 +498,7 @@ impl SetupApp {
                     ui.label(&self.status);
                     if let Some(fraction) = self.fraction { ui.add(egui::ProgressBar::new(fraction).show_percentage()); } else { ui.spinner(); }
                 } else {
-                    let valid = self.plan.mode == Mode::Uninstall || (Path::new(self.mods.trim()).is_absolute() && Path::new(self.mods.trim()).file_name().is_some_and(|name| name == "staging_area"));
+                    let valid = self.plan.mode == Mode::Uninstall || folder_problem(&self.mods).is_none();
                     let label = match self.plan.mode { Mode::Install => "Install TPF3-MP", Mode::Sync => "Install multiplayer mod", Mode::Repair => "Repair installation", Mode::Uninstall => "Uninstall" };
                     if theme::primary_small(ui, valid, Some("download"), label, false).clicked() { self.begin(ui.ctx()); }
                 }
@@ -569,6 +594,51 @@ mod tests {
         assert!(
             harness
                 .query_by_label("Also add a desktop shortcut")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn setup_says_why_a_mods_folder_cannot_be_used() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join("userdata/123/3493540/local/staging_area");
+        assert_eq!(folder_problem(&staging.display().to_string()), None);
+        // Explorer's "Copy as path" quotes the path.
+        let quoted = format!("  \"{}\" ", staging.display());
+        assert_eq!(folder_problem(&quoted), None);
+        assert_eq!(typed_folder(&quoted), staging);
+
+        assert!(folder_problem("").unwrap().contains("Start the game"));
+        assert!(
+            folder_problem("staging_area")
+                .unwrap()
+                .contains("full path")
+        );
+        let local = staging.parent().unwrap().display().to_string();
+        assert!(folder_problem(&local).unwrap().contains("staging_area"));
+
+        let mut app = SetupApp::new(
+            Plan {
+                root: temp.path().join("program"),
+                data: temp.path().to_owned(),
+                mode: Mode::Install,
+                managed: true,
+            },
+            vec![],
+        );
+        app.mods = local;
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(680.0, 540.0))
+            .build_ui_state(
+                |ui, app: &mut SetupApp| {
+                    app.show(ui);
+                },
+                app,
+            );
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label_contains("Choose the folder named staging_area")
                 .is_some()
         );
     }
