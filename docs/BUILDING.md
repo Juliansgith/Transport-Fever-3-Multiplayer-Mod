@@ -369,9 +369,11 @@ connection is only the construction's own track, joined to the world at
 existing track nodes (no split, no removal, no street node), every game
 joins it as the tool did (`rejoinConstruction` in `apply.lua`):
 
-1. it takes away the track pieces at those nodes, the nodes, a far end the
-   pieces leave with no edge, and the junction settings at the far ends
-   that stay, and builds the construction, in one proposal;
+1. it takes away the track pieces at those nodes (found at their own
+   level: a node of a track right above or below is another place), the
+   nodes, a far end the pieces leave with no edge, and the junction
+   settings at the far ends that stay, and builds the construction, in
+   one proposal;
 2. it lays the pieces again at once, through the track build's own path:
    each between the same places with its tangents, template, lanes (an
    electrified piece stays electrified), decorations, lock and owner, now
@@ -379,10 +381,9 @@ joins it as the tool did (`rejoinConstruction` in `apply.lua`):
    named by its entity (the one track node within a few centimetres,
    height included, that did not exist before), not looked up again by
    position, which would take a node of a track right above it; a far
-   end that went comes back as a node of its own. They are laid as the
-   player's build, and where the game refuses that (not enough money left
-   after the construction) for free, as the game's refresh of a
-   construction is;
+   end that went comes back as a node of its own. They are laid for free,
+   as the game's refresh of a construction is: they were the player's
+   already, and the tool only joined onto them;
 3. the construction is refreshed as before.
 
 A piece with a stop or signal on it, a bridge or tunnel, another

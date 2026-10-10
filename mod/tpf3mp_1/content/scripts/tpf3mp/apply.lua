@@ -791,11 +791,10 @@ end
 -- settings at a far end are the game's own otherwise, and go with the
 -- pieces. Where the construction has no track end at such a place, the
 -- piece comes back to a node of its own there, unjoined. The pieces are
--- laid again as the player's build, and where the game refuses that (not
--- enough money left after the construction) for free, as the game's
--- refresh of a construction is; what still fails is logged with the
--- places, the same in every game, and the construction stands. Returns
--- what the build's command answered.
+-- laid again for free, as the game's refresh of a construction is: they
+-- were the player's already; what still fails is logged with the places,
+-- the same in every game, and the construction stands. Returns what the
+-- build's command answered.
 function rejoinConstruction(build, entity, context, refused)
 	local polyline = build.connection
 	local kept = apply.ownStreets(polyline)
@@ -813,7 +812,14 @@ function rejoinConstruction(build, entity, context, refused)
 		local r = v.resolve
 		if type(r) == "table" and (r.Split or (r.Node and r.Node ~= "Track")) then error(refused, 0) end
 		if type(r) == "table" and r.Node then
-			local n = nearest(before, arr(v.pos), NODE_TOLERANCE)
+			-- At its own level: a track's node right above or below (an
+			-- overpass) is another place.
+			local at = arr(v.pos)
+			local level = {}
+			for _, n in ipairs(before) do
+				if math.abs(n.pos[3] - at[3]) <= 2 then level[#level + 1] = n end
+			end
+			local n = nearest(level, at, NODE_TOLERANCE)
 			if n == nil then error("no Track node at vertex " .. i, 0) end
 			if count(streets.getNodeStreetSegments(n.id)) > 0 then error(refused, 0) end
 			if not anchorAt[n.id] then
@@ -954,14 +960,11 @@ function rejoinConstruction(build, entity, context, refused)
 		local second = api.type.SimpleProposal.new()
 		networkInto(second, "Track", nil, nil, { vertices = vertices, links = links, removals = {},
 			removed_nodes = {}, junctions = {} })
-		local refused2 = refusal(second, context)
-		if refused2 then
-			if refusal(second, nil) then error(refused2, 0) end
-			log("the track pieces at the new " .. tostring(build.file) .. " laid again for free: " .. refused2)
-			run(api.cmd.makeWorldBuildProposalCmd(second, nil, true, false))
-		else
-			run(api.cmd.makeWorldBuildProposalCmd(second, context, true, false))
-		end
+		-- For free, as the game's refresh of a construction is: the pieces
+		-- were the player's already, and the tool only joined onto them.
+		local refused2 = refusal(second, nil)
+		if refused2 then error(refused2, 0) end
+		run(api.cmd.makeWorldBuildProposalCmd(second, nil, true, false))
 	end)
 	if not laid then
 		local places = {}

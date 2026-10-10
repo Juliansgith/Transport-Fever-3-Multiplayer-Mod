@@ -5114,6 +5114,14 @@ fn a_construction_refused_on_a_track_end_is_joined_to_it_as_the_tool_joined_it()
         electric,
         "its lanes as they were, not its template's: still electrified"
     );
+    let paid: String = lua
+        .load("return tostring(SENT[2].context) .. '|' .. tostring(SENT[2].playerInitiated)")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        paid, "nil|false",
+        "laid again for free: the piece was the player's already"
+    );
     assert!(
         hook_log(&lua).contains(
             "joining ::/stations/rail/rail_station.con onto track ends 20: \
@@ -5187,11 +5195,12 @@ fn a_construction_refused_on_a_track_end_lays_the_piece_again_from_its_far_end()
     );
 }
 
-/// As above, where the game refuses laying the piece again as the
-/// player's build (not enough money left after the station): it is laid
-/// again for free, as the game's refresh of a construction is, and logged.
+/// As above, where the player could not pay for laying the piece again
+/// (not enough money left after the station): it is laid again for free,
+/// as the game's refresh of a construction is, as it always is: the piece
+/// was the player's already.
 #[test]
-fn a_construction_refused_on_a_track_end_lays_the_piece_again_for_free_when_money_runs_out() {
+fn a_construction_refused_on_a_track_end_lays_the_piece_again_for_free() {
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(STATION_ON_TRACK_END).exec().unwrap();
@@ -5217,25 +5226,23 @@ fn a_construction_refused_on_a_track_end_lays_the_piece_again_for_free_when_mone
         .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
     assert!(ok, "{}", hook_log(&lua));
     assert_eq!(free, "nil|1", "the piece again, with no player to pay");
-    assert!(
-        hook_log(&lua)
-            .contains("laid again for free: the game refuses the build: Not enough money"),
-        "{}",
-        hook_log(&lua)
-    );
 }
 
-/// As above, with another track's node 25 ten metres right above where
-/// the piece ended: the piece is laid again onto the station's own track
-/// end the replay found, by its entity, not onto the node above it.
+/// As above, with other tracks' nodes ten metres right above (25) and
+/// below (19, an older one) where the piece ended: the piece at its own
+/// level is taken, and laid again onto the station's own track end the
+/// replay found, by its entity, not onto the node above it.
 #[test]
 fn a_construction_refused_on_a_track_end_joins_the_piece_at_its_own_level() {
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(STATION_ON_TRACK_END).exec().unwrap();
-    lua.load("NODES[25] = { x = 400, y = 0, z = 10 } TRACKS[25] = { 250 }")
-        .exec()
-        .unwrap();
+    lua.load(
+        "NODES[25] = { x = 400, y = 0, z = 10 } TRACKS[25] = { 250 } \
+         NODES[19] = { x = 400, y = 0, z = -10 } TRACKS[19] = { 190 }",
+    )
+    .exec()
+    .unwrap();
     lua.load(format!(
         "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
          ACTION = assert(capture.construction({}))",
@@ -5259,6 +5266,14 @@ fn a_construction_refused_on_a_track_end_joins_the_piece_at_its_own_level() {
     assert_eq!(
         onto, "30",
         "the station's own track end, not the node above"
+    );
+    let removed: String = lua
+        .load("return table.concat(SENT[1].proposal.streetProposal.edgesToRemove, ',')")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        removed, "200",
+        "the piece at its own level, not the one below"
     );
 }
 
