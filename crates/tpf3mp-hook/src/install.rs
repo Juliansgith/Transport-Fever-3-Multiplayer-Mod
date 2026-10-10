@@ -36,6 +36,34 @@ pub const STEP_TARGET: &str = "GameSim::Step";
 pub const SPEED_TARGET: &str = "CGameTime::GetSpeed";
 /// The profile's name for the step's own call of the speed getter.
 pub const SPEED_CALL_TARGET: &str = "GameSim::Step/GetSpeed call";
+/// `CGame::Sync`, which the batch interval's wrapper calls
+/// ([`crate::interval`]).
+pub const SYNC_TARGET: &str = "CGame::Sync";
+/// `CGame::Step`'s call of it, which the wrapper takes over.
+pub const SYNC_CALL_TARGET: &str = "CGame::Step/Sync call";
+
+/// `CGame::Sync`'s address, for [`sync_wrap`].
+static SYNC: AtomicUsize = AtomicUsize::new(0);
+
+/// `bool CGame::Sync(CGame*, std::function<...>&)`: the bool in `al`.
+/// `C-unwind`: a C++ exception Sync throws passes through the wrapper to
+/// the game's own handlers, as it would without it.
+type SyncFn = unsafe extern "C-unwind" fn(usize, usize) -> u8;
+
+/// Where `CGame::Step`'s call of `CGame::Sync` goes: the real Sync, then,
+/// after a successful one, the batch interval for the batch it exposed
+/// (crate::interval). The main thread's; it never waits for the step
+/// driver's lock.
+unsafe extern "C-unwind" fn sync_wrap(cgame: usize, function: usize) -> u8 {
+    let sync = SYNC.load(Ordering::Acquire);
+    // SAFETY: SYNC holds CGame::Sync's address, which the profile resolved
+    // and the redirect checked the call targets; the arguments are the
+    // ones CGame::Step passed.
+    let sync: SyncFn = unsafe { std::mem::transmute::<usize, SyncFn>(sync) };
+    let ok = unsafe { sync(cgame, function) };
+    let _ = std::panic::catch_unwind(|| crate::interval::after_sync(cgame, ok != 0));
+    ok
+}
 /// The profile's name for Lua's `print`.
 pub const PRINT_TARGET: &str = "luaB_print";
 /// The command queue's add and the simulation's apply of a build: without
@@ -498,6 +526,9 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // What this call answered, and why, for the step trace.
     let mut answered: Option<(Updates, bool)> = None;
     let mut why: &'static str = "own";
+    let mut note: Option<String> = None;
+    let mut info = crate::interval::BatchInfo::default();
+    let seen_before = crate::seeds::updates_seen();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
@@ -534,6 +565,10 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             }
         });
         why = driver.why();
+        if traced_at.is_some() {
+            note = driver.cadence_note();
+        }
+        info = driver.batch_info();
         for (ticket, why) in driver.take_refused() {
             lua::refused(ticket, &why);
         }
@@ -553,6 +588,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         }
         let mut lines = driver.take_log();
         lines.extend(lua::take_log());
+        lines.extend(crate::interval::take_lines());
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
@@ -576,6 +612,26 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         };
         crate::perf::step_call(room, updates, started);
     }
+    // The batch interval (main thread, after the Sync that exposes this
+    // batch) times it by the updates it really ran.
+    if crate::interval::armed() {
+        let (count, room) = match selected {
+            Some((Updates::Exactly(count), room)) => (count, room),
+            _ => (0, false),
+        };
+        // What the step really ran: the game adds pending debug steps to
+        // the answer. A batch that ran other than answered is not timed.
+        let ran = match (seen_before, crate::seeds::updates_seen()) {
+            (Some(before), Some(after)) => u32::try_from(after.wrapping_sub(before)).ok(),
+            _ => None,
+        };
+        let mut record = info.record(this, count);
+        record.eligible &= room && result.is_ok() && ran == Some(count);
+        if room && ran.is_some_and(|ran| ran != count) {
+            crate::interval::note_mismatch(count, ran.unwrap_or(0));
+        }
+        crate::interval::SLOTS.publish(&record);
+    }
     if let (Some(at), Some((updates, lanes))) = (traced_at, answered) {
         let updates = match updates {
             Updates::Exactly(updates) => Some(updates),
@@ -583,7 +639,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         };
         let game = STEP_GAME_NANOS.load(Ordering::Relaxed);
         let call = u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let lines = crate::steptrace::call(at, updates, why, lanes, game, call);
+        let lines = crate::steptrace::call(at, updates, why, lanes, game, call, note.as_deref());
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
@@ -759,6 +815,68 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         ));
     }
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
+    let even = crate::cadence::wanted(std::env::var(crate::cadence::ENV).ok().as_deref());
+    driver.set_even_steps(even);
+    log_line(&if even {
+        format!(
+            "even steps: each call of the game's step runs the room's pace over the game's call period, keeping {} released step(s) in reserve ({}=0 runs all released, as before)",
+            crate::cadence::RESERVE,
+            crate::cadence::ENV
+        )
+    } else {
+        format!(
+            "even steps off ({} says so): each call runs every step released",
+            crate::cadence::ENV
+        )
+    });
+    // The batch interval (crate::interval): only on the build whose layout
+    // was verified, with both of its targets, even steps on and the knob
+    // not saying no; otherwise the game paces itself.
+    let interval_wanted =
+        crate::interval::wanted(std::env::var(crate::interval::ENV).ok().as_deref());
+    let layout = crate::interval::layout_for(&profile.name);
+    let sync_targets = (
+        resolved.get(SYNC_TARGET).map(|t| t.address),
+        resolved.get(SYNC_CALL_TARGET).map(|t| t.address),
+    );
+    let interval_line = match (interval_wanted, even, layout, sync_targets) {
+        (false, ..) => format!("batch interval off ({} says so)", crate::interval::ENV),
+        (true, false, ..) => "batch interval off: it needs even steps".to_owned(),
+        (true, true, None, _) => format!(
+            "batch interval off: no verified layout for {}",
+            profile.name
+        ),
+        (true, true, Some(layout), (Some(sync_rva), Some(call_rva))) => {
+            SYNC.store(base + sync_rva as usize, Ordering::Release);
+            // SAFETY: the call site the profile resolved inside CGame::Step,
+            // which no thread runs yet (the game has no world); install
+            // checks it calls CGame::Sync, and sync_wrap has Sync's ABI.
+            match unsafe {
+                tpf3mp_hookcore::detour::CallRedirect::install(
+                    (base + call_rva as usize) as *mut u8,
+                    base + sync_rva as usize,
+                    sync_wrap as *const u8,
+                )
+            } {
+                Ok(redirect) => {
+                    std::mem::forget(redirect);
+                    crate::interval::arm(layout);
+                    driver.set_batch_interval(true);
+                    format!(
+                        "batch interval: each batch of the room's steps is shown over its updates times the room's time per step, set right after CGame::Sync ({}=0 turns it off)",
+                        crate::interval::ENV
+                    )
+                }
+                Err(error) => {
+                    format!("batch interval off: redirecting {SYNC_CALL_TARGET}: {error:?}")
+                }
+            }
+        }
+        (true, true, Some(_), _) => {
+            format!("batch interval off: the profile has no {SYNC_TARGET} or {SYNC_CALL_TARGET}")
+        }
+    };
+    log_line(&interval_line);
     *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(driver));
 
     // SAFETY: both targets are functions the profile resolved, exactly once,

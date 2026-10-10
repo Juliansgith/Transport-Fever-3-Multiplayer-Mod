@@ -44,6 +44,27 @@ offset = 0
 prologue = "40 53 48 83 EC 20 48 8B 81 F0 01 00 00 48 8B D9"
 required = true
 
+# CGame::Sync (TPF2 0x119140; 40408 0x11f650; here 0x11f690): hands the
+# simulation thread its next batch, publishes the finished one and sets
+# guiFrameTime (m_data+0x218, the same layout as 40408: verified 2026-10-09
+# in CGame::Step and RunGameSimLoop). The hook only calls it (HOOKS.md,
+# "The batch interval").
+[[target]]
+name = "CGame::Sync"
+signature = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 40 4C 8B F2 48 8B D9"
+offset = 0
+prologue = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56"
+required = false
+
+# CGame::Step's call of CGame::Sync (40408 0x11f406; here 0x11f446), which
+# the batch interval redirects; the hook checks the call targets CGame::Sync.
+[[target]]
+name = "CGame::Step/Sync call"
+signature = "48 63 BA 18 02 00 00 48 8B CB 48 03 BA A8 01 00 00 48 8B D6 E8 ?? ?? ?? ?? 84 C0 74"
+offset = 20
+prologue = "E8"
+required = false
+
 # CGameTime::GetSpeed (TPF2 0x2877a0; here 0x2a95a0): the speed GameSim::Step
 # reads, in updates per call (GameSpeed.speedup). Not matched by name: it is
 # the getter GameSim::Step calls before its update loop, 27 bytes returning the

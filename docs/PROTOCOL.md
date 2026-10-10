@@ -386,6 +386,13 @@ at the room's pace behind a jitter buffer of its own
   paused apply at once.
 - **Speed changes.** Steps already sealed keep playing evenly from the last
   one played.
+- **In the game.** The game runs the released steps on its own call clock,
+  an even share each call, keeping a step or so in reserve
+  ([HOOKS.md](HOOKS.md), "Even steps"). It runs everything released when an
+  event waits behind it or the player's own command is on its way, so this
+  adds nothing to a player's own commands; another player's may show one
+  call (about 200 ms) later, and the world shown is up to a few steps older
+  than the release.
 
 What players feel on their own commands is their round trip, plus their own
 buffer, plus the wait for the next turn. It is not the room's input delay,

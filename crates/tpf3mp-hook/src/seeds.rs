@@ -299,6 +299,18 @@ fn once(flag: &AtomicBool, message: &str) {
 }
 
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
+/// Every `ecs::Engine::Update` call seen, for checking what a call of the
+/// game's step really ran ([`updates_seen`]).
+static UPDATES_SEEN: AtomicU64 = AtomicU64::new(0);
+
+/// The simulation updates the game ran so far, counted by the per-update
+/// detour; `None` without it. Its difference across a call of the game's
+/// step is what the call ran, whatever the step was asked: the game's
+/// pending debug steps (`makeGamePerformSimulationStepsCmd`, the native
+/// simulation panel) can add updates the room never released.
+pub fn updates_seen() -> Option<u64> {
+    update_hooked().then(|| UPDATES_SEEN.load(Ordering::Acquire))
+}
 
 /// Whether the shared simulation-update detour is already installed.
 pub(crate) fn update_hooked() -> bool {
@@ -530,6 +542,7 @@ pub fn current_seed() -> Option<u32> {
 /// on the simulation thread): its step becomes the current one, for the
 /// script calls it runs.
 fn before_update() {
+    UPDATES_SEEN.fetch_add(1, Ordering::AcqRel);
     if crate::order::measure::enabled() {
         crate::order::measure::update_begins();
     }
