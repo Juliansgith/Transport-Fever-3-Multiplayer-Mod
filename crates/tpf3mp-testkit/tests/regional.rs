@@ -570,25 +570,37 @@ async fn promoting_a_room_card_releases_the_lookout_slot_at_the_default_limit() 
     // release that slot before opening its primary US connection.
     let mut players = Vec::new();
     for index in 0..7 {
-        let name = format!("player-{index}");
-        let launcher = Launcher::start(launcher_config(
-            root.path(),
-            &name,
-            &trust,
-            &[("EU", &eu), ("US", &us)],
-        ))
-        .await
-        .unwrap();
-        let page = Page::of(&launcher);
-        page.act(json!({ "action": "connect", "server": "", "name": name }))
-            .await;
-        page.wait_for("its US lookout", |state| {
-            state["servers"].as_array().is_some_and(|rows| {
-                rows.len() == 2 && rows[0]["here"] == true && rows[1]["reachable"] == true
-            })
-        })
-        .await;
-        players.push((launcher, page));
+        // Both servers run on loopback. A busy CI runner can make US more
+        // than the tie margin faster, so keep only players whose primary is
+        // EU; otherwise US holds a primary connection, not a lookout slot.
+        for attempt in 0..20 {
+            let name = format!("player-{index}-{attempt}");
+            let launcher = Launcher::start(launcher_config(
+                root.path(),
+                &name,
+                &trust,
+                &[("EU", &eu), ("US", &us)],
+            ))
+            .await
+            .unwrap();
+            let page = Page::of(&launcher);
+            page.act(json!({ "action": "connect", "server": "", "name": name }))
+                .await;
+            if page.state().await["server"] == eu {
+                page.wait_for("its US lookout", |state| {
+                    state["servers"].as_array().is_some_and(|rows| {
+                        rows.len() == 2 && rows[0]["here"] == true && rows[1]["reachable"] == true
+                    })
+                })
+                .await;
+                players.push((launcher, page));
+                break;
+            }
+            page.act(json!({ "action": "disconnect" })).await;
+            if attempt == 19 {
+                panic!("could not establish seven EU primaries with US lookouts");
+            }
+        }
     }
 
     players[0]
