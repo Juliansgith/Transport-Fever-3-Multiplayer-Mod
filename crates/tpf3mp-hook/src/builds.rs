@@ -190,6 +190,8 @@ unsafe extern "C" fn add_detour(
                 crate::crossings::record(&crate::modules::Process, click, payload);
             } else {
                 crate::junctions::record(&crate::modules::Process, click, payload);
+                // The street and track tools' toolbar crossing type.
+                crate::crossings::record_tool(&crate::modules::Process, click, payload);
             }
         }
     }

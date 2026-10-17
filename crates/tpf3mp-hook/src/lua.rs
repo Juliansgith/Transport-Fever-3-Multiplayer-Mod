@@ -58,6 +58,12 @@
 //!   why when it did not read; `nil` when click `n` was neither's
 //!   ([`crate::modules`]). Optional in the contract: a mod that does not
 //!   call it keeps both refused.
+//! - `toolCrossing(n)`: in the GUI: the level crossing type the street or
+//!   track tool's click `n` lays its crossings as, read from its proposal's
+//!   `node2rcType` ([`crate::crossings::decode_tool`]), once: the type
+//!   (this game's index); `false` when it picked none; `false` and why when
+//!   the profile cannot tell; `nil` and why when it did not read; `nil`
+//!   when nothing was kept for click `n`. Optional in the contract.
 //! - `replaying(on)`: the game script begins or ends applying the room's
 //!   actions, whose builds the hook lets through ([`crate::builds`]).
 //! - `chainClick(n, ticket)`, `chainPoll()`, `chainSeen(edge, streets,
@@ -857,6 +863,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
                 (b"built", native_built),
+                (b"toolCrossing", native_tool_crossing),
                 (b"replaying", native_replaying),
                 (b"chainClick", native_chain_click),
                 (b"chainPoll", native_chain_poll),
@@ -2691,6 +2698,52 @@ unsafe extern "C-unwind" fn native_built(l: State) -> c_int {
             .map(|n| n as u64);
         match click.and_then(crate::modules::take) {
             Some(Ok(proposal)) => push_or_nil(api, l, Some(&proposal)),
+            Some(Err(why)) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+            None => {
+                (api.pushnil)(l);
+                1
+            }
+        }
+    }
+}
+
+/// `toolCrossing(n)`: in the GUI: the level crossing type the street or
+/// track tool's click `n` (the count before it) lays its crossings as, once
+/// ([`crate::crossings::take_tool`]): the type (this game's index); false
+/// when it picked none; false and why when the profile cannot tell; nil and
+/// why when it does not read; nothing (nil) when nothing was kept for it.
+unsafe extern "C-unwind" fn native_tool_crossing(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; a C
+    // function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        let click = number_arg(api, l, 1)
+            .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0)
+            .map(|n| n as u64);
+        match click.and_then(crate::crossings::take_tool) {
+            Some(Ok(crate::crossings::ToolType::Type(kind))) => {
+                (api.pushnumber)(l, f64::from(kind));
+                1
+            }
+            Some(Ok(crate::crossings::ToolType::None)) => {
+                (api.pushboolean)(l, 0);
+                1
+            }
+            Some(Ok(crate::crossings::ToolType::Unknown)) => {
+                (api.pushboolean)(l, 0);
+                push_str(
+                    api,
+                    l,
+                    b"the profile does not find the proposal's level crossing maps",
+                );
+                2
+            }
             Some(Err(why)) => {
                 (api.pushnil)(l);
                 push_str(api, l, why.as_bytes());

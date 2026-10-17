@@ -378,6 +378,25 @@ function Link:built(click)
 	return nil
 end
 
+-- In the GUI: the level crossing type the street or track tool's click
+-- `click` lays its crossings as, read by the hook from the click's
+-- proposal (docs/HOOKS.md, "Level crossing types"), once: the type (this
+-- game's index); false when it picked none; false and why when the hook
+-- cannot tell (no `toolCrossing`, which is optional, or a profile without
+-- the maps: the GUI then refuses the build); nil and why when it did not
+-- read; nil when nothing was kept for the click.
+function Link:toolCrossing(click)
+	if type(self.native.toolCrossing) ~= "function" then
+		return false, "the hook does not read the tools' level crossing type"
+	end
+	local ok, kind, why = pcall(self.native.toolCrossing, click)
+	if not ok then return nil, "the hook refused: " .. tostring(kind) end
+	if type(kind) == "number" then return kind end
+	if kind == false then return false, why ~= nil and tostring(why) or nil end
+	if why ~= nil then return nil, tostring(why) end
+	return nil
+end
+
 -- In a game script's postUpdate at a checkpoint: the lanes the hook wants
 -- dumped entry by entry (docs/HOOKS.md, "Lane dumps"), { step =, lanes = {
 -- n, ... } }, once; or nil, and nil from a hook without dumps (`dump` is

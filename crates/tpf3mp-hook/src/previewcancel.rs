@@ -105,6 +105,7 @@ mod tests {
                 style: None,
                 catenary: false,
                 polyline,
+                crossing_type: None,
             })
         } else {
             Action::BuildRoad(RoadBuild {
@@ -113,6 +114,7 @@ mod tests {
                 bus_lane: false,
                 tram: Tram::None,
                 polyline,
+                crossing_type: None,
             })
         };
         action.to_payload().unwrap()

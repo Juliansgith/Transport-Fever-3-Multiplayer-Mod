@@ -1323,6 +1323,20 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	local nextEdge, nextNode = -1, -(#polyline.links + 2 * splits) - 1
 
 	local nodesToAdd, edgesToAdd, edgesToRemove = {}, {}, {}
+	-- Per vertex, the networks its edges are in and the existing nodes they
+	-- join it to: a vertex on both a street and a track is where a level
+	-- crossing may be laid, read back after the build (buildNetwork).
+	local touch = {}
+	local function touches(i, net, anchor)
+		if net ~= "Street" and net ~= "Track" then return end
+		local t = touch[i]
+		if t == nil then
+			t = { nets = {}, anchors = {} }
+			touch[i] = t
+		end
+		t.nets[net] = true
+		if type(anchor) == "number" and anchor >= 0 then t.anchors[#t.anchors + 1] = { node = anchor, network = net } end
+	end
 	-- The nodes at the ends of the edges removed, in order: their lane
 	-- configurations name those edges, and go with them (below).
 	local ends, endSeen = {}, {}
@@ -1382,6 +1396,7 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 			local n = nearest(nodes(r.Node), p, NODE_TOLERANCE)
 			if n == nil then error("no " .. r.Node .. " node at vertex " .. i) end
 			ids[i] = n.id
+			touches(i, r.Node)
 		elseif type(r) == "table" and r.Split then
 			local s = r.Split
 			local e = edgeBetween(nodes(s.network), s.network, arr(s.ends.a), arr(s.ends.b))
@@ -1401,6 +1416,8 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 			local tm = geom.hermiteTangent(e.a, e.ta, e.b, e.tb, u)
 			local mid = addNode(p)
 			ids[i] = mid
+			touches(i, s.network, e.node0)
+			touches(i, s.network, e.node1)
 			removeEdge(e)
 			-- Each half the split edge's own component, read afresh, as the
 			-- game's electrify task rebuilds an edge (electrify.tl).
@@ -1417,6 +1434,9 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	for k, link in ipairs(polyline.links) do
 		local s = links[k]
 		s.comp.node0, s.comp.node1 = ids[link.from + 1], ids[link.to + 1]
+		local net = link.kind and link.kind.network or network
+		touches(link.from + 1, net, ids[link.to + 1])
+		touches(link.to + 1, net, ids[link.from + 1])
 		local structure, name = link.structure, "Ground"
 		if type(structure) == "table" then name = next(structure) end
 		s.comp.type = edgeType[STRUCTURE[name] or error("a link of structure " .. tostring(name))]
@@ -1588,24 +1608,132 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 		shape[#shape + 1] = "+j" .. tostring(n.entity) .. "{lanes " .. turns .. " tram " .. trams .. "}"
 	end
 	log("building " .. table.concat(shape, " "))
-	return carried
+	-- Second, the vertices' node ids, in this proposal's numbering, and the
+	-- vertices on both networks: for the level crossings it lays
+	-- (buildNetwork).
+	local crossings = {}
+	for i = 1, #polyline.vertices do
+		local t = touch[i]
+		if t and t.nets.Street and t.nets.Track and ids[i] ~= nil then
+			crossings[#crossings + 1] = { vertex = i, at = at[i], id = ids[i], anchors = t.anchors }
+		end
+	end
+	return carried, { ids = ids, vertices = #polyline.vertices, crossings = crossings }
 end
 
-local function buildNetwork(network, templateName, style, polyline)
+-- The level crossings at a vertex on both networks (`c`, as networkInto
+-- noted it), each once: on its own node when it is an existing one, and on
+-- the nodes the existing nodes next to it reach within CROSSING_REACH of
+-- it, each through an edge of its network. The game lays a crossing as
+-- half, connector, half (docs/BUILDING.md, "Level crossings"), so a new
+-- crossing's node may sit a few metres off the vertex, and only an edge
+-- laid to the vertex reaches one there.
+local CROSSING_REACH, CROSSING_RISE = 10, 3
+local function crossingsAt(c)
+	local streets = api.engine.system.streetSystem
+	local system = api.engine.system.railRoadCrossingSystem
+	local near, found, seen = {}, {}, {}
+	if c.id >= 0 then near[1] = c.id end
+	for _, a in ipairs(c.anchors) do
+		local segments = (a.network == "Track" and streets.getNodeTrackSegments or streets.getNodeStreetSegments)(a.node)
+		for j = 1, (segments and #segments or 0) do
+			local e = api.engine.getComponent(segments[j], api.type.ComponentType.BASE_EDGE)
+			local other = e and ((e.node0 == a.node and e.node1) or (e.node1 == a.node and e.node0))
+			local b = other and api.engine.getComponent(other, api.type.ComponentType.BASE_NODE)
+			local p = b and arr(b.position)
+			if p then
+				local dx, dy = p[1] - c.at[1], p[2] - c.at[2]
+				if dx * dx + dy * dy <= CROSSING_REACH * CROSSING_REACH and math.abs(p[3] - c.at[3]) <= CROSSING_RISE then
+					near[#near + 1] = other
+				end
+			end
+		end
+	end
+	for _, node in ipairs(near) do
+		local crossing = system.getRailroadCrossingForNode(node)
+		if type(crossing) == "number" and crossing >= 0 and not seen[crossing] then
+			seen[crossing] = true
+			found[#found + 1] = crossing
+		end
+	end
+	return found
+end
+
+local function buildNetwork(network, templateName, style, polyline, crossingType)
+	-- A type this game does not offer is refused before anything is laid.
+	local crossingIndex = crossingType ~= nil and module("crossings").typeIndex(crossingType) or nil
 	local proposal = api.type.SimpleProposal.new()
-	local carried = networkInto(proposal, network, templateName, style, polyline)
+	local carried, laid = networkInto(proposal, network, templateName, style, polyline)
+	-- The level crossing type the player's toolbar picked (docs/HOOKS.md,
+	-- "Level crossing types"), as the tool maps it: each node of the build's
+	-- own polyline to -2 - type, the type "preferred", so a crossing that
+	-- is there already keeps its own, and every crossing laid anew takes it.
+	-- The tool maps only the polyline's crossing nodes; a vertex that joins
+	-- no crossing is never looked up.
+	if crossingIndex ~= nil then
+		local map = {}
+		for i = 1, laid.vertices do
+			if laid.ids[i] ~= nil then map[laid.ids[i]] = -2 - crossingIndex end
+		end
+		proposal.streetProposal.node2rcType = map
+		log("level crossings laid as " .. crossingType)
+	end
 	-- Paid by the player, as the tool builds; the town buildings in the way
 	-- cleared, as the tool clears them (the capture lets only those through).
 	local context = api.type.Context.new()
 	context.player = company()
 	context.gatherBuildings = true
+	-- The crossings at the build's vertices on both networks before it, by
+	-- their nodes: one the build extends keeps its type (preferred).
+	local before, readBefore
+	if crossingIndex ~= nil and not dry and #laid.crossings > 0 then
+		local crossings = module("crossings")
+		readBefore, before = pcall(function()
+			local types = {}
+			for _, c in ipairs(laid.crossings) do
+				for _, crossing in ipairs(crossingsAt(c)) do
+					local comp = crossings.component(crossing)
+					for _, node in ipairs(crossings.nodes(comp)) do types[node] = comp.typeIndex end
+				end
+			end
+			return types
+		end)
+		if not readBefore then log("the level crossings there do not read: " .. tostring(before)) end
+	end
 	local built = buildProposal(proposal, context)
 	settleKept(carried)
+	-- Each crossing at those vertices, read back: one laid anew of another
+	-- type than the toolbar's, or one extended that lost its own, is said.
+	-- Only said, since the build went and nothing here may fail it; the
+	-- room's world checks read every crossing's type (tpf3mp/lanes.lua), so
+	-- games that laid different ones are found there.
+	if built == true and readBefore then
+		local crossings = module("crossings")
+		local read, why = pcall(function()
+			for _, c in ipairs(laid.crossings) do
+				local found = crossingsAt(c)
+				if #found == 0 then log("no level crossing at vertex " .. c.vertex) end
+				for _, crossing in ipairs(found) do
+					local comp = crossings.component(crossing)
+					local expected = crossingIndex
+					for _, node in ipairs(crossings.nodes(comp)) do
+						if before[node] ~= nil then expected = before[node] break end
+					end
+					if comp == nil or comp.typeIndex ~= expected then
+						log("level crossing " .. crossing .. " at vertex " .. c.vertex .. " took type "
+							.. tostring(comp and comp.typeIndex) .. ", not " .. tostring(expected)
+							.. " (the toolbar's " .. crossingType .. " is " .. crossingIndex .. ")")
+					end
+				end
+			end
+		end)
+		if not read then log("the level crossings laid do not read back: " .. tostring(why)) end
+	end
 	return built
 end
 
 function HANDLERS.BuildRoad(road)
-	return buildNetwork("Street", road.street, road.style, road.polyline)
+	return buildNetwork("Street", road.street, road.style, road.polyline, road.crossing_type)
 end
 
 function HANDLERS.EditJunctions(edit)
@@ -1968,7 +2096,7 @@ function HANDLERS.Bulldoze(b)
 end
 
 function HANDLERS.BuildTrack(track)
-	return buildNetwork("Track", track.track, track.style, track.polyline)
+	return buildNetwork("Track", track.track, track.style, track.polyline, track.crossing_type)
 end
 
 -- An upgrade tool's build, said in the log once every game built it

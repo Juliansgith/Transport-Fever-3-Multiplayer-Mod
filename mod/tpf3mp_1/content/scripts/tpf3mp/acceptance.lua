@@ -24,6 +24,11 @@
 -- large ones in bands, and tree strokes of 78 and 124 trees, alike in both.
 -- The crossing type-only path has staged Japan_2 runs, but not ordinary-start
 -- two-player acceptance yet; keep it refused until that run is recorded.
+-- The road and track tools' toolbar crossing type (BuildRoad/BuildTrack
+-- crossing_type, schema 28) passed staged two-game runs on build 40420,
+-- 2026-10-17, on Japan_2 (crossing-tool-1017b, crossing-tool-1017c); off
+-- until the owner takes them, or an ordinary-start run, as its acceptance.
+-- While off, the GUI sends such a build without the type, as before.
 local acceptance = {
     subsidies = true,
     rename = true,
@@ -37,6 +42,7 @@ local acceptance = {
     paint = true,
     assets = true,
     crossings = false,
+    crossingTypes = false,
 }
 
 function acceptance.check(action)
@@ -60,6 +66,10 @@ function acceptance.check(action)
     end
     -- A level crossing's type from its window (action::CrossingType).
     if action.SetCrossingType then feature = "crossings" end
+    -- The level crossing type a road or track tool's toolbar picked for the
+    -- crossings its build lays (RoadBuild.crossing_type, schema 28).
+    local build = action.BuildRoad or action.BuildTrack
+    if type(build) == "table" and build.crossing_type ~= nil then feature = "crossingTypes" end
     if action.Rename or (action.VehicleOp and type(action.VehicleOp.change) == "table"
         and action.VehicleOp.change.Recolor) then feature = "rename" end
     local line = action.CreateLine and action.CreateLine.line

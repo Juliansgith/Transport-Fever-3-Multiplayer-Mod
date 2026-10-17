@@ -274,11 +274,57 @@ function data()
 	-- first, so the same refusal twice is told twice.
 	local NOTICE_NOTE = "tpf3mp.notice"
 	local noticed = 0
-	local function tell(l, why)
+	-- `what` the room does not carry, when not the crossing window's change
+	-- (a snapshot's `tell`, when a string).
+	local function tell(l, why, what)
 		noticed = noticed + 1
-		local text = "Not in multiplayer yet: changing a level crossing's type"
+		local text = "Not in multiplayer yet: " .. (type(what) == "string" and what or "changing a level crossing's type")
 		if why and why ~= "" then text = text .. " (" .. tostring(why) .. ")" end
 		l:note(NOTICE_NOTE, tostring(noticed) .. "	" .. text)
+	end
+
+	-- The street or track tool's click: its BuildRoad or BuildTrack gets the
+	-- level crossing type the toolbar picked for the crossings it lays, by
+	-- its resource file (the hook reads it from the click's proposal,
+	-- node2rcType: crates/tpf3mp-hook/src/crossings.rs, decode_tool; docs/
+	-- HOOKS.md, "Level crossing types"), so every game lays them as the
+	-- player's tool would. While acceptance.lua's `crossingTypes` is off,
+	-- the build goes without it, as before the channel. Once on, only a
+	-- click the hook read as picking no type goes as it is: a type that
+	-- does not read and a hook that cannot tell stop the build, and the
+	-- player is told, since every game would lay another type than theirs.
+	local TOOL_CROSSING = "a level crossing type picked in the build tool"
+	local acceptanceModule = nil
+	local function toolCrossing(l, click, seen)
+		local build = seen.action.BuildRoad or seen.action.BuildTrack
+		local kind, why = l:toolCrossing(click)
+		if acceptanceModule == nil then
+			local ok, m = pcall(ug_require, MOD .. "::/scripts/tpf3mp/acceptance.lua")
+			acceptanceModule = ok and type(m) == "table" and m or false
+		end
+		-- While the channel awaits its acceptance, the build goes as before
+		-- it: without the type, each game laying the engine's own.
+		if not (acceptanceModule and acceptanceModule.crossingTypes == true) then
+			if type(kind) == "number" then
+				l:log("the build's level crossing type is left out: crossingTypes awaits two-player game acceptance")
+			end
+			return seen
+		end
+		local function refused(reason)
+			return { why = reason, shape = seen.shape, tell = TOOL_CROSSING }
+		end
+		if kind == false and why == nil then return seen end
+		if kind == false then return refused(tostring(why)) end
+		if kind == nil then return refused(why or "the hook kept nothing for the click") end
+		if crossingsModule == nil then
+			local ok, m = pcall(ug_require, MOD .. "::/scripts/tpf3mp/crossings.lua")
+			crossingsModule = ok and type(m) == "table" and m or false
+		end
+		if not crossingsModule then return refused("the crossings module does not load") end
+		local named, name = pcall(crossingsModule.typeName, kind)
+		if not named then return refused(tostring(name)) end
+		build.crossing_type = name
+		return seen
 	end
 
 	local function terraformEdit(built)
@@ -1003,6 +1049,9 @@ function data()
 				elseif native ~= nil or whyNot ~= nil then
 					seen = moduleEdit(native, whyNot)
 				end
+				if seen and seen.action and (seen.action.BuildRoad or seen.action.BuildTrack) then
+					seen = toolCrossing(l, handled, seen)
+				end
 				if seen and seen.actions then
 					for i, action in ipairs(seen.actions) do
 						local ok, why = l:command(action)
@@ -1022,13 +1071,13 @@ function data()
 						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
-						if seen.tell then tell(l, why) end
+						if seen.tell then tell(l, why, seen.tell) end
 					end
 				else
 					l:log("stopped a build the room cannot carry: "
 						.. tostring(seen and seen.why or "no proposal seen (a tool that tells game scripts nothing)")
 						.. ((seen and seen.shape) and (" [" .. seen.shape .. "]") or ""))
-					if seen and seen.tell then tell(l, seen.why) end
+					if seen and seen.tell then tell(l, seen.why, seen.tell) end
 				end
 				-- The street or track tool continues from what the room
 				-- builds for this click, if it was handed over (the hook

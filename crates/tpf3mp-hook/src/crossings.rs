@@ -16,9 +16,14 @@
 //! `node2rcType`, and one entry in the window's own crossing -> type map.
 //! The window's other shape rebuilds the crossing's segments and maps its
 //! nodes instead; that one is refused, as is anything else.
+//!
+//! The street and track tools' toolbar type is read here too, at every
+//! other player build ([`record_tool`]): the tool maps its crossing nodes
+//! in the proposal's `node2rcType`, which the Lua binding does not reach.
 
 #![allow(unsafe_code)]
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -212,6 +217,108 @@ fn nothing_else(memory: &dyn Memory, head: &[u8]) -> Result<(), String> {
         return Err("the carrier has node2rcType".to_owned());
     }
     Ok(())
+}
+
+// ---------- the street and track tools' toolbar type ----------
+
+/// What a street or track tool's click says of the level crossings it lays
+/// (docs/HOOKS.md, "Level crossing types"): the tool (`UI::StreetBuilder`)
+/// maps each crossing node of its own polyline to `-2 - rcType`, the
+/// toolbar's type "preferred" (an existing crossing keeps its own), and
+/// maps nothing for an automatic choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolType {
+    /// No node mapped: the engine picks each new crossing's type.
+    None,
+    /// Every node mapped to this type (this game's index), preferred.
+    Type(i32),
+    /// The profile does not find the maps, so what the tool picked is not
+    /// known: the build goes as it did before the reader.
+    Unknown,
+}
+
+/// The tools' types read, by the click count they were queued at, oldest
+/// first: a queue of its own, so the GUI's routing of the module editor's,
+/// the terrain tools' and the crossing window's records is untouched.
+static TOOL_KEPT: Mutex<VecDeque<(u64, Result<ToolType, String>)>> = Mutex::new(VecDeque::new());
+
+/// Whether the profile found the proposal's crossing maps, for the tools'
+/// reader: set at install whether or not the window's call is found.
+static TOOL_LAYOUT: AtomicBool = AtomicBool::new(false);
+
+/// Notes whether the profile found the proposal's crossing maps.
+pub fn set_layout(layout: bool) {
+    TOOL_LAYOUT.store(layout, Ordering::Release);
+}
+
+/// The toolbar's type in the proposal at `payload`: `node2rcType` read
+/// whole (every link checked), its "ignored" entries (-1) left out. Every
+/// other entry must be the tool's preferred encoding (`-2 - type`), all of
+/// one type; a forced type (>= 0, as the crossing window's rebuild writes)
+/// or types that differ are refused.
+pub fn decode_tool(memory: &dyn Memory, payload: usize) -> Result<ToolType, String> {
+    let head = read(
+        memory,
+        payload,
+        crate::modules::layout::HEAD_LEN,
+        "the build's proposal",
+    )?;
+    let values: Vec<i32> = entries(memory, &head, layout::NODE_TYPES, "node2rcType")?
+        .into_iter()
+        .map(|(_, value)| value)
+        .filter(|value| *value != -1)
+        .collect();
+    let Some(&first) = values.first() else {
+        return Ok(ToolType::None);
+    };
+    if values.iter().any(|value| *value >= 0) {
+        return Err("a build that forces a level crossing's type".to_owned());
+    }
+    if values.iter().any(|value| *value != first) {
+        return Err("a build that gives its level crossings different types".to_owned());
+    }
+    // first <= -2, so the type is 0 or more and fits.
+    Ok(ToolType::Type(-2 - first))
+}
+
+/// Keeps what the tool's click `click` (the count before it) says of its
+/// crossings: read at every player build that is not the module editor's,
+/// a terrain tool's or the crossing window's. Logs a line when it picked a
+/// type or did not read.
+pub fn record_tool(memory: &dyn Memory, click: u64, payload: usize) {
+    let read = if TOOL_LAYOUT.load(Ordering::Acquire) {
+        decode_tool(memory, payload)
+    } else {
+        Ok(ToolType::Unknown)
+    };
+    match &read {
+        Ok(ToolType::Type(kind)) => crate::log::line(&format!(
+            "build tool: click {click} lays its level crossings as type {kind}"
+        )),
+        Err(why) => crate::log::line(&format!(
+            "build tool: click {click}'s level crossing type does not read: {why}"
+        )),
+        Ok(_) => {}
+    }
+    keep_tool(click, read);
+}
+
+/// Keeps `read` for click `click`, the newest [`modules::KEPT`] only.
+pub(crate) fn keep_tool(click: u64, read: Result<ToolType, String>) {
+    let mut kept = TOOL_KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+    kept.retain(|(n, _)| *n != click);
+    kept.push_back((click, read));
+    while kept.len() > modules::KEPT {
+        kept.pop_front();
+    }
+}
+
+/// What the tool's click `click` said of its crossings, once: `None` when
+/// nothing was kept for it (not a player build, or taken already).
+pub fn take_tool(click: u64) -> Option<Result<ToolType, String>> {
+    let mut kept = TOOL_KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+    let at = kept.iter().position(|(n, _)| *n == click)?;
+    kept.remove(at).map(|(_, read)| read)
 }
 
 // ---------- the room's replay: a carrier filled with the type ----------

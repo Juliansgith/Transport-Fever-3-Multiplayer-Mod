@@ -39,6 +39,11 @@ function crossings.component(entity)
 	return nil
 end
 
+-- The nodes of crossing `c` (its component), as a Lua list.
+function crossings.nodes(c)
+	return list(c and c.nodes)
+end
+
 -- A place's key, in whole millimetres, as the room's wire rounds it.
 local function mm(v) return math.floor(v * 1000 + 0.5) end
 local function key(p) return { mm(p.x), mm(p.y), mm(p.z) } end

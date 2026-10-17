@@ -591,6 +591,9 @@ tpf3mp_native = {
         if b.why then return nil, b.why end
         return b.proposal
     end,
+    -- The street and track tools' toolbar crossing type by click, as the
+    -- hook reads every player build's: none picked, unless a test says.
+    toolCrossing = function(n) return false end,
     replaying = function(on) HOOK.replaying[#HOOK.replaying + 1] = on end,
     applied = function(i, ok, entity, why)
         HOOK.applied[#HOOK.applied + 1] = { i = i, ok = ok, entity = entity, why = why }
@@ -6657,6 +6660,349 @@ fn street_precedence_survives_capture_and_room_replay() {
         local e = SENT[1].proposal.streetProposal.edgesToAdd[1].streetEdge
         assert(e.precedenceNode0 == 0 and e.precedenceNode1 == 2)
     "#)).exec().unwrap();
+}
+
+/// The level crossing types the game offers here (6 hidden), and the hook's
+/// reading of the street and track tools' toolbar type by click (`TOOL[n]`:
+/// `{ kind = }`, `{ kind = false, why = }` or `{ why = }`), taken once.
+const FAKE_TOOL_CROSSINGS: &str = r#"
+TYPES = { [3] = 'railroad_crossing/era_a_eu.rcr', [5] = 'railroad_crossing/era_c_eu.rcr', [6] = 'hidden.rcr' }
+api.res.railroadCrossingTypeRep = {
+    getName = function(i) return TYPES[i] end,
+    find = function(name) for i, n in pairs(TYPES) do if n == name then return i end end return -1 end,
+    isVisible = function(i) return i ~= 6 end,
+}
+TOOL = {}
+tpf3mp_native.toolCrossing = function(n)
+    local r = TOOL[n]
+    TOOL[n] = nil
+    if r == nil then return nil end
+    if r.why ~= nil then return r.kind, r.why end
+    return r.kind
+end
+"#;
+
+/// The street tool's click carries the level crossing type its toolbar
+/// picked, by its file, once `crossingTypes` is on; while it is off, the
+/// build goes without it, as before. With it on, a click read as picking
+/// none goes as it is; everything else stops the build and the player is
+/// told: a hook that cannot tell, and a type that does not read (forced,
+/// mixed, hidden, nothing kept).
+#[test]
+fn a_street_tool_click_carries_its_toolbars_crossing_type() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOOL_CROSSINGS).exec().unwrap();
+    lua.load(format!(
+        r#"HOOK.room = true HOOK.clicks = 0
+        SCRIPT.guiUpdate({{}}, nil, nil)
+        function CLICK(read)
+            SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetBuilder', 'builder.proposalCreate', {{ {STREET_PROPOSAL} }})
+            TOOL[HOOK.clicks] = read
+            HOOK.clicks = HOOK.clicks + 1
+            SCRIPT.guiUpdate({{}}, nil, nil)
+        end
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossingTypes = false
+        CLICK({{ kind = 5 }})
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossingTypes = true
+        CLICK({{ kind = 5 }})
+        CLICK({{ kind = false }})
+        CLICK({{ kind = false, why = 'the profile does not find the maps' }})
+        CLICK({{ why = "a build that forces a level crossing's type" }})
+        CLICK({{ kind = 6 }})
+        CLICK(nil)
+        NOTICE = HOOK.notes and HOOK.notes['tpf3mp.notice']
+        tpf3mp_native.toolCrossing = nil
+        CLICK(nil)"#
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let sent: Vec<String> = lua
+        .load(
+            "local out = {} \
+             for i, c in ipairs(HOOK.commands) do out[i] = tostring(c.BuildRoad.crossing_type) end \
+             return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        sent,
+        ["nil", "railroad_crossing/era_c_eu.rcr", "nil"],
+        "{}",
+        log(&lua)
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.contains(
+            "the build's level crossing type is left out: crossingTypes awaits two-player game acceptance"
+        )),
+        "{logged:?}"
+    );
+    for why in [
+        "the profile does not find the maps",
+        "a build that forces a level crossing's type",
+        "the hook kept nothing for the click",
+        "the hook does not read the tools' level crossing type",
+    ] {
+        let line = format!("stopped a build the room cannot carry: {why}");
+        assert!(
+            logged.iter().any(|l| l.contains(&line)),
+            "{line}: {logged:?}"
+        );
+    }
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("crossing type hidden.rcr is not offered here")),
+        "{logged:?}"
+    );
+    assert_eq!(
+        lua.load("return NOTICE").eval::<String>().unwrap(),
+        "4\tNot in multiplayer yet: a level crossing type picked in the build tool \
+         (the hook kept nothing for the click)"
+    );
+}
+
+/// Every game lays a track across the street 8-9 with the toolbar's level
+/// crossing type as the tool maps it, each vertex's node to -2 - type
+/// (preferred: a crossing there already keeps its own), reads the crossing
+/// laid back and says when the game did not take the type; a type this game
+/// does not offer is refused before anything is sent, alike in every game.
+#[test]
+fn every_game_lays_a_new_crossing_of_the_toolbars_type() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOOL_CROSSINGS).exec().unwrap();
+    lua.load(
+        r#"
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossingTypes = true
+        local find, get = api.res.streetTemplateRep.find, api.res.streetTemplateRep.get
+        api.res.streetTemplateRep.find = function(name)
+            if name == '::/track/standard.street_template' then return 6 end
+            return find(name)
+        end
+        api.res.streetTemplateRep.get = function(id)
+            if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '::/style/track.street_style' } end
+            return get(id)
+        end
+        api.type.ComponentType.RAILROAD_CROSSING = 14
+        CROSSINGS = {}
+        local component = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == 14 then return CROSSINGS[e] end
+            return component(e, kind)
+        end
+        api.engine.system.railRoadCrossingSystem = { getRailroadCrossingForNode = function(node)
+            for e, c in pairs(CROSSINGS) do
+                for _, n in ipairs(c.nodes) do if n == node then return e end end
+            end
+            return -1
+        end }
+        -- The game's build: the street split at (50, 0) by node 50, the
+        -- crossing 800 laid there of the type LAID (nil: the map's).
+        local send = api.cmd.sendCommand
+        api.cmd.sendCommand = function(command, callback)
+            local map = command.proposal and command.proposal.streetProposal.node2rcType
+            if map then
+                NODES[50] = { x = 50, y = 0, z = 0 }
+                EDGES[102] = { node0 = 8, node1 = 50, objects = {} }
+                EDGES[103] = { node0 = 50, node1 = 9, objects = {} }
+                STREETS[8], STREETS[9], STREETS[50] = { 102 }, { 103 }, { 102, 103 }
+                CROSSINGS[800] = { nodes = { 50 }, typeIndex = LAID or (-2 - map[-6]) }
+            end
+            return send(command, callback)
+        end
+        function TRACK(crossing_type)
+            return { BuildTrack = { track = '::/track/standard.street_template', catenary = false,
+                crossing_type = crossing_type, polyline = { vertices = {
+                    { pos = { x = 20, y = 0, z = 0 }, resolve = 'New' },
+                    { pos = { x = 50, y = 0, z = 0 }, resolve = { Split = { network = 'Street',
+                        ends = { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } } } },
+                    { pos = { x = 80, y = 0, z = 0 }, resolve = 'New' } },
+                links = {
+                    { from = 0, to = 1, tangent0 = { x = 30, y = 0, z = 0 }, tangent1 = { x = 30, y = 0, z = 0 },
+                      structure = 'Ground' },
+                    { from = 1, to = 2, tangent0 = { x = 30, y = 0, z = 0 }, tangent1 = { x = 30, y = 0, z = 0 },
+                      structure = 'Ground' } },
+                removals = {} } } }
+        end
+        HOOK.batch = { TRACK('railroad_crossing/era_c_eu.rcr') }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    let map: String = lua
+        .load(
+            "local m = SENT[1].proposal.streetProposal.node2rcType local keys = {} \
+             for k, v in pairs(m) do keys[#keys + 1] = k .. '=' .. v end \
+             table.sort(keys) return table.concat(keys, ' ')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(
+        map, "-5=-7 -6=-7 -7=-7",
+        "every vertex's node, the split's included, to -2 - 5"
+    );
+    let applied: String = lua
+        .load("return tostring(HOOK.applied[1].ok) .. ' ' .. tostring(HOOK.applied[1].why)")
+        .eval()
+        .unwrap();
+    assert_eq!(applied, "true nil", "{}", hook_log(&lua));
+    assert!(
+        !hook_log(&lua).contains("took type"),
+        "the crossing laid is of the type: {}",
+        hook_log(&lua)
+    );
+
+    // A game that did not take the map: said, the build applied alike.
+    lua.load(
+        "LAID = 3 NODES[50] = nil EDGES[102], EDGES[103] = nil, nil CROSSINGS = {} \
+         STREETS[8], STREETS[9], STREETS[50] = { 100 }, { 100 }, nil \
+         HOOK.batch = { TRACK('railroad_crossing/era_c_eu.rcr') } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(
+        hook_log(&lua).contains(
+            "level crossing 800 at vertex 2 took type 3, not 5 (the toolbar's railroad_crossing/era_c_eu.rcr is 5)"
+        ),
+        "{}",
+        hook_log(&lua)
+    );
+
+    // A type this game does not offer, and the channel off: refused, nothing sent.
+    lua.load(
+        "SENT = {} HOOK.applied = {} \
+         HOOK.batch = { TRACK('hidden.rcr') } UPDATE({}, STATE, 0.2) \
+         ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossingTypes = false \
+         HOOK.batch = { TRACK('railroad_crossing/era_c_eu.rcr') } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    let refused: Vec<String> = lua
+        .load(
+            "local out = {} for i, a in ipairs(HOOK.applied) do \
+             out[i] = tostring(a.ok) .. ' ' .. tostring(a.why) end return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        refused,
+        [
+            "false crossing type hidden.rcr is not offered here",
+            "false crossingTypes awaits two-player game acceptance"
+        ]
+    );
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+}
+
+/// The track tool's proposal for a track from (20, 0) to (80, 0) across the
+/// street 8-9, as the tool hands it to game scripts: the crossing's node -1
+/// new, the street laid again as its two halves to it, edge 100 removed.
+const TRACK_PROPOSAL: &str = "{ toAdd = {}, toRemove = {}, proposal = { \
+    addedNodes = { { entity = -1, comp = { position = { x = 50, y = 0, z = 0 } } }, \
+                   { entity = -2, comp = { position = { x = 20, y = 0, z = 0 } } }, \
+                   { entity = -3, comp = { position = { x = 80, y = 0, z = 0 } } } }, \
+    addedSegments = { \
+        { entity = -4, type = 1, comp = { node0 = -2, node1 = -1, type = 0, typeIndex = -1, \
+          tangent0 = { x = 30, y = 0, z = 0 }, tangent1 = { x = 30, y = 0, z = 0 }, \
+          roadTemplate = '::/track/standard.street_template', roadStyle = '' } }, \
+        { entity = -5, type = 1, comp = { node0 = -1, node1 = -3, type = 0, typeIndex = -1, \
+          tangent0 = { x = 30, y = 0, z = 0 }, tangent1 = { x = 30, y = 0, z = 0 }, \
+          roadTemplate = '::/track/standard.street_template', roadStyle = '' } }, \
+        { entity = -6, type = 0, comp = { node0 = 9, node1 = -1, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = -40, z = 0 }, tangent1 = { x = 0, y = -40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } }, \
+        { entity = -7, type = 0, comp = { node0 = -1, node1 = 8, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = -40, z = 0 }, tangent1 = { x = 0, y = -40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } } }, \
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 9, node1 = 8 } } }, \
+    removedNodes = {}, edgeObjectsToAdd = {} } }";
+
+/// A track the tool laid across a street, from the tool's own proposal
+/// through the room to every game's build: the toolbar's type goes with it,
+/// every game maps the build's nodes to it, and the crossing laid at the
+/// new node where the street's halves meet the track is read back.
+#[test]
+fn a_track_the_tool_laid_across_a_street_takes_its_toolbars_crossing_type() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOOL_CROSSINGS).exec().unwrap();
+    lua.load(format!(
+        r#"
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossingTypes = true
+        local find, get = api.res.streetTemplateRep.find, api.res.streetTemplateRep.get
+        api.res.streetTemplateRep.find = function(name)
+            if name == '::/track/standard.street_template' then return 6 end
+            return find(name)
+        end
+        api.res.streetTemplateRep.get = function(id)
+            if id == 6 then return {{ laneConfigs = {{ 'track lanes' }}, streetStyle = '::/style/track.street_style' }} end
+            return get(id)
+        end
+        api.type.ComponentType.RAILROAD_CROSSING = 14
+        CROSSINGS = {{}}
+        local component = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == 14 then return CROSSINGS[e] end
+            return component(e, kind)
+        end
+        api.engine.system.railRoadCrossingSystem = {{ getRailroadCrossingForNode = function(node)
+            for e, c in pairs(CROSSINGS) do
+                for _, n in ipairs(c.nodes) do if n == node then return e end end
+            end
+            return -1
+        end }}
+        -- The game's build: the street's halves meet at node 50, a crossing
+        -- of the type its node is mapped to.
+        local send = api.cmd.sendCommand
+        api.cmd.sendCommand = function(command, callback)
+            local p = command.proposal and command.proposal.streetProposal
+            if p and p.node2rcType then
+                MAP = p.node2rcType
+                NODES[50] = {{ x = 50, y = 0, z = 0 }}
+                EDGES[102] = {{ node0 = 50, node1 = 8, objects = {{}} }}
+                EDGES[103] = {{ node0 = 9, node1 = 50, objects = {{}} }}
+                STREETS[8], STREETS[9], STREETS[50] = {{ 102 }}, {{ 103 }}, {{ 102, 103 }}
+                local laid = -1
+                for _, v in pairs(MAP) do laid = -2 - v end
+                CROSSINGS[800] = {{ nodes = {{ 50 }}, typeIndex = laid }}
+            end
+            return send(command, callback)
+        end
+        HOOK.room = true HOOK.clicks = 0
+        SCRIPT.guiUpdate({{}}, nil, nil)
+        SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'trackBuilder', 'builder.proposalCreate', {{ {TRACK_PROPOSAL} }})
+        TOOL[0] = {{ kind = 5 }}
+        HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)
+        HOOK.batch = {{ (assert(HOOK.commands[1], 'the click went to the room')) }}
+        UPDATE({{}}, STATE, 0.2)
+        "#
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    let (handed, map, crossing): (String, String, String) = lua
+        .load(
+            "local b = HOOK.commands[1].BuildTrack \
+             local keys = {} for k, v in pairs(MAP) do keys[#keys + 1] = k .. '=' .. v end \
+             table.sort(keys) \
+             return tostring(b.crossing_type), table.concat(keys, ' '), \
+                 tostring(CROSSINGS[800].typeIndex) .. ' ' .. tostring(HOOK.applied[1].ok)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(handed, "railroad_crossing/era_c_eu.rcr");
+    assert_eq!(
+        map, "-5=-7 -6=-7 -7=-7 8=-7 9=-7",
+        "every vertex's node, the new ones by their ids and the street's ends by theirs"
+    );
+    assert_eq!(crossing, "5 true", "{}", hook_log(&lua));
+    let logged = hook_log(&lua);
+    assert!(
+        !logged.contains("took type") && !logged.contains("no level crossing"),
+        "the crossing at the new node read back of the type: {logged}"
+    );
 }
 
 /// A mod's build from its game script's GUI half, as Parallel Roads sends

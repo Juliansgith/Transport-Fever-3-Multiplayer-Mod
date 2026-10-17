@@ -226,6 +226,7 @@ fn a_captured_road_decodes_as_the_schema_says() {
             network: Network::Street,
             at: pos(450_000, 0, 2_000),
         }])),
+        crossing_type: None,
     });
     assert_eq!(decode(road), expected);
 }
@@ -297,6 +298,7 @@ fn a_captured_track_decodes_as_the_schema_says() {
             )]),
         )
         .unwrap(),
+        crossing_type: None,
     });
     assert_eq!(decode(track), expected);
 }
@@ -565,6 +567,7 @@ fn a_tf3_proposal_travels_as_the_tool_made_it() {
             network: Network::Street,
             at: pos(50_000, 1_000, 0),
         }])),
+        crossing_type: None,
     });
     assert_eq!(
         action, expected,

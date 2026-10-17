@@ -255,12 +255,14 @@ fn samples() -> Vec<Action> {
             bus_lane: true,
             tram: Tram::Electric,
             polyline: polyline(),
+            crossing_type: None,
         }),
         Action::BuildTrack(TrackBuild {
             track: text("high_speed.lua"),
             style: None,
             catenary: true,
             polyline: polyline(),
+            crossing_type: Some(text("railroad_crossing/era_c_eu.rcr")),
         }),
         Action::Bulldoze(Bulldoze::Edges {
             network: Network::Track,
@@ -1049,6 +1051,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
         removals: Vec<EdgeRef>,
         removed_nodes: Vec<NodeRef>,
         junctions: Vec<tpf3mp_proto::action::JunctionChange>,
+        crossing_type: Option<String>,
     }
     let good = polyline();
     let mut vertices = good.vertices.to_vec();
@@ -1070,6 +1073,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
         removals: Vec::new(),
         removed_nodes: Vec::new(),
         junctions: Vec::new(),
+        crossing_type: None,
     };
     // The schema version, then Action::BuildTrack.
     let bytes = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, 1u32, &track)).unwrap();
@@ -1210,4 +1214,37 @@ fn a_crossing_type_names_every_node_once_in_order() {
     let mut nameless = crossing;
     nameless.crossing_type = text("");
     refused(nameless, "a type with no name");
+}
+
+/// A road or track build carries the toolbar's crossing type by its file,
+/// through the wire and the mod's tables alike; one with no name is refused.
+#[test]
+fn a_build_carries_its_toolbars_crossing_type_by_name() {
+    let mut builds: Vec<Action> = samples()
+        .into_iter()
+        .filter(|a| matches!(a, Action::BuildRoad(_) | Action::BuildTrack(_)))
+        .collect();
+    assert_eq!(builds.len(), 2);
+    if let Action::BuildRoad(road) = &mut builds[0] {
+        road.crossing_type = Some(text("railroad_crossing/era_a_eu.rcr"));
+    }
+    for action in &builds {
+        let payload = action.to_payload().unwrap();
+        assert_eq!(&Action::from_payload(&payload).unwrap(), action);
+        let table = lua::action_to_lua(action).unwrap();
+        assert_eq!(&lua::action_from_lua(&table).unwrap(), action);
+    }
+    for mut action in builds {
+        match &mut action {
+            Action::BuildRoad(road) => road.crossing_type = Some(text("")),
+            Action::BuildTrack(track) => track.crossing_type = Some(text("")),
+            _ => unreachable!(),
+        }
+        match action.validate() {
+            Err(ActionError::Crossing(said)) => assert_eq!(said, "a type with no name"),
+            other => panic!("a nameless crossing type: {other:?}"),
+        }
+        let wire = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, &action)).unwrap();
+        assert!(Action::from_payload(&Payload::new(wire).unwrap()).is_err());
+    }
 }

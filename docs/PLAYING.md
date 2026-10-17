@@ -487,8 +487,9 @@ protected folder such as Program Files.
   type-only map proposal. The ordinary window may emit a rebuild even for a
   type swap; that UI flow is not carried and remains refused, as do rebuilds
   that change segments or junction settings. `crossings` stays gated off
-  pending ordinary-start two-player acceptance. New crossings' types picked
-  in the road or track tool are not carried.
+  pending ordinary-start two-player acceptance. The type picked in the road
+  or track tool's toolbar for a new crossing is built and waits for its
+  acceptance too: until then each game lays the era's type, as before.
 - **Line waypoints.** Add waypoints to a line's route in the line
   manager as usual: the line is changed in every player's game, each
   waypoint on the same lane or, for an aircraft, at the same place.

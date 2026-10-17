@@ -429,10 +429,11 @@ Dev C:
   type swap; the normal UI flow remains unimplemented and refused unless the
   native proposal has the type-only map shape. Window rebuilds that map nodes
   while changing segments or junctions are refused because the type-only
-  action cannot prove or reproduce those changes. Open: ordinary-start
-  two-player acceptance and the type the road and track tools pick for a new
-  crossing (`rcType`), not carried ([HOOKS.md](HOOKS.md), "Level crossing
-  types").
+  action cannot prove or reproduce those changes. The type the road and
+  track tools pick for a new crossing (`rcType`) goes with
+  `BuildRoad`/`BuildTrack` (schema 28), behind `crossingTypes`
+  (off; staged two-game runs on 2026-10-17 passed, ordinary-start acceptance not yet). Open: ordinary-start two-player acceptance of the window's
+  path ([HOOKS.md](HOOKS.md), "Level crossing types").
 - [ ] Landmarks, built once: the second on the same turn is refused and
   pays nothing.
 - [ ] Warehouses, specialised terminals, maintenance facilities, noise

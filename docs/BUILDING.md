@@ -192,6 +192,14 @@ the replay's job is to reproduce the node layout the UI produced:
   consistent. The native tool would have re-graded it; the replay only sees
   numbers.
 
+A crossing's type is the toolbar's (`rcType`): the tool maps its crossing
+nodes to it in the proposal's `node2rcType`, which the capture cannot read,
+so the hook reads it at the click and `BuildRoad`/`BuildTrack` carry it by
+file (`crossing_type`, schema 28); every game maps its vertices' nodes the
+same way, and a crossing already there keeps its own type (docs/HOOKS.md,
+"Level crossing types"; gated by `acceptance.lua`'s `crossingTypes`).
+Without it each game lays the era's type.
+
 ### Demolish
 
 Road and track demolish (`EDEMO`) matches edges by their end nodes: same
@@ -622,13 +630,14 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**27**; combines station access, company perks
+`ACTION_SCHEMA_VERSION` (**28**; combines station access, company perks
 and preservation, plus named stops and gated asset removal. Schema 26 adds a
 signal's settings to `PlaceStop` and `PlaceSignals`; the unreleased schema
 27 combines `Paint`, `PlantAssets`, `Bulldoze::EdgeObjects`, `SetCrossingType`,
 and link fields after `precedence`: edge-end positions, then signals kept
 from a cut track (`position0`, `position1`, and `kept`; see "Edge ends"
-below). This is one combined layout and has not been released. This
+below); 28 appends a road or track build's toolbar crossing type,
+`crossing_type`. This is one combined layout and has not been released. This
 integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
@@ -674,8 +683,8 @@ appended.
 
 | action | carries |
 |---|---|
-| `BuildRoad` | street type (TF3: its road template), road style (TF3), bus lane, tram track (none, plain, electric), a polyline whose links may each name their own kind, decorations, the towns' lock and the company's ownership (the road modifiers) |
-| `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
+| `BuildRoad` | street type (TF3: its road template), road style (TF3), bus lane, tram track (none, plain, electric), a polyline whose links may each name their own kind, decorations, the towns' lock and the company's ownership (the road modifiers), and the toolbar's level crossing type for the crossings it lays (schema 28) |
+| `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline, and the toolbar's level crossing type (schema 28) |
 | `Bulldoze` | edges of one network by their ends, with the town buildings the game removes along them, each by file and position; or a construction (a town building among them) by file and position; or a stop, signal or waypoint by its edge, position and model; or both stops of a two-sided stop, each by position and model, on one edge (schema 27) |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, the construction it replaces for a module edit, and its connection: the streets and tracks its tool built with it, as a polyline whose every link names its kind |
 | `BuyVehicle` | the depot by its construction's file and position and its index among the construction's depots (its `depots`, then its subconstructions that are depots: an airfield's or airport's hangar; an airport's second hangar), the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |

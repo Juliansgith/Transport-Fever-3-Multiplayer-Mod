@@ -966,6 +966,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
             let crossing = at(crate::crossings::CROSSING_ADD_CALL)
                 .ok()
                 .map(|call| (call, at(crate::crossings::MAPS_LAYOUT).is_ok()));
+            // The street and track tools' toolbar crossing type, read in
+            // the same maps whether or not the window's call is found.
+            crate::crossings::set_layout(at(crate::crossings::MAPS_LAYOUT).is_ok());
             // The game's insert into a crossing map, which the room's replay
             // fills its carrier with: through the window's own call of it.
             let read = |at: u64, len: usize| {

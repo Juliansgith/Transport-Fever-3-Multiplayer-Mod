@@ -50,7 +50,9 @@ window remains gated behind `crossings`; the PR author reported staged Japan_2
 two-player runs on 2026-10-17, but ordinary-start acceptance is not established
 here. The type-only mechanics fixtures explicitly enable the channel in their
 own Lua state, and the crossing-window rebuild fixture proves segment/junction
-rebuilds are refused. Enable the channel only after ordinary two-player
+rebuilds are refused. The type the road and track tools' toolbar picks for a
+new crossing (`crossing_type` on `BuildRoad`/`BuildTrack`) is behind
+`crossingTypes` (off; staged two-game runs on 2026-10-17 passed, ordinary-start acceptance not yet). Enable a channel only after ordinary two-player
 acceptance demonstrates matching outcomes, ownership and money. The gate file
 is part of the installed-mod fingerprint.
 

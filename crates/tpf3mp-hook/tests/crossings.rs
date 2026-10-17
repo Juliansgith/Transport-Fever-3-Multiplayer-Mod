@@ -2,7 +2,10 @@
 #![allow(clippy::unwrap_used)]
 
 use tpf3mp_hook::{
-    crossings::{Change, arm, decode, disarm, fill, is_crossing_window, layout, set_call},
+    crossings::{
+        Change, ToolType, arm, decode, decode_tool, disarm, fill, is_crossing_window, layout,
+        record_tool, set_call, set_layout, take_tool,
+    },
     modules::{Memory, layout as street},
     terrain::Heap,
 };
@@ -313,4 +316,80 @@ fn arming_needs_a_crossing_a_type_and_the_game_s_insert() {
         Err("the profile does not lead to this build's crossing map".to_owned())
     );
     assert_eq!(disarm(), None);
+}
+
+/// A street or track tool's proposal: its crossing nodes mapped as the tool
+/// maps them (`pairs`), nothing in the window's map.
+fn tool(pairs: &[(i32, i32)]) -> Image {
+    let mut m = Image(vec![0; 0x1000]);
+    m.map(layout::NODE_TYPES, NODE_MAP, pairs);
+    m.map(layout::CROSSING_TYPES, CROSSING_MAP, &[]);
+    m
+}
+
+/// The tool maps each crossing node of its polyline to -2 - rcType (build
+/// 40420, UI::StreetBuilder): that reads as the type; nothing mapped (an
+/// automatic choice, or no crossing) as none, -1 entries ignored.
+#[test]
+fn the_tool_s_crossing_type_reads_as_one_type_or_none() {
+    assert_eq!(
+        decode_tool(&tool(&[(-5, -7), (-6, -7), (712, -7)]), PROPOSAL),
+        Ok(ToolType::Type(5))
+    );
+    assert_eq!(
+        decode_tool(&tool(&[(-5, -2)]), PROPOSAL),
+        Ok(ToolType::Type(0))
+    );
+    assert_eq!(decode_tool(&tool(&[]), PROPOSAL), Ok(ToolType::None));
+    assert_eq!(
+        decode_tool(&tool(&[(-5, -1)]), PROPOSAL),
+        Ok(ToolType::None)
+    );
+    assert_eq!(
+        decode_tool(&tool(&[(-5, -1), (-6, -9)]), PROPOSAL),
+        Ok(ToolType::Type(7))
+    );
+}
+
+/// A forced type (the crossing window's encoding), types that differ, or a
+/// map that does not walk are refused, never read as a type.
+#[test]
+fn a_forced_mixed_or_broken_tool_map_is_refused() {
+    assert_eq!(
+        decode_tool(&tool(&[(-5, 5)]), PROPOSAL),
+        Err("a build that forces a level crossing's type".to_owned())
+    );
+    assert_eq!(
+        decode_tool(&tool(&[(-5, -7), (-6, -8)]), PROPOSAL),
+        Err("a build that gives its level crossings different types".to_owned())
+    );
+    let mut m = tool(&[(-5, -7)]);
+    m.word(PROPOSAL + layout::NODE_TYPES + layout::MAP_SIZE, 2);
+    assert!(
+        decode_tool(&m, PROPOSAL)
+            .unwrap_err()
+            .contains("shorter than its size")
+    );
+    assert!(
+        decode_tool(&tool(&[(7, -7), (7, -7)]), PROPOSAL)
+            .unwrap_err()
+            .contains("a key twice")
+    );
+}
+
+/// Each click's reading is kept for the GUI and taken once; without the
+/// profile's maps it is unknown, not none.
+#[test]
+fn the_tool_s_reading_is_kept_by_click_and_taken_once() {
+    // Clicks far from any other test's.
+    set_layout(false);
+    record_tool(&tool(&[(-5, -7)]), 7_000_001, PROPOSAL);
+    assert_eq!(take_tool(7_000_001), Some(Ok(ToolType::Unknown)));
+    set_layout(true);
+    record_tool(&tool(&[(-5, -7)]), 7_000_002, PROPOSAL);
+    record_tool(&tool(&[(-5, 5)]), 7_000_003, PROPOSAL);
+    assert_eq!(take_tool(7_000_002), Some(Ok(ToolType::Type(5))));
+    assert_eq!(take_tool(7_000_002), None, "taken once");
+    assert!(take_tool(7_000_003).unwrap().is_err());
+    assert_eq!(take_tool(7_000_004), None, "nothing kept");
 }
