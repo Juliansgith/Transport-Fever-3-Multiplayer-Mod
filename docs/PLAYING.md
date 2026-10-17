@@ -635,8 +635,10 @@ protected folder such as Program Files.
   or ended between a track's signals now keeps each signal on the piece of
   the cut track the tool chose (`splitSignals`; accepted in a two-game room
   on build 40420). Mods' signals go too. A waypoint on the cut track still
-  stops the build, as does a cut where the tool places a new signal itself
-  (near a node it moves).
+  stops the build. A track started close to a node of a track with
+  signals, where the tool moves that node and puts the signal back on the
+  redrawn track, keeps the old signal there too (`refitSignals`; accepted
+  in a two-game room on build 40420).
 
 ## Playtesting before the game is out
 

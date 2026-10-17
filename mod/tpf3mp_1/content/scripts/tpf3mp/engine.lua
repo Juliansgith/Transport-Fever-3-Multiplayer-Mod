@@ -282,6 +282,160 @@ local function signalOn(entity)
 	return p, model
 end
 
+-- A signal the track tool puts back where it stood. A track started close
+-- to a node of a track with signals: the tool removes that node, redraws
+-- the track through its own, and on an edge whose node it removes it
+-- replaces the signal with a new one on the piece that goes on from the
+-- old edge's other end (seen on build 40420, 2026-10-17, run-1017-033551:
+-- the signal in edgeObjectsToRemove, one record in edgeObjectsToAdd with
+-- category 2 and nothing else that reads, no model, place or settings,
+-- and that piece listing it as a new entity). The piece may also run
+-- across the removed node, from the tool's own node or the old track's end
+-- before it to one past it (run-1017-pr165-p2, run-1017-refit). Each new
+-- signal is taken as the old one, kept on that piece under its own
+-- entity (keptInPlace, as a split's): every game's build keeps its
+-- construction and its settings,
+-- which the tool's record does not say. Only one for one: each record a
+-- signal on one new track edge, each removal a signal (no waypoint) on one
+-- removed track edge, each new signal on a piece that only one removed
+-- signal goes onto: a stretch of its old track (both ends on that
+-- signal's edge or on a removed track edge that meets it at a node the
+-- build removes), not rebuilt between the signal's edge's own nodes, and
+-- that runs where the signal stood, the same way (geom.runsThrough);
+-- anything else refused as before. Behind
+-- acceptance.lua's refitSignals, which only the capture asks: the room
+-- carries it as a split's Link.kept. Returns the old signals so kept, by
+-- entity.
+local SIGNAL_CATEGORY = 2
+local function refitSignals(capture, connection, posOf)
+	local adds, removes = capture.objectAdds or {}, capture.objectRemoves or {}
+	if #adds == 0 and #removes == 0 then return {} end
+	local refused = "a build with a stop or signal"
+	if connection or #adds ~= #removes then error(refused, 0) end
+	local SIGNAL = enum("EdgeObjectType").SIGNAL
+	-- The removed signals, by entity, on the removed track edge each stands on.
+	local on = {}
+	for k, r in ipairs(capture.removed) do
+		for _, o in ipairs(r.typed or {}) do
+			if on[o[1]] ~= nil then error("an edge object on two edges", 0) end
+			on[o[1]] = { k = k, kind = o[2] }
+		end
+	end
+	local removing = {}
+	for _, entity in ipairs(removes) do
+		local src = type(entity) == "number" and entity >= 0 and on[entity]
+		if not src or removing[entity] or src.kind ~= SIGNAL or capture.removed[src.k].network ~= "Track" then
+			error(refused, 0)
+		end
+		-- A waypoint, which lines name, is never put back for another.
+		src.at = signalOn(entity)
+		removing[entity] = src
+	end
+	-- The new signals, by the entity the proposal gives each.
+	local new = {}
+	for _, rec in ipairs(adds) do
+		local id = get(rec, "resultEntity")
+		if get(rec, "category") ~= SIGNAL_CATEGORY or type(id) ~= "number" or id >= 0 or new[id] ~= nil then
+			error(refused, 0)
+		end
+		new[id] = false
+	end
+	local placed = {}
+	for _, e in ipairs(capture.edges) do
+		for i, o in ipairs(e.typed or {}) do
+			if removing[o[1]] then error(refused, 0) end
+			if o[1] < 0 then
+				if new[o[1]] ~= false or o[2] ~= SIGNAL or e.network ~= "Track" then error(refused, 0) end
+				new[o[1]] = true
+				placed[#placed + 1] = { e = e, i = i }
+			end
+		end
+	end
+	for _, seen in pairs(new) do
+		if not seen then error(refused, 0) end
+	end
+	-- The removed track edges by the nodes the build removes that they
+	-- end at: across such a node the track goes on as another removed edge.
+	local gone = {}
+	for _, n in ipairs(capture.removedNodes) do gone[n.id] = {} end
+	for k, r in ipairs(capture.removed) do
+		if r.network == "Track" then
+			for _, n in ipairs({ r.node0, r.node1 }) do
+				if gone[n] then gone[n][#gone[n] + 1] = k end
+			end
+		end
+	end
+	local geometry = {}
+	local function geometryOf(k)
+		geometry[k] = geometry[k] or removedGeometry(capture.removed[k], posOf)
+		return geometry[k]
+	end
+	-- Whether a place lies on the signal's old track: its edge, or a removed
+	-- track edge that meets it at a node the build removes (within
+	-- STAND_TOL, horizontally and in height).
+	local function onOldTrack(src, p)
+		local r = capture.removed[src.k]
+		local edges = { src.k }
+		for _, n in ipairs({ r.node0, r.node1 }) do
+			for _, k in ipairs(gone[n] or {}) do
+				if k ~= src.k then edges[#edges + 1] = k end
+			end
+		end
+		for _, k in ipairs(edges) do
+			local g = geometryOf(k)
+			local u, d = geom.parameterAt(g.a, g.ta, g.b, g.tb, p[1], p[2])
+			local h = geom.hermitePos(g.a, g.ta, g.b, g.tb, u)[3]
+			if d <= geom.STAND_TOL and math.abs(h - p[3]) <= geom.STAND_TOL then return true end
+		end
+		return false
+	end
+	-- Whether the piece is a stretch of the signal's old track: both its
+	-- ends on it. The tool sets its own nodes on the old track about the
+	-- node it removes, before it, past it or both (run-1017-refit: one 20 m
+	-- before, one 29 m past, the signal put back on the piece between).
+	local function tied(src, to)
+		return onOldTrack(src, to.a) and onOldTrack(src, to.b)
+	end
+	-- Each new signal the one removed signal whose track goes on to its
+	-- piece, which runs where that signal stood, the same way.
+	local function standsOn(src, e, to)
+		local r = capture.removed[src.k]
+		if (e.node0 == r.node0 and e.node1 == r.node1) or (e.node0 == r.node1 and e.node1 == r.node0) then
+			return false
+		end
+		return tied(src, to) and geom.runsThrough(geometryOf(src.k), src.at, to) == true
+	end
+	local used, pairsOf = {}, {}
+	for _, p in ipairs(placed) do
+		local e = p.e
+		local to = { a = posOf(e.node0), b = posOf(e.node1), ta = e.tangent0, tb = e.tangent1 }
+		if not (to.a and to.b and to.ta and to.tb) then error("a signal's new track has no place here", 0) end
+		local match
+		for entity, src in pairs(removing) do
+			if standsOn(src, e, to) then
+				if match ~= nil then error("a build that replaces signals it cannot tell apart", 0) end
+				match = entity
+			end
+		end
+		if match == nil or used[match] then error("a build that replaces a signal elsewhere", 0) end
+		used[match] = true
+		pairsOf[#pairsOf + 1] = { p = p, entity = match }
+	end
+	if module("acceptance").refitSignals ~= true then
+		error("a signal the track tool puts back awaits two-player game acceptance", 0)
+	end
+	local refitted = {}
+	for _, m in ipairs(pairsOf) do
+		refitted[m.entity] = true
+		local e = m.p.e
+		e.typed[m.p.i] = { m.entity, SIGNAL }
+		e.objects = {}
+		for _, o in ipairs(e.typed) do e.objects[#e.objects + 1] = o[1] end
+		table.sort(e.objects)
+	end
+	return refitted
+end
+
 -- Stops and signals move with a build on an edge it rebuilds in place: a
 -- new edge between the same places, in the same direction, as a removed
 -- one, listing exactly its objects (a modifier tool's, a road drawn
@@ -290,7 +444,9 @@ end
 -- A signal also moves onto another track the build makes where the track
 -- it stood on is cut (a track started or ended between its signals): the
 -- piece that goes on from one of its old track's ends, the same way
--- (geom.continues), where the tool put it. The edge that takes it says
+-- (geom.continues), where the tool put it; a signal the tool puts back
+-- (refitSignals) also onto one that runs where it stood, the same way
+-- (geom.keepsSignal, as every game's replay asks). The edge that takes it says
 -- which, by the removal, the place along it and its construction (`kept`,
 -- action::KeptSignal), as the tool decided.
 -- Anything else is refused: a new stop or signal, one dropped, a stop or a
@@ -310,6 +466,7 @@ function engine.keptInPlace(capture, connection)
 			and math.abs(a[3] - b[3]) < 0.05
 	end
 	local function key(list) return table.concat(list, ",") end
+	local refitted = refitSignals(capture, connection, posOf)
 	local placed, claimed, moving = {}, {}, {}
 	for _, e in ipairs(capture.edges) do
 		if #e.objects > 0 then
@@ -363,7 +520,12 @@ function engine.keptInPlace(capture, connection)
 				geometry[src.k] = geometry[src.k] or removedGeometry(r, posOf)
 				to = to or { a = posOf(e.node0), b = posOf(e.node1), ta = e.tangent0, tb = e.tangent1 }
 				if not (to.a and to.b and to.ta and to.tb) then error("a signal's new track has no place here", 0) end
-				local ok, why = geom.continues(geometry[src.k], to)
+				local ok, why
+				if refitted[o[1]] then
+					ok, why = geom.keepsSignal(geometry[src.k], p, to)
+				else
+					ok, why = geom.continues(geometry[src.k], to)
+				end
 				if not ok then error(why, 0) end
 				claimed[o[1]] = true
 				e.kept[#e.kept + 1] = { removal = src.k - 1, at = p, model = model }
@@ -412,17 +574,19 @@ function engine.fromProposal(proposal, network, constructions)
 			if #list(get(proposal, name)) > 0 then error("a build with constructions", 0) end
 		end
 	end
-	for _, name in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
-		local v = get(street, name)
-		if v ~= nil and #list(v) > 0 then error("a build with a stop or signal", 0) end
-	end
+	-- Stops and signals added or removed: only a signal the track tool puts
+	-- back where it stood (refitSignals).
+	local objectAdds, objectRemoves = list(get(street, "edgeObjectsToAdd")), list(get(street, "edgeObjectsToRemove"))
 	local added, segments, removed = list(get(street, "addedNodes")), list(get(street, "addedSegments")),
 		list(get(street, "removedSegments"))
 	local removedNodes = list(get(street, "removedNodes"))
-	if #added == 0 and #segments == 0 and #removed == 0 and #removedNodes == 0 then return nil end
+	if #added == 0 and #segments == 0 and #removed == 0 and #removedNodes == 0 then
+		if #objectAdds > 0 or #objectRemoves > 0 then error("a build with a stop or signal", 0) end
+		return nil
+	end
 
 	local capture = { network = network, nodes = {}, edges = {}, removed = {}, removedNodes = {},
-		junctions = junctions.capture(street) }
+		junctions = junctions.capture(street), objectAdds = objectAdds, objectRemoves = objectRemoves }
 	for _, n in ipairs(added) do
 		capture.nodes[#capture.nodes + 1] = { id = n.entity, pos = vec3(n.comp.position) }
 	end
@@ -608,7 +772,9 @@ end
 -- A tool's proposal in one line, for the log: nodes added (+n) and removed
 -- (-n), edges added (+e) and removed (-e) with their ends, existing nodes
 -- with their positions; a construction's own nodes and edges (its frozen
--- ones) marked "*".
+-- ones) marked "*"; each edge's stops and signals ([entity:type]), the
+-- edge objects added (+o, what of the record reads) and removed (-o, what
+-- their EDGE_OBJECT says).
 function engine.describe(proposal)
 	local ok, text = pcall(function()
 		local street = get(proposal, "proposal")
@@ -631,6 +797,33 @@ function engine.describe(proposal)
 			if type(id) == "number" and id >= 0 then return tostring(id) .. at(nodePos(id)) end
 			return tostring(id)
 		end
+		-- An edge's stops and signals as its component lists them,
+		-- [entity:EdgeObjectType,...]; nothing for none.
+		local function objects(comp)
+			local parts = {}
+			for _, o in ipairs(list(comp and get(comp, "objects"))) do
+				parts[#parts + 1] = tostring(get(o, 1)) .. ":" .. tostring(get(o, 2))
+			end
+			return #parts > 0 and ("[" .. table.concat(parts, ",") .. "]") or ""
+		end
+		-- The names a game record's metatable holds (its members, where the
+		-- binding keeps them there), for a record whose fields do not read.
+		local function members(v)
+			local names = {}
+			pcall(function()
+				local mt = getmetatable(v)
+				local index = type(mt) == "table" and mt.__index
+				for _, t in ipairs({ mt, type(index) == "table" and index or nil }) do
+					if type(t) == "table" then
+						for k in pairs(t) do
+							if type(k) == "string" and k:sub(1, 2) ~= "__" then names[#names + 1] = k end
+						end
+					end
+				end
+			end)
+			table.sort(names)
+			return table.concat(names, ",")
+		end
 		for _, n in ipairs(list(get(street, "addedNodes"))) do
 			out[#out + 1] = "+n" .. tostring(n.entity) .. mark(n.entity) .. at(n.comp.position)
 		end
@@ -640,24 +833,48 @@ function engine.describe(proposal)
 		for _, s in ipairs(list(get(street, "addedSegments"))) do
 			out[#out + 1] = "+e" .. tostring(s.entity) .. mark(s.entity) .. "/" .. tostring(s.type) .. ":"
 				.. node(s.comp.node0) .. mark(s.comp.node0) .. ">" .. node(s.comp.node1) .. mark(s.comp.node1)
+				.. objects(s.comp)
 		end
 		for _, s in ipairs(list(get(street, "removedSegments"))) do
 			out[#out + 1] = "-e" .. tostring(s.entity) .. ":" .. node(s.comp.node0) .. ">" .. node(s.comp.node1)
+				.. objects(s.comp)
 		end
 		-- Stops, signals and waypoints: whatever of their fields reads.
 		for _, o in ipairs(list(get(street, "edgeObjectsToAdd"))) do
 			local fields = {}
-			for _, key in ipairs({ "resultEntity", "category", "left", "playerEntity", "edgeEntity", "param", "model", "name" }) do
+			for _, key in ipairs({ "resultEntity", "category", "left", "oneWay", "playerEntity", "edgeEntity",
+				"edge", "param", "model", "name" }) do
 				local v = get(o, key)
 				if v ~= nil then fields[#fields + 1] = key .. "=" .. tostring(v) end
 			end
+			local params = get(o, "params")
+			if params ~= nil then fields[#fields + 1] = "params=" .. ser(params) end
 			local mi = get(o, "modelInstance")
 			if mi ~= nil then
 				local t = get(mi, "transf")
 				fields[#fields + 1] = "modelId=" .. tostring(get(mi, "modelId"))
 				if t ~= nil then fields[#fields + 1] = "at=" .. at({ get(t, 13), get(t, 14), get(t, 15) }) end
 			end
+			local names = type(o) == "userdata" and members(o) or ""
+			if names ~= "" then fields[#fields + 1] = "members=" .. names end
 			out[#out + 1] = "+o{" .. table.concat(fields, " ") .. "}"
+		end
+		-- The objects it removes, by entity: what their EDGE_OBJECT says.
+		for _, e in ipairs(list(get(street, "edgeObjectsToRemove"))) do
+			local fields = {}
+			local c
+			pcall(function() c = api.engine.getComponent(e, api.type.ComponentType.EDGE_OBJECT) end)
+			if c == nil then
+				fields[1] = "no edge object"
+			else
+				for _, key in ipairs({ "edgeEntity", "param", "left", "oneWay", "edgeObjectConstruction" }) do
+					local v = get(c, key)
+					if v ~= nil then fields[#fields + 1] = key .. "=" .. tostring(v) end
+				end
+				local t = get(c, "transf")
+				if t ~= nil then fields[#fields + 1] = "at=" .. at({ get(t, 13), get(t, 14), get(t, 15) }) end
+			end
+			out[#out + 1] = "-o" .. tostring(e) .. "{" .. table.concat(fields, " ") .. "}"
 		end
 		-- Junction settings: each node's lanes and how many a tram's.
 		for _, n in ipairs(list(get(street, "nodeConfigsToAdd"))) do

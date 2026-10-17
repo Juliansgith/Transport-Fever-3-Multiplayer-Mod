@@ -15,6 +15,15 @@
 -- acceptance on build 40420, 2026-10-17 (run-1017-024110, Japan_2: two
 -- cuts by a moved node, each signal applied in both games and moved
 -- 0.00 m, every checkpoint's free-id fingerprint equal).
+-- A signal the track tool puts back where it stood (refitSignals: a track
+-- started close to a node of a track with signals, the tool replacing the
+-- signal on the edge whose node it removes) is captured as the old signal
+-- kept on that piece, a split's Link.kept on the wire; only the capture
+-- asks this gate (tpf3mp/engine.lua refitSignals). It passed two-player
+-- acceptance on build 40420, 2026-10-17 (run-1017-refit2, Japan_2: one
+-- build by each player, a mod's signal and the game's own, each put back
+-- on the piece between the tool's own nodes about the removed one, kept in
+-- both games and moved 0.00 and 0.01 m, every rolling world check equal).
 -- Subsidies passed local two-game acceptance on build 40408, 2026-10-07:
 -- investigation/TPF3_SUBSIDIES_2026-10-07.md.
 -- Line waypoints passed local two-game acceptance on build 40420, 2026-10-16:
@@ -34,6 +43,7 @@ local acceptance = {
     preservation = false,
     signals = true,
     splitSignals = true,
+    refitSignals = true,
     paint = true,
     assets = true,
     crossings = false,

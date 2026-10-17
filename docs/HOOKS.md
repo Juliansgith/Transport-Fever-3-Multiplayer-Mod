@@ -3010,7 +3010,9 @@ construction's window its edits:
   an edge with a stop or signal on it, or that places stops, signals or
   constructions, is refused, except a track cut between its signals where
   every existing non-waypoint signal is declared and kept on its continuing
-  piece (`Link::kept`, BUILDING.md; `splitSignals`).
+  piece (`Link::kept`, BUILDING.md; `splitSignals`), and a signal the tool
+  puts back where it stood on a track it redraws around a node it moves,
+  kept as the old signal on that piece (`refitSignals`).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -3333,7 +3335,12 @@ start point after each segment, and hook.log says why once
 
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
-build handed to the room is logged with its shape too. The upgrade, bus
+build handed to the room is logged with its shape too. The shape
+(`engine.describe`) names each edge's stops and signals as its component
+lists them (`[entity:EdgeObjectType]`), each new edge object with what of
+its record reads (`+o{...}`, and its binding's member names where its
+fields do not), and each edge object removed with what its `EDGE_OBJECT`
+says (`-o<entity>{param edgeObjectConstruction at ...}`). The upgrade, bus
 lane and tram track tools stay refused until their builds are captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 
@@ -3457,8 +3464,9 @@ of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
 lets the road and track tools build through an edge with a stop on it. A
 track signal (not a waypoint) may also move onto the piece of a track
-the build cuts that goes on from one of its old track's ends, where the
-tool put it (`Link::kept`, BUILDING.md).
+the build cuts that goes on from one of its old track's ends, or that
+runs where it stood, the same way, where the tool put it (`Link::kept`,
+BUILDING.md).
 
 A track's catenary and type travel the same way, as far as the game's
 scripts say (build 40408's `construction_react_util.tl`: the

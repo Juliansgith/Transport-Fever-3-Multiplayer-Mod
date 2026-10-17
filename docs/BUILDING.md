@@ -736,14 +736,41 @@ positions, the originator's decisions included:
   acting company's or no company's, and that the piece starts where its
   old track started or ends where it ended, the same way there
   (`geom.continues`: within 0.5 m in three dimensions, tangents within
-  about 6 degrees), and lists it on that piece under its own entity;
+  about 6 degrees), or runs where the signal stood, the same way
+  (`geom.runsThrough`: its centreline within 0.5 m of that place,
+  horizontally and in height, its direction there the old track's, within
+  about 6 degrees; `geom.keepsSignal` asks both), and lists it on that
+  piece under its own entity;
   anything missing or ambiguous refuses the build in every game. After
   the build each kept signal must still exist (else the room's replay
   stops), and how far it moved is said in the log. A cut where the tool
   adds a new signal itself (`edgeObjectsToAdd`, seen where it redraws the
-  track around a moved node) stays refused. The kept-signal behavior passed
-  local two-player acceptance on build 40420, 2026-10-17; `acceptance.lua`'s
-  `splitSignals` gate is enabled for that accepted case.
+  track around a moved node) is taken as a put-back signal, below. The
+  kept-signal behavior passed local two-player acceptance on build 40420,
+  2026-10-17; `acceptance.lua`'s `splitSignals` gate is enabled for that
+  accepted case. A track started close to a node of a
+  track with signals: the tool removes that node, redraws the track
+  through its own, and on an edge whose node it removes replaces the
+  signal with a new one (`edgeObjectsToRemove` the old signal,
+  `edgeObjectsToAdd` one record of category 2 with no model, place or
+  settings that read, the piece listing it as a new entity; seen on build
+  40420, 2026-10-17). The room takes the new one as the old signal kept on
+  that piece, the same `kept` as a cut's, so every game keeps the signal
+  under its own entity with its own construction and settings, which the
+  tool's record does not say. Only one for one (`engine.lua`
+  `refitSignals`): each record a signal on one new track edge, each
+  removal a signal on one removed track edge and no waypoint, each new
+  signal on a piece that only one removed signal goes onto: a stretch of
+  its old track, both ends on that signal's edge or on a removed track
+  edge that meets it at a node the build removes, within 0.5 m (the tool
+  sets its own nodes on the old track about the node it removes, before
+  it, past it or both, and may put the signal back on the piece across
+  that node; seen in run-1017-pr165-p2 and run-1017-refit), not rebuilt
+  between the signal's edge's own nodes, and that runs where the signal
+  stood, the same way (`geom.runsThrough`); anything else is refused as a
+  build with a stop or signal. Captured only behind `acceptance.lua`'s
+  `refitSignals`, on since a two-player game showed every game keeps the
+  signal where it stood (run-1017-refit2, build 40420);
 - `removals`: existing edges the build removes, of either network, by their
   ends: an upgrade's, a span the build passes under, the stretch the tool
   rebuilds around a new junction or crossing. A split parent is no removal;

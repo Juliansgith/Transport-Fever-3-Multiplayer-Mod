@@ -1188,7 +1188,8 @@ end
 -- stands, one for one, and each checked as the capture checked it: a track
 -- signal, no waypoint (its signal list says, as tpf3mp/engine.lua's capture
 -- reads it), the acting company's or no company's, on a link of track that
--- goes on from one of its old track's ends, the same way (geom.continues).
+-- goes on from one of its old track's ends, the same way, or runs where it
+-- stood, the same way (geom.keepsSignal, as the capture asks).
 -- Anything missing or ambiguous refuses the whole build, in every game
 -- alike. Returns { link, entity, kind, pos } for each.
 local function keptSignals(polyline, removalEdges, network, at, dangling)
@@ -1245,7 +1246,7 @@ local function keptSignals(polyline, removalEdges, network, at, dangling)
 			local from = e
 			if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
 			local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
-			local ok, why = geom.continues(from, to)
+			local ok, why = geom.keepsSignal(from, kept.at, to)
 			if not ok then error(what .. ": " .. why, 0) end
 			seen[best] = true
 			local pos

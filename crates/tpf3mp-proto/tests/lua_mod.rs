@@ -17365,6 +17365,66 @@ fn every_game_keeps_a_cut_tracks_signals_on_their_pieces() {
     );
 }
 
+/// A track started close to node 21 of track 200-21-201 (FAKE_TRACKS): the
+/// tool removes 21 and puts its own node at (70, 200), short of signal 301
+/// (at 75), which it keeps on the piece that took over the track beyond
+/// 21 (refitSignals). That piece neither starts where 200 started nor ends
+/// where it ended, but runs where 301 stood, the same way: every game keeps
+/// it there, and none keeps it on a piece that runs the other way.
+const ACROSS_NODE: &str = "{ BuildTrack = { track = '::/track/standard.street_template', catenary = false,     polyline = {     vertices = {         { pos = { x = 0, y = 200, z = 0 }, resolve = { Node = 'Track' } },         { pos = { x = 70, y = 200, z = 0 }, resolve = 'New' },         { pos = { x = 200, y = 200, z = 0 }, resolve = { Node = 'Track' } } },     links = {         { from = 0, to = 1, tangent0 = { x = 70, y = 0, z = 0 }, tangent1 = { x = 70, y = 0, z = 0 },           structure = 'Ground', kept = { KEPT_300 } },         { from = FROM, to = TO, tangent0 = TANGENT, tangent1 = TANGENT,           structure = 'Ground', kept = { KEPT_301 } } },     removals = { { network = 'Track', ends = { a = { x = 0, y = 200, z = 0 }, b = { x = 100, y = 200, z = 0 } } },                  { network = 'Track', ends = { a = { x = 200, y = 200, z = 0 }, b = { x = 100, y = 200, z = 0 } } } },     removed_nodes = { { network = 'Track', at = { x = 100, y = 200, z = 0 } } }     } } }";
+
+fn across_node(from: u32, to: u32, tangent: &str) -> String {
+    ACROSS_NODE
+        .replace("KEPT_300", KEPT_300)
+        .replace("KEPT_301", KEPT_301)
+        .replace("FROM", &from.to_string())
+        .replace("TO", &to.to_string())
+        .replace("TANGENT", tangent)
+}
+
+#[test]
+fn every_game_keeps_a_signal_put_back_across_a_removed_node() {
+    let lua = cut_track_game(true);
+    lua.load(format!(
+        "HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+        across_node(1, 2, "{ x = 130, y = 0, z = 0 }")
+    ))
+    .exec()
+    .unwrap_or_else(|error| {
+        panic!(
+            "{error}
+{}",
+            hook_log(&lua)
+        )
+    });
+    assert_eq!(
+        cut_track_sent(&lua),
+        "-1[300:2] -2[301:2] | -200,201",
+        "{}",
+        hook_log(&lua)
+    );
+
+    let back = cut_track_game(true);
+    back.load(format!(
+        "HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+        across_node(2, 1, "{ x = -130, y = 0, z = 0 }")
+    ))
+    .exec()
+    .unwrap_or_else(|error| {
+        panic!(
+            "{error}
+{}",
+            hook_log(&back)
+        )
+    });
+    assert_eq!(cut_track_sent(&back), "nothing sent");
+    assert!(
+        hook_log(&back).contains("neither goes on from its track nor runs where it stood"),
+        "{}",
+        hook_log(&back)
+    );
+}
+
 /// What a game refuses of a cut track's kept signals, saying why, the same
 /// in every game: a signal kept on the piece it did not stand on, one left
 /// behind, one it cannot find or finds twice, a waypoint or a mod's signal.
@@ -17396,7 +17456,7 @@ fn a_cut_tracks_signal_a_game_cannot_keep_refuses_the_build() {
     .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
     assert_eq!(cut_track_sent(&lua), "nothing sent");
     assert!(
-        hook_log(&lua).contains("does not go on from its track"),
+        hook_log(&lua).contains("neither goes on from its track nor runs where it stood"),
         "{}",
         hook_log(&lua)
     );
