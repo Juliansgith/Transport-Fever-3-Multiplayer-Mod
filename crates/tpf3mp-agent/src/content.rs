@@ -127,11 +127,20 @@ pub fn split(
                     "not found among the installed mods, so shared".to_owned(),
                 ),
                 // Which copy the game loads is not known (`roots::settle`):
-                // shared, never personal.
-                Some(found) if found.unsure => (
-                    Class::Shared,
-                    "installed twice, as a Mod Hub download and a local mod, so shared".to_owned(),
-                ),
+                // shared, never personal, and of a version no other game
+                // has.
+                Some(found) if found.unsure => {
+                    listed.version = Text::lossy(&crate::picker::unsure_version(
+                        listed.version.as_str(),
+                        &found.id,
+                        &found.path,
+                    ));
+                    (
+                        Class::Shared,
+                        "installed twice, as a Mod Hub download and a local mod, so shared and compared with no one"
+                            .to_owned(),
+                    )
+                }
                 Some(found) => {
                     let report = tpf3mp_modscan::scan(&found.path);
                     let why = report.sharing().next().map_or_else(
@@ -344,6 +353,51 @@ mod tests {
         let bare = super::split("40408", None, &found, false).unwrap();
         assert_eq!(bare.lists, None);
         assert_eq!(bare.manifest, manifest("40408", None).unwrap());
+    }
+
+    /// A listed mod installed both as a Mod Hub download and as a local
+    /// mod, which copy the game loads not known (`roots::settle`): shared,
+    /// and its listed version no longer matches another player's.
+    #[test]
+    fn a_listed_mod_installed_twice_is_shared_and_compared_with_no_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("modio");
+        let staging = dir.path().join("staging_area");
+        installed_mod(
+            &storage.join("10640/mods"),
+            "6400001",
+            &[("mod.json", r#"{"modId": "overlay_1"}"#)],
+        );
+        installed_mod(
+            &staging,
+            "overlay_1",
+            &[("mod.json", r#"{"modId": "overlay_1"}"#)],
+        );
+        let mut found = roots::installed(&roots::roots(
+            None,
+            &[],
+            &[roots::HubRoot {
+                source: roots::HubSource::Default,
+                storage,
+            }],
+        ));
+        found.extend(roots::installed(&[staging.into()]));
+        let found = roots::settle(found, &[]);
+        let list = dir.path().join("mods.txt");
+        fs::write(&list, "overlay_1 1\n").unwrap();
+
+        let split = split("40408", Some(&list), &found, false).unwrap();
+        assert_eq!(split.verdicts[0].class, Class::Shared);
+        let version = split.manifest.mods[0].version.as_str();
+        assert!(version.starts_with("1+?"), "{version}");
+        assert_eq!(
+            split.manifest,
+            super::split("40408", Some(&list), &found, false)
+                .unwrap()
+                .manifest,
+            "the same at each scan"
+        );
+        assert!(split.lists.unwrap().personal.is_empty());
     }
 
     #[test]

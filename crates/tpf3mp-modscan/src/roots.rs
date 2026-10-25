@@ -72,7 +72,8 @@ pub enum HubSource {
     /// tells players to edit it to keep their mods on another drive.
     Settings,
     /// A folder the game itself last loaded Mod Hub mods from, as its
-    /// `stdout.txt` names it.
+    /// `stdout.txt` names it: said in the log, never looked in, as a log
+    /// tells of the game's last start, not of where mod.io keeps them now.
     GameLog,
     /// The SDK's default: `mod.io` in the users' shared folder
     /// (`%PUBLIC%`) on Windows, in the per-user data folder elsewhere.
@@ -126,20 +127,25 @@ pub struct HubSearch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Use {
     Used,
+    /// The folder mod.io uses, but no downloads of this game are there.
     NotThere,
     /// The same folder as the one at this index.
     Same(usize),
-    /// There, but mod.io uses the one at this index before it.
+    /// mod.io uses the one at this index instead.
     Passed(usize),
+    /// Named by the game's last log; mod.io uses the one at this index, if
+    /// any is known.
+    Logged(Option<usize>),
 }
 
 impl HubSearch {
-    /// The folders Mod Hub's downloads are taken from, the first copy of a
-    /// mod counting: of mod.io's own places (its settings' and its default
-    /// folders), the first that holds this game's downloads, as only that
-    /// one is the folder mod.io uses (it creates `10640\mods` in the folder
-    /// it uses); then each folder the game's log says it loaded them from.
-    /// An old folder left behind after a move does not count.
+    /// The folder Mod Hub's downloads are taken from: the one mod.io uses,
+    /// the first of its own places found (a user's settings', the global
+    /// settings', its default), if this game's downloads are there. Only
+    /// that one: an old folder left behind after a move, or a folder the
+    /// game's last log names but mod.io no longer uses, holds downloads the
+    /// game will not load. A folder named but not there (a drive not
+    /// connected, a folder chosen but not yet used) is not looked past.
     pub fn used(&self) -> Vec<HubRoot> {
         self.uses()
             .into_iter()
@@ -150,23 +156,27 @@ impl HubSearch {
     }
 
     fn uses(&self) -> Vec<Use> {
+        let mine = self
+            .roots
+            .iter()
+            .position(|root| root.source != HubSource::GameLog);
         let mut uses = Vec::with_capacity(self.roots.len());
-        let mut first = None;
         for (index, root) in self.roots.iter().enumerate() {
             let used = if let Some(earlier) = self.roots[..index]
                 .iter()
                 .position(|earlier| same_folder(&earlier.storage, &root.storage))
             {
                 Use::Same(earlier)
-            } else if !root.mods().is_dir() {
-                Use::NotThere
+            } else if Some(index) == mine {
+                if root.mods().is_dir() {
+                    Use::Used
+                } else {
+                    Use::NotThere
+                }
             } else if root.source == HubSource::GameLog {
-                Use::Used
-            } else if let Some(first) = first {
-                Use::Passed(first)
+                Use::Logged(mine)
             } else {
-                first = Some(index);
-                Use::Used
+                Use::Passed(mine.unwrap_or(index))
             };
             uses.push(used);
         }
@@ -199,9 +209,21 @@ impl HubSearch {
                 }
                 Use::NotThere => "not there".to_owned(),
                 Use::Same(earlier) => format!("the same folder as place {}", earlier + 1),
-                Use::Passed(first) => format!(
-                    "there, but mod.io uses place {} before it: not looked in",
-                    first + 1
+                Use::Logged(Some(mine)) => format!(
+                    "the game last loaded Mod Hub mods from here, but mod.io uses place {}: not looked in",
+                    mine + 1
+                ),
+                Use::Logged(None) => {
+                    "the game last loaded Mod Hub mods from here: not looked in".to_owned()
+                }
+                Use::Passed(mine) => format!(
+                    "{}, but mod.io uses place {}: not looked in",
+                    if root.mods().is_dir() {
+                        "there"
+                    } else {
+                        "not there"
+                    },
+                    mine + 1
                 ),
             };
             out.push(format!(
@@ -291,15 +313,24 @@ pub fn settle(mut found: Vec<Found>, chosen: &[(String, PathBuf)]) -> Vec<Found>
         if copies.len() < 2 {
             continue;
         }
-        let pick = chosen
+        // Logs naming different copies (two Steam accounts' games) settle
+        // nothing.
+        let mut picks: Vec<usize> = chosen
             .iter()
             .filter(|(id, _)| *id == found[index].id)
-            .find_map(|(_, path)| {
+            .filter_map(|(_, path)| {
                 copies
                     .iter()
                     .copied()
                     .find(|&i| same_folder(&found[i].path, path))
-            });
+            })
+            .collect();
+        picks.sort_unstable();
+        picks.dedup();
+        let pick = match picks.as_slice() {
+            [pick] => Some(*pick),
+            _ => None,
+        };
         match pick {
             Some(pick) => found.swap(index, pick),
             None => {
@@ -312,11 +343,12 @@ pub fn settle(mut found: Vec<Found>, chosen: &[(String, PathBuf)]) -> Vec<Found>
     found
 }
 
-/// Where mod.io may keep this game's downloads on this system, as the SDK
-/// picks it: a user's settings' folder, else the global settings' folder,
-/// else its default folder; then, as found before, the local app data
-/// folder; then each folder the game's log under each of `steam_roots`
-/// says it loaded Mod Hub mods from. A setting that is no absolute path is
+/// Where mod.io may keep this game's downloads on this system, in the order
+/// the SDK picks it ([`HubSearch::used`] takes the first): a user's
+/// settings' folder, else the global settings' folder, else its default
+/// folder, else the local app data folder (as found before); then, for the
+/// log alone, each folder the game's log under each of `steam_roots` says
+/// it loaded Mod Hub mods from. A setting that is no absolute path is
 /// passed over: nothing tells where it leads.
 pub fn hub_roots(steam_roots: &[PathBuf]) -> HubSearch {
     #[cfg(windows)]
@@ -829,32 +861,35 @@ mod tests {
 
     /// The 2026-10-25 report: an owner's Mod Hub mods were all "Missing",
     /// as his downloads were neither in the users' shared folder nor in
-    /// the local app data folder. mod.io's settings move them wherever the
-    /// player says, under a folder of any name; they are found there,
-    /// versioned by the file mod.io installed, and the default folder,
-    /// there too, is not looked in.
+    /// the local app data folder. Another game on mod.io's SDK (Sins of a
+    /// Solar Empire 2) had written mod.io's global settings, shared by
+    /// every such game, with its own folder, in this shape: forward
+    /// slashes, no trailing one, a folder not named `mod.io`, and the game
+    /// id joined to it directly. The downloads are found there, versioned
+    /// by the file mod.io installed; the default folder, there and empty
+    /// on his PC, is not looked in, nor what was left in it.
     #[test]
     fn mod_hub_downloads_are_found_where_mod_io_settings_move_them() {
         let dir = tempfile::tempdir().unwrap();
         let local = dir.path().join("AppData/Local");
-        let moved = dir.path().join("D/Games/ModStore");
+        let moved = local.join("sins2/mods/modio");
         let public = dir.path().join("Public/mod.io");
         download(&moved, 6414581, "bobdike_achievements_unbound", 9001);
         write(
             &local.join("mod.io/globalsettings.json"),
-            &format!(r#"{{"RootLocalStoragePath": {}}}"#, json_path(&moved)),
+            &format!(
+                r#"{{ "RootLocalStoragePath": "{}" }}"#,
+                moved.to_string_lossy().replace('\\', "/")
+            ),
         );
         // Left behind in the default folder: a mod the game no longer has.
         download(&public, 6037864, "celmi_timetables", 8001);
 
         let search = hub_roots_in(Some(&local), Some(public.clone()), &[]);
+        assert!(same_folder(&search.roots[0].storage, &moved));
         assert_eq!(
-            search.roots,
+            search.roots[1..],
             [
-                HubRoot {
-                    source: HubSource::Settings,
-                    storage: moved.clone()
-                },
                 HubRoot {
                     source: HubSource::Default,
                     storage: public
@@ -885,9 +920,33 @@ mod tests {
             [
                 "mod.io's settings (globalsettings.json): names a folder",
                 "Mod Hub's downloads, place 1 (mod.io's settings (globalsettings.json)): looked in: 1 mods, 1 of them with the file mod.io installed",
-                "Mod Hub's downloads, place 2 (mod.io's default folder): there, but mod.io uses place 1 before it: not looked in",
-                "Mod Hub's downloads, place 3 (the local app data folder): not there",
+                "Mod Hub's downloads, place 2 (mod.io's default folder): there, but mod.io uses place 1: not looked in",
+                "Mod Hub's downloads, place 3 (the local app data folder): not there, but mod.io uses place 1: not looked in",
             ]
+        );
+    }
+
+    /// A folder mod.io's settings name that is not there (a drive not
+    /// connected, a folder chosen that the game has not used yet) is not
+    /// looked past: the game will not load what the default folder holds.
+    #[test]
+    fn a_named_folder_that_is_not_there_is_not_looked_past() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("AppData/Local");
+        let public = dir.path().join("Public/mod.io");
+        download(&public, 6414521, "revyn112_towns_de", 8264750);
+        write(
+            &local.join("mod.io/globalsettings.json"),
+            &format!(
+                r#"{{"RootLocalStoragePath": {}}}"#,
+                json_path(&dir.path().join("X/modio"))
+            ),
+        );
+        let search = hub_roots_in(Some(&local), Some(public), &[]);
+        assert!(search.used().is_empty(), "{search:?}");
+        assert_eq!(
+            search.report(&[])[1],
+            "Mod Hub's downloads, place 1 (mod.io's settings (globalsettings.json)): not there"
         );
     }
 
@@ -1033,10 +1092,35 @@ mod tests {
                 PathBuf::from(staged)
             )]
         );
-        let found = installed(&roots(None, &[], &search.used()));
+        // What mod.io uses is known only from its own places: a folder
+        // the game last loaded from is said, not looked in.
+        assert!(search.used().is_empty());
+        assert_eq!(
+            search.report(&[]),
+            [
+                "Mod Hub's downloads, place 1 (the game's log (stdout.txt)): the game last loaded Mod Hub mods from here: not looked in"
+            ]
+        );
+        // Where it is mod.io's folder too, the log bears it out.
+        let both = HubSearch {
+            roots: [
+                vec![HubRoot {
+                    source: HubSource::Default,
+                    storage: storage.clone(),
+                }],
+                search.roots.clone(),
+            ]
+            .concat(),
+            ..HubSearch::default()
+        };
+        let found = installed(&roots(None, &[], &both.used()));
         assert_eq!(
             find(&found, "parallel_tracks_1").unwrap().hub.unwrap().file,
             Some(77)
+        );
+        assert_eq!(
+            both.report(&found)[1],
+            "Mod Hub's downloads, place 2 (the game's log (stdout.txt)): the same folder as place 1"
         );
     }
 
@@ -1133,8 +1217,21 @@ mod tests {
         assert_eq!((day_mode.revision, day_mode.hub), (Some(8), None));
         assert_eq!(chosen.len(), found.len());
 
-        // A log naming a folder that is no copy settles nothing.
-        let elsewhere = settle(found, &[("day_mode".to_owned(), dir.path().join("x"))]);
+        // A log naming a folder that is no copy settles nothing, nor do
+        // two logs (two Steam accounts' games) naming different copies.
+        let elsewhere = settle(
+            found.clone(),
+            &[("day_mode".to_owned(), dir.path().join("x"))],
+        );
         assert!(find(&elsewhere, "day_mode").unwrap().unsure);
+        let hub_copy = find(&found, "day_mode").unwrap().path.clone();
+        let both = settle(
+            found,
+            &[
+                ("day_mode".to_owned(), staging.join("day_mode")),
+                ("day_mode".to_owned(), hub_copy),
+            ],
+        );
+        assert!(find(&both, "day_mode").unwrap().unsure);
     }
 }

@@ -25,7 +25,7 @@
 //! their game ([`Mods::lists`]).
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -101,7 +101,7 @@ pub fn scanned(found: &[roots::Found]) -> Vec<Installed> {
                 );
                 class = Class::Shared;
                 reason = "installed twice, as a Mod Hub download and a local mod".to_owned();
-                format!("{}+?{}", short_revision(&revision), unique())
+                unsure_version(&revision, &mod_found.id, &mod_found.path)
             // TPF3-MP's own mod: its revision and the fingerprint of its
             // files, so that an old copy of the same revision differs.
             } else if mod_found.id == OWN_MOD {
@@ -138,6 +138,22 @@ pub fn hub_version(revision: &str, hub: roots::HubFile, id: &str) -> String {
             format!("{revision}+m?{}", unique())
         }
     }
+}
+
+/// The version of the mod `id` of `revision` at `path`, installed twice so
+/// that which copy the game loads is not known (`roots::settle`): one no
+/// other game has, the same at each scan while this launcher runs, so that
+/// a rescan of the same files changes nothing.
+pub(crate) fn unsure_version(revision: &str, id: &str, path: &Path) -> String {
+    static NONCES: std::sync::Mutex<BTreeMap<(String, PathBuf, String), String>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let mut nonces = NONCES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let nonce = nonces
+        .entry((id.to_owned(), path.to_owned(), revision.to_owned()))
+        .or_insert_with(unique);
+    format!("{}+?{nonce}", short_revision(revision))
 }
 
 /// A revision short enough to fit a manifest's version with the largest
@@ -823,7 +839,10 @@ mod tests {
         assert_eq!(twice.len(), 1);
         assert_eq!(twice[0].class, Class::Shared);
         assert!(twice[0].version.starts_with("1+?"), "{}", twice[0].version);
-        assert_ne!(
+        assert_ne!(twice[0].version, "1+m5", "not the Mod Hub copy's version");
+        // A rescan of the same files declares the same: the room is not
+        // told of a change that is none.
+        assert_eq!(
             twice[0].version,
             scanned(&roots::settle(found.clone(), &[]))[0].version
         );

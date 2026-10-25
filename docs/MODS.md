@@ -130,25 +130,36 @@ build 40425's binary: `RootLocalStoragePath`, `../../globalsettings.json`,
 3. else its default, `mod.io` in the users' shared folder (`%PUBLIC%`,
    `C:\Users\Public\mod.io`).
 
-The scan (`roots::hub_roots`) reads the same settings and takes the first
-of those folders that holds this game's downloads (`<storage>\10640\mods`,
-which the SDK creates in the folder it uses), then `%LOCALAPPDATA%\mod.io`
-if none does (they were found there on 2026-09-30). An old folder left
-behind after a move is not looked in. Besides, it looks in each folder the
-game's own last log names: the game's `stdout.txt`
-(`<Steam>\userdata\<account>\3493540\local\crash_dump`) names each mod's
+The scan (`roots::hub_roots`, `HubSearch::used`) reads the same settings
+and looks in the first of those folders alone, `<storage>\10640\mods`
+(the value is the storage folder itself, whatever its name: the game id is
+joined to it directly). An old folder left behind after a move is not
+looked in, and a folder named but not there (a drive not connected, a
+folder chosen that the game has not used yet) is not looked past: its mods
+are then missing until the game has downloaded them there, rather than
+taken from a folder the game will not load. `%LOCALAPPDATA%\mod.io`, where
+they were found on 2026-09-30, counts only where no default folder is
+known. A setting that is no absolute path is passed over, and only
+`RootLocalStoragePath` is read from a `user.json`, which also holds the
+player's mod.io login. Linux and macOS: the per-user data folder's
+`mod.io`, to confirm.
+
+The game's own last log, its `stdout.txt`
+(`<Steam>\userdata\<account>\3493540\local\crash_dump`), names each mod's
 folder as it loads it, `Reading content cache from json for dir
-'<storage>/10640/mods/<mod.io id>/content/'`, so a folder the settings do
-not explain (a game ignoring them, a moved users' folder) is found once
-the game has loaded from it. A setting that is no absolute path is passed
-over, and only `RootLocalStoragePath` is read from a `user.json`, which
-also holds the player's mod.io login. Linux and macOS: the per-user data
-folder's `mod.io` and the game's log only, to confirm.
+'<storage>/10640/mods/<mod.io id>/content/'`. The folders it names are
+said in the launcher's log, as the same folder as the one looked in or
+not: a log tells of the game's last start, not of where mod.io keeps the
+downloads now, so they are never looked in.
 
 Until 2026-10-25 the scan looked only in `%PUBLIC%\mod.io` and
-`%LOCALAPPDATA%\mod.io`: a room owner whose `globalsettings.json` moved his
-downloads had 23 of his save's 28 mods shown "Missing", although his game
-loaded them (report 2026-10-25).
+`%LOCALAPPDATA%\mod.io`: a room owner had 23 of his save's 28 mods shown
+"Missing", although his game loaded them (report 2026-10-25). Another
+game on mod.io's SDK, Sins of a Solar Empire 2, had written the shared
+`globalsettings.json` with its own folder,
+`{ "RootLocalStoragePath": "C:/Users/<name>/AppData/Local/sins2/mods/modio" }`,
+and Transport Fever 3 kept its downloads in `...\modio\10640\mods` since,
+while `%PUBLIC%\mod.io\10640\mods` stayed there, empty.
 
 The launcher's log says where it looked, in words that survive the path
 redaction of diagnostics: what each settings file said (`mod.io's settings
@@ -156,9 +167,11 @@ redaction of diagnostics: what each settings file said (`mod.io's settings
 and what became of it:
 
 ```
+mod.io's settings (globalsettings.json): names a folder
 Mod Hub's downloads, place 1 (mod.io's settings (globalsettings.json)): looked in: 31 mods, 31 of them with the file mod.io installed
-Mod Hub's downloads, place 2 (mod.io's default folder): there, but mod.io uses place 1 before it: not looked in
-Mod Hub's downloads, place 3 (the local app data folder): not there
+Mod Hub's downloads, place 2 (mod.io's default folder): there, but mod.io uses place 1: not looked in
+Mod Hub's downloads, place 3 (the local app data folder): not there, but mod.io uses place 1: not looked in
+Mod Hub's downloads, place 4 (the game's log (stdout.txt)): the same folder as place 1
 ```
 
 **A mod found twice.** The game, finding one id in two folders, loads one
@@ -167,9 +180,11 @@ and logs `Multiple (2) mods with same id found <id>, the one from
 (the staging area's, or `local\mods`) over a Mod Hub download of the same
 id (two PCs, 2026-10-25), but nothing says it always does. So
 (`roots::settle`): the copy the game's last log names counts; where it
-names none and one copy is a Mod Hub download and another a local mod,
-the mod is shared, never a personal choice, and gets a version no other
-game has, with a warning in the log (fail closed: two copies of a mod's
+names none, or two logs (two Steam accounts' games) name different
+copies, and one copy is a Mod Hub download and another a local mod, the
+mod is shared, never a personal choice, and gets a version no other game
+has (the same at each scan while the launcher runs, so a rescan changes
+nothing), with a warning in the log; with `--mods` too (fail closed: two copies of a mod's
 author, the published and the one in work, may well differ). Copies all
 local, such as the game's own `mw_*` in both `mods` and `mods\release`,
 count as the first, as before.
