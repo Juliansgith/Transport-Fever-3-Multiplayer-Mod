@@ -3670,6 +3670,159 @@ function HANDLERS.ModEvent(e, ctx)
 	return run(api.cmd.makeScriptingSendEventCmd(src, id, name, param))
 end
 
+-- What a shared mod's game script keeps up after builds (tpf3mp/upkeep.lua):
+-- every game makes each operation from its own world as the mod's own code
+-- would, by places and names, for free as the mod builds. An operation
+-- already done (the deciding game's pass asked twice before the first
+-- landed) is skipped, and one the game refuses is skipped with why, the
+-- same in every game; the action stands.
+local function upkeepConstructions(file)
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local out = {}
+	local all = api.engine.getEntitiesWithComponent(CONSTRUCTION)
+	for i = 1, #all do
+		local c = api.engine.getComponent(all[i], CONSTRUCTION)
+		if c and c.fileName == file then out[#out + 1] = { entity = all[i], comp = c } end
+	end
+	return out
+end
+
+-- The construction of `file` within a metre of `at` whose parameter `key` is
+-- `identity`, the lowest entity of identical ones; or nil.
+local function upkeepFind(file, at, key, identity)
+	local best
+	for _, c in ipairs(upkeepConstructions(file)) do
+		local t = c.comp.transf
+		local dx, dy, dz = t[13] - at.x, t[14] - at.y, t[15] - at.z
+		local ok, value = pcall(function() return c.comp.params[key] end)
+		if dx * dx + dy * dy + dz * dz <= 1 and ok and value == identity and (best == nil or c.entity < best) then
+			best = c.entity
+		end
+	end
+	return best
+end
+
+local function upkeepEdge(nodes, edge)
+	local e = edgeBetween(nodes, "Track", arr(edge.a), arr(edge.b))
+	if e == nil then error("no track there", 0) end
+	return e
+end
+
+local UPKEEP = {}
+
+function UPKEEP.Retype(op, mod, nodes)
+	if not op.template:find(mod.template, 1, true) then error("a template not the mod's: " .. op.template, 0) end
+	local e = upkeepEdge(nodes(), op.edge)
+	if tostring(e.comp.roadTemplate) == op.template then return "already" end
+	local proposal = api.engine.util.proposal.replaceSegment(e.id, op.template)
+	if proposal == nil then error("the game will not rebuild the track", 0) end
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, nil, true, false))
+end
+
+function UPKEEP.Regrade(op, mod, nodes)
+	local e = upkeepEdge(nodes(), op.edge)
+	if not tostring(e.comp.roadTemplate):find(mod.template, 1, true) then error("a track not the mod's", 0) end
+	local t0, t1 = op.tangent0, op.tangent1
+	-- The game's edge may run the other way: its ends then swap, each
+	-- tangent turned round.
+	local d0 = (e.a[1] - op.edge.a.x) ^ 2 + (e.a[2] - op.edge.a.y) ^ 2
+	local d1 = (e.a[1] - op.edge.b.x) ^ 2 + (e.a[2] - op.edge.b.y) ^ 2
+	if d1 < d0 then
+		t0, t1 = { x = -op.tangent1.x, y = -op.tangent1.y, z = -op.tangent1.z },
+			{ x = -op.tangent0.x, y = -op.tangent0.y, z = -op.tangent0.z }
+	end
+	local seg = api.type.SegmentAndEntity.new()
+	seg.entity = -1
+	seg.type = 1
+	seg.comp = e.comp
+	pcall(function()
+		local owned = api.engine.getComponent(e.id, api.type.ComponentType.PLAYER_OWNED)
+		if owned then seg.playerOwned = owned end
+	end)
+	seg.comp.tangent0 = api.type.Vec3f.new(t0.x, t0.y, t0.z)
+	seg.comp.tangent1 = api.type.Vec3f.new(t1.x, t1.y, t1.z)
+	local proposal = api.type.SimpleProposal.new()
+	proposal.streetProposal.edgesToRemove = { e.id }
+	proposal.streetProposal.edgesToAdd = { seg }
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, nil, true, false))
+end
+
+function UPKEEP.RemoveEdges(op, mod, nodes)
+	local ids = {}
+	for k, edge in ipairs(op.edges) do
+		local e = upkeepEdge(nodes(), edge)
+		if not tostring(e.comp.roadTemplate):find(mod.template, 1, true) then
+			error("track " .. k .. " is not the mod's", 0)
+		end
+		ids[#ids + 1] = e.id
+	end
+	local proposal = api.engine.util.proposal.makeSegmentsRemoveProposal(ids)
+	if proposal == nil then error("the game will not remove the tracks", 0) end
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, nil, true, true))
+	return nil, true
+end
+
+function UPKEEP.Build(op, mod)
+	if not mod.files[op.file] then error("a construction not the mod's: " .. op.file, 0) end
+	local params = module("modevents").decode(op.params)
+	if type(params) ~= "table" or params[mod.identity] ~= op.identity then
+		error("parameters that do not name the construction", 0)
+	end
+	local at = op.transform.origin
+	if upkeepFind(op.file, at, mod.identity, op.identity) then return "already" end
+	local entity = api.type.SimpleProposal.ConstructionEntity.new()
+	entity.fileName = op.file
+	entity.transf = matrix(op.transform)
+	entity.params = params
+	entity.name = op.name
+	entity.playerEntity = company()
+	local proposal = api.type.SimpleProposal.new()
+	proposal.constructionsToAdd = { entity }
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, nil, true, true))
+	if op.locked then
+		local built = upkeepFind(op.file, at, mod.identity, op.identity)
+		if built then run(api.cmd.makeWorldSetBulldozableCmd(built, false)) end
+	end
+end
+
+function UPKEEP.Demolish(op, mod)
+	if not mod.files[op.file] then error("a construction not the mod's: " .. op.file, 0) end
+	local found = upkeepFind(op.file, op.at, mod.identity, op.identity)
+	if found == nil then return "already" end
+	run(api.cmd.makeWorldSetBulldozableCmd(found, true))
+	local proposal = api.type.Proposal.new()
+	proposal.toRemove = { found }
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, nil, true, false))
+end
+
+function HANDLERS.ScriptUpkeep(u)
+	local mod = module("upkeep").MODS[u.mod_id]
+	if mod == nil then error("no upkeep of the mod " .. tostring(u.mod_id) .. " is carried", 0) end
+	local cached
+	local function nodes()
+		cached = cached or readNodes("Track")
+		return cached
+	end
+	local done, already, refused = 0, 0, {}
+	for i, op in ipairs(u.ops) do
+		local name, body = next(op)
+		local fn = UPKEEP[name]
+		local ok, result, changedNodes = false, "an operation of no kind", false
+		if fn then ok, result, changedNodes = pcall(fn, body, mod, nodes) end
+		if changedNodes then cached = nil end
+		if not ok then
+			refused[#refused + 1] = i .. " " .. tostring(name) .. ": " .. tostring(result)
+		elseif result == "already" then
+			already = already + 1
+		else
+			done = done + 1
+		end
+	end
+	log("upkeep of " .. u.mod_id .. ": " .. done .. " done, " .. already .. " already done"
+		.. (#refused > 0 and (", skipped " .. table.concat(refused, "; ")) or ""))
+	return true
+end
+
 function HANDLERS.NotificationSeen(n)
 	if type(n.notification) ~= "number" then error("a notification by its id", 0) end
 	return run(api.cmd.makeScriptingSendEventCmd("", "Notifications", "initialSound",

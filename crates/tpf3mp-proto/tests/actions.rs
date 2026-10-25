@@ -653,6 +653,39 @@ fn samples() -> Vec<Action> {
             name: text("rct.setLineRule"),
             param: text("{s4:linei3;s4:rule{s7:enabledts5:starti21600;}}"),
         }),
+        Action::ScriptUpkeep(tpf3mp_proto::action::ScriptUpkeep {
+            mod_id: text("cayde_devers_1"),
+            ops: list(vec![
+                tpf3mp_proto::action::UpkeepOp::Retype {
+                    edge: ends(pos(0, 0, 1_000), pos(10_000, 0, 1_000)),
+                    template: text("standard_ccant_cck1.lua"),
+                },
+                tpf3mp_proto::action::UpkeepOp::Regrade {
+                    edge: ends(pos(0, 0, 1_000), pos(10_000, 0, 1_000)),
+                    tangent0: pos(10_000, 0, 200),
+                    tangent1: pos(10_000, 0, 0),
+                },
+                tpf3mp_proto::action::UpkeepOp::RemoveEdges {
+                    edges: list(vec![ends(pos(0, 0, 1_000), pos(10_000, 0, 1_000))]),
+                },
+                tpf3mp_proto::action::UpkeepOp::Build {
+                    file: text("cayde_devers_1::/construction/cayde_devers/render.con"),
+                    transform: Transform {
+                        basis: [1_000_000, 0, 0, 0, 1_000_000, 0, 0, 0, 1_000_000],
+                        origin: pos(10_000, 0, 1_000),
+                    },
+                    name: text("Canted track"),
+                    params: text("{s6:cc_sigs1:Cs4:seedi0;}"),
+                    identity: text("C"),
+                    locked: true,
+                },
+                tpf3mp_proto::action::UpkeepOp::Demolish {
+                    file: text("cayde_devers_1::/construction/cayde_devers/render.con"),
+                    at: pos(0, 0, 1_000),
+                    identity: text("B"),
+                },
+            ]),
+        }),
     ]
 }
 
@@ -865,13 +898,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=28.
+    // Every top-level variant is sampled: postcard tags them 0..=29.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=28).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=29).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

@@ -58,6 +58,7 @@
         "scripts/tpf3mp/modbuild.lua",
         "scripts/tpf3mp/modguard.lua",
         "scripts/tpf3mp/modevents.lua",
+        "scripts/tpf3mp/upkeep.lua",
         "scripts/tpf3mp/previews.lua",
         "scripts/tpf3mp/progression.lua",
         "scripts/tpf3mp/registry.lua",

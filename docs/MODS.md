@@ -676,17 +676,17 @@ in full on 2026-10-25; not yet played in a room.
   one of each for the whole world, so they are the room's, not a player's.
   A track drawn with Cant on is drawn with the mod's `_ccup` templates,
   which the room's `BuildTrack` carries by name.
-- **Not working yet: the canting itself.** After a build, the mod's game
+- **The canting itself** goes through the room from one game (HOOKS.md,
+  "Scripts' upkeep"; `tpf3mp/upkeep.lua`). After a build, the mod's game
   script decides in its GUI half (`guiUpdate`, every game) to swap track
-  templates in place, fix grades and place its drawings (`render.con`,
-  with the catenary that follows the lean), with `makeWorldBuildProposalCmd`.
-  D27's wrapper stops each (removals and constructions are not carried
-  from a script), and every game would decide them from its own GUI. Until
-  one game decides them and hands them to the room (template swaps,
-  grades, constructions and removals carried as a script's follow-up), keep
-  Cant off in a room: with it on the mod retries its stopped builds without
-  end. Tracks canted in the save before the room load the same in every
-  game.
+  templates in place, ease grades and place or remove its drawings
+  (`render.con`, with the catenary that follows the lean). The room's
+  deciding game hands these to the room as `ScriptUpkeep` operations by
+  places and names, and every game applies them alike; the other games'
+  passes send nothing. The manual cant of new segments (`cayde_cant.override`)
+  goes the same way. Not yet played in a room.
+- **Not carried:** the mod's removal mode and its conversion from Real Track
+  Cant (`devers_1`): run them in single player, then host the save.
 
 ## To measure in the game
 

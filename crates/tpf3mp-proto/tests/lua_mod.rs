@@ -19889,3 +19889,291 @@ fn a_mod_events_parameter_is_plain_data_in_one_order() {
     .exec()
     .unwrap();
 }
+
+/// The world Real Cant's game script sees in the game scripts' GUI state, for
+/// tpf3mp/upkeep.lua: track 500 from node 1 to node 2 with one of its
+/// templates, track 501 with a stock one, its drawing 900 and a stock
+/// station 901; a fake api.cmd and api.engine.util.proposal, and the hook's
+/// link as upkeep.install takes it.
+const FAKE_UPKEEP: &str = r#"
+local U = ug_require('tpf3mp_1::/scripts/tpf3mp/upkeep.lua')
+local E = ug_require('tpf3mp_1::/scripts/tpf3mp/modevents.lua')
+RENDER = 'cayde_devers_1::/construction/cayde_devers/render.con'
+WORLD = {
+    BASE_EDGE = {
+        [500] = { node0 = 1, node1 = 2, roadTemplate = 'standard_ccant_cck1.lua',
+                  tangent0 = { x = 10, y = 0, z = 0 }, tangent1 = { x = 10, y = 0, z = 0 } },
+        [501] = { node0 = 2, node1 = 3, roadTemplate = 'standard.lua' },
+    },
+    BASE_NODE = {
+        [1] = { position = { x = 0, y = 0, z = 1 } },
+        [2] = { position = { x = 10, y = 0, z = 1 } },
+        [3] = { position = { x = 20, y = 0, z = 1 } },
+    },
+    CONSTRUCTION = {
+        [900] = { fileName = RENDER, params = { cc_sig = 'b10;0;0;1', cc_n = 2 },
+                  transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,1,1 } },
+        [901] = { fileName = 'station/rail/modular_station.con', params = {},
+                  transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 50,0,1,1 } },
+    },
+}
+SENT, HANDED, LOGGED = {}, {}, {}
+IN_ROOM, APPLYING, DECIDES = true, false, true
+CMD = {
+    makeWorldBuildProposalCmd = function(p, ...) return { built = p } end,
+    makeWorldSetBulldozableCmd = function(e, v) return { lock = e, value = v } end,
+    makeEntitySetPlayerCmd = function(e, p) return { owner = e } end,
+    makeScriptingSendEventCmd = function(src, id, name, param) return { event = id .. ' ' .. name } end,
+    sendCommand = function(c, cb) SENT[#SENT + 1] = c; if cb then cb(c, false) end end,
+}
+PROPOSALS = {
+    replaceSegment = function(e, tpl) return { replaced = e, tpl = tpl } end,
+    makeSegmentsRemoveProposal = function(ids) return { removes = ids } end,
+}
+HOOKS = assert(U.install(CMD, PROPOSALS, {
+    inRoom = function() return IN_ROOM end,
+    applying = function() return APPLYING end,
+    decides = function() return DECIDES end,
+    command = function(a) HANDED[#HANDED + 1] = a return true end,
+    world = { component = function(e, name) return WORLD[name] and WORLD[name][e] end },
+    encode = E.encode,
+    event = function(src, id, name, param) return E.capture({}, src, id, name, param) end,
+    log = function(line) LOGGED[#LOGGED + 1] = line end,
+}))
+-- As Real Cant sends: the command made, then sent with its callback.
+ANSWERS = {}
+function SEND(p)
+    local c = CMD.makeWorldBuildProposalCmd(p, nil, true, false)
+    CMD.sendCommand(c, function(res, ok) ANSWERS[#ANSWERS + 1] = { ok = ok, res = res } end)
+end
+"#;
+
+/// Real Cant's template swaps, grade fixes, removals and drawings become
+/// operations by places and names, handed to the room by the deciding game
+/// alone, each once; the mod hears they went; its lock and owner on its
+/// drawings are left to the room's action, and its events go from the
+/// deciding game. Anything else goes on to D27's wrapper.
+#[test]
+fn real_cants_upkeep_goes_to_the_room_from_the_deciding_game_alone() {
+    use tpf3mp_proto::{
+        action::Action,
+        lua::{action_from_lua, action_to_lua},
+    };
+    let lua = gui();
+    lua.load(FAKE_UPKEEP).exec().unwrap();
+    lua.load(
+        r#"
+        local U = ug_require('tpf3mp_1::/scripts/tpf3mp/upkeep.lua')
+        -- Who decides.
+        local players = { { id = 3, connected = true, owner = true }, { id = 1, connected = true, me = true } }
+        assert(not U.decider({ players = players }))
+        players[1].connected = false
+        assert(U.decider({ players = players }), 'the lowest id while the owner is away')
+        assert(not U.decider(nil))
+
+        -- A template swap.
+        SEND(PROPOSALS.replaceSegment(500, 'standard_ccant_ccs3_cck2.lua'))
+        assert(#SENT == 0, 'nothing built here')
+        assert(#HANDED == 1, 'handed: ' .. #HANDED)
+        local r = HANDED[1].ScriptUpkeep
+        assert(r.mod_id == 'cayde_devers_1')
+        local op = r.ops[1].Retype
+        assert(op.template == 'standard_ccant_ccs3_cck2.lua' and op.edge.a.x == 0 and op.edge.b.x == 10)
+        -- Asked again before the room's action landed: not handed twice.
+        SEND(PROPOSALS.replaceSegment(500, 'standard_ccant_ccs3_cck2.lua'))
+        assert(#HANDED == 1)
+        assert(#ANSWERS == 0, 'answered a frame later')
+        HOOKS.frame(nil)
+        assert(#ANSWERS == 2 and ANSWERS[1].ok and ANSWERS[2].ok, 'the mod hears its commands went')
+        assert(#ANSWERS[1].res.resultEntities == 0)
+
+        -- A swap to a stock template is not its upkeep: D27 judges it.
+        SEND(PROPOSALS.replaceSegment(501, 'high_speed.lua'))
+        assert(#SENT == 1 and SENT[1].built.replaced == 501)
+
+        -- A grade eased at a station.
+        local p = { streetProposal = { edgesToRemove = { 500 }, edgesToAdd = { { entity = -1, type = 1,
+            comp = { node0 = 1, node1 = 2, tangent0 = { x = 10, y = 0, z = 0.2 }, tangent1 = { x = 10, y = 0, z = 0 } } } } } }
+        SEND(p)
+        local g = HANDED[2].ScriptUpkeep.ops[1].Regrade
+        assert(g and g.tangent0.z == 0.2 and g.edge.a.x == 0)
+
+        -- Tracks removed with their drawing.
+        SEND(PROPOSALS.makeSegmentsRemoveProposal({ 500 }))
+        assert(HANDED[3].ScriptUpkeep.ops[1].RemoveEdges.edges[1].b.x == 10)
+
+        -- Drawings added: their parameters as plain data, named by cc_sig.
+        local add = { constructionsToAdd = {
+            { fileName = RENDER, name = 'Canted track', params = { cc_sig = 'b10;10;0;1', cc_n = 1, cc_c0 = 0.125, seed = 0 },
+              transf = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 10, 0, 1, 1 } } },
+        }, streetProposal = {} }
+        SEND(add)
+        local b = HANDED[4].ScriptUpkeep.ops[1].Build
+        assert(b.identity == 'b10;10;0;1' and b.locked and b.transform.origin.x == 10)
+        assert(ug_require('tpf3mp_1::/scripts/tpf3mp/modevents.lua').decode(b.params).cc_c0 == 0.125)
+
+        -- A drawing removed, and its lock and owner, which the room's action sets.
+        SEND({ toRemove = { 900 } })
+        local d = HANDED[5].ScriptUpkeep.ops[1].Demolish
+        assert(d.identity == 'b10;0;0;1' and d.at.z == 1)
+        CMD.sendCommand(CMD.makeWorldSetBulldozableCmd(900, false))
+        CMD.sendCommand(CMD.makeEntitySetPlayerCmd(900, 25))
+        assert(#SENT == 1, 'the lock and owner of its drawing are not sent')
+        CMD.sendCommand(CMD.makeWorldSetBulldozableCmd(901, false))
+        assert(#SENT == 2, 'another construction is not its own')
+
+        -- A mix with a stock construction is not its upkeep.
+        SEND({ constructionsToAdd = { add.constructionsToAdd[1],
+            { fileName = 'station/rail/modular_station.con', params = {}, transf = add.constructionsToAdd[1].transf } },
+            streetProposal = {} })
+        assert(#SENT == 3 and #HANDED == 5)
+
+        -- Its event from this state.
+        CMD.sendCommand(CMD.makeScriptingSendEventCmd('cayde_cant', 'cayde_cant', 'cayde_cant.override',
+            { mm = 80, keys = { '0.0;0.0;1.0|10.0;0.0;1.0' } }))
+        assert(HANDED[6].ModEvent.name == 'cayde_cant.override')
+
+        -- Another game hands nothing, and still tells the mod it went.
+        HOOKS.frame(nil)
+        DECIDES = false
+        local before = #HANDED
+        SEND(PROPOSALS.replaceSegment(500, 'standard_ccant_cck3.lua'))
+        CMD.sendCommand(CMD.makeScriptingSendEventCmd('cayde_cant', 'cayde_cant', 'cayde_cant.override', { mm = 0 }))
+        assert(#HANDED == before and #SENT == 3)
+        local answered = #ANSWERS
+        HOOKS.frame(nil)
+        assert(#ANSWERS == answered + 1 and ANSWERS[#ANSWERS].ok)
+
+        -- Outside the room, all as the game would.
+        IN_ROOM = false
+        SEND(PROPOSALS.replaceSegment(500, 'standard_ccant_cck3.lua'))
+        assert(#SENT == 4 and SENT[4].built.replaced == 500)
+    "#,
+    )
+    .exec()
+    .unwrap();
+    // Every action survives the wire.
+    let handed: Vec<mlua::Value> = lua.load("return HANDED").eval().unwrap();
+    assert_eq!(handed.len(), 6);
+    for captured in &handed {
+        let action = action_from_lua(&common::tree(captured)).unwrap();
+        let decoded = Action::from_payload(&action.to_payload().unwrap()).unwrap();
+        assert_eq!(decoded, action);
+        action_to_lua(&decoded).unwrap();
+    }
+}
+
+/// The deciding game starts the mod's pass after the room applied another
+/// player's build, not after its own (the mod starts that one itself), and
+/// only for a mod the room runs.
+#[test]
+fn the_deciding_game_starts_real_cants_pass_after_another_players_build() {
+    let lua = gui();
+    lua.load(FAKE_UPKEEP).exec().unwrap();
+    lua.load(
+        r#"
+        local G = { dirty = false }
+        local function load(path)
+            assert(path == 'cayde_devers_1::/cayde_devers/shared.lua')
+            return { G = G }
+        end
+        HOOKS.frame('3 other', load, nil)
+        assert(not G.dirty, 'the first note only sets where it stands')
+        HOOKS.frame('4 mine', load, nil)
+        assert(not G.dirty, 'its own build: the mod starts the pass itself')
+        HOOKS.frame('5 other', load, { tpf3mp_1 = true })
+        assert(not G.dirty, 'a room without the mod')
+        HOOKS.frame('6 other', load, { cayde_devers_1 = true })
+        assert(G.dirty and G.fullNext and G.wait == 4)
+        G.dirty = false
+        DECIDES = false
+        HOOKS.frame('7 other', load, nil)
+        assert(not G.dirty, 'only the deciding game')
+        -- An upkeep the room applied: its pass again, in the deciding game.
+        DECIDES = true
+        HOOKS.frame('7 other', load, nil, '1')
+        assert(not G.dirty, 'the first count only sets where it stands')
+        HOOKS.frame('7 other', load, nil, '2')
+        assert(G.dirty, 'after an upkeep landed')
+    "#,
+    )
+    .exec()
+    .unwrap();
+}
+
+/// Every game builds the drawing the action names for free, the acting
+/// company's and locked, and once: asked twice, the second finds it there.
+/// A removal takes the drawing of that identity, not another at the same
+/// place; one gone already is skipped.
+#[test]
+fn every_game_builds_and_removes_real_cants_drawings_alike() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        local E = ug_require('tpf3mp_1::/scripts/tpf3mp/modevents.lua')
+        RENDER = 'cayde_devers_1::/construction/cayde_devers/render.con'
+        CONSTRUCTIONS = {
+            [900] = { fileName = RENDER, params = { cc_sig = 'A' }, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,1,1 } },
+            [901] = { fileName = RENDER, params = { cc_sig = 'B' }, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,1,1 } },
+        }
+        LOCKS, NEXT = {}, 950
+        local get = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == 2 then return CONSTRUCTIONS[e] end
+            return get and get(e, kind)
+        end
+        api.engine.getEntitiesWithComponent = function(kind)
+            local l = {}
+            if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end
+            table.sort(l)
+            return l
+        end
+        api.type.Proposal = { new = function() return { toRemove = {} } end }
+        api.cmd.makeWorldSetBulldozableCmd = function(e, v) return { lock = e, value = v } end
+        local send = api.cmd.sendCommand
+        api.cmd.sendCommand = function(cmd, ...)
+            if cmd.lock then LOCKS[cmd.lock] = cmd.value end
+            local p = cmd.proposal
+            for _, e in ipairs(p and p.toRemove or {}) do CONSTRUCTIONS[e] = nil end
+            for _, c in ipairs(p and p.constructionsToAdd or {}) do
+                NEXT = NEXT + 1
+                CONSTRUCTIONS[NEXT] = { fileName = c.fileName, params = c.params, player = c.playerEntity,
+                    context = cmd.context,
+                    transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } }
+            end
+            return send(cmd, ...)
+        end
+        local build = { Build = { file = RENDER, name = 'Canted track', identity = 'C', locked = true,
+            params = E.encode({ cc_sig = 'C', cc_c0 = 0.125, seed = 0 }),
+            transform = { basis = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, origin = { x = 10, y = 0, z = 1 } } } }
+        HOOK.room = true UPDATE({}, STATE, 0.2)
+        HOOK.batch = { { ScriptUpkeep = { mod_id = 'cayde_devers_1', ops = {
+            build, build,
+            { Demolish = { file = RENDER, at = { x = 0, y = 0, z = 1 }, identity = 'B' } },
+            { Demolish = { file = RENDER, at = { x = 0, y = 0, z = 1 }, identity = 'Z' } },
+        } } } }
+        UPDATE({}, STATE, 0.2)
+        assert(#HOOK.applied == 1 and HOOK.applied[1].ok, table.concat(HOOK.logged, '|'))
+        local c = CONSTRUCTIONS[951]
+        assert(c and c.params.cc_c0 == 0.125 and c.player == 25 and c.context == nil, 'built for free, the company s')
+        assert(CONSTRUCTIONS[952] == nil, 'built once')
+        assert(LOCKS[951] == false, 'locked against the bulldozer')
+        assert(CONSTRUCTIONS[900] and not CONSTRUCTIONS[901], 'removed by its identity')
+        local said = table.concat(HOOK.logged, '|')
+        assert(said:find('upkeep of cayde_devers_1: 2 done, 2 already done', 1, true), said)
+
+        -- Another mod's construction is refused, alike.
+        HOOK.batch = { { ScriptUpkeep = { mod_id = 'cayde_devers_1', ops = {
+            { Demolish = { file = 'station/rail/modular_station.con', at = { x = 0, y = 0, z = 1 }, identity = 'A' } },
+        } } } }
+        UPDATE({}, STATE, 0.2)
+        said = table.concat(HOOK.logged, '|')
+        assert(said:find('a construction not the mod', 1, true), said)
+        HOOK.batch = { { ScriptUpkeep = { mod_id = 'other_mod', ops = { build } } } }
+        UPDATE({}, STATE, 0.2)
+        assert(HOOK.applied[#HOOK.applied].ok == false, 'an upkeep of a mod not carried')
+    "#,
+    )
+    .exec()
+    .unwrap();
+}

@@ -3517,6 +3517,59 @@ Parallel Roads, Auto Signals"). The stack there named no mod
 (`guard.callers`), so the log says no mod's name.
 
 
+### Scripts' upkeep
+
+*Proposed.* Some shared mods keep the world up by themselves after builds,
+from their game script's GUI half: Real Cant Engineering rebuilds tracks
+with its canted templates, eases grades at stations, and places and removes
+its drawings of canted track. It does so in every game, from what each
+game's GUI saw, in passes that follow no build of this player's (on load,
+late passes, chains of callbacks), so D27's wrapper stopped all of it.
+
+`mod/tpf3mp_1/content/scripts/tpf3mp/upkeep.lua` sits in front of D27's
+wrapper in the game scripts' GUI state (hook.log: `shared mods' upkeep from
+the game scripts' GUI state goes to the room from one game`), for the mods
+`upkeep.MODS` lists:
+
+- **One game decides** (`upkeep.decider`): the room's owner while connected,
+  else the connected player of the lowest id. Every game works it out from
+  the same room status.
+- **What the mod sends becomes operations by places and names**
+  (`upkeep.ops`): a track rebuilt with another template (recorded from the
+  mod's `api.engine.util.proposal.replaceSegment`), a track rebuilt between
+  its own nodes with other tangents, tracks removed (recorded from
+  `makeSegmentsRemoveProposal`), and the mod's constructions built or
+  removed, each by its file, its place and its identity (one of its
+  parameters, Real Cant's `cc_sig`), with its parameters as plain-data text
+  (`tpf3mp/modevents.lua`). Only the mod's own tracks (a template with its
+  mark in the name) and constructions (its files); any other build goes on
+  to D27's wrapper.
+- **The deciding game hands them to the room** as `ScriptUpkeep` actions
+  (action schema 29), split to fit a payload; the same operation once
+  within `REPEAT_FRAMES` (the mod asks again before the room's action
+  lands). The other games send nothing.
+- **The mod hears its command went**, a frame later, with no entities, in
+  every game: told it failed, Real Cant turns its ground fill off for the
+  session.
+- **The bulldozer's lock and the owner** the mod sets on its own
+  constructions (`makeWorldSetBulldozableCmd`, `makeEntitySetPlayerCmd`)
+  are not sent: the room's action sets them in every game. Its events to
+  its own game script from this state (`cayde_cant.override`) go to the room
+  from the deciding game as `ModEvent`s and are dropped in the others.
+- **Every game applies the action alike** (`apply.lua`,
+  `HANDLERS.ScriptUpkeep`): each track found by its nodes' places
+  (`edgeBetween`), each construction by its file within a metre of its
+  place and its identity; built for free and the acting company's, as the
+  mod builds; a drawing locked against the bulldozer. An operation already
+  done is skipped, one the game refuses is skipped with why, the same in
+  every game.
+- **The deciding game starts the mod's pass** (`MODS[..].nudge`) after the
+  room applied another player's build, which the mod would not hear, and
+  after an upkeep landed (the note `tpf3mp.upkeep`), in case its last pass
+  ended before.
+
+Not yet played in a room.
+
 ### The road and track modifiers
 
 The tools of the road menu's tools tab and the track menu's (tram tracks,
