@@ -3657,6 +3657,19 @@ end
 -- script's own event marks it (game_mechanics/notifications/
 -- notifications.script.tl, "initialSound"), in every game, so no game
 -- plays it again.
+-- A shared mod's event to its own game script (tpf3mp/modevents.lua): sent
+-- here, in every game at the same update, so every game's copy of the mod's
+-- game script hears the same event. What it names is found in this game: the
+-- acting company's own lines and vehicles, a depot by its construction.
+function HANDLERS.ModEvent(e, ctx)
+	local src, id, name, param = module("modevents").resolve({
+		own = function(kind, canonical) return ownOf(ctx, kind, canonical) end,
+		depot = function(ref, index) return purchaseDepot({ depot = ref, depot_index = index }) end,
+	}, e)
+	log("event " .. tostring(id) .. " " .. tostring(name) .. " to the game script of " .. tostring(e.mod_id))
+	return run(api.cmd.makeScriptingSendEventCmd(src, id, name, param))
+end
+
 function HANDLERS.NotificationSeen(n)
 	if type(n.notification) ~= "number" then error("a notification by its id", 0) end
 	return run(api.cmd.makeScriptingSendEventCmd("", "Notifications", "initialSound",

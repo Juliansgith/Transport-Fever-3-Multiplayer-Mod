@@ -646,6 +646,13 @@ fn samples() -> Vec<Action> {
             ]),
             crossing_type: text("infrastructure/railroad_crossing/era_c_eu/era_c_eu.rcr"),
         }),
+        Action::ModEvent(tpf3mp_proto::action::ModEvent {
+            mod_id: text("just_more_weather_1"),
+            src: text(""),
+            id: text("RealClockService"),
+            name: text("rct.setLineRule"),
+            param: text("{s4:linei3;s4:rule{s7:enabledts5:starti21600;}}"),
+        }),
     ]
 }
 
@@ -858,13 +865,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=27.
+    // Every top-level variant is sampled: postcard tags them 0..=28.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=27).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=28).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

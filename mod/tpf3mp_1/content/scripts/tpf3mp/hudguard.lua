@@ -260,6 +260,7 @@ end
 function hudguard.install(cmd, link, api, where)
 	local guard = module("guard")
 	module("capture")
+	module("modevents")
 	-- Refusals so far, by kind, and the last reason logged of each.
 	local refusals, reasons = {}, {}
 	local label = where or "the HUD's state"

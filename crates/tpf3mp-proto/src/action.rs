@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 28;
+pub const ACTION_SCHEMA_VERSION: u32 = 29;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -1484,6 +1484,29 @@ pub struct Preservation {
     pub preserved: bool,
 }
 
+/// The longest parameter of a [`ModEvent`], in bytes of its text.
+pub const MAX_MOD_EVENT_PARAM: usize = 4096;
+
+/// A shared mod's event to its own game script
+/// (`api.cmd.makeScriptingSendEventCmd(src, id, name, param)` from the mod's
+/// GUI half, `tpf3mp/modevents.lua`): every game sends it in its simulation
+/// state at the ordered step, so every game's copy of the mod's game script
+/// hears it alike. Only the events `modevents.ALLOW` lists are carried, each
+/// checked again in every game. Appended under schema version 29.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModEvent {
+    /// The mod whose game script hears it, by its `modId`.
+    pub mod_id: Text<64>,
+    /// The event's source, as the mod sent it (often empty).
+    pub src: Text<64>,
+    pub id: Text<64>,
+    pub name: Text<64>,
+    /// The event's parameter as `modevents.encode` writes it: plain data,
+    /// its keys in one order, an entity it names already turned into what
+    /// the room names it by.
+    pub param: Text<MAX_MOD_EVENT_PARAM>,
+}
+
 /// A level crossing's type, chosen in the crossing's window (the native
 /// `RailroadCrossingComp`, whose build maps the crossing to the type: docs/
 /// HOOKS.md, "Level crossing types"). Appended under schema version 27.
@@ -1598,6 +1621,9 @@ pub enum Action {
     /// A level crossing's type ([`CrossingType`]). Appended after the other
     /// unreleased schema-27 actions; earlier action tags stay fixed.
     SetCrossingType(CrossingType),
+    /// A shared mod's event to its own game script ([`ModEvent`]). Appended
+    /// under schema version 29: the variants before it keep their bytes.
+    ModEvent(ModEvent),
 }
 
 #[derive(Debug, Error)]
@@ -1675,6 +1701,7 @@ impl Action {
             Action::Paint(_) => "Paint",
             Action::PlantAssets(_) => "PlantAssets",
             Action::SetCrossingType(_) => "SetCrossingType",
+            Action::ModEvent(_) => "ModEvent",
         }
     }
 
@@ -1958,7 +1985,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -2002,7 +2029,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -2063,7 +2090,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -2081,7 +2108,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -2096,7 +2123,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -2107,7 +2134,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -2119,7 +2146,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -2156,7 +2183,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [28, 11]);
+            assert_eq!(payload.as_bytes()[..2], [29, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         // Appended under schema version 24: the perk tools take the next tag.
@@ -2164,7 +2191,7 @@ mod tests {
             industry: IndustryId(5),
             permit: None,
         });
-        assert_eq!(green.to_payload().unwrap().as_bytes(), [28, 21, 0, 5, 0]);
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [29, 21, 0, 5, 0]);
         // Appended under schema version 24: Historic Preservation takes the
         // next tag.
         let preserve = Action::Preserve(Preservation {
@@ -2177,7 +2204,7 @@ mod tests {
         });
         assert_eq!(
             preserve.to_payload().unwrap().as_bytes(),
-            [28, 22, 1, b'b', 2, 0, 0, 0, 1]
+            [29, 22, 1, b'b', 2, 0, 0, 0, 1]
         );
         // Appended under schema version 26: signals on existing tracks take
         // the next tag.
@@ -2201,7 +2228,7 @@ mod tests {
         });
         assert_eq!(
             signals.to_payload().unwrap().as_bytes(),
-            [28, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+            [29, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
         );
         // Schema 27 appends the terrain and asset actions, then the
         // two-sided stop removal within Bulldoze. Earlier tags stay fixed.
@@ -2218,7 +2245,7 @@ mod tests {
         });
         assert_eq!(
             paint.to_payload().unwrap().as_bytes(),
-            [28, 25, 1, 4, 2, 1, 1, 3, 2, 0]
+            [29, 25, 1, 4, 2, 1, 1, 3, 2, 0]
         );
         let plant = Action::PlantAssets(AssetStroke {
             models: BoundedVec::new(vec![Text::new("t").unwrap()]).unwrap(),
@@ -2238,7 +2265,7 @@ mod tests {
         assert_eq!(
             plant.to_payload().unwrap().as_bytes(),
             [
-                28, 26, 1, 1, b't', 0, 1, 1, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 2, 0, 0
+                29, 26, 1, 1, b't', 0, 1, 1, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 2, 0, 0
             ]
         );
         let stops = Action::Bulldoze(Bulldoze::EdgeObjects {
@@ -2264,7 +2291,7 @@ mod tests {
         assert_eq!(
             stops.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 2,  // Action::Bulldoze
                 4,  // Bulldoze::EdgeObjects
                 0, 0, 0, 0, 2, 0, 0, // Street, (0, 0, 0), (1, 0, 0)
@@ -2278,7 +2305,19 @@ mod tests {
         });
         assert_eq!(
             crossing.to_payload().unwrap().as_bytes(),
-            [28, 27, 2, 0, 0, 0, 2, 0, 0, 1, b'c']
+            [29, 27, 2, 0, 0, 0, 2, 0, 0, 1, b'c']
+        );
+        // Schema 29 appends a shared mod's event to its own game script.
+        let event = Action::ModEvent(ModEvent {
+            mod_id: Text::new("m").unwrap(),
+            src: Text::new("").unwrap(),
+            id: Text::new("I").unwrap(),
+            name: Text::new("N").unwrap(),
+            param: Text::new("t").unwrap(),
+        });
+        assert_eq!(
+            event.to_payload().unwrap().as_bytes(),
+            [29, 28, 1, b'm', 0, 1, b'I', 1, b'N', 1, b't']
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
@@ -2287,7 +2326,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                28, // schema version
+                29, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

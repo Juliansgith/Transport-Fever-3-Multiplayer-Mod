@@ -1297,7 +1297,7 @@ mod tests {
              `Bulldoze`, `BuildConstruction`, `BuyVehicle`, `SellVehicle`, `CreateLine`, \
              `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`, `Loan`, `VehicleOp`, \
              `ReplaceVehicle`, `Prospect`, `NotificationSeen`, `ApplyRank`, `EditJunctions`, \
-             `Subsidy`, `Rename`, `Perk`, `Preserve`, `CalendarSpeed`, `PlaceSignals`, `Paint`, `PlantAssets`, `SetCrossingType`"
+             `Subsidy`, `Rename`, `Perk`, `Preserve`, `CalendarSpeed`, `PlaceSignals`, `Paint`, `PlantAssets`, `SetCrossingType`, `ModEvent`"
         );
     }
 
