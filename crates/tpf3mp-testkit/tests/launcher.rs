@@ -1252,3 +1252,118 @@ async fn the_rooms_mods_follow_a_mod_hub_update_since_the_launchers_started() {
     let _ = stop.send(());
     let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
 }
+
+/// A save's start as the game writes one, listing the mods `ids`, as
+/// `tpf3mp_modscan::save` reads it (the same as the agent's own test
+/// saves, `save_check::saves`).
+fn write_save(path: &Path, ids: &[&str]) {
+    fn string(out: &mut Vec<u8>, text: &str) {
+        out.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+    let mut out = b"tf**\x5c\x02\x00\x00".to_vec();
+    string(&mut out, "company");
+    out.extend_from_slice(&[4, 0, 0, 0, 1, 1, 0, 0, 0, 3, 0, 0, 0]);
+    out.extend_from_slice(&u32::try_from(ids.len()).unwrap().to_le_bytes());
+    for id in ids {
+        string(&mut out, id);
+        string(&mut out, "StagingArea");
+        string(&mut out, &format!("StagingArea,{id}"));
+        string(&mut out, id);
+        string(&mut out, "");
+        out.extend_from_slice(&0u32.to_le_bytes());
+    }
+    out.extend_from_slice(&[1, 0x80, 2, 0, 0, 0x68, 1, 0, 0]);
+    std::fs::write(path, zstd::encode_all(&out[..], 3).unwrap()).unwrap();
+}
+
+/// A room made from a start save takes the save's mods in the versions
+/// installed as it is made, not as the launcher started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_made_from_a_start_save_declares_the_versions_installed_now() {
+    use std::sync::Mutex;
+
+    use tpf3mp_agent::{
+        launcher::{Action, ModHave},
+        picker::{Finder, Installed, Mods},
+    };
+    use tpf3mp_modscan::Class;
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    const STATION: &str = "shin_sumihama_station_1";
+    let mods = |station: &str| {
+        let of = |id: &str, version: &str| Installed {
+            id: id.into(),
+            name: id.into(),
+            version: version.into(),
+            class: Class::Shared,
+            reason: String::new(),
+            path: root.path().join(id),
+            hub: None,
+        };
+        vec![of("tpf3mp_1", "1"), of(STATION, station)]
+    };
+    let now = Arc::new(Mutex::new(mods("7+m8368015")));
+    let mut ann = launcher_config(
+        root.path(),
+        "ann",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    let save = root.path().join("Japan_2.sav");
+    write_save(&save, &[STATION, "tpf3mp_1"]);
+    ann.start_save = Some(save);
+    ann.picker = Some(Mods::new(
+        toy_content().game,
+        now.lock().unwrap().clone(),
+        [],
+        false,
+    ));
+    let found = Arc::clone(&now);
+    ann.find_mods = Some(Finder::new(move || found.lock().unwrap().clone()));
+    let ann = Launcher::start_local(ann);
+    let handle = ann.handle();
+    handle
+        .act(Action::Connect {
+            server: server_address,
+            name: "Ann".into(),
+        })
+        .await
+        .unwrap();
+    // The game downloads revision 8 while the launcher runs.
+    *now.lock().unwrap() = mods("8+m8400000");
+    handle
+        .act(Action::Create {
+            room: "from a save".into(),
+            max_players: 2,
+            password: None,
+            rules: None,
+            start_save: None,
+            listing: None,
+            competitive: false,
+        })
+        .await
+        .unwrap();
+    let station = handle
+        .state()
+        .room_mods
+        .into_iter()
+        .find(|m| m.id == STATION)
+        .map(|m| (m.version, m.have));
+    assert_eq!(station, Some(("8+m8400000".to_owned(), ModHave::Yes)));
+
+    drop(ann);
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}

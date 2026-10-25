@@ -4690,6 +4690,7 @@ dependencies = [
  "tpf3mp-snapshot",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
