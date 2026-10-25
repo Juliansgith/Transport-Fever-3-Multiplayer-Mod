@@ -358,11 +358,11 @@ impl LauncherArgs {
         )?;
         // Without --mods, the launcher finds the player's mods itself and
         // lets them choose their personal ones (docs/MODS.md).
-        let picker = self.mods.is_none().then(|| {
-            let found = crate::picker::discover(
-                installed.as_ref().map(|game| game.dir.as_path()),
-                &steam::steam_roots(),
-            );
+        let find_mods = self.mods.is_none().then(|| {
+            crate::picker::Finder::installed(installed.as_ref().map(|game| game.dir.clone()))
+        });
+        let picker = find_mods.as_ref().map(|finder| {
+            let found = finder.find();
             for m in &found {
                 tracing::info!("mod {} {} is {}: {}", m.id, m.version, m.class, m.reason);
             }
@@ -422,6 +422,7 @@ impl LauncherArgs {
             content: split.manifest,
             mods: split.lists,
             picker,
+            find_mods,
             native: None,
             installed,
             link: self.game_link.clone(),

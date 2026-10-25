@@ -46,7 +46,7 @@ use tracing::{info, warn};
 pub use self::api::{
     Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent,
     ModClass, ModHave, ModRow, Phase, PublicRoom, Room, RoomList, RoomModRow, RoomNativeRow,
-    RoomStart, RulesChoice, ServerRow, StartProgress, State, World,
+    RoomStart, RulesChoice, SelectedMod, ServerRow, StartProgress, State, World,
 };
 pub use self::servers::ListedServer;
 use self::{api::View, http::Page, lobby::IdleLink};
@@ -57,7 +57,7 @@ use crate::{
         self, Bridge, BridgeEnd, BridgeOptions, Control, LobbyLink, Rejoin, SharedStatus, Status,
     },
     connect,
-    picker::Declaration,
+    picker::{Declaration, Have},
 };
 
 /// How long the launcher keeps trying to rejoin a room after losing the
@@ -138,6 +138,11 @@ pub struct LauncherConfig {
     /// found them itself (no `--mods`): `content` and `mods` then follow
     /// them and the room (`crate::picker`; docs/MODS.md).
     pub picker: Option<crate::picker::Mods>,
+    /// How the picker finds the installed mods again: before the room's
+    /// owner declares the room's mods, as a guest joins or is told mods it
+    /// lacks, and when the game's window asks. Without, its mods stay as it
+    /// started.
+    pub find_mods: Option<crate::picker::Finder>,
     /// Where native mods come from: the project's signed index, when this
     /// launcher was built with its key (docs/NATIVE_MODS.md). Without, it
     /// offers none.
@@ -531,8 +536,9 @@ impl Shared {
         }
     }
 
-    /// The picker as a room session asks it.
-    fn picker_link(self: &Arc<Self>) -> Option<bridge::PickerLink> {
+    /// The picker as a room session asks it; `finds_again` whether the
+    /// launcher can find the installed mods again (`LauncherConfig::find_mods`).
+    fn picker_link(self: &Arc<Self>, finds_again: bool) -> Option<bridge::PickerLink> {
         let lists = Arc::clone(self.picker.as_ref()?);
         let learning = Arc::clone(&lists);
         let shared = Arc::clone(self);
@@ -544,11 +550,36 @@ impl Shared {
                     .then(|| Declaration::Content(mods.manifest()))
             }),
             adopt: Arc::new(move |room, owns| {
-                let again = shared.picker().and_then(|mut mods| {
-                    mods.adopt(room, owns)
-                        .then(|| Declaration::Content(mods.manifest()))
+                let (again, lacking) = shared.picker().map_or((None, false), |mut mods| {
+                    let changed = mods.adopt(room, owns);
+                    let lacking = changed
+                        && !mods.is_owner()
+                        && mods.required().iter().any(|m| m.have != Have::Yes);
+                    (
+                        changed.then(|| Declaration::Content(mods.manifest())),
+                        lacking,
+                    )
                 });
                 shared.show_mods();
+                // The room's mods, new to this guest, name one their game
+                // lacks or has in another version: the game may have
+                // downloaded it since the mods were last found. Found again
+                // in the lobby, what they declare follows (`rescan_mods`).
+                let in_lobby = shared
+                    .status()
+                    .room
+                    .as_ref()
+                    .is_some_and(|room| room.phase == RoomPhase::Lobby);
+                if lacking && finds_again && in_lobby {
+                    let (reply, _) = oneshot::channel();
+                    if shared
+                        .actions
+                        .try_send((Action::RescanMods, reply))
+                        .is_err()
+                    {
+                        warn!("cannot ask to find the installed mods again: the launcher is busy");
+                    }
+                }
                 again
             }),
         })
@@ -1145,6 +1176,9 @@ async fn act(
                 config.start_save.as_ref(),
                 crate::steam::find_save,
             )?;
+            // The room's mods in the versions installed now, not as the
+            // launcher started: the game may have updated one since.
+            find_mods_again(shared, config).await?;
             if !room_list_runs_own_mod(shared.picker().as_deref(), start_world.as_deref()) {
                 check_start_save(start_world.as_deref())?;
             }
@@ -2525,6 +2559,8 @@ async fn choose_room_mods(
         }
         None => None,
     };
+    // Each in the version installed now.
+    find_mods_again(shared, config).await?;
     let (declaration, chosen) = {
         let mut picker = shared
             .picker()
@@ -2602,20 +2638,44 @@ async fn rescan_mods(
     if shared.picker.is_none() {
         return Err("this launcher takes its mods from --mods".into());
     }
-    let game = config.installed.as_ref().map(|game| game.dir.clone());
-    let found = tokio::task::spawn_blocking(move || {
-        crate::picker::discover(game.as_deref(), &crate::steam::steam_roots())
-    })
-    .await
-    .map_err(|error| format!("finding the mods failed: {error}"))?;
-    let changed = shared.picker().is_some_and(|mut mods| mods.rescan(found));
-    shared.show_mods();
-    if !changed {
+    if !find_mods_again(shared, config).await? {
         info!("the installed mods are as they were");
         return Ok(());
     }
     info!("the installed mods changed: declaring anew");
     redeclare(shared, config, connected, session).await
+}
+
+/// Finds the installed mods again (`LauncherConfig::find_mods`), off the
+/// async runtime, and takes them into the picker: the game may have
+/// downloaded a Mod Hub update since they were last found, as the room's
+/// owner's did mid-session in the playtest of 2026-10-24. Returns whether
+/// they changed; never without the picker or a way to find them. Refused
+/// when finding them fails: nothing is declared from mods not known now.
+async fn find_mods_again(shared: &Shared, config: &LauncherConfig) -> Result<bool, String> {
+    let Some(finder) = config.find_mods.clone().filter(|_| shared.picker.is_some()) else {
+        return Ok(false);
+    };
+    let found = tokio::task::spawn_blocking(move || finder.find())
+        .await
+        .map_err(|error| format!("finding the installed mods failed: {error}"))?;
+    let changed = shared.picker().is_some_and(|mut mods| {
+        log_found_again(mods.installed(), &found);
+        mods.rescan(found)
+    });
+    shared.show_mods();
+    Ok(changed)
+}
+
+/// Logs each mod of `now` that is new or not as `before` had it, as the
+/// launcher's start logs each, and each no longer installed.
+fn log_found_again(before: &[crate::picker::Installed], now: &[crate::picker::Installed]) {
+    for m in now.iter().filter(|m| !before.contains(m)) {
+        info!("mod {} {} is {}: {}", m.id, m.version, m.class, m.reason);
+    }
+    for m in before.iter().filter(|m| !now.iter().any(|n| n.id == m.id)) {
+        info!("mod {} is no longer installed", m.id);
+    }
 }
 
 /// Whether `picked` names the save `room` already starts from: then only
@@ -2668,6 +2728,8 @@ async fn choose_start(
     let declare = if described {
         None
     } else {
+        // The room's mods in the versions installed now.
+        find_mods_again(shared, config).await?;
         if !room_list_runs_own_mod(shared.picker().as_deref(), file.as_deref()) {
             check_start_save(file.as_deref())?;
         }
@@ -2742,7 +2804,7 @@ fn begin_session(
         start_world: start_world.filter(|_| owned).map(|(file, _)| file),
         start_generated_world: owned && generate_world,
         mods: config.mods.clone(),
-        picker: shared.picker_link(),
+        picker: shared.picker_link(config.find_mods.is_some()),
         ..BridgeOptions::default()
     };
     let rejoin = Rejoin {
@@ -3513,6 +3575,9 @@ async fn join(
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = Some((invite, password.clone()));
     connected.as_ref().ok_or("connect to a server first")?;
+    // This game's mods as installed now: the game may have updated one
+    // since they were last found.
+    find_mods_again(shared, config).await?;
     // Another's room: its shared mods are learned from what it says this
     // game lacks (docs/MODS.md). Until then, this game declares none.
     let fresh = shared.picker().map(|mut mods| {
@@ -3969,6 +4034,7 @@ mod tests {
             content: ContentManifest::new(tpf3mp_proto::Text::new("test").unwrap(), Vec::new()),
             mods: None,
             picker: None,
+            find_mods: None,
             native: None,
             installed: None,
             link: "renderer-recovery-test".into(),
