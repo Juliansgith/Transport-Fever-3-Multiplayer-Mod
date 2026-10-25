@@ -1248,6 +1248,32 @@ async fn the_rooms_mods_follow_a_mod_hub_update_since_the_launchers_started() {
     ann_handle.act(pick()).await.unwrap();
     matches("9+m8500000").await;
 
+    // Revision 10 arrives, and the owner then picks a list naming a mod
+    // they do not have: refused, but the room still learns revision 10,
+    // which their launcher has now found.
+    *ann_now.lock().unwrap() = mods("10+m8600000");
+    *gus_now.lock().unwrap() = mods("10+m8600000");
+    let Action::ChooseRoomMods { mut mods, .. } = pick() else {
+        unreachable!()
+    };
+    mods.push(SelectedMod {
+        id: "not_installed_here".into(),
+        name: String::new(),
+        source: "mod.io".into(),
+        modio: Some(1),
+    });
+    let refused = ann_handle
+        .act(Action::ChooseRoomMods {
+            save: String::new(),
+            map: String::new(),
+            year: 0,
+            mods,
+            params: Vec::new(),
+        })
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    matches("10+m8600000").await;
+
     drop((ann, gus));
     let _ = stop.send(());
     let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;

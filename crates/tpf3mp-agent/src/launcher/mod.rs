@@ -2560,13 +2560,22 @@ async fn choose_room_mods(
         None => None,
     };
     // Each in the version installed now.
-    find_mods_again(shared, config).await?;
-    let (declaration, chosen) = {
-        let mut picker = shared
-            .picker()
-            .ok_or("this launcher takes its mods from --mods")?;
-        picker.choose_room(&selection, settings)?;
-        (picker.declaration()?, picker.chosen())
+    let found_again = find_mods_again(shared, config).await?;
+    let picked = shared
+        .picker()
+        .ok_or_else(|| "this launcher takes its mods from --mods".to_owned())
+        .and_then(|mut picker| {
+            picker.choose_room(&selection, settings)?;
+            Ok((picker.declaration()?, picker.chosen()))
+        });
+    let (declaration, chosen) = match picked {
+        Ok(picked) => picked,
+        Err(why) => {
+            if found_again {
+                declare_found_again(shared, config, session).await;
+            }
+            return Err(why);
+        }
     };
     shared.show_mods();
     remember_mods(config, chosen);
@@ -2667,6 +2676,17 @@ async fn find_mods_again(shared: &Shared, config: &LauncherConfig) -> Result<boo
     Ok(changed)
 }
 
+/// The room's owner's change was refused after their mods were found again
+/// and had changed: the room still learns the versions installed now, which
+/// the picker already holds and a later scan, finding nothing new, would
+/// not declare.
+async fn declare_found_again(shared: &Shared, config: &LauncherConfig, session: &Option<Session>) {
+    info!("the installed mods changed: declaring anew");
+    if let Err(error) = forward(session, Control::Declare(shared.content(config))).await {
+        warn!(%error, "cannot declare the mods found again");
+    }
+}
+
 /// Logs each mod of `now` that is new or not as `before` had it, as the
 /// launcher's start logs each, and each no longer installed.
 fn log_found_again(before: &[crate::picker::Installed], now: &[crate::picker::Installed]) {
@@ -2729,9 +2749,14 @@ async fn choose_start(
         None
     } else {
         // The room's mods in the versions installed now.
-        find_mods_again(shared, config).await?;
-        if !room_list_runs_own_mod(shared.picker().as_deref(), file.as_deref()) {
-            check_start_save(file.as_deref())?;
+        let found_again = find_mods_again(shared, config).await?;
+        if !room_list_runs_own_mod(shared.picker().as_deref(), file.as_deref())
+            && let Err(why) = check_start_save(file.as_deref())
+        {
+            if found_again {
+                declare_found_again(shared, config, session).await;
+            }
+            return Err(why);
         }
         own_start(shared, file.as_deref())
     };
