@@ -79,13 +79,11 @@ pub fn sources(game_dir: &Path) -> Vec<PathBuf> {
 /// The installed TPF3-MP mod the game loads: the first `tpf3mp_1` in the
 /// mod folders, in the game's order.
 pub fn installed_mod(game_dir: Option<&Path>) -> Option<PathBuf> {
-    tpf3mp_modscan::roots::installed(&tpf3mp_modscan::roots::default_roots(
-        game_dir,
-        &crate::steam::steam_roots(),
-    ))
-    .into_iter()
-    .find(|found| found.id == tpf3mp_bridge::mods::OWN_MOD)
-    .map(|found| found.path)
+    tpf3mp_modscan::roots::discovered(game_dir, &crate::steam::steam_roots())
+        .1
+        .into_iter()
+        .find(|found| found.id == tpf3mp_bridge::mods::OWN_MOD)
+        .map(|found| found.path)
 }
 
 /// At the launcher's start: the portraits of the game in `game_dir`, build

@@ -126,6 +126,12 @@ pub fn split(
                     Class::Shared,
                     "not found among the installed mods, so shared".to_owned(),
                 ),
+                // Which copy the game loads is not known (`roots::settle`):
+                // shared, never personal.
+                Some(found) if found.unsure => (
+                    Class::Shared,
+                    "installed twice, as a Mod Hub download and a local mod, so shared".to_owned(),
+                ),
                 Some(found) => {
                     let report = tpf3mp_modscan::scan(&found.path);
                     let why = report.sharing().next().map_or_else(
@@ -280,7 +286,7 @@ mod tests {
             "timetables 8\noverlay_1 1\ntpf3mp_1 1\nnot_installed 2\n",
         )
         .unwrap();
-        let found = roots::installed(std::slice::from_ref(&root));
+        let found = roots::installed(&[root.clone().into()]);
 
         let split = split("40408", Some(&list), &found, false).unwrap();
         let declared: Vec<&str> = split.manifest.mods.iter().map(|m| m.id.as_str()).collect();
