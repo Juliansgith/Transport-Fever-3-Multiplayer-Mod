@@ -1130,13 +1130,13 @@ async fn the_rooms_mods_follow_a_mod_hub_update_since_the_launchers_started() {
     let gus_now = Arc::new(Mutex::new(mods("7+m8368015")));
     let mut ann = launcher_config(
         root.path(),
-        "ann",
+        "una",
         &trust,
         Arc::new(Identity::generate().unwrap().0),
     );
     let mut gus = launcher_config(
         root.path(),
-        "gus",
+        "vic",
         &trust,
         Arc::new(Identity::generate().unwrap().0),
     );
@@ -1343,7 +1343,7 @@ async fn a_room_made_from_a_start_save_declares_the_versions_installed_now() {
     let now = Arc::new(Mutex::new(mods("7+m8368015")));
     let mut ann = launcher_config(
         root.path(),
-        "ann",
+        "wes",
         &trust,
         Arc::new(Identity::generate().unwrap().0),
     );
