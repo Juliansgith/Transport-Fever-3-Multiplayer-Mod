@@ -445,12 +445,21 @@ mod tests {
         assert_eq!(c.give(-5, 30_000), -5);
     }
 
+    /// Never short, and not long by more than a timer tick. The shortest of
+    /// five tries: a busy test runner can preempt any one wait (18.6 ms for
+    /// 5 on CI, 2026-10-29), which says nothing about the wait itself.
     #[cfg(windows)]
     #[test]
     fn the_wait_lasts_what_it_was_asked() {
-        let start = Instant::now();
-        wait(5.0);
-        let took = start.elapsed().as_secs_f64() * 1000.0;
-        assert!((5.0..12.0).contains(&took), "took {took} ms");
+        let tries: Vec<f64> = (0..5)
+            .map(|_| {
+                let start = Instant::now();
+                wait(5.0);
+                start.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        assert!(tries.iter().all(|took| *took >= 5.0), "{tries:?}");
+        let shortest = tries.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(shortest < 12.0, "{tries:?}");
     }
 }
