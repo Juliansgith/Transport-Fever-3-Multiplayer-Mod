@@ -26,6 +26,7 @@
 mod header;
 mod ring;
 mod shm;
+mod timer;
 
 use std::fmt;
 
@@ -34,6 +35,7 @@ use thiserror::Error;
 pub use header::{ABI_VERSION, HEADER_SIZE};
 pub use ring::{LENGTH_PREFIX, PopError, PushError};
 pub use shm::ShmError;
+pub use timer::FineTimer;
 
 use header::Layout;
 use shm::SharedRegion;

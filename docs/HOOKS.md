@@ -301,6 +301,13 @@ the payload may wrap around the end of the buffer.
   then checks `abi_version` and `header_size`, reads the ring sizes, and sets
   its own pid and heartbeat. The hook fails closed (runs solo) if no mapping is
   present.
+- **Polling.** The agent reads the hook's ring every 2 ms. A Windows timer
+  sleeps to the system's tick, 15.6 ms unless the process asked for a
+  finer one, and since Windows 10 2004 the game's own request does not
+  reach the agent's process. So the agent asks for 1 ms
+  (`tpf3mp_ipc::FineTimer`, `timeBeginPeriod`) while it plays a room, and
+  gives it back when the room ends: a step's report, a player's action and
+  the next release wait about 2 ms in the agent, not up to 16.
 - **Heartbeat.** Each side bumps its own counter and reads the peer's. A counter
   that stops advancing means the peer is gone.
   The agent gives a loaded game's hook 60 s (a load 600 s). A game that
