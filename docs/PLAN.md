@@ -31,6 +31,7 @@ Flag each of these when a task asks for it:
 | Writing or changing a decision, or settling a question left open for the owner | The owner decides (AGENTS.md) | A pull request the owner approves |
 | Logging an invite code bare | D13: codes cannot be spotted in a log line | `invite=<code>`, which redaction hides |
 | Sending crash dumps, whole files, or players' logs to a server other than the one they play on | D10 (including its approved amendment): redacted lines to the server played on, over the game's connection | The game's dumps through `collect-logs`, on the player's say |
+| An AI player that runs in every game, reads what players cannot see, gets money or prices players do not, or plays faster than a person | D32: one member's agent drives it through ordered actions; no cheats at any difficulty | Difficulty as competence and tempo (AI_PLAYERS.md) |
 
 ## Before release (done)
 
@@ -512,3 +513,31 @@ Dev C:
   snapshot store.
 - [ ] *Added (D31):* `Text` refuses bidirectional controls and invisible
   format characters in names; protocol version bumped.
+
+## Part 5: AI players
+
+*Added (D32, 2026-10-29).* Companies a computer plays, Easy, Normal or
+Hard, added by the room's owner in the lobby. The design, the difficulties
+and what "done" means for each milestone are in
+[AI_PLAYERS.md](AI_PLAYERS.md); the evidence in
+investigation/AI_PLAYERS_2026-10-29.md.
+
+- [ ] **Foundations.** AI seats in the server, its log and protocol;
+  adding and removing them in both Multiplayer windows; the driver and its
+  hand-over; the memo; `AiIntent`; the mod's world reader, verdicts and
+  outcomes, and their bridge messages; `tpf3mp-ai` with its world model
+  and executor; an AI that founds its company. The verdicts' costs
+  measured on the big fixture.
+- [ ] **Streets, Easy.** Bus lines in towns, truck lines for two-step
+  cargo chains, depots, line tuning, vehicle replacement, loans.
+- [ ] **Track.** Station sites, terrain routes, `BuildTrack` in pieces,
+  signals, depots and trains; single track with passing loops, then
+  double track.
+- [ ] **Water and air.** Harbours and ships; airfields, airports and
+  planes.
+- [ ] **Normal and Hard.** The difficulty profiles, networks with
+  transfers, upgrades, competition, subsidies and perks.
+- [ ] **The ladder.** Easy, Normal and Hard against each other on ten
+  seeds of two maps in the rig; Hard beats Normal and Normal beats Easy in
+  at least eight.
+- [ ] **Release.** The owner's playtests, tuning, PLAYING.md.

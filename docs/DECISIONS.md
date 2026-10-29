@@ -1666,3 +1666,60 @@ Rejected:
 
 Touches: PLAN.md, Part 4; PROTOCOL.md, "Snapshots" and "Slow and
 misbehaving clients"; OPERATIONS.md.
+
+## D32 (2026-10-29, decided under the owner's delegation): AI players drive companies through a member's agent
+
+The owner, on 2026-10-29: "investigate the possibility of a full opponent
+AI that can do everything like intelligently make train station, optimise
+routes etc, bus train truck ship etc. investigate deeply and make a plan
+for 3 different difficulties that can be added as ai players during
+lobby", with "you make any decisions if required". Claude decided the
+design below; the pull request that adds this entry asks the owner to
+confirm. The plan is [AI_PLAYERS.md](AI_PLAYERS.md), the evidence
+investigation/AI_PLAYERS_2026-10-29.md.
+
+- **An AI is a room's member without a connection** (an AI seat): a
+  player id the server derives, nobody's key; always ready; never pacing
+  the room; written in the room's log. The room's owner adds and removes
+  AI players in the lobby and in the game's Multiplayer window, Easy,
+  Normal or Hard.
+- **It acts only through the action schema** (D8), as ordered intents of
+  its seat, checked by the room's rules like a player's (`GameActions`),
+  and only on channels enabled in a room (Part 3, fail closed). Every
+  game applies them; the AI's company is booked as a player's would be.
+- **One member's agent drives it**: the room's owner's, else the
+  earliest-joined member keeping up with the room. The server hands the
+  seat on when the driver leaves, with the AI's memo, which the server
+  keeps (at most 256 KiB a seat). With no driver, the AI rests and its
+  company runs on.
+- **Its mind is Rust** (D1), the crate `tpf3mp-ai`, in the driver's agent
+  process. The driver's game, through the mod, only reads the world in
+  sliced reads (at most 1.5 ms a frame), answers verdicts on builds the
+  AI considers (`apply.proposalOf` and the game's `makeProposalData`) and
+  reports outcomes.
+- **An AI's company is the AI's alone** (amends D21: players cannot join
+  it). It counts as one of the room's eight companies and takes no
+  player's seat. D21 protects what it owns, and D22's station access
+  applies to its stations.
+- **No cheats, at any difficulty.** The same money, prices, rules and
+  information as a player; no faster hands than a quick player (one
+  action every 20 s at Easy, 5 s at Normal, 1 s at Hard). Difficulty is
+  competence and tempo.
+
+Rejected:
+
+- **The AI in every game, deterministically** (a game script): identical
+  results on every platform are what D2 rules out, and every player's
+  simulation would pay for the thinking.
+- **The AI as Lua in the mod**: thinking on the game's threads stutters
+  the driver's game, Lua is slow for route search, and it is hard to test.
+- **A game on the server to drive AIs**: a non-goal (ARCHITECTURE.md): a
+  licence and Steam login per server. It stays possible later, as the
+  driver of a room's AIs, since the driver is just a member.
+- **Bonuses for harder AIs**: unfair to players, and in `native` rooms
+  money can only change through actions.
+- **Players joining an AI's company**: an AI and a player would undo each
+  other's plans.
+
+Touches: D21 (AI companies are their own); PLAN.md, Part 5; PROTOCOL.md
+and the bridge (new messages, versions bumped, when built).
