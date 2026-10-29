@@ -173,8 +173,17 @@ function follow.loans(api, mine)
 		cached, cachedFor, cachedAt = (ok and built) or table0, company, t
 		return cached
 	end
+	-- The GAME_SCRIPT kind, read once: every getComponent of this GUI state
+	-- comes through here (the game's windows call it many times a frame),
+	-- and any other kind goes straight to the game's without a closure, a
+	-- pcall or a walk through the api's bindings.
+	local gameScriptKind = nil
 	local wrapper = function(entity, kind, ...)
-		if kind ~= nil and entity ~= nil then
+		if kind ~= nil and entity ~= nil and gameScriptKind == nil then
+			local ok, k = pcall(function() return api.type.ComponentType.GAME_SCRIPT end)
+			if ok and k ~= nil then gameScriptKind = k end
+		end
+		if kind ~= nil and entity ~= nil and gameScriptKind ~= nil and kind == gameScriptKind then
 			local isLoans = false
 			pcall(function()
 				if loanEntity == nil or loanEntity < 0 then
@@ -484,7 +493,7 @@ function follow.lineReport(api, line)
 	return table.concat(parts, "; ")
 end
 
-function follow.watchLines(api, require_, link, where)
+function follow.watchLines(api, require_, link, where, hasReact)
 	if not (link and link.note) then return 0 end
 	local saidCount, saidText = 0, {}
 	local checkedAt, on = nil, false
@@ -505,7 +514,11 @@ function follow.watchLines(api, require_, link, where)
 		pcall(function() link:log(text .. " (" .. tostring(where) .. ")") end)
 	end
 	local wrapped = 0
-	local okB, builtin = pcall(require_, follow.BUILTIN)
+	-- guiHandleEvent's state can query the engine but has no React builtin
+	-- recipes. Requiring them there emits a native error banner even under
+	-- pcall. Only actual React roots opt in to the LineViewer wrapper.
+	local okB, builtin = false, nil
+	if hasReact then okB, builtin = pcall(require_, follow.BUILTIN) end
 	if okB and type(builtin) == "table" and type(builtin.LineViewer) == "function" and not follow.wrappedTests[builtin.LineViewer] then
 		local original = builtin.LineViewer
 		local viewer = function(params, ...)

@@ -98,6 +98,51 @@ async fn the_admin_endpoint_finds_a_room_by_invite_player_or_name() {
     drop(ann);
 }
 
+/// Browsers are kept out of the admin endpoint: a request with an Origin
+/// (a page's cross-site post of a notice) or a Host that is a name (DNS
+/// rebinding) is refused before it is routed; scripts calling it by address
+/// are answered as before.
+#[tokio::test]
+async fn the_admin_endpoint_refuses_browsers_and_foreign_hosts() {
+    let server = RunningServer::start(|_| {}).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admin = listener.local_addr().unwrap();
+    tokio::spawn(serve_admin(listener, server.stats.clone()));
+
+    let notice = "POST /announce HTTP/1.1\r\nHost: 127.0.0.1:9470\r\nOrigin: https://evil.example\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nfake";
+    let (status, body) = raw(admin, notice).await;
+    assert_eq!(status, 403, "{body}");
+    let rebound = "GET /rooms HTTP/1.1\r\nHost: evil.example:9470\r\n\r\n";
+    let (status, body) = raw(admin, rebound).await;
+    assert_eq!(status, 403, "{body}");
+    for host in ["127.0.0.1:9470", "localhost", "[::1]:9470", "10.8.0.1"] {
+        let request = format!("GET /healthz HTTP/1.1\r\nHost: {host}\r\n\r\n");
+        let (status, body) = raw(admin, &request).await;
+        assert_eq!(status, 200, "{host}: {body}");
+    }
+    let script = "POST /announce HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\nhello";
+    let (status, body) = raw(admin, script).await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// One raw request to the admin endpoint; its status code and body.
+async fn raw(address: std::net::SocketAddr, request: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.unwrap();
+    let status = answer
+        .split(' ')
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap();
+    let body = answer
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default();
+    (status, body)
+}
+
 /// One GET to the admin endpoint; its status code and body.
 async fn get(address: std::net::SocketAddr, path: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(address).await.unwrap();

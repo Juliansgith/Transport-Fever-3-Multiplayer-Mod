@@ -15,6 +15,13 @@
 //! (docs/PROTOCOL.md, "Saving"), so games with and without this agree.
 //! Each rewrite checks the site's bytes first and installs alone; a build
 //! where either is not exactly as expected keeps the game's own.
+//!
+//! On by default since the measurement on Steam Windows 40425: periodic
+//! room saves of the same 150 MB world took 4.4-4.6 s with it against
+//! 7.2-7.4 s without (6.1-7.1 s in a later baseline), for files about 6.5%
+//! larger (investigation/PERFORMANCE_EXPERIMENTS_2026-10-28.md). Every
+//! player of a room saves at the same step and stands still while it
+//! does, so this is the longest freeze a room has.
 
 #![allow(unsafe_code)]
 
@@ -26,16 +33,17 @@ pub use crate::build_data::native::savefast::{
     BUFFER_64K_BYTES, BUFFER_BYTES, BUFFER_SIZE, LEVEL_LOAD, LEVEL_LOAD_BYTES, LEVEL_ONE_BYTES,
 };
 
-/// Opt-in: unset keeps the game's level and buffer; `1` enables the rewrite.
+/// On unless switched off: unset or `1`/`on`/`true`/`yes` rewrites both
+/// sites; `0`/`off`/`false`/`no` keeps the game's level and buffer. Any
+/// other value also keeps the game's (an unrecognized setting is never
+/// read as consent to patch).
 pub const ENV: &str = "TPF3MP_HOOK_SAVE_FAST";
 
 fn enabled(value: Option<&str>) -> bool {
-    matches!(
-        value
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("1" | "on" | "true" | "yes")
-    )
+    match value.map(|value| value.trim().to_ascii_lowercase()) {
+        None => true,
+        Some(value) => matches!(value.as_str(), "1" | "on" | "true" | "yes"),
+    }
 }
 
 /// Rewrites both sites the profile resolved, where their bytes are the
@@ -56,13 +64,13 @@ unsafe fn install_with_setting(
     at: &dyn Fn(&str) -> Result<usize, String>,
 ) -> String {
     if !enabled(setting) {
-        return format!("faster saves: off (set {ENV}=1 to enable)");
+        return format!("faster saves: off ({ENV} says so; unset or 1 enables them)");
     }
 
     #[cfg(not(tpf3mp_native_savefast))]
     {
         let _ = at;
-        "faster saves: unavailable for this build (no verified save targets; opt-in ignored)"
+        "faster saves: unavailable for this build (no verified save targets; the game's own)"
             .to_owned()
     }
 
@@ -95,7 +103,7 @@ unsafe fn install_with_setting(
             }
             Err(why) => format!("the game's 128-byte buffer ({why})"),
         };
-        format!("faster saves: {level}, {buffer} (opt-in via {ENV}=1)")
+        format!("faster saves: {level}, {buffer} ({ENV}=0 keeps the game's)")
     }
 }
 
@@ -104,11 +112,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn save_rewrites_are_opt_in_and_explicit_disable_still_wins() {
-        assert!(
-            !enabled(None),
-            "unset must preserve the native save settings"
-        );
+    fn save_rewrites_are_on_by_default_and_explicit_disable_still_wins() {
+        assert!(enabled(None), "unset rewrites both sites (the default)");
         for value in ["0", "off", "false", "no", "", "unknown", "2", "  "] {
             assert!(!enabled(Some(value)), "{value} must disable the rewrite");
         }
@@ -122,14 +127,14 @@ mod tests {
     }
 
     #[test]
-    fn install_logs_the_opt_in_when_disabled_without_resolving_sites() {
+    fn install_logs_the_switch_when_disabled_without_resolving_sites() {
         // SAFETY: no site is resolved or changed on the disabled path.
         let line = unsafe {
-            install_with_setting(None, &|name| Err(format!("unexpected lookup: {name}")))
+            install_with_setting(Some("0"), &|name| Err(format!("unexpected lookup: {name}")))
         };
         assert_eq!(
             line,
-            "faster saves: off (set TPF3MP_HOOK_SAVE_FAST=1 to enable)"
+            "faster saves: off (TPF3MP_HOOK_SAVE_FAST says so; unset or 1 enables them)"
         );
     }
 
@@ -154,14 +159,15 @@ mod tests {
     #[cfg(tpf3mp_native_savefast)]
     #[test]
     fn missing_sites_leave_the_game_its_own() {
-        // SAFETY: both lookups fail, so no address is written.
-        let line = unsafe {
-            install_with_setting(Some("1"), &|name| {
-                Err(format!("{name} is not in this build"))
-            })
-        };
-        assert!(line.contains("the game's zstd level"), "{line}");
-        assert!(line.contains("the game's 128-byte buffer"), "{line}");
+        // Unset (the default) and an explicit 1 both try the sites.
+        for setting in [None, Some("1")] {
+            // SAFETY: both lookups fail, so no address is written.
+            let line = unsafe {
+                install_with_setting(setting, &|name| Err(format!("{name} is not in this build")))
+            };
+            assert!(line.contains("the game's zstd level"), "{line}");
+            assert!(line.contains("the game's 128-byte buffer"), "{line}");
+        }
     }
 
     #[cfg(not(tpf3mp_native_savefast))]
@@ -169,12 +175,15 @@ mod tests {
     fn unsupported_build_reports_unavailable_without_resolving_sites() {
         // SAFETY: the unsupported build path must return before looking up
         // either site, so this resolver panics if the guard regresses.
-        let line =
-            unsafe { install_with_setting(Some("1"), &|name| panic!("unexpected lookup: {name}")) };
-        assert_eq!(
-            line,
-            "faster saves: unavailable for this build (no verified save targets; opt-in ignored)"
-        );
+        for setting in [None, Some("1")] {
+            let line = unsafe {
+                install_with_setting(setting, &|name| panic!("unexpected lookup: {name}"))
+            };
+            assert_eq!(
+                line,
+                "faster saves: unavailable for this build (no verified save targets; the game's own)"
+            );
+        }
     }
 
     #[cfg(tpf3mp_native_savefast)]

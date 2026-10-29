@@ -31,6 +31,17 @@ use tpf3mp_proto::Speed;
 /// everything released, as before.
 pub const ENV: &str = "TPF3MP_HOOK_EVEN_STEPS";
 
+/// Opt-in recovery for short batches whose native copy/readiness overhead
+/// prevents the interval trim alone from keeping up. Default is unchanged.
+pub const SHORT_RECOVERY_ENV: &str = "TPF3MP_HOOK_BATCH_RECOVERY";
+
+pub fn short_recovery_wanted(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "on" | "true" | "yes")
+    )
+}
+
 /// Released steps kept back in the steady state: the slack that absorbs a
 /// release a little late against the game's call.
 pub const RESERVE: u64 = 1;
@@ -165,6 +176,19 @@ pub struct Choice {
 }
 
 impl Choice {
+    /// When an opt-in cap leaves Far recovery uncompressed, keep timing
+    /// feedback: relaxing to room pace would never repay the backlog. At
+    /// 2x, for example, a cap of five is fully shown despite nominal three.
+    /// Drains for actions, pauses and short checkpoint tails still relax.
+    pub fn steady_interval(&self, fixed_nominal: u32, batch_limit: u32) -> bool {
+        matches!(self.pick, Pick::Nominal | Pick::Repay)
+            || (self.pick == Pick::Far
+                && batch_limit < crate::step::MAX_STEPS_PER_CALL
+                && fixed_nominal > 0
+                && self.steps == batch_limit
+                && crate::interval::shown(self.steps, fixed_nominal) == self.steps)
+    }
+
     /// The step trace's note.
     pub fn note(&self) -> String {
         format!(
@@ -184,6 +208,9 @@ pub struct Cadence {
     /// The batch interval times each call ([`crate::interval`]): a fixed
     /// nominal count, no repaying with extra updates.
     fixed: bool,
+    /// Desired steady batch duration when the verified interval hook runs.
+    batch_period: Duration,
+    short_recovery: bool,
     steps_per_second: u16,
     /// The room's speed in percent; the last one before a pause while
     /// paused, which steps released before the pause still play at.
@@ -206,6 +233,8 @@ impl Cadence {
         Self {
             on,
             fixed: false,
+            batch_period: crate::interval::BASE,
+            short_recovery: false,
             steps_per_second: 5,
             speed: Speed::NORMAL.0,
             paused: false,
@@ -257,7 +286,15 @@ impl Cadence {
 
     /// The nominal count with the batch interval.
     pub fn fixed_nominal(&self) -> u32 {
-        crate::interval::nominal(self.pace())
+        crate::interval::nominal(self.pace(), self.batch_period)
+    }
+
+    pub fn set_batch_period(&mut self, period: Duration) {
+        self.batch_period = period;
+    }
+
+    pub fn set_short_recovery(&mut self, enabled: bool) {
+        self.short_recovery = enabled;
     }
 
     pub fn set_on(&mut self, on: bool) {
@@ -326,6 +363,11 @@ impl Cadence {
         f64::from(self.steps_per_second) * f64::from(self.speed) / 100.0
     }
 
+    /// The room's pace now, steps a second; 0 while paused.
+    pub fn pace_now(&self) -> f64 {
+        if self.paused { 0.0 } else { self.pace() }
+    }
+
     /// The game's call period as measured.
     pub fn period(&self) -> Duration {
         Duration::from_secs_f64(self.period)
@@ -376,9 +418,9 @@ impl Cadence {
         let rate = self.pace() * self.period;
         let nominal = if self.fixed {
             // The batch interval times each call (crate::interval): the
-            // count is the pace over the game's own 200 ms batch, never a
+            // count is the pace over the selected batch duration, never a
             // measured period the interval itself sets.
-            f64::from(crate::interval::nominal(self.pace()))
+            f64::from(self.fixed_nominal())
         } else if (rate - rate.round()).abs() <= WHOLE_RATE {
             self.credit = 0.0;
             rate.round().max(0.0)
@@ -429,14 +471,31 @@ impl Cadence {
             // band is fine, so a release a little early or late (+-1 a
             // call) changes nothing; above it, repay towards its middle.
             let left = available - nominal;
-            // With the batch interval, a repaid step would only be shown
-            // longer: the interval's trim repays instead.
-            if left <= RESERVE + BAND || planned || self.fixed {
+            // Normally the interval's trim repays instead. A short batch
+            // can nevertheless be throughput-limited by copy/readiness
+            // overhead: increasing its frequency cannot create capacity.
+            // The experiment amortizes that overhead over a few more
+            // updates before reaching Far. Actual count still drives the
+            // presentation interval, and the gate/checkpoint cap still wins.
+            let short_repay = self.fixed
+                && self.short_recovery
+                && self.batch_period < crate::interval::BASE
+                && left > RESERVE + BAND + 2 * base;
+            if left <= RESERVE + BAND || planned || (self.fixed && !short_repay) {
                 (nominal, Pick::Nominal)
             } else {
+                // Three updates can only break even once checkpoint cuts
+                // and frame quantization are included. If pressure grows,
+                // allow up to twice nominal (still under the caller cap),
+                // rather than accumulating 1.5 seconds before doing so.
+                let recovery_cap = if short_repay && left > RESERVE + BAND + 4 * base {
+                    base.max(1)
+                } else {
+                    (nominal / 2).max(1)
+                };
                 let repay = (left - RESERVE - BAND / 2)
                     .div_ceil(REPAY_DIVISOR)
-                    .min((nominal / 2).max(1));
+                    .min(recovery_cap);
                 (nominal + repay, Pick::Repay)
             }
         };
@@ -473,9 +532,103 @@ fn toward_checkpoint(nominal: u64, to_checkpoint: u64, behind: bool) -> u64 {
     }
 }
 
+/// How long [`CatchUp`] looks back.
+pub const CATCH_UP_WINDOW: Duration = Duration::from_secs(5);
+/// Steps run against the room's pace over the window above which a game is
+/// catching up (a join, a rejoin, a reload): it runs as fast as it can.
+pub const CATCH_UP_RATIO: f64 = 1.25;
+
+/// Whether this game has been catching up with the room lately: over the
+/// last [`CATCH_UP_WINDOW`] it ran clearly more steps than the room's pace.
+/// A game at the room's pace runs the pace (a backlog after a freeze is
+/// repaid within a call or two); one replaying minutes of history after a
+/// join runs 1.4 (4x) to 6 (1x) times it for as long as that takes. Only
+/// the hook's own calls are counted, so it needs no word from the agent and
+/// sees past the event that stops a batch.
+#[derive(Debug, Default, Clone)]
+pub struct CatchUp {
+    calls: std::collections::VecDeque<(Instant, u32)>,
+}
+
+impl CatchUp {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A room call at `now` that ran `steps`.
+    pub fn note(&mut self, now: Instant, steps: u32) {
+        self.calls.push_back((now, steps));
+        while let Some(&(at, _)) = self.calls.front() {
+            if now.saturating_duration_since(at) > CATCH_UP_WINDOW {
+                self.calls.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Forgets every call (a load, leaving the room's game).
+    pub fn reset(&mut self) {
+        self.calls.clear();
+    }
+
+    /// Whether the calls of the last window ran more than
+    /// [`CATCH_UP_RATIO`] times `pace` steps a second; only once the window
+    /// is nearly full, so a burst of a call or two never counts.
+    pub fn catching_up(&self, now: Instant, pace: f64) -> bool {
+        let Some(&(first, _)) = self.calls.front() else {
+            return false;
+        };
+        let span = now.saturating_duration_since(first);
+        if pace <= 0.0 || span < CATCH_UP_WINDOW.mul_f64(0.8) {
+            return false;
+        }
+        let steps: u64 = self.calls.iter().map(|&(_, n)| u64::from(n)).sum();
+        #[allow(clippy::cast_precision_loss)]
+        let rate = steps as f64 / span.as_secs_f64();
+        rate > CATCH_UP_RATIO * pace
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capped_far_feedback_does_not_time_drains_or_checkpoint_tails_as_steady() {
+        let far = Choice {
+            steps: 5,
+            pick: Pick::Far,
+            available: 35,
+            cap: 5,
+            nominal: 5,
+        };
+        assert!(far.steady_interval(5, 5));
+        assert!(far.steady_interval(3, 5), "2x must also clear its backlog");
+        assert!(Choice { steps: 4, ..far }.steady_interval(5, 4));
+        assert!(
+            !far.steady_interval(1, 5),
+            "compressed recovery already accelerates"
+        );
+        assert!(!far.steady_interval(5, 16));
+        for nominal in 1..=16 {
+            assert!(
+                !Choice { steps: 16, ..far }.steady_interval(nominal, 16),
+                "the default cap must retain its timing even in faster-step rooms"
+            );
+        }
+        assert!(!Choice { steps: 2, ..far }.steady_interval(5, 5));
+        for pick in [
+            Pick::Barrier,
+            Pick::Command,
+            Pick::Paused,
+            Pick::Stale,
+            Pick::Reserve,
+            Pick::Underrun,
+        ] {
+            assert!(!Choice { pick, ..far }.steady_interval(5, 5));
+        }
+    }
 
     /// A room releasing on its own grid and a game calling on a jittered
     /// clock, run through a [`Cadence`]: the counts each call ran.
@@ -691,6 +844,24 @@ mod tests {
     }
 
     #[test]
+    fn shorter_batches_choose_the_selected_count_after_world_reset() {
+        let now = Instant::now();
+        for (ms, count) in [(50, 1), (100, 2), (200, 4)] {
+            let mut cadence = Cadence::new(true);
+            cadence.set_batch_period(Duration::from_millis(ms));
+            cadence.set_fixed(true);
+            cadence.begin(5);
+            cadence.speed(Speed(400));
+            cadence.reset(0, now);
+            let choice = cadence.choose(1, 5, 16, 50, false, false, now);
+            assert_eq!(choice.steps, count);
+            assert_eq!(cadence.fixed_nominal(), count);
+            cadence.speed(Speed(100));
+            assert_eq!(cadence.fixed_nominal(), 1);
+        }
+    }
+
+    #[test]
     fn with_the_batch_interval_the_count_is_fixed_and_never_repays() {
         let mut cadence = Cadence::new(true);
         cadence.begin(5);
@@ -763,6 +934,186 @@ mod tests {
         assert_eq!((choice.steps, choice.pick), (16, Pick::Far));
     }
 
+    fn short_candidate(recovery: bool) -> Cadence {
+        let mut cadence = Cadence::new(true);
+        cadence.begin(5);
+        cadence.speed(Speed(400));
+        cadence.set_fixed(true);
+        cadence.set_batch_period(Duration::from_millis(100));
+        cadence.set_short_recovery(recovery);
+        cadence
+    }
+
+    #[test]
+    fn short_recovery_is_explicit_and_leaves_ordinary_batches_and_boundaries_alone() {
+        for value in [None, Some("0"), Some("off"), Some(""), Some("typo")] {
+            assert!(!short_recovery_wanted(value));
+        }
+        assert!(short_recovery_wanted(Some(" 1 ")));
+        let now = Instant::now();
+        for enabled in [false, true] {
+            let mut c = short_candidate(enabled);
+            assert_eq!(c.choose(1, 5, 4, 50, false, false, now).steps, 2);
+            assert_eq!(c.choose(1, 9, 4, 50, false, false, now).steps, 2);
+            let recover = c.choose(1, 10, 4, 50, false, false, now);
+            assert_eq!(recover.steps, if enabled { 3 } else { 2 });
+            assert_eq!(
+                recover.pick,
+                if enabled { Pick::Repay } else { Pick::Nominal }
+            );
+            assert_eq!(
+                c.choose(1, 14, 4, 50, false, false, now).steps,
+                if enabled { 4 } else { 2 }
+            );
+            assert_eq!(c.choose(1, 10, 2, 2, false, false, now).steps, 2);
+            assert_eq!(c.choose(1, 10, 4, 50, true, false, now).pick, Pick::Barrier);
+            assert_eq!(c.choose(1, 10, 4, 50, false, true, now).pick, Pick::Command);
+            c.speed(Speed::PAUSED);
+            assert_eq!(c.choose(1, 10, 4, 50, false, false, now).pick, Pick::Paused);
+            c.speed(Speed(400));
+            c.set_batch_period(crate::interval::BASE);
+            assert_eq!(c.choose(1, 20, 16, 50, false, false, now).steps, 4);
+        }
+    }
+
+    #[test]
+    fn short_recovery_amortizes_service_overhead_without_waiting_for_far_backlog() {
+        // Capacity model, not a renderer simulation. Native work costs
+        // 35 ms/update plus 40 ms/call of copy/readiness overhead. A
+        // two-update batch cannot sustain 20 updates/s even at zero wait.
+        // Three alone only break even at checkpoint cuts; four under
+        // sustained pressure recover. Quantize to 60 Hz presentation frames.
+        let run = |recovery| {
+            let mut c = short_candidate(recovery);
+            let mut trim = crate::interval::Trim::default();
+            if recovery {
+                trim.bound_recovery();
+            }
+            let start = Instant::now();
+            let mut ms = 0.0_f64;
+            let mut next = 1_u64;
+            let mut far_calls = 0;
+            let mut last_backlog = 0;
+            while ms < 240_000.0 {
+                let released = (ms / 50.0).floor() as u64 + 4;
+                let checkpoint = (50 - next % 50) % 50 + 1;
+                let cap = u32::try_from(checkpoint.min(4)).unwrap();
+                let choice = c.choose(
+                    next,
+                    released,
+                    cap,
+                    checkpoint,
+                    false,
+                    false,
+                    start + Duration::from_secs_f64(ms / 1000.0),
+                );
+                assert!(choice.steps > 0 && choice.steps <= cap);
+                next += u64::from(choice.steps);
+                assert!(next <= released + 1, "ran unreleased updates");
+                last_backlog = released + 1 - next;
+                far_calls += usize::from(choice.pick == Pick::Far);
+                let shown_nominal = if choice.pick == Pick::Repay {
+                    choice.steps.max(2)
+                } else {
+                    2
+                };
+                if matches!(choice.pick, Pick::Nominal | Pick::Repay) {
+                    trim.update(last_backlog, shown_nominal);
+                } else {
+                    trim.relax();
+                }
+                let interval = f64::from(crate::interval::interval_us(
+                    choice.steps,
+                    shown_nominal,
+                    50_000,
+                    trim.value(),
+                    false,
+                )) / 1000.0;
+                let service = 35.0 * f64::from(choice.steps) + 40.0;
+                ms += (service.max(interval) / (1000.0 / 60.0)).ceil() * (1000.0 / 60.0);
+            }
+            (last_backlog, far_calls, (next - 1) as f64 / (ms / 1000.0))
+        };
+        let before = run(false);
+        let after = run(true);
+        assert!(
+            before.0 >= 25 && before.1 > 0,
+            "model must reproduce the backlog: {before:?}"
+        );
+        assert!(after.0 <= 16 && after.1 == 0, "{after:?}");
+        assert!(after.2 >= 19.9, "did not sustain room rate: {after:?}");
+    }
+
+    #[test]
+    fn five_update_batches_have_capacity_without_shortening_the_native_step() {
+        // Feasibility model only: the next worker batch must finish within
+        // the PREVIOUS buffer's presentation interval. Include 40 ms of
+        // native copy/readiness work, 35 ms/update and 60 Hz frame boundaries.
+        // This does not stand in for captured vehicle motion in the game.
+        let run = |period_ms| {
+            let mut cadence = short_candidate(false);
+            cadence.set_batch_period(Duration::from_millis(period_ms));
+            let nominal = cadence.fixed_nominal();
+            let mut trim = crate::interval::Trim::default();
+            let start = Instant::now();
+            let (mut ms, mut previous_interval) = (0.0_f64, 200.0_f64);
+            let (mut next, mut missed, mut calls) = (1_u64, 0, 0);
+            let mut backlog = 0;
+            while ms < 240_000.0 {
+                let released = (ms / 50.0).floor() as u64 + 6;
+                let checkpoint = (50 - next % 50) % 50 + 1;
+                let cap = u32::try_from(checkpoint.min(16)).unwrap();
+                let choice = cadence.choose(
+                    next,
+                    released,
+                    cap,
+                    checkpoint,
+                    false,
+                    false,
+                    start + Duration::from_secs_f64(ms / 1000.0),
+                );
+                next += u64::from(choice.steps);
+                assert!(next <= released + 1, "never run unreleased updates");
+                assert!(u64::from(choice.steps) <= checkpoint);
+                backlog = released + 1 - next;
+                let service = 35.0 * f64::from(choice.steps) + 40.0;
+                if ms > 5_000.0 {
+                    calls += 1;
+                    missed += usize::from(service > previous_interval + 16.667);
+                }
+                ms += (service.max(previous_interval) / (1000.0 / 60.0)).ceil() * (1000.0 / 60.0);
+                if choice.pick == Pick::Nominal {
+                    trim.update(backlog, nominal);
+                } else {
+                    trim.relax();
+                }
+                previous_interval = f64::from(crate::interval::interval_us(
+                    choice.steps,
+                    nominal,
+                    50_000,
+                    trim.value(),
+                    false,
+                )) / 1000.0;
+            }
+            (
+                backlog,
+                missed as f64 / calls as f64,
+                (next - 1) as f64 / (ms / 1000.0),
+            )
+        };
+        let baseline = run(200);
+        let candidate = run(250);
+        assert!(candidate.0 <= 16, "backlog: {candidate:?}");
+        assert!(candidate.2 >= 19.9, "lost room speed: {candidate:?}");
+        assert!(
+            candidate.1 < baseline.1,
+            "no modeled benefit: {baseline:?} -> {candidate:?}"
+        );
+        eprintln!(
+            "200 ms: {baseline:?}; 250 ms: {candidate:?} (backlog, missed fraction, updates/s)"
+        );
+    }
+
     #[test]
     fn the_checkpoint_cut_and_the_cap_always_hold() {
         let mut cadence = Cadence::new(true);
@@ -824,5 +1175,59 @@ mod tests {
         let after = &counts[50..];
         assert!(after.iter().all(|n| *n <= 6), "{after:?}");
         assert!(after[20..].iter().all(|n| (3..=5).contains(n)), "{after:?}");
+    }
+}
+
+#[cfg(test)]
+mod catch_up_tests {
+    use super::*;
+
+    fn calls(c: &mut CatchUp, start: Instant, seconds: f64, per_call: u32, period: f64) -> Instant {
+        let mut t = 0.0;
+        while t < seconds {
+            c.note(start + Duration::from_secs_f64(t), per_call);
+            t += period;
+        }
+        start + Duration::from_secs_f64(seconds)
+    }
+
+    #[test]
+    fn a_game_at_the_rooms_pace_is_not_catching_up() {
+        let mut c = CatchUp::new();
+        let start = Instant::now();
+        // 4x: 20 steps a second, four a call every 200 ms.
+        let now = calls(&mut c, start, 10.0, 4, 0.2);
+        assert!(!c.catching_up(now, 20.0));
+        // A short freeze's backlog repaid in one call of 16 does not count.
+        // (A longer one may for a few seconds; that only lets a call run
+        // more of what is released, and a repaid backlog leaves nothing.)
+        c.note(now, 16);
+        assert!(!c.catching_up(now, 20.0));
+    }
+
+    #[test]
+    fn a_game_replaying_history_is_catching_up_until_it_is_back() {
+        let mut c = CatchUp::new();
+        let start = Instant::now();
+        // 16 steps every 430 ms against a 4x room: 37 a second.
+        let now = calls(&mut c, start, 6.0, 16, 0.43);
+        assert!(c.catching_up(now, 20.0));
+        assert!(!c.catching_up(now, 0.0), "paused: not catching up");
+        // Back at the frontier: the room's pace again.
+        let now = calls(&mut c, now, 6.0, 4, 0.2);
+        assert!(!c.catching_up(now, 20.0));
+    }
+
+    #[test]
+    fn a_short_window_never_counts() {
+        let mut c = CatchUp::new();
+        let start = Instant::now();
+        let now = calls(&mut c, start, 2.0, 16, 0.2);
+        assert!(
+            !c.catching_up(now, 5.0),
+            "two seconds is not enough to tell"
+        );
+        c.reset();
+        assert!(!c.catching_up(now, 5.0));
     }
 }

@@ -212,7 +212,7 @@ pub fn line_players(room: bool, all: bool, companies: &[i64], company: i64) -> V
 /// The entities of the `std::vector<Entity>` at `vector`.
 fn entities_at(vector: usize, into: &mut Vec<i32>) {
     let read = |a: usize| -> Option<usize> {
-        if a == 0 || !crate::image::readable(a, 8) {
+        if a == 0 || !crate::image::readable_cached(a, 8) {
             return None;
         }
         // SAFETY: eight readable bytes; only read.
@@ -225,7 +225,7 @@ fn entities_at(vector: usize, into: &mut Vec<i32>) {
         return;
     };
     let count = (bytes / 4).min(LINES_MAX);
-    if count == 0 || !crate::image::readable(begin, count * 4) {
+    if count == 0 || !crate::image::readable_cached(begin, count * 4) {
         return;
     }
     // SAFETY: `count` readable dwords from `begin`; only read.
@@ -453,7 +453,7 @@ fn at_site(index: usize, regs: *mut SavedRegs) {
                 // The owner's pointer the next instruction forms.
                 let at = regs.rax.wrapping_add(regs.rcx.wrapping_mul(4));
                 let at = usize::try_from(at).unwrap_or(0);
-                if at == 0 || !at.is_multiple_of(4) || !crate::image::readable(at, 4) {
+                if at == 0 || !at.is_multiple_of(4) || !crate::image::readable_cached(at, 4) {
                     return false;
                 }
                 // SAFETY: four readable bytes, the owner the game compares
@@ -483,7 +483,7 @@ fn at_site(index: usize, regs: *mut SavedRegs) {
             Kind::Owner => {
                 let slot = reg(regs, site.reg);
                 let at = usize::try_from(*slot).unwrap_or(0);
-                if at == 0 || !at.is_multiple_of(4) || !crate::image::readable(at, 4) {
+                if at == 0 || !at.is_multiple_of(4) || !crate::image::readable_cached(at, 4) {
                     return false;
                 }
                 // SAFETY: four readable bytes, the owner the game compares
@@ -593,7 +593,7 @@ pub fn gui_getter(code: &[u8]) -> bool {
 /// vtable, its call (slot 2) and that call's code.
 fn closure_is_gui(closure: usize) -> bool {
     let read = |a: usize| -> Option<usize> {
-        if a == 0 || !crate::image::readable(a, 8) {
+        if a == 0 || !crate::image::readable_cached(a, 8) {
             return None;
         }
         // SAFETY: eight readable bytes, checked just above; only read.
@@ -605,7 +605,7 @@ fn closure_is_gui(closure: usize) -> bool {
     else {
         return false;
     };
-    if !crate::image::readable(call, 31) {
+    if !crate::image::readable_cached(call, 31) {
         return false;
     }
     // SAFETY: 31 readable bytes of the getter's code; only read.
@@ -779,6 +779,44 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The GUI calls `getPlayer`, the owner sites and the line viewers many
+    /// times a frame. Each `VirtualQuery` costs about 50 µs in a running
+    /// game (four made `getPlayer` take 203 µs, 2026-10-29), so these reads
+    /// go through the guarded check and never ask the system.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[test]
+    fn the_guis_per_call_reads_never_ask_the_system() {
+        if crate::image::guarded::mode() != crate::image::guarded::Mode::On {
+            return;
+        }
+        // A getPlayer closure whose function object's call is the menu
+        // getter: closure +0x38 -> object -> vtable, vtable +0x10 -> code.
+        let code: [u8; 31] = [
+            0x48, 0x8B, 0x41, 0x08, 0x48, 0x8B, 0x80, 0xB0, 0x06, 0x00, 0x00, 0x48, 0x8B, 0x80,
+            0xE0, 0x01, 0x00, 0x00, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC,
+            0xCC, 0xCC, 0xCC,
+        ];
+        let vtable: [usize; 3] = [0, 0, code.as_ptr() as usize];
+        let object: [usize; 1] = [vtable.as_ptr() as usize];
+        let mut closure = [0usize; 8];
+        closure[7] = object.as_ptr() as usize;
+        let entities: [i32; 3] = [214_443, 372_609, 5];
+        let range = entities.as_ptr_range();
+        let vector: [usize; 3] = [range.start as usize, range.end as usize, range.end as usize];
+
+        let before = crate::image::system_queries();
+        assert!(closure_is_gui(closure.as_ptr() as usize));
+        let mut into = Vec::new();
+        entities_at(vector.as_ptr() as usize, &mut into);
+        assert_eq!(into, entities);
+        assert!(!closure_is_gui(0), "a null closure is refused");
+        assert_eq!(
+            crate::image::system_queries(),
+            before,
+            "the GUI's per-call reads asked VirtualQuery"
+        );
+    }
 
     #[test]
     fn every_room_company_can_see_the_map_but_outside_rooms_stays_native() {

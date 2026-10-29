@@ -208,6 +208,9 @@ pub struct Window {
     /// `GetComponentDataIndex`'s calls (`crate::fastindex`), when counted.
     pub lookups: Option<u64>,
     pub lookup_state: crate::fastindex::State,
+    /// `BitmapRasterizable` spans filled by words and calls handed to the
+    /// game's loop (`crate::fastbitmap`).
+    pub bitmap_spans: (u64, u64),
 }
 
 /// Takes every counter, zero again.
@@ -226,6 +229,7 @@ pub fn take() -> Window {
         parcel_max_area: PARCEL_MAX_AREA.swap(0, Ordering::Relaxed),
         lookups: crate::fastindex::take_calls(),
         lookup_state: crate::fastindex::state(),
+        bitmap_spans: crate::fastbitmap::take_counts(),
     }
 }
 
@@ -285,6 +289,12 @@ pub fn line(window: &Window, updates: u64) -> Option<String> {
             crate::perf::FULL
         ),
     });
+    if window.bitmap_spans != (0, 0) {
+        out.push_str(&format!(
+            "; bitmap spans {} by words, {} the game's",
+            window.bitmap_spans.0, window.bitmap_spans.1
+        ));
+    }
     Some(out)
 }
 
@@ -450,6 +460,7 @@ mod tests {
             parcel_max_area: 25_500_000,
             lookups: Some(123_456_789),
             lookup_state: State::Counting,
+            bitmap_spans: (0, 0),
         }
     }
 
@@ -484,6 +495,18 @@ mod tests {
         );
         w.systems = [None; N];
         assert_eq!(line(&w, 1), None, "nothing in, no line");
+    }
+
+    #[test]
+    fn the_sim_line_counts_the_bitmap_spans_when_there_were_any() {
+        let mut w = window();
+        assert!(!line(&w, 1).unwrap().contains("bitmap spans"));
+        w.bitmap_spans = (4_096, 2);
+        assert!(
+            line(&w, 1)
+                .unwrap()
+                .ends_with("; bitmap spans 4096 by words, 2 the game's")
+        );
     }
 
     #[test]

@@ -2493,9 +2493,13 @@ impl Room {
                 }
             }
         };
-        if let Some(reason) = rejection {
-            metrics::increment(&self.metrics.intents_refused);
-            self.push(index, ServerMessage::IntentRejected { client_seq, reason });
+        match rejection {
+            Some(reason) => {
+                metrics::increment(&self.metrics.intents_refused);
+                self.push(index, ServerMessage::IntentRejected { client_seq, reason });
+            }
+            // Ordered now, not at the next tick.
+            None => self.advance_and_seal(now),
         }
     }
 
@@ -3378,6 +3382,16 @@ impl Room {
         if self.closed {
             return;
         }
+        self.advance_and_seal(now);
+    }
+
+    /// Moves the clock on to `now` and seals a turn when the frontier moved,
+    /// events wait or the speed changed: every tick, and as soon as a
+    /// player's command is ordered, so a command reaches every game without
+    /// waiting for the next tick (up to `tick`, 100 ms by default, of what
+    /// players feel on their own commands). The pacer carries fractions of
+    /// a step, so sealing between ticks changes no step's pace.
+    fn advance_and_seal(&mut self, now: Instant) {
         let Phase::Running(game) = &mut self.phase else {
             return;
         };

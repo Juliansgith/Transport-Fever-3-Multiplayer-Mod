@@ -5,7 +5,7 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 16,                 -- bridge.VERSION; anything else is refused
+--     version = 17,                 -- bridge.VERSION; anything else is refused
 --     command = function(action, password), -- the player acted: an action
 --                                   -- table, for the room to order, and a
 --                                   -- company's password for joining or
@@ -59,6 +59,7 @@
 --                                   -- id = } } }
 --     chat    = function(),         -- what the room's members said since the
 --                                   -- last call, { { from =, text = } }
+--     chooseSpeed = function(speed), -- explicit 0/1/2/4 choice -> true | false, why
 --     say     = function(text),     -- says text to the room -> true |
 --                                   -- false, why
 --     dump    = function(),         -- optional; in a game script's
@@ -128,6 +129,7 @@ local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptan
 
 local bridge = {}
 
+-- 17: explicit chooseSpeed requests; loading a save never changes room speed.
 -- 13: token-only ordered replay wakes, takeReplay and replayed, so actions
 --     run between simulation updates while paused as well as while running.
 -- 12: company passwords: `command` takes a password beside the action,
@@ -146,7 +148,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 16
+bridge.VERSION = 17
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -162,7 +164,7 @@ function bridge.attach(native)
 	end
 	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room",
 			"checkpoint", "lanes", "clicks", "replaying", "applied", "results", "status", "chat",
-			"say", "takeReplay", "replayed", "scanned" }) do
+			"say", "chooseSpeed", "takeReplay", "replayed", "scanned" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -232,6 +234,14 @@ function Link:status()
 	local ok, status = pcall(self.native.status)
 	if not ok or type(status) ~= "table" then return nil end
 	return status
+end
+
+-- An explicit choice from the in-game buttons or keyboard, in multiples of 1x.
+function Link:chooseSpeed(speed)
+	local ok, accepted, why = pcall(self.native.chooseSpeed, speed)
+	if not ok then return nil, tostring(accepted) end
+	if accepted ~= true then return nil, tostring(why or "the hook did not take the speed") end
+	return true
 end
 
 -- What the room's members said since the last call, oldest first:

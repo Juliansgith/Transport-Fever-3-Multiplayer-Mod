@@ -895,9 +895,9 @@ pub mod freed_ids {
         /// The executable's base, for return addresses as RVAs.
         static BASE: AtomicU64 = AtomicU64::new(0);
         static TRACE: Mutex<Trace> = Mutex::new(Trace::new());
-        /// Enough for the 53 total modifications seen in the first
-        /// divergent 50-step interval, with a visible overflow count.
-        pub const MAX_OPERATIONS: usize = 96;
+        /// Bound allocator changes, not the thousands of empty native
+        /// modifications per checkpoint. Overflow remains visible.
+        pub const MAX_OPERATIONS: usize = 512;
         /// The first allocator split was 53 checkpoints before the lane
         /// mismatch. Keep a wider window without writing it every time.
         pub const KEPT_CHECKPOINTS: usize = 128;
@@ -1018,6 +1018,7 @@ pub mod freed_ids {
             tally: Tally,
             operations: Vec<Operation>,
             omitted: u64,
+            unchanged: u64,
             unread: u64,
             history: std::collections::VecDeque<Window>,
             last_flushed: Option<u64>,
@@ -1033,6 +1034,7 @@ pub mod freed_ids {
             step: u64,
             operations: Vec<Operation>,
             omitted: u64,
+            unchanged: u64,
             unfit: u64,
             unread: u64,
         }
@@ -1043,6 +1045,7 @@ pub mod freed_ids {
                     tally: Tally::new(),
                     operations: Vec::new(),
                     omitted: 0,
+                    unchanged: 0,
                     unread: 0,
                     history: std::collections::VecDeque::new(),
                     last_flushed: None,
@@ -1065,6 +1068,10 @@ pub mod freed_ids {
             ) -> (Option<u64>, u64) {
                 let taken = self.tally.last.and_then(|before| taken_since(before, seen));
                 let outside = self.tally.count(seen, ids, place);
+                if taken == Some(0) && seen.freed == 0 && ids.is_empty() {
+                    self.unchanged += 1;
+                    return (outside, self.tally.outside_total);
+                }
                 if self.operations.len() < MAX_OPERATIONS {
                     let mut hash = Fnv1a::new();
                     for id in ids {
@@ -1093,6 +1100,7 @@ pub mod freed_ids {
                     step,
                     operations: std::mem::take(&mut self.operations),
                     omitted: std::mem::take(&mut self.omitted),
+                    unchanged: std::mem::take(&mut self.unchanged),
                     unfit: tally.unfit,
                     unread: std::mem::take(&mut self.unread),
                 });
@@ -1140,16 +1148,17 @@ pub mod freed_ids {
                 let suppressed_through = self.suppressed_through.take();
                 self.last_suppressed_step = None;
                 self.suppression_reported = false;
-                let mut relevant = self
+                let relevant = self
                     .history
                     .iter()
                     .rev()
                     .filter(|w| w.step <= diverged)
                     .take(INCIDENT_CHECKPOINTS)
                     .collect::<Vec<_>>();
-                relevant.reverse();
-                let first = relevant.first().map(|w| w.step);
-                let last = relevant.last().map(|w| w.step);
+                // Spend the byte budget nearest the failure, not on the
+                // oldest windows while silently losing the actual incident.
+                let first = relevant.last().map(|w| w.step);
+                let last = relevant.first().map(|w| w.step);
                 let mut lines = Vec::new();
                 // Reserve space for the summary line, including its rate-limit
                 // metadata, so the complete incident batch stays inside the
@@ -1157,6 +1166,7 @@ pub mod freed_ids {
                 let mut bytes = INCIDENT_HEADER_RESERVE;
                 let mut printed = 0usize;
                 let omitted = relevant.iter().map(|w| w.omitted).sum::<u64>();
+                let unchanged = relevant.iter().map(|w| w.unchanged).sum::<u64>();
                 let unfit = relevant.iter().map(|w| w.unfit).sum::<u64>();
                 let unread = relevant.iter().map(|w| w.unread).sum::<u64>();
                 let mut cut = false;
@@ -1191,7 +1201,7 @@ pub mod freed_ids {
                 // not a missing record in these 64 checkpoints. A delayed
                 // notice with fewer than 64 retained windows is incomplete.
                 lines.insert(0, format!(
-                    "free operations: diverged={diverged} retained_checkpoints={} expired_checkpoints={} oldest={} newest={} recorded={printed}/{retained} omitted={omitted} unfit={unfit} unread={unread} suppressed={suppressed} suppressed_through={} byte_limit={MAX_FLUSH_BYTES} complete={}",
+                    "free operations: diverged={diverged} retained_checkpoints={} expired_checkpoints={} oldest={} newest={} recorded={printed}/{retained} omitted={omitted} unchanged={unchanged} unfit={unfit} unread={unread} suppressed={suppressed} suppressed_through={} byte_limit={MAX_FLUSH_BYTES} complete={}",
                     relevant.len(), self.expired, first.map_or_else(|| "-".into(), |n| n.to_string()),
                     last.map_or_else(|| "-".into(), |n| n.to_string()),
                     suppressed_through.map_or_else(|| "-".into(), |n| n.to_string()),
@@ -1464,8 +1474,9 @@ pub mod freed_ids {
 
         /// From the step detour, on the simulation thread, before each call
         /// of the game's step: the room's game names its simulation's
-        /// engine, any other game none. Another engine (a world loaded)
-        /// starts the counts again.
+        /// engine, any other game none. Simulation buffers can alternate
+        /// engine addresses each call; only an explicit world load or leaving
+        /// the room resets the logical world's operation history.
         pub fn note_step(this: u64, room: bool) {
             if !on() {
                 return;
@@ -1476,8 +1487,15 @@ pub mod freed_ids {
             } else {
                 0
             };
-            if SIM_ENGINE.swap(engine, Ordering::AcqRel) != engine {
+            SIM_ENGINE.store(engine, Ordering::Release);
+            if !room {
                 *trace() = Trace::new();
+            } else if engine == 0 {
+                // Keep earlier evidence, but do not infer taken IDs across
+                // an interval in which no engine could be observed.
+                let mut trace = trace();
+                trace.unread += 1;
+                trace.tally.last = None;
             }
         }
 
@@ -1888,7 +1906,7 @@ pub mod freed_ids {
                 let first_at = Instant::now();
                 let lines = trace.incident_at(50, first_at);
                 assert!(
-                    lines[0].contains("recorded=96/96 omitted=1"),
+                    lines[0].contains("recorded=512/512 omitted=1"),
                     "{}",
                     lines[0]
                 );
@@ -1934,6 +1952,7 @@ pub mod freed_ids {
                 }
                 let lines = trace.incident(KEPT_CHECKPOINTS as u64);
                 assert!(lines[0].contains("complete=false"), "{}", lines[0]);
+                assert!(lines[1].contains("step 128 part 1"), "{}", lines[1]);
                 assert!(
                     lines
                         .iter()
@@ -1942,6 +1961,41 @@ pub mod freed_ids {
                         <= MAX_FLUSH_BYTES - SUPPRESSION_NOTICE_RESERVE
                 );
                 assert!(lines.iter().all(|line| line.len() < 1024));
+            }
+
+            #[test]
+            fn empty_modifications_do_not_crowd_out_allocator_changes() {
+                let mut trace = Trace::new();
+                let unchanged = Seen {
+                    table: 100,
+                    queued: 0,
+                    freed: 0,
+                };
+                // Keep the unknown first observation. Only proven no-ops
+                // may be filtered from detail; aggregates still count all.
+                for _ in 0..2000 {
+                    trace.count(unchanged, &[], Place::Update, Some(49), Some(0x123));
+                }
+                trace.count(
+                    Seen {
+                        table: 101,
+                        ..unchanged
+                    },
+                    &[],
+                    Place::StepOutsideUpdate,
+                    None,
+                    Some(0x456),
+                );
+                let summary = trace.checkpoint(50, queue());
+                assert!(summary.contains("2000 modification(s)"), "{summary}");
+                let lines = trace.incident(50);
+                assert!(
+                    lines[0].contains("recorded=2/2 omitted=0 unchanged=1999"),
+                    "{}",
+                    lines[0]
+                );
+                assert!(lines[0].contains("complete=true"), "{}", lines[0]);
+                assert!(lines.iter().any(|line| line.contains("-:S:1/0:101/0")));
             }
 
             #[test]
@@ -2712,7 +2766,7 @@ mod trace_tests {
 
         let mut engine = Engine::new();
         // A GameSim whose data names the engine.
-        let data: Box<[u64; 4]> = Box::new([0, 0, 0, engine.at()]);
+        let mut data: Box<[u64; 4]> = Box::new([0, 0, 0, engine.at()]);
         let sim: Box<[u64; 2]> = Box::new([0, data.as_ptr() as u64]);
         assert_eq!(layout::STEP_DATA, 8);
         assert_eq!(layout::DATA_ENGINE, 0x18);
@@ -2741,7 +2795,7 @@ mod trace_tests {
         engine.set(11, &[5, 8, 9], &[]);
         observe_at(&engine);
         // Another engine's modification (the GUI's) is left alone.
-        let other = Engine::new();
+        let mut other = Engine::new();
         observe_at(&other);
         crate::order::set_in_step(false);
 
@@ -2754,6 +2808,48 @@ mod trace_tests {
             line.ends_with("; outside updates: 2 took 2 and freed 2"),
             "{line}"
         );
+        // The simulation alternates buffers without loading a new world.
+        // Its history and the preceding modification survive the swap.
+        other.set(12, &[8, 9], &[5]);
+        data[3] = other.at();
+        note_step(sim.as_ptr() as u64, true);
+        observe_at(&other);
+        let line = checkpoint_line(100).unwrap();
+        assert!(
+            line.ends_with("; outside updates: 1 took 2 and freed 1"),
+            "{line}"
+        );
+        // A temporarily unreadable engine is a gap, not a new world. It
+        // must be visible in incident coverage and cannot infer allocations
+        // across the missing observations.
+        data[3] = 0;
+        note_step(sim.as_ptr() as u64, true);
+        data[3] = other.at();
+        note_step(sim.as_ptr() as u64, true);
+        other.set(20, &[9], &[]);
+        observe_at(&other);
+        let line = checkpoint_line(150).unwrap();
+        assert!(
+            line.ends_with("; outside updates: 0 took 0 and freed 0"),
+            "{line}"
+        );
+        let incident = incident_lines(150);
+        assert!(
+            incident[0].contains("retained_checkpoints=3"),
+            "{incident:?}"
+        );
+        assert!(incident[0].contains("recorded=4/4"), "{incident:?}");
+        assert!(incident[0].contains("unread=1"), "{incident:?}");
+        assert!(incident[0].contains("complete=false"), "{incident:?}");
+
+        // Explicit load clears history even when the address is reused.
+        reset_world();
+        note_step(sim.as_ptr() as u64, true);
+        observe_at(&other);
+        checkpoint_line(50).unwrap();
+        let fresh = incident_lines(50);
+        assert!(fresh[0].contains("retained_checkpoints=1"), "{fresh:?}");
+        assert!(fresh[0].contains("recorded=1/1"), "{fresh:?}");
         // Outside a room the trace knows no engine and says nothing.
         note_step(sim.as_ptr() as u64, false);
         assert_eq!(checkpoint_line(100), None);

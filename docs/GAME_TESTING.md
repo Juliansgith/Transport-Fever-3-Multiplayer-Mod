@@ -92,6 +92,29 @@ reinstalled by every `room.ps1` (without `-NoInstall`).
 
 ### Fixture saves
 
+For pacing comparisons, pass `-NoZoom` to `room.ps1` to retain the save's
+camera, and verify the host's console-close coordinates for the current
+window. `-BatchPeriods '200,100' -BatchLimits '16,4'` selects experimental
+native scheduling separately for P1 and P2; each list needs one entry per
+player. These flags affect only the child games, not the rig's environment.
+Swap the settings in a second run to distinguish scheduling effects from
+host/guest and foreground/background differences. Keep periodic saves and
+slow calls in the reported results. Shorter simulation calls alone do not
+prove smoother rendering or lower CPU usage.
+
+`-ReadyBudgets '0,1'` compares the optional measured presentation floor on the
+second player with it disabled on the first. It also requires one value per
+player and affects only those child games. Use equal batch periods/caps for
+this comparison so the floor is the only policy difference.
+
+For an ordinary main-menu start, use `room.ps1 -ManualRoom -Run <name>`.
+It installs the mod and starts the local server, agents and games with the
+same isolation checks, then prints their PIDs. It does **not** connect players,
+create/join/start a room, load a fixture or type into the console. Do those
+steps through the games' Multiplayer/Join a friend pages, then select a save
+or generate a world normally. Quit the owned games with `quit.ps1` afterward.
+The corresponding rig option is `--manual-room`.
+
 Rooms start from a save in the game's `save` folder:
 
 - `tpf3mp_fixture`: a plain map, 16 by 16 tiles, seed `tpf3mp`, the

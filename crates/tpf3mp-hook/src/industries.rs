@@ -1,18 +1,52 @@
-//! Read-only diagnostics for build 40408's automatic industry demand spawn.
+//! Deterministic industry-demand scheduling and optional read-only diagnostics.
 //!
-//! This probe is deliberately opt-in. It records the native callback's
+//! Scheduling is shared by default in rooms. The separate opt-in probe records the native callback's
 //! GameTime/FNV seed, target-capacity key/result, candidate loop order and
 //! returned entity IDs; it never changes a game value. The profile sites are
-//! specific to the compiled 40408 native bundle (docs/HOOKS.md,
+//! specific to the compiled native bundle (docs/HOOKS.md,
 //! "Automatic industry spawn probe").
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use tpf3mp_hookcore::profile::{self, Profile, ResolvedProfile};
+static FAULT: AtomicBool = AtomicBool::new(false);
 
 pub const TRACE_ENV: &str = "TPF3MP_HOOK_TRACE_INDUSTRIES";
-const PROBE_PROFILE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../profiles/tf3_build40408_steam_windows/industry_probe.toml"
-));
+const PROBE_PROFILE: Option<&str> = include!(concat!(env!("OUT_DIR"), "/industry_probe.rs"));
+
+#[cfg(all(windows, target_arch = "x86_64", tpf3mp_industry_schedule))]
+#[path = "industry_schedule.rs"]
+mod schedule;
+
+#[cfg(all(windows, target_arch = "x86_64", tpf3mp_industry_schedule))]
+#[path = "industry_shared.rs"]
+mod shared;
+
+pub fn reset_world() {
+    FAULT.store(false, Ordering::Release);
+    #[cfg(all(windows, target_arch = "x86_64", tpf3mp_industry_schedule))]
+    shared::reset_world();
+}
+
+pub fn fault() -> Option<&'static str> {
+    FAULT
+        .load(Ordering::Acquire)
+        .then_some("industry scheduler could not validate its native state; the world is held")
+}
+
+pub fn install_scheduler(resolved: &ResolvedProfile) -> Result<Option<String>, String> {
+    #[cfg(all(windows, target_arch = "x86_64", tpf3mp_industry_schedule))]
+    {
+        schedule::install_fix(resolved)?;
+        Ok(Some(
+            "industry scheduler: installed; both world buffers use one demand history".into(),
+        ))
+    }
+    #[cfg(not(all(windows, target_arch = "x86_64", tpf3mp_industry_schedule)))]
+    {
+        let _ = resolved;
+        Ok(None)
+    }
+}
 
 /// Diagnostics are off unless this exact opt-in is present. The game's
 /// ordinary hook fixes use a default-on toggle; this probe must not.
@@ -21,8 +55,8 @@ fn requested(value: Option<&str>) -> bool {
 }
 
 /// Resolves the probe's exact-build signatures before the ordinary hooks
-/// patch the image. These sites do not belong to the release profile: a
-/// different supported game build remains fully covered without them.
+/// patch the image. The scheduler is also a required normal hook; the other
+/// observation sites remain optional and cannot gate ordinary game startup.
 pub fn resolve_probe(
     active: &Profile,
     code: &[u8],
@@ -31,17 +65,19 @@ pub fn resolve_probe(
     if !requested(std::env::var(TRACE_ENV).ok().as_deref()) {
         return Ok(None);
     }
-    let probe = Profile::from_toml(PROBE_PROFILE)
-        .map_err(|error| format!("the compiled 40408 probe profile is invalid: {error}"))?;
+    let probe = Profile::from_toml(
+        PROBE_PROFILE.ok_or("the selected native bundle has no industry probe")?,
+    )
+    .map_err(|error| format!("the compiled probe profile is invalid: {error}"))?;
     if active.build != probe.build || active.region != probe.region {
-        return Err("the probe is only for the exact compiled 40408 build".into());
+        return Err("the probe is only for the exact compiled native build".into());
     }
     profile::resolve(&probe, code, region_base)
         .map(Some)
-        .map_err(|error| format!("the compiled 40408 probe sites did not resolve: {error}"))
+        .map_err(|error| format!("the compiled probe sites did not resolve: {error}"))
 }
 
-/// Installs the 40408-only industry probe when explicitly requested.
+/// Installs the exact-build industry probe when explicitly requested.
 pub fn install(resolved: &ResolvedProfile) -> Vec<String> {
     #[cfg(all(windows, target_arch = "x86_64"))]
     {
@@ -287,21 +323,22 @@ mod tests {
 
     #[test]
     fn probe_profile_is_separate_and_pinned_to_the_release_build() {
-        let probe = Profile::from_toml(PROBE_PROFILE).unwrap();
-        let release = Profile::from_toml(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../profiles/tf3_build40408_steam_windows/hooks.toml"
-        )))
-        .unwrap();
+        let Some(source) = PROBE_PROFILE else { return };
+        let probe = Profile::from_toml(source).unwrap();
+        let release = Profile::from_toml(crate::build_data::native::PROFILE_TOML).unwrap();
         assert_eq!(probe.build, release.build);
         assert_eq!(probe.region, release.region);
-        assert_eq!(probe.targets.len(), 6);
+        assert_eq!(
+            probe.targets.len(),
+            if cfg!(tpf3mp_industry_schedule) { 9 } else { 6 }
+        );
         assert!(probe.targets.iter().all(|target| target.required));
         assert!(probe.targets.iter().all(|target| {
-            release
-                .targets
-                .iter()
-                .all(|regular| regular.name != target.name)
+            target.name == "industry schedule"
+                || release
+                    .targets
+                    .iter()
+                    .all(|regular| regular.name != target.name)
         }));
     }
 
@@ -472,7 +509,7 @@ mod live {
             .collect();
         if !missing.is_empty() {
             return vec![format!(
-                "industry-spawn probe: off; 40408 profile is missing {}",
+                "industry-spawn probe: off; compiled profile is missing {}",
                 missing.join(", ")
             )];
         }
@@ -490,6 +527,8 @@ mod live {
     }
 
     fn install_all(resolved: &ResolvedProfile) -> Result<(), String> {
+        #[cfg(tpf3mp_industry_schedule)]
+        schedule::install(resolved)?;
         let capacity = resolved
             .get(profile::CAPACITY)
             .ok_or_else(|| format!("missing {}", profile::CAPACITY))?;

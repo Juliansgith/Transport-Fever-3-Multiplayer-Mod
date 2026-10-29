@@ -814,7 +814,7 @@ fn players_at(vector: usize) -> (Vec<i32>, usize) {
         return (Vec::new(), 0);
     }
     let shown = listed.min(4);
-    if shown == 0 || !crate::image::readable(begin, shown * 4) {
+    if shown == 0 || !crate::image::readable_cached(begin, shown * 4) {
         return (Vec::new(), listed);
     }
     // SAFETY: `shown` readable dwords at the list's start, only read.
@@ -1000,7 +1000,7 @@ fn vector_len(at: usize, size: usize) -> Option<i64> {
 }
 
 fn read_i32(at: usize) -> Option<i32> {
-    if at == 0 || !crate::image::readable(at, 4) {
+    if at == 0 || !crate::image::readable_cached(at, 4) {
         return None;
     }
     // SAFETY: four readable bytes; only read.
@@ -1313,7 +1313,7 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> String {
 
 /// A pointer at `address`, if it is readable.
 fn pointer(address: usize) -> Option<usize> {
-    if address == 0 || !crate::image::readable(address, 8) {
+    if address == 0 || !crate::image::readable_cached(address, 8) {
         return None;
     }
     // SAFETY: eight readable bytes, checked just above; one unaligned read,
@@ -1323,7 +1323,7 @@ fn pointer(address: usize) -> Option<usize> {
 
 /// [`SCAN_BYTES`] of the object at `address`, if they are readable.
 fn object(address: usize) -> Option<Vec<u8>> {
-    if address == 0 || !crate::image::readable(address, SCAN_BYTES) {
+    if address == 0 || !crate::image::readable_cached(address, SCAN_BYTES) {
         return None;
     }
     // SAFETY: SCAN_BYTES readable bytes, checked just above; copied, never
@@ -1380,7 +1380,7 @@ fn look(game: usize) -> Vec<String> {
         (0, 0, None)
     } else {
         let index = SIM_INDEX.load(Ordering::Acquire);
-        let i = if crate::image::readable(states + index, 4) {
+        let i = if crate::image::readable_cached(states + index, 4) {
             // SAFETY: four readable bytes, checked just above; read only.
             Some(unsafe { std::ptr::read_unaligned((states + index) as *const i32) })
         } else {

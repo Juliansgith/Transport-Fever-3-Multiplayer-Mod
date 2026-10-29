@@ -13,13 +13,15 @@
 //! before; `u` the updates answered (`own` for the game's own speed); `why`
 //! the step driver's reason for that answer; `game` the game's own step and
 //! `call` the whole detour, in milliseconds; `lanes` marks a checkpoint
-//! batch, whose step also read the world's lanes. A call that could run the
+//! batch, whose step also read the world's lanes. `first` identifies the
+//! first ordered room step in a positive batch, allowing costly calls to
+//! be compared at the same world state across replicas. A call that could run the
 //! room's steps ends with how [`crate::cadence`] chose its count: the steps
 //! released and not run (`avail`), the batch's cap (`cap`), the nominal
 //! count (`nom`) and the rule (`pick`).
 
 use std::sync::{
-    Mutex,
+    Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Instant;
@@ -31,6 +33,25 @@ pub const ENV: &str = "TPF3MP_HOOK_STEP_TRACE";
 pub const FLUSH_EVERY: usize = 50;
 
 static ON: AtomicBool = AtomicBool::new(false);
+static CLOCK: OnceLock<Instant> = OnceLock::new();
+
+/// Shared monotonic clock for worker calls and main-thread buffer delivery.
+/// Buffered log timestamps cannot align these two event streams accurately.
+pub fn clock_ms(now: Instant) -> f64 {
+    now.saturating_duration_since(*CLOCK.get_or_init(Instant::now))
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// Integer version for the presentation-budget experiment, including when
+/// tracing is off. It never uses buffered wall-clock log timestamps.
+pub fn clock_us(now: Instant) -> u64 {
+    u64::try_from(
+        now.saturating_duration_since(*CLOCK.get_or_init(Instant::now))
+            .as_micros(),
+    )
+    .unwrap_or(u64::MAX)
+}
 static STATE: Mutex<State> = Mutex::new(State {
     first: None,
     last: None,
@@ -55,6 +76,9 @@ pub fn wanted(value: Option<&str>) -> bool {
 /// Reads [`ENV`]; the line for hook.log when the trace is on.
 pub fn configure_from_env() -> Option<String> {
     let on = wanted(std::env::var(ENV).ok().as_deref());
+    if on {
+        CLOCK.get_or_init(Instant::now);
+    }
     ON.store(on, Ordering::Release);
     on.then(|| format!("step-trace: tracing every call of the game's step ({ENV}=1)"))
 }
@@ -92,12 +116,13 @@ pub fn call(
         .map_or(0.0, |last| millis(started.saturating_duration_since(last)));
     state.last = Some(started);
     let line = format!(
-        "step-trace: t={:.1} gap={gap:.1} u={} why={} game={:.1} call={:.1}{}{}",
+        "step-trace: t={:.1} gap={gap:.1} u={} why={} game={:.1} call={:.1} clock_ms={:.3}{}{}",
         millis(started.saturating_duration_since(first)),
         updates.map_or_else(|| "own".to_owned(), |u| u.to_string()),
         if why.is_empty() { "-" } else { why },
         nanos_ms(game_nanos),
         nanos_ms(call_nanos),
+        clock_ms(started),
         if lanes { " lanes" } else { "" },
         note.map(|note| format!(" {note}")).unwrap_or_default(),
     );

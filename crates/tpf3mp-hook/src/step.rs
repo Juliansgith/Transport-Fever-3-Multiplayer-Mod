@@ -77,6 +77,33 @@ use crate::lanedump::{self, DumpOrder, LaneDumps};
 /// itself runs up to 64 in a call (its debug steps).
 pub const MAX_STEPS_PER_CALL: u32 = 16;
 
+/// Most steps one call runs while the game is catching up with the room
+/// ([`crate::cadence::CatchUp`]): the game's own limit for a call (its
+/// debug steps, 64), still cut at every checkpoint (50 steps by default)
+/// and every event. Each call costs the game about 90 ms besides its
+/// updates (measured on a 150 MB world, build 40425: 24 calls of up to 16
+/// updates in 10.3 s, 8.1 s of them in the step), and a checkpoint every 50
+/// steps cut catch-up into 16 + 16 + 16 + 2: four calls where one does.
+/// A game catching up shows fast-forwarded motion anyway.
+pub const CATCH_UP_STEPS_PER_CALL: u32 = 64;
+
+/// Experimental cap on ordinary catch-up. Ordered drains retain the default
+/// bound, so smaller batches do not slow actions or replayed room history.
+/// No extra steps are released.
+pub const BATCH_LIMIT_ENV: &str = "TPF3MP_HOOK_MAX_BATCH_UPDATES";
+
+pub fn batch_limit(value: Option<&str>) -> Result<u32, String> {
+    match value.map(str::trim) {
+        None | Some("16") => Ok(MAX_STEPS_PER_CALL),
+        Some("4") => Ok(4),
+        Some("5") => Ok(5),
+        Some("8") => Ok(8),
+        Some(value) => Err(format!(
+            "{BATCH_LIMIT_ENV}={value:?}: expected 4, 5, 8 or 16"
+        )),
+    }
+}
+
 /// How many updates one call of the game's step runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Updates {
@@ -113,6 +140,11 @@ pub trait RoomGate {
     /// ([`Session::barrier_waiting`]).
     fn barrier_waiting(&self) -> bool {
         false
+    }
+    /// Queue only the next step's commands after reporting a completed
+    /// batch, without consuming a release or world/lifecycle operation.
+    fn stage_actions(&mut self, _game: &mut HookGame) -> Result<(), SessionError> {
+        Ok(())
     }
     fn after_step(&mut self, game: &mut HookGame) -> Result<u64, SessionError>;
     fn loaded(&mut self, next_step: u64) -> Result<(), SessionError>;
@@ -246,6 +278,9 @@ struct Loading {
 }
 
 impl RoomGate for Session {
+    fn stage_actions(&mut self, game: &mut HookGame) -> Result<(), SessionError> {
+        Session::stage_actions(self, game)
+    }
     fn heartbeat(&self) {
         Session::heartbeat(self);
     }
@@ -567,8 +602,6 @@ pub struct StepDriver<G> {
     loading: Option<Loading>,
     replaying: Option<Instant>,
     phase: Phase,
-    /// The speed row's last value in the room's game, once seen.
-    chosen: Option<u64>,
     /// Steps between checkpoints, from the room's `Begin`.
     checkpoint_interval: u64,
     /// The batch chosen last ends at a checkpoint step, this one.
@@ -606,6 +639,9 @@ pub struct StepDriver<G> {
     handed_at: Option<Instant>,
     /// The batch interval times each call ([`crate::interval`]).
     batch_interval: bool,
+    max_batch_updates: u32,
+    /// Whether the game has been catching up with the room lately.
+    catch_up: crate::cadence::CatchUp,
     /// The driver ran the room's game after the last call: leaving it (an
     /// end, the menu, playing alone) starts a new epoch for the interval.
     was_running: bool,
@@ -628,7 +664,6 @@ impl<G: RoomGate> StepDriver<G> {
             loading: None,
             replaying: None,
             phase: Phase::BeforeBegin,
-            chosen: None,
             checkpoint_interval: u64::MAX,
             lanes_due: false,
             checkpoint_step: 0,
@@ -645,6 +680,8 @@ impl<G: RoomGate> StepDriver<G> {
             cadence: Cadence::new(false),
             handed_at: None,
             batch_interval: false,
+            max_batch_updates: MAX_STEPS_PER_CALL,
+            catch_up: crate::cadence::CatchUp::new(),
             was_running: false,
             choice: None,
             log: Vec::new(),
@@ -675,6 +712,20 @@ impl<G: RoomGate> StepDriver<G> {
         self.cadence.set_fixed(on);
     }
 
+    /// Experimentally shorten steady batches; the verified interval hook
+    /// must be armed before this affects scheduling.
+    pub fn set_batch_period(&mut self, period: Duration) {
+        self.cadence.set_batch_period(period);
+    }
+
+    pub fn set_batch_limit(&mut self, limit: u32) {
+        self.max_batch_updates = limit.clamp(1, MAX_STEPS_PER_CALL);
+    }
+
+    pub fn set_short_recovery(&mut self, enabled: bool) {
+        self.cadence.set_short_recovery(enabled);
+    }
+
     /// For the batch interval, after a call: whether its batch may be timed,
     /// the room's time per step, the nominal count, the steps released and
     /// not run, and whether the count was the steady one.
@@ -688,12 +739,21 @@ impl<G: RoomGate> StepDriver<G> {
                 && self.phase == Phase::Running
                 && !self.cadence.paused(),
             step_us: self.cadence.step_us(),
-            nominal: self.cadence.fixed_nominal(),
+            // Controlled repayment must be displayed for all its updates,
+            // unlike emergency catch-up whose presentation is capped. Do
+            // not introduce a speed pulse by showing four updates as three.
+            nominal: self
+                .choice
+                .filter(|choice| choice.pick == Pick::Repay)
+                .map_or_else(
+                    || self.cadence.fixed_nominal(),
+                    |choice| choice.steps.max(self.cadence.fixed_nominal()),
+                ),
             backlog: u32::try_from(released.saturating_add(1).saturating_sub(next))
                 .unwrap_or(u32::MAX),
-            steady: self
-                .choice
-                .is_some_and(|choice| choice.pick == Pick::Nominal),
+            steady: self.choice.is_some_and(|choice| {
+                choice.steady_interval(self.cadence.fixed_nominal(), self.max_batch_updates)
+            }),
             waiting: self.why == "wait",
         }
     }
@@ -791,34 +851,24 @@ impl<G: RoomGate> StepDriver<G> {
         }
     }
 
-    /// The game's speed row says `speedup` (0 paused, 1 for 1x, ...). In the
-    /// room's game, a change the player makes there asks the room for that
-    /// speed; the value found on entering the room's game is taken as it is,
-    /// so joining never resets a room's speed.
+    /// An explicit speed-button or keyboard request, never a sampled native
+    /// value: restoring GAME_SPEED from a snapshot is not player intent.
     pub fn chosen_speed(&mut self, speedup: u64) {
-        if self.phase != Phase::Running {
-            self.chosen = None;
+        if self.phase != Phase::Running || self.loading.is_some() || self.at_menu {
             return;
         }
-        match self.chosen {
-            None => self.chosen = Some(speedup),
-            Some(before) if before == speedup => {}
-            Some(_) => {
-                self.chosen = Some(speedup);
-                let percent = u16::try_from(speedup.saturating_mul(100)).unwrap_or(u16::MAX);
-                let speed = Speed(percent.min(Speed::MAX.0));
-                match self.gate.request_speed(speed) {
-                    Ok(()) => self.log.push(format!(
-                        "the speed row asks the room for speed {}%",
-                        speed.0
-                    )),
-                    // A speed the room did not hear is not a reason to stop
-                    // following it: the room's speed simply stays.
-                    Err(error) => self
-                        .log
-                        .push(format!("asking the room for a speed failed: {error}")),
-                }
-            }
+        let speed = match speedup {
+            0 | 1 | 2 | 4 => Speed((speedup * 100) as u16),
+            _ => return,
+        };
+        match self.gate.request_speed(speed) {
+            Ok(()) => self.log.push(format!(
+                "the speed controls ask the room for speed {}%",
+                speed.0
+            )),
+            Err(error) => self
+                .log
+                .push(format!("asking the room for a speed failed: {error}")),
         }
     }
 
@@ -948,6 +998,9 @@ impl<G: RoomGate> StepDriver<G> {
                             }
                         }
                     }
+                    if steps > 0 && self.phase == Phase::Running {
+                        self.stage_actions_after_batch();
+                    }
                 }
             }
             // A failed update batch is not reported; the world holds.
@@ -955,6 +1008,54 @@ impl<G: RoomGate> StepDriver<G> {
         }
         self.note_phase();
         Outcome { updates }
+    }
+
+    /// Start the GUI/engine wake as soon as the preceding updates and their
+    /// checkpoint are complete. Waiting for the next native callback adds
+    /// an avoidable zero-update batch to every action boundary. A late wake
+    /// still holds the next callback: this never simulates through replay.
+    fn stage_actions_after_batch(&mut self) {
+        if self.replaying.is_some() {
+            return;
+        }
+        if let Some(why) = self.foreign_world() {
+            self.hold(why);
+            return;
+        }
+        if let Err(error) = self.gate.stage_actions(&mut self.game) {
+            self.hold(format!(
+                "preparing actions after a completed batch: {error}"
+            ));
+            return;
+        }
+        if let Some(fault) = self.game.fault.take() {
+            self.hold(fault);
+            return;
+        }
+        if !self.game.actions.is_empty() {
+            self.log.push(format!(
+                "staging {} room action(s) before step {} after a completed batch",
+                self.game.actions.len(),
+                self.gate.next_step()
+            ));
+            self.start_replay();
+        }
+    }
+
+    fn start_replay(&mut self) {
+        let actions: Vec<_> = std::mem::take(&mut self.game.actions)
+            .into_iter()
+            .map(|(action, own, player, seal)| Ordered {
+                action,
+                ticket: own.and_then(|seq| self.tickets.remove(&seq)),
+                player,
+                seal,
+            })
+            .collect();
+        match self.control.request_replay(self.gate.next_step(), &actions) {
+            Ok(()) => self.replaying = Some(Instant::now()),
+            Err(why) => self.hold(format!("starting the room's actions: {why}")),
+        }
     }
 
     /// A divergence, or a line of the room's chat asking for a lane dump:
@@ -1153,19 +1254,7 @@ impl<G: RoomGate> StepDriver<G> {
             // Apply before any release, save, load or end that follows these
             // events. Even a paused world receives commands on its sim thread.
             if gate.is_ok() && self.game.fault.is_none() && !self.game.actions.is_empty() {
-                let actions: Vec<_> = std::mem::take(&mut self.game.actions)
-                    .into_iter()
-                    .map(|(action, own, player, seal)| Ordered {
-                        action,
-                        ticket: own.and_then(|seq| self.tickets.remove(&seq)),
-                        player,
-                        seal,
-                    })
-                    .collect();
-                match self.control.request_replay(self.gate.next_step(), &actions) {
-                    Ok(()) => self.replaying = Some(Instant::now()),
-                    Err(why) => self.hold(format!("starting the room's actions: {why}")),
-                }
+                self.start_replay();
                 self.why = "actions";
                 return Updates::Exactly(0);
             }
@@ -1184,7 +1273,29 @@ impl<G: RoomGate> StepDriver<G> {
                             self.cadence.speed(*speed);
                         }
                     }
-                    return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
+                    let barrier = self.gate.barrier_waiting();
+                    let command = self.command_on_its_way();
+                    // Preserve the existing throughput toward an ordered
+                    // boundary, including saved-history replay on rejoin.
+                    // The gate still stops at the event and each checkpoint.
+                    let max_batch = if barrier || command || self.cadence.paused() {
+                        MAX_STEPS_PER_CALL
+                    } else {
+                        self.max_batch_updates
+                    };
+                    // Replaying history after a join or a reload: as many as
+                    // the game runs in a call, to the next checkpoint or
+                    // event (the gate cuts there either way).
+                    let catching_up = max_batch == MAX_STEPS_PER_CALL
+                        && self
+                            .catch_up
+                            .catching_up(Instant::now(), self.cadence.pace_now());
+                    let max_batch = if catching_up {
+                        CATCH_UP_STEPS_PER_CALL
+                    } else {
+                        max_batch
+                    };
+                    return match self.gate.batch(&mut self.game, max_batch) {
                         Ok(cap) => {
                             let interval = self.checkpoint_interval.max(1);
                             let to_checkpoint = (interval - first % interval) % interval + 1;
@@ -1193,8 +1304,8 @@ impl<G: RoomGate> StepDriver<G> {
                                 self.gate.released(),
                                 cap,
                                 to_checkpoint,
-                                self.gate.barrier_waiting(),
-                                self.command_on_its_way(),
+                                barrier,
+                                command,
                                 Instant::now(),
                             );
                             crate::perf::cadence_pick(choice.pick);
@@ -1203,8 +1314,9 @@ impl<G: RoomGate> StepDriver<G> {
                                 self.why = "reserve";
                                 return Updates::Exactly(0);
                             }
-                            self.why = "run";
+                            self.why = if catching_up { "catch-up" } else { "run" };
                             let steps = choice.steps.max(1);
+                            self.catch_up.note(Instant::now(), steps);
                             let last = first.saturating_add(u64::from(steps) - 1);
                             self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
                             self.checkpoint_step = last;
@@ -1420,11 +1532,13 @@ impl<G: RoomGate> StepDriver<G> {
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
         crate::persons::freed_ids::trace::reset_world();
+        crate::industries::reset_world();
         self.next_step = Some(next_step);
         // The released counter starts again here, whatever world ran before;
         // so do the batches the interval times (new GameSims).
         self.cadence
             .reset(next_step.saturating_sub(1), Instant::now());
+        self.catch_up.reset();
         crate::interval::SLOTS.next_epoch();
         self.room_world = Some(self.control.world_mark());
         crate::order::measure::room_step(next_step);
@@ -2619,6 +2733,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn smaller_catchup_caps_drain_every_step_and_keep_checkpoint_boundaries() {
+        for limit in [4, 5, 8] {
+            let mut script = Script::default();
+            script.begin.push_back(Some(begin_every(7)));
+            script.gates.extend((0..40).map(|_| StepGate::Run));
+            let (mut d, mut calls) = driver(script);
+            d.set_batch_limit(limit);
+            while d.gate.ran < 40 {
+                let before = d.gate.ran;
+                let got = call(&mut d, &mut calls);
+                let Updates::Exactly(n) = got else {
+                    panic!("unexpected own speed")
+                };
+                assert!(n > 0 && n <= limit, "{got:?}");
+                assert_eq!(d.gate.ran, before + u64::from(n));
+                assert!(before / 7 == (d.gate.ran - 1) / 7, "crossed checkpoint");
+            }
+            assert_eq!(call(&mut d, &mut calls), PAUSED);
+            assert_eq!(d.gate.ran, 40);
+        }
+    }
+
+    #[test]
+    fn catchup_limit_is_opt_in_and_cannot_remove_the_global_bound() {
+        assert_eq!(batch_limit(None).unwrap(), MAX_STEPS_PER_CALL);
+        for n in [4, 5, 8, 16] {
+            assert_eq!(batch_limit(Some(&n.to_string())).unwrap(), n);
+        }
+        for invalid in ["", "0", "1", "17", "100000", "-4"] {
+            assert!(batch_limit(Some(invalid)).is_err());
+        }
+    }
+
+    #[test]
     fn a_room_far_ahead_is_caught_up_a_bounded_number_of_steps_a_call() {
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
@@ -2675,30 +2823,33 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_change_in_the_speed_row_asks_the_room_and_joining_asks_nothing() {
+    fn only_explicit_speed_requests_in_a_loaded_room_are_sent() {
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
         let (mut d, mut calls) = driver(script);
         d.chosen_speed(4);
-        assert!(
-            d.gate.speeds.is_empty(),
-            "before the room's game, nothing is asked"
-        );
-        call(&mut d, &mut calls);
-        // Entering the room's game at 2x: taken as it is.
-        d.chosen_speed(2);
-        d.chosen_speed(2);
         assert!(d.gate.speeds.is_empty());
+        call(&mut d, &mut calls);
+        d.chosen_speed(2);
         d.chosen_speed(4);
         d.chosen_speed(0);
-        d.chosen_speed(0);
-        assert_eq!(d.gate.speeds, vec![Speed(400), Speed::PAUSED]);
-        d.chosen_speed(1000);
-        assert_eq!(
-            d.gate.speeds.last(),
-            Some(&Speed::MAX),
-            "capped at the room's fastest"
-        );
+        d.chosen_speed(3);
+        d.chosen_speed(u64::MAX);
+        assert_eq!(d.gate.speeds, vec![Speed(200), Speed(400), Speed::PAUSED]);
+        d.loading = Some(Loading {
+            next_step: 101,
+            since: Instant::now(),
+        });
+        d.chosen_speed(4);
+        d.loading = None;
+        d.world_loaded(101);
+        // Loading a snapshot is no request. A deliberate click afterward is.
+        assert_eq!(d.gate.speeds.len(), 3);
+        d.chosen_speed(4);
+        assert_eq!(d.gate.speeds.last(), Some(&Speed(400)));
+        d.on_menu();
+        d.chosen_speed(2);
+        assert_eq!(d.gate.speeds.len(), 4);
     }
 
     #[test]
@@ -3524,6 +3675,188 @@ mod even_steps_over_a_real_link {
                 kicked: false,
             },
         }
+    }
+
+    #[test]
+    fn replay_is_staged_after_the_preceding_checkpoint_and_can_finish_between_calls() {
+        let (mut driver, agent) = playing("staged-replay", 2, 1, 400);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        state.lock().unwrap().replay_wait = true;
+        driver.control = Box::new(control);
+        release(&agent, 1, 2);
+        let action = crate::lua::tests::depot_build();
+        let mut event = super::tests::command_event(7, 3, &action);
+        if let EventBody::Command { player, .. } = &mut event.body {
+            *player = ME;
+        }
+        driver.tickets.insert(7, 42);
+        say(&agent, &ToHook::Apply(event));
+        release(&agent, 3, 4);
+        driver.on_step(Vec::new(), &mut |batch| {
+            assert_eq!(batch.updates, Updates::Exactly(2));
+            assert!(batch.lanes);
+            assert!(state.lock().unwrap().replay_requests.is_empty());
+            Ok(Some(vec![(0, "before replay".to_owned())]))
+        });
+        let requests = state.lock().unwrap().replay_requests.clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, 3);
+        assert_eq!(requests[0].1[0].action, action);
+        assert_eq!(requests[0].1[0].ticket, Some(42));
+        assert_eq!(requests[0].1[0].player, ME);
+        assert_eq!(driver.gate.released(), 2, "the next release stays unread");
+        let mut reports = Vec::new();
+        let mut buf = vec![0; tpf3mp_bridge::MAX_MESSAGE];
+        while let Some(len) = agent.recv_into(&mut buf).unwrap() {
+            reports.push(tpf3mp_bridge::decode::<tpf3mp_bridge::ToAgent>(&buf[..len]).unwrap());
+        }
+        assert!(reports.iter().any(|report| matches!(report,
+            tpf3mp_bridge::ToAgent::Checkpoint { step: 2, lanes }
+                if *lanes == lane_digests(&[(0, "before replay".to_owned())])
+        )));
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        assert_eq!(
+            step(&mut driver).0,
+            Updates::Exactly(1),
+            "no compulsory zero batch; cadence keeps one released step in reserve"
+        );
+        assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+        assert!(driver.tickets.is_empty());
+    }
+
+    #[test]
+    fn staged_replay_still_waits_for_ack_and_fails_closed() {
+        for failed in [false, true] {
+            let tag = if failed {
+                "staged-failed"
+            } else {
+                "staged-delayed"
+            };
+            let (mut driver, agent) = playing(tag, 50, 1, 400);
+            let control = FakeControl::default();
+            let state = control.state.clone();
+            state.lock().unwrap().replay_wait = true;
+            driver.control = Box::new(control);
+            release(&agent, 1, 4);
+            say(
+                &agent,
+                &ToHook::Apply(super::tests::command_event(
+                    1,
+                    5,
+                    &crate::lua::tests::depot_build(),
+                )),
+            );
+            release(&agent, 5, 8);
+            assert_eq!(step(&mut driver).0, Updates::Exactly(4));
+            assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+            assert_eq!(step(&mut driver).0, Updates::Exactly(0));
+            assert_eq!(driver.why(), "replaying");
+            assert_eq!(driver.next_step(), Some(5));
+            state.lock().unwrap().replay_answer = Some(if failed {
+                Err("the action could not finish".into())
+            } else {
+                Ok(())
+            });
+            assert_eq!(
+                step(&mut driver).0,
+                Updates::Exactly(if failed { 0 } else { 3 })
+            );
+            assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+            if failed {
+                assert!(matches!(driver.phase(), Phase::Holding(_)));
+                assert_eq!(driver.next_step(), Some(5));
+            }
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_cut_does_not_stage_actions_ahead_of_unfinished_steps() {
+        let (mut driver, agent) = playing("stage-after-cut", 2, 1, 400);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        driver.control = Box::new(control);
+        release(&agent, 1, 3);
+        say(
+            &agent,
+            &ToHook::Apply(super::tests::command_event(
+                1,
+                4,
+                &crate::lua::tests::depot_build(),
+            )),
+        );
+        assert_eq!(step(&mut driver).0, Updates::Exactly(2));
+        assert!(state.lock().unwrap().replay_requests.is_empty());
+        assert_eq!(step(&mut driver).0, Updates::Exactly(1));
+        assert_eq!(state.lock().unwrap().replay_requests[0].0, 4);
+    }
+
+    #[test]
+    fn a_small_recovery_cap_does_not_slow_history_drains_or_cross_their_event() {
+        let (mut driver, agent) = playing("capped-history", 50, 1, 200);
+        driver.set_batch_limit(5);
+        release(&agent, 1, 40);
+        say(&agent, &ToHook::Apply(left(41)));
+        release(&agent, 41, 55);
+        for expected in [16, 16, 8] {
+            assert_eq!(step(&mut driver).0, Updates::Exactly(expected));
+            assert_eq!(driver.game().events, 0, "event preceded its steps");
+        }
+        assert_eq!(driver.next_step(), Some(41));
+        let Updates::Exactly(n) = step(&mut driver).0 else {
+            panic!("unexpected own speed")
+        };
+        assert!(n <= 5, "ordinary scheduling did not restore its cap");
+        assert_eq!(driver.game().events, 1);
+    }
+
+    #[test]
+    fn capped_recovery_keeps_command_drains_fast_and_waits_for_replay_ack() {
+        let (mut driver, agent) = playing("capped-drain", 50, 1, 400);
+        driver.set_batch_limit(4);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        state.lock().unwrap().replay_wait = true;
+        driver.control = Box::new(control);
+        release(&agent, 1, 9);
+        say(
+            &agent,
+            &ToHook::Apply(super::tests::command_event(
+                1,
+                10,
+                &crate::lua::tests::depot_build(),
+            )),
+        );
+        release(&agent, 10, 15);
+        assert_eq!(step(&mut driver).0, Updates::Exactly(9));
+        assert_eq!(state.lock().unwrap().replay_requests[0].0, 10);
+        assert_eq!(driver.next_step(), Some(10));
+        assert_eq!(step(&mut driver).0, Updates::Exactly(0));
+        assert_eq!(driver.why(), "replaying");
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        assert_eq!(step(&mut driver).0, Updates::Exactly(4));
+        assert_eq!(driver.next_step(), Some(14));
+        assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+    }
+
+    #[test]
+    fn controlled_short_recovery_presents_its_actual_update_count() {
+        let (mut driver, agent) = playing("short-recovery", 50, 1, 400);
+        driver.set_batch_interval(true);
+        driver.set_batch_period(Duration::from_millis(100));
+        driver.set_batch_limit(4);
+        driver.set_short_recovery(true);
+        release(&agent, 1, 14);
+        // Exercise selection and the record supplied to Sync without
+        // arming global native hooks in the parallel test process.
+        assert_eq!(driver.updates(), Updates::Exactly(4));
+        let info = driver.batch_info();
+        assert!(info.eligible && info.steady);
+        assert_eq!(info.nominal, 4);
+        assert_eq!(
+            crate::interval::interval_us(4, info.nominal, info.step_us, 1.0, false),
+            200_000
+        );
     }
 
     #[test]

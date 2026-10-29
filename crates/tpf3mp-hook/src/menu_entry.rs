@@ -166,8 +166,6 @@ static LUA_SETTOP: AtomicUsize = AtomicUsize::new(0);
 static LUA_PUSHLSTRING: AtomicUsize = AtomicUsize::new(0);
 static LUA_TOLSTRING: AtomicUsize = AtomicUsize::new(0);
 static MANAGER_WINDOW_SUPPORTED: AtomicBool = AtomicBool::new(false);
-/// The Lua states already patched.
-static PATCHED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Keeps the detour armed for the life of the process.
 static DETOUR: Mutex<Option<InlineDetour>> = Mutex::new(None);
 static CACHE_DETOUR: Mutex<Option<InlineDetour>> = Mutex::new(None);
@@ -291,6 +289,14 @@ unsafe extern "system" fn cached_loadfile(
     holder: *mut *mut c_void,
     uri: *const u8,
 ) -> u8 {
+    // A fresh state may obtain all its early modules from the native cache,
+    // bypassing the loader body. Install its wrapper before that lookup.
+    if !holder.is_null() {
+        let state = unsafe { *holder };
+        if !state.is_null() {
+            patch_once(state);
+        }
+    }
     if uri_part(uri, 0x20).as_deref() == Some("industries/industryutil.lua")
         && uri_part(uri, 0).as_deref() == Some("")
         && !holder.is_null()
@@ -429,15 +435,49 @@ unsafe extern "C" fn read_chunk(
     chunk.ptr.cast::<c_char>()
 }
 
-/// Runs [`PATCH`] in `state` the first time the state is seen.
+/// Read the marker from the live state, never a process-wide address list:
+/// the game destroys/recreates Lua states and can reuse their addresses.
+/// Raw lookups avoid executing Lua or allocating/compiling a chunk per file.
+fn patch_installed(state: *mut c_void) -> bool {
+    let Some(api) = crate::lua::api() else {
+        return false;
+    };
+    if state.is_null() {
+        return false;
+    }
+    // SAFETY: only called at the native loader boundary, with its live state
+    // on the owning thread. The installed API matches that state's Lua.
+    unsafe {
+        let top = (api.gettop)(state);
+        if (api.checkstack)(state, 3) == 0 {
+            return false;
+        }
+        match api.globals {
+            crate::lua::Globals::Registry { index, key } => (api.rawgeti)(state, index, key),
+            crate::lua::Globals::Pseudo(index) => (api.pushvalue)(state, index),
+        }
+        let resolveutil = c"resolveutil";
+        (api.pushlstring)(state, resolveutil.as_ptr(), resolveutil.to_bytes().len());
+        (api.rawget)(state, -2);
+        let installed = if (api.type_of)(state, -1) == 5 {
+            let marker = c"__tpf3mp_menu";
+            (api.pushlstring)(state, marker.as_ptr(), marker.to_bytes().len());
+            (api.rawget)(state, -2);
+            (api.toboolean)(state, -1) != 0
+        } else {
+            false
+        };
+        (api.settop)(state, top);
+        installed
+    }
+}
+
+/// Runs [`PATCH`] once per live state's resolveutil table. Failed or early
+/// attempts can retry; a reused address is not evidence of installation.
 fn patch_once(state: *mut c_void) {
-    let mut seen = PATCHED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if seen.contains(&(state as usize)) {
+    if patch_installed(state) {
         return;
     }
-    seen.push(state as usize);
 
     let load = LUA_LOAD.load(Ordering::Acquire);
     let pcallk = LUA_PCALLK.load(Ordering::Acquire);
@@ -486,6 +526,9 @@ fn patch_once(state: *mut c_void) {
         note(&format!(
             "the menu patch raised (status {status}) in state {state:p}"
         ));
+        return;
+    }
+    if !patch_installed(state) {
         return;
     }
     note(&format!("menu patch installed in Lua state {state:p}"));
@@ -756,10 +799,7 @@ extern "C" fn on_entry(args: *const u64) -> *const u8 {
         }
         return original;
     }
-    let patched = PATCHED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains(&(state as usize));
+    let patched = patch_installed(state);
     if request_path(closure).is_some_and(|path| path.ends_with("industries/industryutil.lua")) {
         note(&format!(
             "industry loader state={state:p} patched={patched} namespace={:?}",
@@ -767,14 +807,15 @@ extern "C" fn on_entry(args: *const u64) -> *const u8 {
         ));
     }
     if request_path(closure).is_some_and(|path| is_main_page(&path)) {
-        // In a patched state the patch's wrap has asked for the mod's copy
-        // (the body sees only the path, the same for both); in one the
-        // patch is not in yet, the game's own page loads.
-        note(if patched {
-            "main_page.tl SERVED: the main menu's page comes from the mod, with the Multiplayer entry"
-        } else {
-            "main_page.tl MISSED: the main menu's page loaded before the menu patch was in its Lua state; the main menu is the game's own"
-        });
+        // The actual URI namespace proves which file is being loaded.
+        // An installed wrapper can still fall back when its copy fails.
+        note(
+            if request_namespace(closure).as_deref() == Some("tpf3mp_1") {
+                "main_page.tl SERVED: the main menu's page comes from the mod, with the Multiplayer entry"
+            } else {
+                "main_page.tl MISSED: the loader requested the game's base page; the mod's redirect was absent or its copy failed to load"
+            },
+        );
     }
     patch_once(state);
     original
@@ -824,6 +865,38 @@ unsafe extern "C" fn entry_thunk() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installation_tracks_the_live_lua_table_not_a_reused_state_address() {
+        let api = crate::lua::tests::lua51();
+        let lua = crate::lua::tests::Lua::new();
+        let state = lua.state();
+        // Preserve caller values, including across an unavailable/wrong table.
+        unsafe { (api.pushnumber)(state, 42.0) };
+        let top = unsafe { (api.gettop)(state) };
+        for source in ["resolveutil = nil", "resolveutil = 7", "resolveutil = {}"] {
+            lua.run(source).unwrap();
+            assert!(!patch_installed(state));
+            assert_eq!(unsafe { (api.gettop)(state) }, top);
+        }
+        lua.run("debugPrint = function() end; resolveutil.loadfile = function(path) return function() return path end end").unwrap();
+        lua.run(&menu_patch(true)).unwrap();
+        assert!(patch_installed(state));
+        assert_eq!(unsafe { (api.gettop)(state) }, top);
+        // Replace the globals just as a newly allocated state at this exact
+        // address would have them. An address-only cache incorrectly says yes.
+        lua.run("resolveutil = {loadfile = function(path) return function() return path end end}")
+            .unwrap();
+        assert!(!patch_installed(state));
+        lua.run(&menu_patch(true)).unwrap();
+        assert!(patch_installed(state));
+        assert_eq!(
+            lua.run("return resolveutil.loadfile('::/gui/menu/main_page.tl')()")
+                .unwrap(),
+            "tpf3mp_1::/gui/menu/main_page.tl"
+        );
+        assert_eq!(unsafe { (api.gettop)(state) }, top);
+    }
 
     #[test]
     fn the_entry_resolves_its_own_targets_only() {

@@ -21,7 +21,7 @@
 //! process: the game then paces itself, as without it.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Set to `0` (or `off`) in the game's environment, the hook never writes
 /// the batch interval.
@@ -38,6 +38,22 @@ pub const ZERO_US: u32 = 50_000;
 /// The game's own batch: 200 ms, which `RunGameSimLoop` also hands every
 /// update as its time step.
 pub const BASE: Duration = Duration::from_millis(200);
+
+/// Experimental steady batch duration. This changes grouping, never room
+/// steps, ordering or the native update duration. Unset retains 200 ms.
+pub const BATCH_MS_ENV: &str = "TPF3MP_HOOK_BATCH_MS";
+
+pub fn batch_period(value: Option<&str>) -> Result<Duration, String> {
+    match value.map(str::trim) {
+        None | Some("200") => Ok(BASE),
+        Some("100") => Ok(Duration::from_millis(100)),
+        Some("50") => Ok(Duration::from_millis(50)),
+        Some("250") => Ok(Duration::from_millis(250)),
+        Some(value) => Err(format!(
+            "{BATCH_MS_ENV}={value:?}: expected 50, 100, 200 or 250"
+        )),
+    }
+}
 
 /// The trim's bounds: throughput at most 25 % above or below the room's
 /// pace, far inside the server's pacing window.
@@ -102,8 +118,8 @@ pub fn layout_for(profile: &str) -> Option<Layout> {
 
 /// The updates a call runs at the room's pace with the game's own 200 ms
 /// batch: 1, 2, 4 at 1x, 2x, 4x and 5 steps a second; at least 1.
-pub fn nominal(pace: f64) -> u32 {
-    let count = (pace * BASE.as_secs_f64()).round();
+pub fn nominal(pace: f64, period: Duration) -> u32 {
+    let count = (pace * period.as_secs_f64()).round();
     if count.is_finite() && count >= 1.0 {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let count = count.min(f64::from(crate::step::MAX_STEPS_PER_CALL)) as u32;
@@ -147,15 +163,26 @@ pub fn interval_us(count: u32, nominal: u32, step_us: u32, trim: f64, waiting: b
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Trim {
     value: f64,
+    /// Short-batch recovery already amortizes overhead with more updates.
+    /// Do not also demand twice room speed from those expensive batches.
+    recovery_floor: f64,
 }
 
 impl Default for Trim {
     fn default() -> Self {
-        Self { value: 1.0 }
+        Self {
+            value: 1.0,
+            recovery_floor: TRIM_DEEP,
+        }
     }
 }
 
 impl Trim {
+    pub fn bound_recovery(&mut self) {
+        self.recovery_floor = TRIM_MIN;
+        self.value = self.value.max(TRIM_MIN);
+    }
+
     pub fn value(&self) -> f64 {
         self.value
     }
@@ -186,13 +213,13 @@ impl Trim {
         // just under the far-behind catch-up): up to twice the room's pace
         // rather than 1.25 times, so it is caught up in seconds, not ten.
         let floor = if backlog > 2 * high + u64::from(nominal) {
-            TRIM_DEEP
+            self.recovery_floor
         } else {
             TRIM_MIN
         };
         let want = (1.0 - TRIM_GAIN * error / f64::from(nominal.max(1))).clamp(floor, TRIM_MAX);
         let step = (want - self.value).clamp(-TRIM_SLEW, TRIM_SLEW);
-        self.value = (self.value + step).clamp(TRIM_DEEP, TRIM_MAX);
+        self.value = (self.value + step).clamp(self.recovery_floor, TRIM_MAX);
     }
 }
 
@@ -221,6 +248,8 @@ impl BatchInfo {
             backlog: self.backlog,
             steady: self.steady,
             waiting: self.waiting,
+            started_us: 0,
+            finished_us: 0,
         }
     }
 }
@@ -243,13 +272,16 @@ pub struct Record {
     pub nominal: u32,
     /// Steps released and not run after the batch.
     pub backlog: u32,
-    /// The count was the steady one (crate::cadence's `Nominal`): only then
+    /// The count was steady or bounded repayment (crate::cadence): only then
     /// does the backlog say anything about the pace; before an action, the
     /// player's own command, a pause or a catch-up it is emptied or filled
     /// on purpose, and the trim only eases back towards 1.
     pub steady: bool,
     /// No step was released for the batch: the room waits.
     pub waiting: bool,
+    /// Worker timing on steptrace's common monotonic clock, never log time.
+    pub started_us: u64,
+    pub finished_us: u64,
 }
 
 impl Slot {
@@ -265,6 +297,8 @@ impl Slot {
             backlog: AtomicU32::new(0),
             steady: AtomicBool::new(false),
             waiting: AtomicBool::new(false),
+            started_us: AtomicU64::new(0),
+            finished_us: AtomicU64::new(0),
         }
     }
 }
@@ -282,6 +316,8 @@ struct Slot {
     backlog: AtomicU32,
     steady: AtomicBool,
     waiting: AtomicBool,
+    started_us: AtomicU64,
+    finished_us: AtomicU64,
 }
 
 /// Two published batches, one per `GameSim` (the game double-buffers its
@@ -337,6 +373,9 @@ impl Slots {
         slot.backlog.store(record.backlog, Ordering::Relaxed);
         slot.steady.store(record.steady, Ordering::Relaxed);
         slot.waiting.store(record.waiting, Ordering::Relaxed);
+        slot.started_us.store(record.started_us, Ordering::Relaxed);
+        slot.finished_us
+            .store(record.finished_us, Ordering::Relaxed);
         slot.seq.store(begin + 1, Ordering::Release);
     }
 
@@ -365,6 +404,8 @@ impl Slots {
             backlog: slot.backlog.load(Ordering::Relaxed),
             steady: slot.steady.load(Ordering::Relaxed),
             waiting: slot.waiting.load(Ordering::Relaxed),
+            started_us: slot.started_us.load(Ordering::Relaxed),
+            finished_us: slot.finished_us.load(Ordering::Relaxed),
         };
         std::sync::atomic::fence(Ordering::Acquire);
         let after = slot.seq.load(Ordering::Relaxed);
@@ -413,23 +454,53 @@ pub enum Fault {
 #[derive(Debug, Default)]
 pub struct Interval {
     trim: Trim,
+    ready_budget: crate::ready_budget::ReadyBudget,
     /// The last interval written, µs.
     last: Option<u32>,
     /// The `m_data` and world whose field was found writable.
     writable_for: Option<(usize, u64)>,
+    /// Optional wall-clock delivery diagnostic, not simulation/render state.
+    delivery: Option<(Instant, u64, u32, u32)>,
 }
 
 impl Interval {
     pub const fn new() -> Self {
         Self {
-            trim: Trim { value: 1.0 },
+            trim: Trim {
+                value: 1.0,
+                recovery_floor: TRIM_DEEP,
+            },
+            ready_budget: crate::ready_budget::ReadyBudget::new(),
             last: None,
             writable_for: None,
+            delivery: None,
         }
     }
 
     pub fn trim(&self) -> f64 {
         self.trim.value()
+    }
+
+    /// Successful buffer-swap spacing versus the previous buffer's assigned
+    /// presentation interval. Not GPU frame time or a vehicle-motion trace.
+    fn delivered(
+        &mut self,
+        now: Instant,
+        epoch: u64,
+        us: u32,
+        count: u32,
+    ) -> Option<(Duration, Duration, u32)> {
+        let (before, old_epoch, previous_us, previous_count) =
+            self.delivery.replace((now, epoch, us, count))?;
+        if old_epoch != epoch {
+            return None;
+        }
+        let gap = now.saturating_duration_since(before);
+        Some((
+            gap,
+            gap.saturating_sub(Duration::from_micros(u64::from(previous_us))),
+            previous_count,
+        ))
     }
 
     /// After a successful Sync, with what it read of the game: the interval
@@ -457,10 +528,12 @@ impl Interval {
         }
         let Some(record) = record else {
             self.trim.reset();
+            self.ready_budget.reset();
             return Ok(Err(Skip::NoRecord));
         };
         if !record.eligible || record.step_us == 0 {
             self.trim.reset();
+            self.ready_budget.reset();
             return Ok(Err(Skip::NotEligible));
         }
         if record.count > 0 && record.steady {
@@ -490,6 +563,11 @@ pub static SLOTS: Slots = Slots::new();
 
 /// Off for the process: the knob, a profile without the layout, or a fault.
 static OFF: AtomicBool = AtomicBool::new(true);
+static BUDGET_ON: AtomicBool = AtomicBool::new(false);
+
+pub fn budget_enabled() -> bool {
+    BUDGET_ON.load(Ordering::Relaxed)
+}
 /// The wrapper's state (only the main thread, in the wrapper, takes it).
 static STATE: std::sync::Mutex<Interval> = std::sync::Mutex::new(Interval::new());
 /// The game's layout, set once when the interval is armed.
@@ -507,7 +585,31 @@ static FALSE_SYNCS: AtomicU64 = AtomicU64::new(0);
 /// writes, until a fault.
 pub fn arm(layout: Layout) {
     let _ = LAYOUT.set(layout);
+    if crate::steptrace::wanted(std::env::var(crate::ready_budget::ENV).ok().as_deref())
+        && let Ok(mut state) = STATE.lock()
+    {
+        state.ready_budget.enable();
+        BUDGET_ON.store(true, Ordering::Relaxed);
+        say("measured presentation budget enabled (experiment): recovery deadlines respect native preparation/worker costs, capped at room pace".into());
+    }
     OFF.store(false, Ordering::Release);
+}
+
+/// The game's layout once the interval is armed (`crate::motion` reads the
+/// same fields each frame).
+pub fn layout() -> Option<Layout> {
+    LAYOUT.get().copied()
+}
+
+/// Called during install, before a world starts. Only the opt-in short
+/// batch policy combines extra updates with this bounded acceleration.
+pub fn bound_short_recovery(period: Duration, recovery: bool) {
+    if recovery
+        && period < BASE
+        && let Ok(mut state) = STATE.lock()
+    {
+        state.trim.bound_recovery();
+    }
 }
 
 /// Whether the interval is in effect: armed, not off after a fault, and
@@ -621,7 +723,7 @@ pub fn sync_in(
             "the game's state is not what it should be ({fault:?})"
         )),
         Ok(Err(skip)) => Done::Skipped(skip),
-        Ok(Ok(us)) => {
+        Ok(Ok(mut us)) => {
             let Some(at) = field(layout.gui_frame_time) else {
                 return Done::Off("guiFrameTime's address overflows".into());
             };
@@ -629,6 +731,7 @@ pub fn sync_in(
             // The world may have changed since the record was read (a hold
             // on the simulation thread): never time another world's batch.
             if record.is_none_or(|record| record.epoch != epoch) {
+                state.ready_budget.reset();
                 return Done::Skipped(Skip::NoRecord);
             }
             if state.writable_for != Some((m_data, epoch)) {
@@ -637,6 +740,25 @@ pub fn sync_in(
                 }
                 state.writable_for = Some((m_data, epoch));
             }
+            if let Some(record) = record {
+                us = state
+                    .ready_budget
+                    .after_swap(
+                        crate::ready_budget::Key {
+                            world: m_data,
+                            epoch,
+                            step_us: record.step_us,
+                            nominal: record.nominal,
+                        },
+                        crate::steptrace::clock_us(Instant::now()),
+                        record.count,
+                        record.started_us,
+                        record.finished_us,
+                        us,
+                    )
+                    .clamp(MIN_US, MAX_US);
+            }
+            state.last = Some(us);
             write_i32(at, us);
             match record {
                 Some(record) => Done::Wrote(us, record),
@@ -666,21 +788,41 @@ pub fn after_sync(cgame: usize, ok: bool) {
         Done::FalseSync => {}
         Done::Skipped(_) => {
             SKIPS.fetch_add(1, Ordering::Relaxed);
+            state.delivery = None;
+            crate::motion::on_untimed();
         }
         Done::Off(why) => {
             OFF.store(true, Ordering::Release);
+            state.delivery = None;
+            crate::motion::on_untimed();
             say(format!(
                 "batch interval: off for good, {why}; the game paces itself"
             ));
         }
         Done::Wrote(us, record) => {
             WRITES.fetch_add(1, Ordering::Relaxed);
+            if let Some((m_data, _)) = state.writable_for {
+                crate::motion::on_batch(m_data, record.count, record.step_us, record.waiting);
+            }
             if crate::steptrace::enabled() {
+                let now = Instant::now();
+                let delivery = state.delivered(now, record.epoch, us, record.count);
+                let timing = delivery.map_or_else(String::new, |(gap, late, previous_count)| {
+                    format!(
+                        " delivery_gap_ms={:.3} delivery_late_ms={:.3} previous_n={previous_count}",
+                        gap.as_secs_f64() * 1000.0,
+                        late.as_secs_f64() * 1000.0
+                    )
+                });
                 say(format!(
-                    "interval: n={} us={us} trim={:.2} backlog={}",
+                    "interval: n={} us={us} trim={:.2} backlog={} epoch={} clock_ms={:.3}{} budget_us={}",
                     record.count,
                     state.trim(),
                     record.backlog,
+                    record.epoch,
+                    crate::steptrace::clock_ms(now),
+                    timing,
+                    state.ready_budget.last_floor_us,
                 ));
             }
         }
@@ -750,6 +892,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extra_update_recovery_does_not_also_halve_the_presentation_deadline() {
+        for bounded in [false, true] {
+            let mut trim = Trim::default();
+            if bounded {
+                trim.bound_recovery();
+            }
+            for _ in 0..30 {
+                trim.update(20, 4);
+            }
+            assert_eq!(
+                interval_us(4, 4, 50_000, trim.value(), false),
+                if bounded { 160_000 } else { 100_000 }
+            );
+            trim.reset();
+            assert_eq!(trim.value(), 1.0);
+            for _ in 0..30 {
+                trim.update(20, 4);
+            }
+            assert!((trim.value() - if bounded { TRIM_MIN } else { TRIM_DEEP }).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn delivery_timing_uses_the_previous_interval_and_resets_between_worlds() {
+        let mut state = Interval::new();
+        let now = Instant::now();
+        assert!(state.delivered(now, 1, 100_000, 2).is_none());
+        assert_eq!(
+            state.delivered(now + Duration::from_millis(140), 1, 200_000, 4),
+            Some((Duration::from_millis(140), Duration::from_millis(40), 2))
+        );
+        assert_eq!(
+            state.delivered(now + Duration::from_millis(330), 1, 50_000, 0),
+            Some((Duration::from_millis(190), Duration::ZERO, 4))
+        );
+        assert_eq!(
+            state.delivered(now + Duration::from_millis(410), 1, 100_000, 2),
+            Some((Duration::from_millis(80), Duration::from_millis(30), 0))
+        );
+        assert!(
+            state
+                .delivered(now + Duration::from_secs(90), 2, 100_000, 2)
+                .is_none()
+        );
+        state.delivery = None;
+        assert!(
+            state
+                .delivered(now + Duration::from_secs(100), 2, 100_000, 2)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn only_verified_builds_have_a_layout() {
         assert_eq!(
             layout_for("Transport Fever 3 Build 40408 (Steam, Windows x64)"),
@@ -783,13 +978,13 @@ mod tests {
 
     #[test]
     fn the_nominal_count_is_the_rooms_pace_over_the_games_batch() {
-        assert_eq!(nominal(5.0), 1);
-        assert_eq!(nominal(10.0), 2);
-        assert_eq!(nominal(20.0), 4);
-        assert_eq!(nominal(7.0), 1);
-        assert_eq!(nominal(0.0), 1);
-        assert_eq!(nominal(f64::NAN), 1);
-        assert_eq!(nominal(1000.0), crate::step::MAX_STEPS_PER_CALL);
+        assert_eq!(nominal(5.0, BASE), 1);
+        assert_eq!(nominal(10.0, BASE), 2);
+        assert_eq!(nominal(20.0, BASE), 4);
+        assert_eq!(nominal(7.0, BASE), 1);
+        assert_eq!(nominal(0.0, BASE), 1);
+        assert_eq!(nominal(f64::NAN, BASE), 1);
+        assert_eq!(nominal(1000.0, BASE), crate::step::MAX_STEPS_PER_CALL);
     }
 
     #[test]
@@ -855,6 +1050,8 @@ mod tests {
             backlog: 2,
             steady: true,
             waiting: false,
+            started_us: 0,
+            finished_us: 0,
         }
     }
 
@@ -862,11 +1059,19 @@ mod tests {
     fn a_sync_reads_the_batch_of_the_simulation_it_exposed_never_the_next() {
         let slots = Slots::new();
         let epoch = slots.next_epoch();
-        slots.publish(&record(0x1000, epoch, 3));
+        let mut first = record(0x1000, epoch, 3);
+        first.started_us = 123_000;
+        first.finished_us = 218_000;
+        slots.publish(&first);
         // The next batch, on the other simulation, finishes before the
         // wrapper reads: it lands in the other slot.
         slots.publish(&record(0x2000, epoch, 5));
         assert_eq!(slots.read(0x1000).unwrap().count, 3);
+        assert_eq!(
+            slots.read(0x1000),
+            Some(first),
+            "worker timing belongs to this buffer too"
+        );
         assert_eq!(slots.read(0x2000).unwrap().count, 5);
         // The same simulation's next batch replaces its own slot only.
         slots.publish(&record(0x1000, epoch, 4));
@@ -1119,6 +1324,8 @@ mod native {
             backlog: 2,
             steady: true,
             waiting: false,
+            started_us: 0,
+            finished_us: 0,
         });
     }
 
@@ -1273,15 +1480,37 @@ mod coupled {
         freeze_ms: i64,
         timed: bool,
     ) -> Run {
+        run_period(
+            speed,
+            seconds,
+            jitter_ms,
+            action_every,
+            freeze_ms,
+            timed,
+            BASE,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_period(
+        speed: u16,
+        seconds: u64,
+        jitter_ms: f64,
+        action_every: u64,
+        freeze_ms: i64,
+        timed: bool,
+        period: Duration,
+    ) -> Run {
         let step_ms = 200.0 * 100.0 / f64::from(speed);
         let step_us = (step_ms * 1000.0) as u32;
         let mut cadence = Cadence::new(true);
         cadence.begin(5);
         cadence.speed(Speed(speed));
         cadence.set_fixed(true);
+        cadence.set_batch_period(period);
         let start = Instant::now();
         cadence.reset(0, start);
-        let nominal = super::nominal(5.0 * f64::from(speed) / 100.0);
+        let nominal = super::nominal(5.0 * f64::from(speed) / 100.0, period);
         let slots = Slots::new();
         let epoch = slots.next_epoch();
         let mut state = Interval::new();
@@ -1374,6 +1603,8 @@ mod coupled {
                     backlog: backlog as u32,
                     steady,
                     waiting: count == 0 && released < next,
+                    started_us: 0,
+                    finished_us: 0,
                 });
             }
             total = total.min(last_sync + gft - 1);
@@ -1400,6 +1631,38 @@ mod coupled {
             .filter(|s| (**s - 1.0).abs() <= within)
             .count();
         even as f64 / run.speeds.len().max(1) as f64
+    }
+
+    #[test]
+    fn shorter_batches_keep_ordered_pace_with_jitter_actions_and_checkpoints() {
+        for ms in [50, 100, 250] {
+            for speed in [100, 200, 400] {
+                let run = run_period(speed, 60, 8.0, 15, 1200, true, Duration::from_millis(ms));
+                assert!(
+                    run.end_backlog <= 8,
+                    "{ms} ms/{speed}%: {} behind",
+                    run.end_backlog
+                );
+                assert!(
+                    even_share(&run, 0.25) >= 0.75,
+                    "{ms} ms/{speed}%: uneven motion"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn experimental_batch_setting_is_bounded_and_default_is_unchanged() {
+        assert_eq!(batch_period(None).unwrap(), BASE);
+        for ms in [50, 100, 200, 250] {
+            let period = batch_period(Some(&format!(" {ms} "))).unwrap();
+            assert_eq!(period.as_millis(), ms);
+            assert_eq!(nominal(20.0, period), (ms / 50) as u32);
+            assert_eq!(nominal(5.0, period), 1);
+        }
+        for invalid in ["", "0", "20", "49", "201", "NaN", "1e2"] {
+            assert!(batch_period(Some(invalid)).is_err());
+        }
     }
 
     #[test]

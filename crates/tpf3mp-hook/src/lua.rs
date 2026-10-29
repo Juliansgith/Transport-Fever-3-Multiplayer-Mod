@@ -171,7 +171,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 16.0;
+pub const VERSION: f64 = 17.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -406,6 +406,8 @@ struct RoomStatus {
     replay: bool,
     /// What the player said, for the room.
     said: VecDeque<ChatText>,
+    /// Latest explicit GUI speed choice, consumed once by the worker.
+    chosen_speed: Option<u64>,
 }
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
@@ -445,6 +447,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         history: VecDeque::new(),
         replay: false,
         said: VecDeque::new(),
+        chosen_speed: None,
     },
     told: 0,
     menu_load: None,
@@ -722,6 +725,7 @@ pub fn request_load(name: &str) {
     shared.menu_load = None;
     shared.load = Some(None);
     shared.load_failure = None;
+    shared.room.chosen_speed = None;
 }
 
 /// Asks the game's main menu to load the save `name` of the game's own save
@@ -735,6 +739,7 @@ pub fn request_menu_load(name: &str) {
     shared.menu_load = Some(name.to_owned());
     shared.load = Some(None);
     shared.load_failure = None;
+    shared.room.chosen_speed = None;
 }
 
 /// The load the main menu is asked to start, once.
@@ -895,6 +900,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"status", native_status),
                 (b"chat", native_chat),
                 (b"say", native_say),
+                (b"chooseSpeed", native_choose_speed),
                 (b"copy", native_copy),
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
@@ -1459,6 +1465,7 @@ unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
     crate::image::invalidate();
     let mut shared = shared();
     shared.worlds += 1;
+    shared.room.chosen_speed = None;
     // A world loaded: the room's, after a divergence.
     shared.room.diverged = None;
     // Its GUI has none of the chat so far: give it the history again.
@@ -1485,6 +1492,7 @@ pub fn notice(notice: &Notice) {
         }
         Notice::Ended(_) => {
             room.info = None;
+            room.chosen_speed = None;
             room.diverged = None;
             crate::previews::clear();
         }
@@ -1869,6 +1877,58 @@ pub(crate) unsafe extern "C-unwind" fn native_mods(l: State) -> c_int {
 /// the room.
 pub fn take_said() -> Vec<ChatText> {
     shared().room.said.drain(..).collect()
+}
+
+/// The last explicit choice, coalesced while the worker is busy. Native
+/// getter changes (including snapshot restoration) never enter this queue.
+pub fn take_chosen_speed() -> Option<u64> {
+    shared().room.chosen_speed.take()
+}
+
+fn choose_speed(speed: Option<f64>) -> Result<(), &'static str> {
+    let speed = match speed {
+        Some(0.0) => 0,
+        Some(1.0) => 1,
+        Some(2.0) => 2,
+        Some(4.0) => 4,
+        _ => return Err("choose pause, 1x, 2x or 4x"),
+    };
+    if !in_room() {
+        return Err("not in a running room");
+    }
+    let mut s = shared();
+    if s.load.is_some() {
+        return Err("the room world is loading");
+    }
+    let room = &mut s.room;
+    let Some(info) = &room.info else {
+        return Err("room status is not ready");
+    };
+    if room.me != Some(info.owner) {
+        return Err("only the host controls speed");
+    }
+    room.chosen_speed = Some(speed);
+    Ok(())
+}
+
+/// `chooseSpeed(0|1|2|4)`: explicit user input, not a native speed sample.
+unsafe extern "C-unwind" fn native_choose_speed(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: called by Lua with its own live state and argument frame.
+    let result = choose_speed(unsafe { number_arg(api, l, 1) });
+    // SAFETY: a C function's frame has room for these two results.
+    unsafe {
+        (api.pushboolean)(l, c_int::from(result.is_ok()));
+        match result {
+            Ok(()) => 1,
+            Err(why) => {
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
 }
 
 /// The room as `status()` gives it, or `None` before the room's game.
@@ -3660,6 +3720,7 @@ pub(crate) mod tests {
             history: VecDeque::new(),
             replay: false,
             said: VecDeque::new(),
+            chosen_speed: None,
         };
     }
 
@@ -4387,7 +4448,7 @@ my_timetables";
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
             ),
-            Ok("16|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("17|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -4589,6 +4650,38 @@ my_timetables";
             Ok("Julian: the bus is late|0".into()),
             "heard once"
         );
+        // Native entry point checks authority and values, then delivers only
+        // explicit input once. Reads and snapshot lifecycle cannot fabricate it.
+        set_in_room(true);
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(4)"),
+            Ok("false|only the host controls speed".into())
+        );
+        set_me(player(1));
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(3)"),
+            Ok("false|choose pause, 1x, 2x or 4x".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(0/0)"),
+            Ok("false|choose pause, 1x, 2x or 4x".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(2)"),
+            Ok("true".into())
+        );
+        assert_eq!(take_chosen_speed(), Some(2));
+        assert_eq!(take_chosen_speed(), None);
+        lua.run("tpf3mp_native.chooseSpeed(4)").unwrap();
+        request_load("snapshot");
+        assert_eq!(take_chosen_speed(), None);
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(4)"),
+            Ok("false|the room world is loading".into())
+        );
+        shared().load = None;
+        set_me(player(2));
+        set_in_room(false);
         // The world the room sends loads: the divergence is over, and its
         // GUI, which starts with no chat, gets what was said so far once,
         // as old lines, then what is new.

@@ -301,6 +301,13 @@ the payload may wrap around the end of the buffer.
   then checks `abi_version` and `header_size`, reads the ring sizes, and sets
   its own pid and heartbeat. The hook fails closed (runs solo) if no mapping is
   present.
+- **Polling.** The agent reads the hook's ring every 2 ms. A Windows timer
+  sleeps to the system's tick, 15.6 ms unless the process asked for a
+  finer one, and since Windows 10 2004 the game's own request does not
+  reach the agent's process. So the agent asks for 1 ms
+  (`tpf3mp_ipc::FineTimer`, `timeBeginPeriod`) while it plays a room, and
+  gives it back when the room ends: a step's report, a player's action and
+  the next release wait about 2 ms in the agent, not up to 16.
 - **Heartbeat.** Each side bumps its own counter and reads the peer's. A counter
   that stops advancing means the peer is gone.
   The agent gives a loaded game's hook 60 s (a load 600 s). A game that
@@ -742,7 +749,9 @@ call of the speed getter, as TPF2MP's speed hook
   agent's one-step releases), at most 16 a call and never past a
   checkpoint step, whose lanes must be the world's right after it, an even
   share ("Even steps" below); the call then reports each (`after_step`).
-  A room faster than the game's own pace catches up that way, up to 16x.
+  A room faster than the game's own pace catches up that way, up to 16x,
+  and a game that has run far behind for 5 s on end up to 64 a call
+  ("Catching up" below).
   When the room withholds the next step (paused, or a player behind), 0:
   the game's paused path, and the world stands still.
 - **The room's world.** A `Load` without a file (the world every player
@@ -764,25 +773,22 @@ call of the speed getter, as TPF2MP's speed hook
   Nothing may send the debug step command during a room: its pending count
   would add updates to a call.
 - **The speed row follows the room.** The Lua replacement
-  `gui/tpf3mp/speed_control.script.lua` highlights the accepted speed for guests from
-  the hook's room status, including pause. Guests see disabled buttons
-  with "Host controls speed" help; their keyboard speed shortcuts are
-  disabled through both `game.tl`'s internal `game_react_globals` table
-  and the public module that copies its functions. It copies feature
-  flags instead of changing the game's table, preserving mission/mod
-  restrictions. Becoming host or leaving the room restores the stock
-  recipe and shortcuts, including the host's keyboard hints. Updating the display
-  never sends `makeGameSetSpeedCmd`: feeding the room's speed back into
-  the game's local value would be mistaken for a player's request.
-- **The host's speed row asks the room.** The getter's detour only reads: the
-  game's own speed, the speed row's value, every time the game asks
-  (`CGame::Sync` and the game UI ask every frame, paused or not). When it
-  changes in the room's game, the hook sends `ToAgent::Speed` and the agent
-  asks the room (`Request::SetSpeed`): the owner's choice sets the room's
-  speed for everyone, and anyone else's is refused, shown as a notice. The
-  value found on entering the room's game is not sent, so joining never
-  resets a room's speed. What the room says back (its speed, a refusal, the
-  end) goes to the hook's log.
+  `gui/tpf3mp/speed_control.script.lua` highlights the accepted room speed
+  for both host and guests, including pause. Guests see disabled buttons
+  and keyboard shortcuts. Hosts retain the stock recipe, mission/mod
+  restrictions and keyboard hints. The shared helper API's `getSpeed`
+  reads room status; `setSpeed`, `cycleSpeed` and `togglePause` submit
+  explicit choices, then retain the stock local command for native camera
+  and particle behavior. Outside a room the original API is used.
+- **Only explicit input asks for a speed.** Lua contract **17** adds
+  `chooseSpeed(0|1|2|4)`. The hook rejects unknown values, guests and loads,
+  coalesces pending input to the latest choice, and sends it through the
+  existing `ToAgent::Speed` / `Request::SetSpeed` path. The server still
+  authorizes the host. The worker ignores requests outside a loaded running
+  world; load/room lifecycle clears stale choices. No network protocol
+  change is needed. A native getter change alone never sends a request:
+  restoring a 4x snapshot into a 2x room must leave that room at 2x.
+  Merely refreshing the UI never writes the native speed or requests one.
 
 Measured in TF3 build 40408 on release day (the rig with one player,
 `app.startGame()` from the console, the game's speed set with
@@ -802,6 +808,37 @@ to hold. Tests: `step::tests` drive the driver against a scripted room;
 runs exactly once per call with the count chosen and its arguments
 untouched; `session::tests` read releases ahead over a real link;
 `detour::x86_64::tests` redirect one call in hand-written code.
+
+#### Catching up
+
+A game that joins a running room loads the room's snapshot, then replays
+every step ordered since it was saved. Measured on build 40425 with the
+step trace (2026-10-29, the rig's big fixture at 4x, the second game
+joining 7 minutes after the first): each call of the game's step costs
+90-100 ms beyond `GameSim::Step` itself (the game's per-frame work around
+it: the GUI's sync, the renderer's handover, the scripts' updates), so 16
+steps a call replayed 25.4 steps a second against the room's 19.8, and
+every call was cut at 16 or at a checkpoint (`16 16 16 2`): the game
+closed 3,550 steps in 607 s, 5.8 steps a second.
+
+`crate::cadence::CatchUp` keeps the steps run per call over the last 5 s.
+When the window is at least four-fifths full and ran more than 1.25 times
+the room's pace (`Cadence::pace_now`), the game is catching up, and the
+call runs up to `CATCH_UP_STEPS_PER_CALL` (64) of the released steps,
+still never past a checkpoint, an event, a save or a load; the step trace
+names such a call `catch-up`. A burst of one call (a save's freeze, a
+reconnect of a second) never fills the window, so a game that follows the
+room keeps its even steps; a world loaded resets it.
+
+On the same run with the cap raised the calls ran 50 steps (the
+checkpoints cut them: every 50 steps), and the game replayed 29.6 steps a
+second, closing 4,450 steps in 454 s, 9.8 steps a second (the same 3,550
+in about 360 s instead of 607), with the simulation's threads busy 91 % of
+the time instead of 78 %. Every one of the 278 checkpoints both games
+logged agreed. A call of 50 steps takes about 1.5 s, so the joining game
+shows a frame that often until it has caught up, as it showed one every
+0.5 s before; the step itself, about 30 ms an update, now bounds the
+catch-up: at 4x a game replays at most about 1.5 times the room's pace.
 
 #### Even steps
 
@@ -834,7 +871,7 @@ rules in order:
 - **far behind** (more than 1.5 s of the room's pace, at least 16 steps:
   a reconnect, a load; below the server's pacing window, so a game that
   falls behind catches up before it holds the room back): all of them, at
-  most 16 a call, as before;
+  most 16 a call, as before (64 while catching up, above);
 - **the room is paused**, or **nothing new was released for 400 ms** (the
   room waits for a member): all of them, so every game stops at the
   frontier;
@@ -935,7 +972,59 @@ room's game, paused, or for a batch it cannot match, nothing is written:
 the game's own interval stands. `TPF3MP_HOOK_BATCH_INTERVAL=0` turns it off.
 `perf-step:` counts intervals written, Syncs skipped and Syncs that
 returned false; with the step trace on, each write logs `interval: n=..
-us=.. trim=.. backlog=..`.
+us=.. trim=.. backlog=..`. The trace also reports a shared monotonic
+`clock_ms` on worker calls and interval writes, plus `epoch`,
+`delivery_gap_ms`, `delivery_late_ms` and `previous_n`. Delivery is a
+successful Sync; lateness is its wall-clock spacing minus the **previous**
+buffer's assigned interval, clamped at zero. World changes and untimed
+buffers reset this measurement. Zero-update buffers remain labelled. This
+measures buffer supply, not GPU frame time or rendered vehicle movement.
+Diagnostic lines can be dropped on contention as above.
+
+Experimental scheduling controls (defaults preserve the existing policy):
+`TPF3MP_HOOK_BATCH_MS=50|100|200|250` selects the steady target (default 200),
+and `TPF3MP_HOOK_MAX_BATCH_UPDATES=4|5|8|16` bounds ordinary catch-up batches
+(default 16). Drains toward ordered events, pending player commands or pause
+retain the existing 16-update bound and checkpoint/event cuts, so a small cap
+does not slow history replay or action application.
+`TPF3MP_HOOK_BATCH_RECOVERY=1` allows short batches to repay backlog
+earlier, up to twice nominal under sustained pressure, still bounded by
+the gate cap and checkpoint. Controlled repayment is presented for its
+actual count. This opt-in short recovery keeps trim at or above 0.8 rather than 0.5:
+repayment should not also demand an often impossible double-speed deadline.
+The controls change grouping while preserving the native update duration,
+ordered steps and replay acknowledgements. Shorter calls can increase native
+copy/readiness overhead; they are not accepted smoothness improvements.
+See `investigation/PERFORMANCE_EXPERIMENTS_2026-10-28.md` for comparisons.
+
+`TPF3MP_HOOK_READY_BUDGET=1` adds an experimental recovery deadline floor.
+Each exposed buffer carries worker start/end times on the shared monotonic
+clock, published with its simulation pointer and room epoch. From the prior
+successful Sync to worker completion, the main thread measures preparation
+plus work, keeping 16 samples separately for each normal batch count. After
+four samples it uses the upper quartile plus 16.667 ms of presentation margin.
+The floor cannot lengthen a normal batch beyond its duration at room pace.
+Emergency catch-up batches keep the original compressed interval; the first
+model showed that stretching those made recovery worse. Zero-update buffers
+break the measurement pair; pauses, world/epoch or pace changes clear training.
+Missing or inconsistent timestamps are never training samples. No simulation
+steps, ordered actions, world memory or native ownership are changed by this
+floor. `budget_us` in interval traces identifies it. Default is off; the extra
+worker clock reads are enabled only with this experiment. The actual long
+industry/save stalls remain visible and remain in diagnostics.
+
+For a capped experiment, `250` ms with cap `5` keeps even emergency 4x
+catch-up batches at their ordinary count. With an opt-in cap below 16, when
+a full capped Far batch is shown without compression, the interval continues
+using backlog feedback;
+relaxing trim toward 1 there would leave an uncleared queue. This also covers
+five updates at 2x, where nominal is three but all five are shown. Drains for
+actions, pause/stale boundaries and smaller checkpoint tails still relax.
+For counts up to nominal, the measured floor bounds recovery's demand on
+native worker capacity.
+Ordered drains can still make a longer native call: this experiment does not
+change that trade-off or claim smooth rendering during replay. It is an
+experiment, not a changed default or a smoothness claim.
 
 ### The Lua side
 
@@ -1113,6 +1202,13 @@ every game between the same two simulation steps, including while paused:
    `StepDriver` gives the ordered actions to `lua::request_replay` and
    holds updates. This applies to running rooms too, so every replica uses
    the same engine phase regardless of when the resume arrives.
+   When commands are already queued at the end of a batch, the driver
+   stages their replay after reporting that batch and its checkpoint,
+   while the completed batch is being presented. It reads at most 1,024
+   commands without blocking and stops before a release, save, load,
+   roster event or end. Commands never cross unfinished released steps.
+   If replay finishes before the next native callback, that callback can
+   advance immediately; a delayed or failed replay still withholds updates.
 3. The GUI polls a `replay` token (Lua contract version 13) and sends only
    that token in the existing `tpf3mp/command` scripting event (a string
    token, rather than an action table, so older saves already subscribe).
@@ -4996,6 +5092,17 @@ gate redirects, and the other readers are `CGame::Sync`, the UI, the
 camera, the rail vehicles' sounds and their transformators. So it changes
 no lane; it does leave the host's saved `GameSpeed` unlike the guests'.
 
+Build 40425's `GameSpeedHelper` also commits speed changes automatically
+when `getEstimatedMaximumGameSpeed()` falls below its chosen speed. During
+rejoin catch-up this made the host request 3x, 2x and 1x without input;
+guests sent refused owner-only requests. In rooms, `speed_control.script.lua`
+reports the helper's full supported 4x range from that GUI estimate. The
+room gate still controls updates, replay barriers and catch-up budgets; this
+does not bypass any of them or promise that a slow machine can sustain 4x.
+Outside a room the original native estimate is returned. Zero is unsuitable:
+the stock helper would repeatedly commit on every GUI step. Button and
+keyboard handling, including mission restrictions, are otherwise unchanged.
+
 #### The street trace
 
 `TPF3MP_HOOK_STREET_TRACE=1` (or `on`; off unless set; logging only,
@@ -5448,9 +5555,35 @@ Unknown map key types or pre-existing metatables are refused. Native
 validation and its current limits are recorded in
 `investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
 
+### Shared industry-demand history (40425)
+
+The native industry's `OnIntervalStep` lambda captures a separate
+`IndustryChainSpawnState` for each simulation buffer. That history is not
+replicated with the world. Both buffers can count the same demand change,
+and a peer's local batch boundaries choose which pending counter is read.
+The Bubu save reproduced different spawn times and roads despite identical
+current demand sets; see `investigation/PERFORMANCE_2026-10-28.md`.
+
+In rooms, the required `industry schedule` hook retains one native
+`shared_ptr` history per loaded logical world. An active scheduler receives
+that history in a stack copy of its captures, with the original GameState,
+resources, logger and callback queue. Inactive buffers keep their original
+callback. Native code still compares demand, schedules attempts and places
+industries. The native lambda copies the values it needs into queued work;
+it does not retain the temporary capture address.
+
+The exact compiled prologue, native shared-pointer layout, vtable and
+lifetime methods are validated. Invalid state holds the room; it never
+silently resumes independent scheduling. A world load advances the epoch
+and releases the retained history before the next active scheduler call.
+Native reference counting keeps its containers alive until the final owner
+releases them. This fix is always on in supported rooms, separate from the
+optional diagnostic probe, and does nothing outside multiplayer. It does
+not make the native industry-construction callback asynchronous.
+
 ### Automatic industry spawn probe
 
-Steam build 40408 has a separate native demand-spawn path. For a local
+The game has a separate native demand-spawn path. For a local
 diagnostic run only, set `TPF3MP_HOOK_TRACE_INDUSTRIES=1` in the launcher's
 environment. The exact-build hook then records each demand callback's native
 GameTime and FNV-1a seed, both target-capacity key strings and the unchanged
@@ -5464,13 +5597,17 @@ This is a read-only diagnostic: it never changes native values or sends the
 records to the room. The game-thread callbacks copy fixed-size records into a
 64-entry queue; a separate logger thread formats and writes them. The probe
 records at most 32 loop candidates per callback and 512 callbacks per game;
-queue overflow is reported explicitly. Its six signatures live in a separate
-compiled 40408-only diagnostic profile, leaving the release targets and the
-40418 Preview coverage contract unchanged. The probe enables only on an exact
+queue overflow is reported explicitly. The selected bundle supplies its
+diagnostic profile. Build 40425 adds demand-scheduler observations: interval
+time, pending attempts before/after, changed town/global demand sets, and
+comparison count (64 changes and cargo IDs per record, 4096 intervals). The
+scheduler target is shared with the required fix below; the other eight
+observation sites are optional. A bundle without that file cannot enable the probe; it never falls
+back to another build's profile. The probe enables only on an exact
 `TPF3MP_HOOK_TRACE_INDUSTRIES=1` opt-in and when every site resolves before
 the ordinary hooks patch the image. Any splice mismatch rolls back the detour
 and earlier splices. The capacity
-detour also checks its compiled 40408 entry bytes before installation, so a
+detour also checks its compiled native entry bytes before installation, so a
 shadow profile cannot redirect that name to a function with another ABI. With
 the switch unset, the probe installs nothing.
 
@@ -5849,7 +5986,18 @@ does this without asking the system first:
   is read, as before.
 - The handler is never removed: the hook stays loaded for the life of
   the game. The cold paths (code checks before a patch, install-time
-  reads) still ask `VirtualQuery` through `image::readable`.
+  reads) still ask `VirtualQuery` through `image::readable`; nothing that
+  runs per call, per frame or per update may. In a running game one
+  `VirtualQuery` costs about 50 µs, not the microsecond of a small test
+  process: measured 2026-10-29 on build 40425 with a 150 MB world, the
+  GUI's `getPlayer` took 203 µs a call while the hook's GUI player fix
+  checked its closure with four of them, and the main thread spent about
+  6% of its time in those calls (investigation/PERFORMANCE_AUDIT_2026-10-29.md).
+  The GUI fixes, the tool player, the tick counters, the module and stop
+  tool reads, the terrain writes, plugin reads and the industry probe now
+  check through `image::readable_cached` (the guarded check); a test
+  (`guiplayer::tests::the_guis_per_call_reads_never_ask_the_system`)
+  counts the thread's system queries.
 
 The tests (`image::guarded::windows_tests`) read committed, reserved,
 freed, no-access and read-only pages, ranges that run from a committed
@@ -6059,7 +6207,11 @@ Logging only, on with `freed-id-order` (`TPF3MP_HOOK_FREED_ID_TRACE=0`
 turns it off). It rides on the fix's own splice and reads, through
 `image::Readable`, only the simulation's engine: the one `GameSim::Step`
 hands `ecs::Engine::Update` (`[[this+8]+0x18]`), noted at every call of
-the room's game's step. The replicated engine is left out.
+the room's game's step. The replicated engine is left out. Alternating
+simulation-buffer addresses do not clear the logical world's counters or
+retained history. An explicit world load or leaving the room clears them;
+an unreadable engine instead marks a gap and breaks allocation inference
+across that gap without discarding earlier evidence.
 
 - At every checkpoint (and the first batch after a load), right after the
   `ticks:` line:
@@ -6089,12 +6241,14 @@ the room's game's step. The replicated engine is left out.
   `tpfre q <db> func <rva>`. In a sound game there are none; a room
   action is applied for its step and counts as an update.
 
-- The trace also keeps the first 96 modifications, including ones that
-  take or free no IDs, of each
+- The trace also keeps the first 512 allocator-changing or unknown
+  modifications of each
   checkpoint interval in memory, across the last 128 checkpoints. When a
   divergent checkpoint or its room-wide lane-dump request arrives, each
   game writes the latest 64 retained intervals up to that checkpoint to
-  `hook.log`.
+  `hook.log`, newest interval first so the byte budget prioritizes the
+  failure. Proven no-op modifications remain in the aggregate counts but
+  are counted as `unchanged` instead of consuming detail slots.
   This includes an allocator split well before the first lane mismatch,
   without continuously filling the hook's 192 KiB/minute diagnostic upload
   budget. Native-operation trace bursts, whether triggered by a divergence or
@@ -6108,9 +6262,9 @@ the room's game's step. The replicated engine is left out.
   notices were suppressed and the latest suppressed step, then includes the
   latest retained interval through the eligible divergence. The header gives
   the oldest and newest retained checkpoints, expired checkpoints,
-  recorded/retained operations, omitted operations, unfit counts and
+  recorded/retained operations, omitted operations, unchanged observations, unfit counts and
   unreadable native observations.
-  `complete=true` means none of those gaps occurred within the selected
+  `complete=true` means no allocator-detail gaps occurred within the selected
   incident window. Older expired checkpoints are reported separately and do
   not make an intact recent window incomplete. The launcher's source
   and run budgets can still skip old log
@@ -6424,6 +6578,12 @@ Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
 every game has the same switches, or alone.
 
+`TPF3MP_HOOK_SAVE_FAST=0` (or `off`) keeps the game's own save
+compression (zstd level 3 through a 128-byte buffer) instead of the
+hook's level 1 and 64 KiB buffer, which are on by default (docs/BIGMAPS.md,
+"Saving"). It changes how a save is compressed, never the world, so one
+game of a room may set it alone.
+
 The desync diagnostics are off unless set, and logging only: they change
 nothing the game computes, so one game of a room may run them alone.
 
@@ -6442,6 +6602,101 @@ nothing the game computes, so one game of a room may run them alone.
 
 The `road-entry:` digest at every checkpoint needs no switch: it is on
 while `road-entry-order` sorts.
+
+### What the renderer shows: the `motion:` line
+
+`crates/tpf3mp-hook/src/motion.rs`, logging only, on unless
+`TPF3MP_HOOK_MOTION=0`. Once a frame (after `CMenuUI::DoStep`, the main
+thread's frame) it reads `totalTime`, `lastSyncTime` and `guiFrameTime`
+through the guarded reads, the fields the batch interval uses, and works
+out the simulation time on screen: the updates of every timed batch shown
+before plus `alpha` times the current batch's. Its rate against the room's
+pace is how fast vehicles move on screen relative to how fast they should.
+Every 10 s in a room's game:
+
+```
+motion: 10.0s frames=341 fps=34.0 frame_ms p50=28.2 p95=42.1 p99=67.2 max=85.5 over33=61; shown speed p5=0.64 p50=1.03 p95=1.32 mean=1.036 cv=0.274 jerks=111; by the game's clock p5=1.00 p50=1.00 p95=1.00, clock gap ms p50=2.9 p95=22.7; still frames=0 (0.0% ) late=0/0ms empty=0/0ms waiting=0/0ms other=0; longest=0ms runs>50ms=0 >100ms=0; batches=52 empty=0
+```
+
+- `frame_ms`: the frames' wall-clock length.
+- `shown speed`: the on-screen speed per frame, 1 the room's pace, by the
+  wall clock at the frame's end; `cv` its coefficient of variation;
+  `jerks` frames whose speed differs from the previous frame's by more
+  than 0.3.
+- `by the game's clock`: the same against the game's own `totalTime`, and
+  how far each frame's clock step differs from its wall time. A steady
+  `1.00` here with a spread above means the batches are even and the
+  frame clock is not.
+- `still frames`: frames in which nothing moved, by why: `late` (the next
+  batch was not ready, `alpha` at its end), `empty` (a batch without
+  updates), `waiting` (the room released nothing); then the longest run
+  and the runs over 50 and 100 ms.
+
+`TPF3MP_HOOK_MOTION=frames` also logs the first 4,000 frames' raw values
+(`motion-frame: wall_us= game_us= last_us= gft_us= n=`) for offline
+analysis; a diagnosis, not for play.
+
+What it found (investigation/PERFORMANCE_AUDIT_2026-10-29.md, "Micro-
+stutter"): in steady play neither late nor empty batches; the speed by the
+game's clock 1.00 at p5 and p95 at 1x and 4x; but by the wall clock it
+swung between about 0.65 and 1.35 of the pace (`cv` 0.25), because the
+game's frame clock is one frame late (below).
+
+### Frame pacing
+
+`crates/tpf3mp-hook/src/pacing.rs`, on unless `TPF3MP_HOOK_FRAME_PACING=0`,
+in a room's game whose batches are timed. The game moves its vehicles by
+the frame's `dt`: `UI::CGameUI::GameStep(int64)` hands it to `CGame::Step`
+(`0x11f400`), which adds it to `totalTime`, and `alpha` follows. That `dt`
+is the previous frame's length: in 2,400 frames at 1x the clock's step at
+frame `i` correlated +1.000 with the wall time of frame `i - 1` and +0.27
+with frame `i`. So with uneven frames, a frame shown for 37 ms after one of
+22 ms moves vehicles 22 ms' worth, and the next the other way round: the
+micro-stutter of a vehicle followed up close. Smoothing the clock does not
+help much (the next frame's length is not predictable: `cv` 0.23 to 0.18 at
+best in the same frames).
+
+After each frame the hook waits until the frame has lasted the target: the
+75th percentile of the last 120 frames' own length (from the end of the
+last wait), moved at most 2% a frame, between 1/240 s and 1/20 s; frames of
+more than 200 ms (a save, a load) are not counted. A longer frame is not
+waited on. The wait is a high-resolution waitable timer, then a spin of
+the last half millisecond. Every frame then lasts about the same, so the
+previous frame's length is this frame's. A `pacing:` line every 10 s
+gives the target, the waits and the frames over the target.
+
+Pacing alone left the frames over the target (about one in four): the
+frame after one gets its full length as `dt` while it is shown only for the
+target, a jump to about 1.4 times the speed. So the hook also redirects
+`UI::CGameUI::GameStep`'s call of `CGame::Step` (40425 `0x65f26c`; profile
+target `UI::CGameUI::GameStep/CGame::Step call`, optional; the callee's
+first 31 bytes, up to its `add [m_data + totalTime], rdx`, are checked
+before) and gives it the pacing target as `dt` (`pacing::Clock`): a frame
+held to the target moves vehicles exactly its own length. What the game's
+own `dt` and the given one differ by is a debt, repaid a tenth a frame, so
+`totalTime` keeps the game's time over any span and only advances. A `dt`
+more than three times the target or under a third of it (a freeze, a
+load, the game's slow motion) is the game's own and clears the debt.
+Simulated on the recorded frames: speed variation 0.23 to 0.11, swings over
+30% from 827 to 150 in 2,400 frames, for about 10% fewer frames (the 85th
+percentile: 0.097, 14% fewer). Measured in the game at the 85th percentile:
+0.25-0.29 to 0.09-0.12 at 1x and 4x, swings 100-135 to 17-23 in 10 s.
+
+**Two targets.** A frame whose step hands over a batch (`CGame::Sync`,
+five times a second) is longer: in the same 2,400 frames, median 29.6 ms
+against 23.5 ms for the others (the guest: 30.3 against 23.7). With one
+target, either those frames run over it (a jerk five times a second) or
+every frame waits as long as they take. So the hook keeps a target for
+each kind: before the step runs, the clock knows whether it will sync
+(`totalTime + dt >= lastSyncTime + guiFrameTime`), gives that frame the
+handover target as `dt`, and the pacing holds it to that target; every
+other frame gets the shorter one. Simulated on the same frames: about 1.5
+to 2 fps more than one target at the same percentile, at the same
+smoothness. The `pacing:` line gives both targets and the handover frames.
+
+Only presentation changes: nothing the simulation computes depends on wall
+time or on `totalTime`'s steps, so a paced game and an unpaced one agree;
+`CGame::Sync` follows `totalTime` as before.
 
 ### The game's own systems: the `perf: sim` line
 
@@ -6519,6 +6774,38 @@ searches again and asserts as the game does.
 To A/B it, run the same save with and without
 `TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` and compare the first line's `ms/update`
 and the `perf: sim` line's `parcel-collision`.
+
+### The faster bitmap span
+
+`crates/tpf3mp-hook/src/fastbitmap.rs` (`fast-bitmap-span`, on unless
+`TPF3MP_HOOK_FAST_BITMAP_SPAN=0` or `off`; profile target
+`fast-bitmap-span: BitmapRasterizable::Fill`, 40425 only). Every time an
+industry spawns, the game connects it to the road network on the
+simulation thread (`game/urbansim/init_streets_util.cpp`), and its console
+says `Connect industry: 850-1075 ms` on Bubu's 150 MB world: a freeze of
+every game of the room, several times in ten minutes. A sampling profile of
+four of those calls (investigation/PERFORMANCE_AUDIT_2026-10-29.md) found
+61% of their time in one 78-byte function, an anonymous
+`BitmapRasterizable`'s span fill (`0x91a560`, vtable slot 1): it sets
+`count` bits from `y * width + x` in a `std::vector<uint32_t>`, one bit at
+a time (load, `bts`, store).
+
+- **Exact, so not a room setting.** The hook jumps from its entry to a fill
+  of whole 32-bit words: the span's bits become 1 and every other bit keeps
+  its value, which is what the game's loop leaves. It takes the plain case
+  only (a start at or past bit 0 and a count that moves forward); an empty
+  span answers at once as the game's does, and anything else goes to the
+  game's own loop through the trampoline. Nothing is cached.
+- **Fails closed**: the signature is the whole function, entry to `ret`.
+- **Tested against the game's own bytes**: the 78 bytes run in an
+  executable page of the test process beside the hook's fill on 20,000
+  random bitmaps, widths and spans, empty and negative counts included;
+  every word must match (`fastbitmap::original_tests`).
+- The `perf: sim` line ends with `; bitmap spans <n> by words, <m> the
+  game's` in a window with calls.
+- **Measured** on the same world, two games in one room at 4x: `Connect
+  industry` 850-1075 ms in eight calls before, 409-416 ms in four after;
+  both games' rolling checks agreed throughout.
 
 ## Release-day procedure: adding a target for a new build
 

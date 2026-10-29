@@ -588,6 +588,43 @@ impl Session {
         self.peeked.is_some()
     }
 
+    /// After a completed batch has been reported, prepare commands for the
+    /// next exact step while the game presents that completed batch. This
+    /// never releases a step or consumes a save, load, end or roster event.
+    /// The caller must finish replay before polling/running another step.
+    /// Reading is bounded and nonblocking, including under sustained input.
+    pub fn stage_actions(&mut self, game: &mut impl Game) -> Result<(), SessionError> {
+        if self.gate.may_run()
+            || self.gate.loading()
+            || self.gate.ended()
+            || self.pending_save.is_some()
+            || self.pending_load.is_some()
+        {
+            return Ok(());
+        }
+        for _ in 0..READ_AHEAD_MAX {
+            let Some(message) = self.try_recv()? else {
+                self.check_agent()?;
+                return Ok(());
+            };
+            if matches!(
+                &message,
+                ToHook::Apply(Event {
+                    body: EventBody::Command { .. },
+                    ..
+                })
+            ) {
+                // Gate::on_message still verifies the exact step and that
+                // it was not released. Malformed input fails closed.
+                self.handle(message, game)?;
+            } else {
+                self.peeked = Some(message);
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
     /// Records that the game ran its next step and reports it, with the
     /// world's lanes at checkpoint steps. Returns the step.
     pub fn after_step(&mut self, game: &mut impl Game) -> Result<u64, SessionError> {
@@ -1423,6 +1460,76 @@ mod tests {
             assert!(Instant::now() < deadline, "the hook said nothing");
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    fn command(step: u64) -> ToHook {
+        ToHook::Apply(Event {
+            seq: step,
+            step,
+            body: EventBody::Command {
+                player: PlayerId(FixedBytes([1; 32])),
+                client_seq: step,
+                payload: Payload::new(vec![1]).unwrap(),
+                seal: None,
+            },
+        })
+    }
+
+    #[test]
+    fn staging_does_not_consume_control_messages_or_the_next_release() {
+        let barriers = [
+            ToHook::Release { through: 1 },
+            ToHook::Apply(Event {
+                seq: 2,
+                step: 1,
+                body: EventBody::Save,
+            }),
+            ToHook::Load {
+                file: None,
+                next_step: 10,
+            },
+            ToHook::End {
+                reason: Text::lossy("left"),
+            },
+            ToHook::Apply(event(1)),
+            ToHook::Speed(Speed(200)),
+        ];
+        for (i, barrier) in barriers.into_iter().enumerate() {
+            let (mut session, agent, mut world) = playing(&format!("stage-barrier-{i}"), 50);
+            say(&agent, &command(1));
+            say(&agent, &barrier);
+            say(&agent, &command(1));
+            session.stage_actions(&mut world).unwrap();
+            assert_eq!(world.applied, vec![1]);
+            assert_eq!(session.peeked.as_ref(), Some(&barrier));
+            assert_eq!(session.released(), 0);
+            assert!(session.pending_save.is_none());
+            assert!(session.pending_load.is_none());
+            assert!(!session.gate.ended());
+            session.stage_actions(&mut world).unwrap();
+            assert_eq!(world.applied, vec![1], "never reads past that barrier");
+        }
+    }
+
+    #[test]
+    fn staging_is_bounded_and_keeps_exact_step_validation() {
+        let (mut session, agent, mut world) = playing("stage-bounded", 50);
+        for _ in 0..=READ_AHEAD_MAX {
+            say(&agent, &command(1));
+        }
+        session.stage_actions(&mut world).unwrap();
+        assert_eq!(world.applied.len(), READ_AHEAD_MAX);
+        session.stage_actions(&mut world).unwrap();
+        assert_eq!(world.applied.len(), READ_AHEAD_MAX + 1);
+        say(&agent, &command(2));
+        assert!(matches!(
+            session.stage_actions(&mut world),
+            Err(SessionError::Gate(GateError::EventStep {
+                expected: 1,
+                got: 2
+            }))
+        ));
+        assert_eq!(world.applied.len(), READ_AHEAD_MAX + 1);
     }
 
     #[test]

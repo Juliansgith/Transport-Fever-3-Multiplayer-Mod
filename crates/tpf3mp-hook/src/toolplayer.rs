@@ -316,7 +316,7 @@ fn noted(key: &str) -> Option<i32> {
 }
 
 fn read_usize(address: usize) -> Option<usize> {
-    if address == 0 || !crate::image::readable(address, 8) {
+    if address == 0 || !crate::image::readable_cached(address, 8) {
         return None;
     }
     // SAFETY: eight readable bytes, checked just above.
@@ -375,7 +375,7 @@ fn fields_of(tool: Tool, this: usize) -> Option<Vec<(usize, &'static str)>> {
 
 /// One field: brings it to what [`decide`] says.
 fn field(state: &mut State, tool: Tool, this: usize, field: usize, what: &str) {
-    if !crate::image::readable(field, 4) || !field.is_multiple_of(4) {
+    if !crate::image::readable_cached(field, 4) || !field.is_multiple_of(4) {
         return;
     }
     // SAFETY: four readable, aligned bytes of the tool's own object, read

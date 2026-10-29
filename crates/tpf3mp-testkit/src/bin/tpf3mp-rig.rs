@@ -84,6 +84,19 @@ struct Args {
     #[arg(long = "game-arg", allow_hyphen_values = true)]
     game_args: Vec<OsString>,
 
+    /// Experimental native batch period per player, in seat order. Supply
+    /// one value per player; omitted leaves the inherited hook setting alone.
+    #[arg(long, value_delimiter = ',', value_parser = ["50", "100", "200", "250"])]
+    batch_periods: Vec<String>,
+
+    /// Experimental maximum updates per native batch, one per player.
+    #[arg(long, value_delimiter = ',', value_parser = ["4", "5", "8", "16"])]
+    batch_limits: Vec<String>,
+
+    /// Opt-in measured presentation budget per real-game player (0 or 1).
+    #[arg(long, value_delimiter = ',', value_parser = ["0", "1"])]
+    ready_budgets: Vec<String>,
+
     /// With a real game: the hook library to load into it; without, the
     /// one next to this program.
     #[arg(long)]
@@ -123,6 +136,11 @@ struct Args {
     /// world as a save.
     #[arg(long)]
     wait_for_games: bool,
+
+    /// Leave room creation, joining and starting to the in-game menus.
+    /// The rig still owns the local server, agents and game processes.
+    #[arg(long, conflicts_with = "mods")]
+    manual_room: bool,
 
     /// Run the local server without a snapshot store. Every player then
     /// loads the world it starts from itself, as on a server that keeps no
@@ -228,7 +246,12 @@ async fn run(args: Args) -> Result<ExitCode> {
     let game = GameCommand::new(&args)?;
 
     let (server, trust, local) = if args.server.eq_ignore_ascii_case("local") {
-        let local = LocalServer::start(&root.join("server"), args.players, !args.no_snapshots)?;
+        let local = LocalServer::start(
+            &root.join("server"),
+            args.players,
+            !args.no_snapshots,
+            args.game != "fake",
+        )?;
         println!(
             "rig: local server on {}, certificate in {}",
             local.address,
@@ -244,6 +267,23 @@ async fn run(args: Args) -> Result<ExitCode> {
     };
 
     let content = content::manifest(&args.game_build, args.mods.as_deref())?;
+    // The ordinary menu's world chooser declares its selected mods. The
+    // automatic fixture rig has a fixed --mods manifest, but manual setup
+    // needs the same read-only discovery/picker as the player's launcher.
+    let installed = (args.manual_room && args.game != "fake")
+        .then(|| tpf3mp_agent::steam::find_game(Some(Path::new(&args.game))))
+        .flatten();
+    let find_mods = args.manual_room.then(|| {
+        tpf3mp_agent::picker::Finder::installed(installed.as_ref().map(|game| game.dir.clone()))
+    });
+    let picker = find_mods.as_ref().map(|finder| {
+        tpf3mp_agent::picker::Mods::new(
+            tpf3mp_proto::Text::lossy(&args.game_build),
+            finder.find(),
+            Vec::new(),
+            false,
+        )
+    });
     let tunnel = args.tunnel.choice()?;
     let room_settings = RoomSettings {
         steps_per_second: args.step_rate,
@@ -272,13 +312,14 @@ async fn run(args: Args) -> Result<ExitCode> {
             trust: trust.clone(),
             identity,
             name: name.clone(),
-            content: content.clone(),
-            mods: None,
-            picker: None,
-            find_mods: None,
+            content: picker
+                .as_ref()
+                .map_or_else(|| content.clone(), |mods| mods.manifest()),
+            mods: picker.as_ref().and_then(|mods| mods.lists()),
+            picker: picker.clone(),
+            find_mods: find_mods.clone(),
             native: None,
-            // The rig's players run the fake game, not one Steam installed.
-            installed: None,
+            installed: installed.clone(),
             diagnostics: None,
             game_logs: None,
             hook: None,
@@ -421,6 +462,10 @@ async fn play(
 /// The host creates the room; everyone else joins its invite; all get
 /// ready, and the host starts the game.
 async fn set_up_room(args: &Args, server: &str, players: &[Player]) -> Result<()> {
+    if args.manual_room {
+        println!("rig: manual room setup; create and join through the in-game menus");
+        return Ok(());
+    }
     let (host, guests) = players.split_first().context("no players")?;
     act(
         host,
@@ -607,6 +652,7 @@ struct GameCommand {
     hook: Option<PathBuf>,
     /// How long a real game waits, suspended, for its hook to be ready.
     ready_wait: Duration,
+    performance_env: Vec<Vec<(String, String)>>,
 }
 
 /// A real game started with the hook, ended when dropped: the rig stops
@@ -623,6 +669,7 @@ impl Drop for RealGame {
 
 impl GameCommand {
     fn new(args: &Args) -> Result<Self> {
+        let performance_env = performance_env(args)?;
         let fake = args.game == "fake";
         let program = if fake {
             let me = std::env::current_exe().context("finding this program")?;
@@ -674,6 +721,7 @@ impl GameCommand {
             profiles,
             hook,
             ready_wait: Duration::from_secs(args.hook_ready_wait),
+            performance_env,
         })
     }
 
@@ -684,7 +732,7 @@ impl GameCommand {
             copy_profiles(profiles, &player.dir.join("profiles"))?;
         }
         if let Some(hook) = &self.hook {
-            return self.launch(player, hook);
+            return self.launch(player, hook, index);
         }
         // The fake game, told its link, seed and steps on its command line.
         let mut command = Command::new(&self.program);
@@ -733,11 +781,22 @@ impl GameCommand {
 
     /// Starts a real game as the launcher does, with the hook in it; the
     /// task ends with the game, and ends the game when dropped.
-    fn launch(&self, player: &Seat, hook: &Path) -> Result<JoinHandle<Result<GameEnd>>> {
+    fn launch(
+        &self,
+        player: &Seat,
+        hook: &Path,
+        index: usize,
+    ) -> Result<JoinHandle<Result<GameEnd>>> {
         let dir = player
             .dir
             .to_str()
             .context("the player's folder is not valid Unicode")?;
+        let mut env = vec![
+            (LINK_ENV.to_owned(), player.link.clone()),
+            (DATA_DIR_ENV.to_owned(), dir.to_owned()),
+            (LAUNCHER_PID_ENV.to_owned(), std::process::id().to_string()),
+        ];
+        env.extend(self.performance_env[index].iter().cloned());
         let started = tpf3mp_launch::start(&tpf3mp_launch::Launch {
             exe: self.program.clone(),
             args: self
@@ -746,11 +805,7 @@ impl GameCommand {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect(),
             hook: hook.to_owned(),
-            env: vec![
-                (LINK_ENV.to_owned(), player.link.clone()),
-                (DATA_DIR_ENV.to_owned(), dir.to_owned()),
-                (LAUNCHER_PID_ENV.to_owned(), std::process::id().to_string()),
-            ],
+            env,
             ready_wait: self.ready_wait,
         })
         .with_context(|| format!("starting {}", self.program.display()))?;
@@ -780,6 +835,43 @@ impl GameCommand {
             })
         }))
     }
+}
+
+/// Explicit child environments, never changes to this process's global
+/// environment: staggered launches must not inherit another seat's variant.
+fn performance_env(args: &Args) -> Result<Vec<Vec<(String, String)>>> {
+    let mut seats = vec![Vec::new(); usize::from(args.players)];
+    for (flag, key, values) in [
+        (
+            "--batch-periods",
+            "TPF3MP_HOOK_BATCH_MS",
+            &args.batch_periods,
+        ),
+        (
+            "--batch-limits",
+            "TPF3MP_HOOK_MAX_BATCH_UPDATES",
+            &args.batch_limits,
+        ),
+        (
+            "--ready-budgets",
+            "TPF3MP_HOOK_READY_BUDGET",
+            &args.ready_budgets,
+        ),
+    ] {
+        if values.is_empty() {
+            continue;
+        }
+        if args.game == "fake" {
+            bail!("{flag} requires a real game");
+        }
+        if values.len() != seats.len() {
+            bail!("{flag} needs exactly one value per player");
+        }
+        for (seat, value) in seats.iter_mut().zip(values) {
+            seat.push((key.to_owned(), value.clone()));
+        }
+    }
+    Ok(seats)
 }
 
 /// Prints a game's output under its player's name, and collects its lane
@@ -832,13 +924,18 @@ impl LocalServer {
     /// Listens on a free loopback port, keeping world snapshots in `dir` so
     /// players can join running games (unless `snapshots` is false), and
     /// writes its certificate there for agents started by hand.
-    fn start(dir: &Path, players: u8, snapshots: bool) -> Result<Self> {
+    fn start(dir: &Path, players: u8, snapshots: bool, real_game: bool) -> Result<Self> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1", "::1"])?;
         let cert = dir.join("dev-cert.der");
         fs::write(&cert, identity.leaf()).with_context(|| format!("writing {}", cert.display()))?;
         let trust = ServerTrust::Pinned(identity.leaf().clone());
         let mut config = ServerConfig::new(([127, 0, 0, 1], 0).into(), identity);
+        // Real games check every intent as the production server does; the
+        // fake game's intents are no actions.
+        if real_game {
+            config.rules = tpf3mp_server::RulesMenu::native_checked();
+        }
         // Every player connects from this PC, one address; leave room for
         // a few more started by hand.
         let players = usize::from(players);
@@ -880,6 +977,65 @@ mod tests {
     #[test]
     fn the_command_line_is_consistent() {
         Args::command().debug_assert();
+    }
+
+    #[test]
+    fn performance_variants_are_per_seat_and_require_complete_real_game_settings() {
+        let args = Args::try_parse_from([
+            "rig",
+            "--server",
+            "local",
+            "--game",
+            "real.exe",
+            "--batch-periods",
+            "200,100",
+            "--batch-limits",
+            "16,4",
+            "--ready-budgets",
+            "0,1",
+        ])
+        .unwrap();
+        let env = performance_env(&args).unwrap();
+        assert_eq!(
+            env[0],
+            [
+                ("TPF3MP_HOOK_BATCH_MS".into(), "200".into()),
+                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "16".into()),
+                ("TPF3MP_HOOK_READY_BUDGET".into(), "0".into())
+            ]
+        );
+        assert_eq!(
+            env[1],
+            [
+                ("TPF3MP_HOOK_BATCH_MS".into(), "100".into()),
+                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "4".into()),
+                ("TPF3MP_HOOK_READY_BUDGET".into(), "1".into())
+            ]
+        );
+        let mut args = args;
+        args.batch_limits.pop();
+        assert!(performance_env(&args).is_err());
+        args.batch_limits.clear();
+        args.game = "fake".into();
+        assert!(performance_env(&args).is_err());
+        args.batch_periods.clear();
+        assert!(performance_env(&args).is_err());
+        args.ready_budgets.clear();
+        assert_eq!(performance_env(&args).unwrap(), vec![vec![], vec![]]);
+        assert!(
+            Args::try_parse_from(["rig", "--server", "local", "--batch-periods", "0,100"]).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_room_setup_performs_no_automatic_player_actions() {
+        let args = Args::try_parse_from(["rig", "--server", "local", "--manual-room"])
+            .expect("manual room arguments");
+        // No player handles exist: this must return before connecting,
+        // creating a room, marking ready or starting a world.
+        set_up_room(&args, "127.0.0.1:1", &[])
+            .await
+            .expect("the in-game UI owns setup");
     }
 
     #[test]

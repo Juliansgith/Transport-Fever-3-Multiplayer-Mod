@@ -22,6 +22,7 @@ pub mod order;
 pub mod persons;
 pub mod previewcancel;
 pub mod probe;
+pub mod savefast;
 pub mod seeds;
 pub mod simperf;
 pub mod stoptool;
