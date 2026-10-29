@@ -501,3 +501,14 @@ Dev C:
 - [ ] *Held* (D18, D19, D20): choosing versions and tracks, and a Dev
   track of untested builds. The owner decides after launch, once `dev`
   takes reviewed pull requests only.
+- [ ] *Added (D31):* a joiner whose replay would be long (the room's
+  snapshot more than 1,800 steps behind) gets a fresh save, made for it
+  at most once a minute.
+- [ ] *Added (D31):* an 8 MiB receive window for the connection uploading
+  the room's save, and for no other.
+- [ ] *Added (D31):* wrong room passwords counted per address (10 a
+  minute), the room-wide stop only beyond 100 a minute.
+- [ ] *Added (D31):* one address's rooms hold at most an eighth of the
+  snapshot store.
+- [ ] *Added (D31):* `Text` refuses bidirectional controls and invisible
+  format characters in names; protocol version bumped.

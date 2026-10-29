@@ -1614,3 +1614,55 @@ replay each ask against their own game's node, as under D30.
 
 Touches: D30 (one more case for its exception); PLAN.md, Part 3, the
 junction item; `strict_junctions` remains off.
+
+## D31 (2026-10-29, decided under the owner's delegation): fresher worlds for joiners, and four security limits
+
+The owner, on 2026-10-29, after the rejoin, network and security review
+(investigation/PERFORMANCE_AUDIT_2026-10-29.md, "Rejoin, network and
+security") listed five questions for them: "you make any decisions if
+required". Claude decided them as follows; the pull request that adds
+this entry asks the owner to confirm.
+
+- **A joiner gets a fresh world when its replay would be long.** When a
+  member waits for a world and the room's current snapshot lies more than
+  1,800 steps behind the room (three minutes of catching up at 4x, about
+  a minute at 1x), the room saves for it, as it already does for a member
+  no snapshot can serve, at most once a minute, and hands it that save.
+  Every member pauses for the save (about 5 s on a large world) and then
+  loads it with the joiner (about 40 s on the rig's big fixture), as
+  PROTOCOL.md, "Snapshots", already has them do whenever a joiner is
+  handed a save newer than the one they play. The joiner then waits for
+  the save, its upload and the load, plus a short catch-up, instead of up
+  to twenty minutes of replay at 4x; the others give up under a minute.
+- **Uploads get a large window, nothing else does.** While a member
+  uploads the room's save, the server lets that connection have 8 MiB in
+  flight; every other connection keeps 256 KiB a stream and 512 KiB in
+  all. A 166 MB save then uploads at a fast link's speed at 100 ms, not at
+  2.5 MiB/s, while no other client can make the server hold more.
+- **Wrong room passwords are counted per address.** Ten wrong passwords a
+  minute from one address stop that address's tries at that room for the
+  minute; the room stops everyone's only beyond 100 a minute. A stranger
+  with the invite then locks out only themselves.
+- **One address's rooms hold at most an eighth of the snapshot store**
+  (8 GiB of the 64 GiB default). Past it, a new save of those rooms is not
+  kept, the previous one stays the room's world, and the server's log
+  says why. Other rooms always have room to save.
+- **Names refuse direction and invisible characters.** `Text` refuses
+  Unicode's bidirectional controls and invisible format characters
+  (U+200B to U+200F, U+202A to U+202E, U+2060 to U+2064, U+2066 to
+  U+2069, U+FEFF) in every name: players, rooms, companies, lines,
+  stations. The protocol version changes. A name already in a room's log
+  is shown with them removed.
+
+Rejected:
+
+- **Saving more often at high speed** (by steps rather than minutes): it
+  pauses every game every few minutes at 4x to help a joiner who may
+  never come.
+- **A larger window for every connection**: memory any client could make
+  the server hold.
+- **Refusing names with those characters only in the launcher**: other
+  clients would still send them.
+
+Touches: PLAN.md, Part 4; PROTOCOL.md, "Snapshots" and "Slow and
+misbehaving clients"; OPERATIONS.md.
