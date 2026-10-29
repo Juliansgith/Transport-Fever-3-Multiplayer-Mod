@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Platform, Text,
     bytes::{FixedBytes, Payload},
-    control::{RulesName, Speed},
+    control::{AiDifficulty, RulesName, Speed},
     ids::{PlayerId, RoomId},
     snapshot::WorldOffer,
 };
@@ -104,4 +104,15 @@ pub enum EventBody {
     /// of its turn, and that turn seals no new steps, so a stream that
     /// starts from the save starts at a turn boundary.
     Save,
+    // Last, so the earlier variants keep their tags on the wire.
+    /// The room seated an AI player (docs/AI_PLAYERS.md): `player` is its
+    /// seat's id ([`PlayerId::ai_seat`]), which its actions carry from now
+    /// on.
+    AiJoined {
+        player: PlayerId,
+        name: Text<32>,
+        difficulty: AiDifficulty,
+    },
+    /// The room's owner removed this AI player.
+    AiLeft { player: PlayerId },
 }

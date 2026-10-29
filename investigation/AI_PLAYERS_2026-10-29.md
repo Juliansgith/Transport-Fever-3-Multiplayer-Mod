@@ -91,6 +91,44 @@ as keys and opened the company window. Nothing was built; the game was
 the session's own, alone in a throwaway room. The console was opened
 again and the probes repeated.
 
+## The first AI games (2026-10-29)
+
+Seven two-game rig rooms on the big fixture, build 40425, the local
+server (`target/game-runs/aigame1` to `aigame7`). What each run found, and what changed for the next:
+
+| run | found | changed |
+|---|---|---|
+| 1 | The AIs founded their companies but never borrowed: the GUI's copy of the roster has no loan offers but the player's. | The AI reads the game script's roster. |
+| 2 | Stops were built, in both games, but the AI never saw them: a street stop's station is an `EDGE_OBJECT` of its edge, in no construction. | Its place is the edge object's transform. |
+| 3 | Depots were built, but the road the AI then laid onto the depot's entrance was refused by the verdict, "Construction Not Possible": the entrance is the construction's own frozen node. | The depot carries the construction tool's connection: the street split through a new junction, the entrance 2 m short of it; every game's refresh of the depot snaps it on. |
+| 4 | The depot snapped alike in both games (`+e-2:203666>-1 -e205109`), but the AI read it as off the street: a road depot's frozen nodes hold only its apron's inner end (read from the console: six depots, all alike). A depot split at a junction a company's road meets passed the verdict, and both games refused it at apply time ("the junction edge belongs to Company"): the room's check of junction settings runs only when it applies (D21), never in a preview. | The entrance is where the depot's own edge meets one not its own; streets report a company's junction at their ends, and the AI splits none of them. |
+| 5 | A Hard AI opened a line and ran three buses on it, the same buses (room ids 76 to 78) on the same line in both games. After the second game joined, the world was loaded again and the AI's half-built line was lost with its driver's mind. | The next driver takes the AI's stops on no line up again; a town counts as served only where a line stops. |
+| 6 | Hard, Normal and Easy together: seven lines in seven minutes (Hard four, Normal two, Easy one), no action refused in either game, no divergence. The company read cost the driver up to 71 ms (below). | The company read asks the game's index for the AI's own depots and stations. |
+| 7 | The same three: the second game drove them, the first to play again after the joiner's reload. The company read now costs about 1 ms. | |
+
+**What the answers cost the driving game** (runs 6 and 7, the mod's own
+log, `ai: answers in 60 s`), against the 1.5 ms a frame the driver may
+spend:
+
+| question | mean | slowest |
+|---|---|---|
+| company, run 6 | 22 to 30 ms | 71 ms |
+| company, run 7 (the game's index) | 0.9 to 1.3 ms | 4 ms |
+| verdict | 21 to 39 ms | 80 ms |
+| towns | 7 ms | 8 ms |
+| streets, models | 2 to 3 ms | 8 ms |
+
+A question is answered whole in one frame, so each verdict and each
+company read was a frame that long. The company read went through every
+construction in the world (3,470: 3 to 18 ms, timed in the console) to
+find the AI's few depots and stations; it now asks the game's index
+(`streetConnectorSystem`) for its own, about 1 ms (run 7). The verdict is the game's
+`makeProposalData`, which cannot be cut into pieces: about 25 ms for a
+stop or a depot. It runs in the GUI's state, so it holds a rendered
+frame; in the game script's state it would hold a simulation step
+instead, which the room's pace leaves room for, once the mod's dry run is
+shown to leave nothing behind that a later applied action could read.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by
@@ -132,10 +170,13 @@ is.
 
 - The cost of the HUD state's verdicts for the pieces the planners make
   (a 200 m road, a 500 m track, a station), and the frame time they cost
-  the driver, against the 1.5 ms a frame budget.
+  the driver, against the 1.5 ms a frame budget. *Measured for a stop
+  and a depot (above): about 25 ms, over budget; roads and track still
+  to measure.*
 - Whether a construction's verdict (stations, depots, harbours, airports)
   needs the construction's own parameters the tools set, and which of
-  them the AI can choose from the template's defaults.
+  them the AI can choose from the template's defaults. *A road depot takes
+  `seed` and `year`; a two-sided street stop only its model, by year.*
 - The game's limits a route must meet (track and street gradients, curve
   radii, station lengths), read from the templates and checked against
   verdicts.

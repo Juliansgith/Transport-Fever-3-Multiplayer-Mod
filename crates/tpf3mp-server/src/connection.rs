@@ -104,6 +104,10 @@ const INTENT_BURST: u32 = 80;
 /// Excess ones are dropped.
 const PREVIEWS_PER_SECOND: u32 = 5;
 const PREVIEW_BURST: u32 = 10;
+/// What a driver keeps for its AI seats (`GameMessage::AiMemo`): an AI
+/// writes its memo after each project's step, far less than this.
+const MEMOS_PER_SECOND: u32 = 2;
+const MEMO_BURST: u32 = 8;
 /// Time a client gets to say what a new bulk stream is for.
 const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -232,7 +236,10 @@ async fn handshake(
     let ClientMessage::Hello(hello) = read_message(&mut recv, CONTROL_MAX_FRAME).await? else {
         return Err(Refusal::UnexpectedMessage);
     };
-    if !verify_proof(connection, &hello.identity, &hello.proof) {
+    // An AI seat's id is the server's to give (`PlayerId::is_ai`): a key that
+    // looks like one would let a player act as an AI, so it is refused even
+    // with a good proof.
+    if hello.identity.is_ai() || !verify_proof(connection, &hello.identity, &hello.proof) {
         reject(&mut send, RejectReason::BadProof).await?;
         return Err(Refusal::BadProof);
     }
@@ -515,8 +522,20 @@ impl Client {
                 ClientMessage::Game(message) => {
                     if self.game.admit(&message, now) {
                         self.game(message)?;
-                    } else if let GameMessage::Intent { client_seq, .. } = message {
-                        self.reject_intent(client_seq, IntentRejection::RateLimited);
+                    } else {
+                        match message {
+                            GameMessage::Intent { client_seq, .. } => {
+                                self.reject_intent(client_seq, IntentRejection::RateLimited);
+                            }
+                            GameMessage::AiIntent {
+                                seat, client_seq, ..
+                            } => self.reject_ai_intent(
+                                seat,
+                                client_seq,
+                                IntentRejection::RateLimited,
+                            ),
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -666,6 +685,22 @@ impl Client {
             }
             Request::Kick(target) => {
                 self.in_room(|player, reply| RoomCommand::Kick {
+                    player,
+                    target,
+                    reply,
+                })
+                .await
+            }
+            Request::AddAi { difficulty } => {
+                self.in_room(|player, reply| RoomCommand::AddAi {
+                    player,
+                    difficulty,
+                    reply,
+                })
+                .await
+            }
+            Request::RemoveAi(target) => {
+                self.in_room(|player, reply| RoomCommand::RemoveAi {
                     player,
                     target,
                     reply,
@@ -831,8 +866,14 @@ impl Client {
     fn game(&mut self, message: GameMessage) -> Result<(), Violation> {
         let Some(room) = &self.room else {
             // Game traffic can still be in flight just after a player left.
-            if let GameMessage::Intent { client_seq, .. } = message {
-                self.reject_intent(client_seq, IntentRejection::GameNotRunning);
+            match message {
+                GameMessage::Intent { client_seq, .. } => {
+                    self.reject_intent(client_seq, IntentRejection::GameNotRunning);
+                }
+                GameMessage::AiIntent {
+                    seat, client_seq, ..
+                } => self.reject_ai_intent(seat, client_seq, IntentRejection::GameNotRunning),
+                _ => {}
             }
             return Ok(());
         };
@@ -856,6 +897,28 @@ impl Client {
                 room.notify(RoomCommand::Loading {
                     player: self.player,
                     stage,
+                });
+            }
+            GameMessage::AiIntent {
+                seat,
+                client_seq,
+                payload,
+            } => {
+                let queued = room.notify(RoomCommand::AiIntent {
+                    player: self.player,
+                    seat,
+                    client_seq,
+                    payload,
+                });
+                if !queued {
+                    self.reject_ai_intent(seat, client_seq, IntentRejection::RateLimited);
+                }
+            }
+            GameMessage::AiMemo { seat, memo } => {
+                room.notify(RoomCommand::AiMemo {
+                    player: self.player,
+                    seat,
+                    memo,
                 });
             }
             GameMessage::Preview(preview) => {
@@ -910,6 +973,14 @@ impl Client {
             .link
             .control
             .try_send(ServerMessage::IntentRejected { client_seq, reason });
+    }
+
+    fn reject_ai_intent(&self, seat: PlayerId, client_seq: u64, reason: IntentRejection) {
+        let _ = self.link.control.try_send(ServerMessage::AiRejected {
+            seat,
+            client_seq,
+            reason,
+        });
     }
 }
 
@@ -1178,6 +1249,8 @@ struct GameMeters {
     progress: TokenBucket,
     intents: TokenBucket,
     previews: TokenBucket,
+    /// What the session's AI seats keep with the server.
+    memos: TokenBucket,
     /// Checkpoint and save reports.
     reports: TokenBucket,
 }
@@ -1188,6 +1261,7 @@ impl GameMeters {
             progress: TokenBucket::new(PROGRESS_PER_SECOND, PROGRESS_BURST),
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
             previews: TokenBucket::new(PREVIEWS_PER_SECOND, PREVIEW_BURST),
+            memos: TokenBucket::new(MEMOS_PER_SECOND, MEMO_BURST),
             reports: TokenBucket::new(REPORTS_PER_SECOND, REPORTS_BURST),
         }
     }
@@ -1195,7 +1269,10 @@ impl GameMeters {
     /// Whether `message` may go on to the room now.
     fn admit(&mut self, message: &GameMessage, now: std::time::Instant) -> bool {
         match message {
-            GameMessage::Intent { .. } => self.intents.take(now, 1),
+            // An AI's actions share the driver's own limit: a driver acts for
+            // its seats as a quick player would, never faster.
+            GameMessage::Intent { .. } | GameMessage::AiIntent { .. } => self.intents.take(now, 1),
+            GameMessage::AiMemo { .. } => self.memos.take(now, 1),
             GameMessage::Progress { .. } => self.progress.take(now, 1),
             // The room keeps at most about two a second; more are never
             // needed.

@@ -66,7 +66,7 @@ use tpf3mp_bridge::{
 };
 use tpf3mp_proto::{
     ChatText, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Seal, Secret, Speed,
-    action::Action,
+    Text, action::Action,
 };
 
 use crate::cadence::{Cadence, Choice, Pick};
@@ -157,6 +157,12 @@ pub trait RoomGate {
     /// Shows the room's other members what the player's build tool shows,
     /// or that it shows nothing.
     fn preview(&mut self, preview: Option<Payload>) -> Result<(), SessionError>;
+    /// Answers the agent's question `id` for an AI seat this game drives.
+    fn ai_answer(
+        &mut self,
+        id: u32,
+        answer: Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>,
+    ) -> Result<(), SessionError>;
     /// Before the room begins: the game's world number `world` is up. Says
     /// whether the agent was told.
     fn world_up(&mut self, world: u64) -> Result<bool, SessionError>;
@@ -329,6 +335,13 @@ impl RoomGate for Session {
     fn preview(&mut self, preview: Option<Payload>) -> Result<(), SessionError> {
         Session::preview(self, preview)
     }
+    fn ai_answer(
+        &mut self,
+        id: u32,
+        answer: Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>,
+    ) -> Result<(), SessionError> {
+        Session::ai_answer(self, id, answer)
+    }
     fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
         Session::world_up(self, world)
     }
@@ -422,7 +435,7 @@ impl Game for HookGame {
         // other members' previews for the GUI, not the log.
         if !matches!(
             notice,
-            Notice::Room(_) | Notice::Chat { .. } | Notice::Preview { .. }
+            Notice::Room(_) | Notice::Chat { .. } | Notice::Preview { .. } | Notice::AiAsk { .. }
         ) {
             self.notices.push(format!("{notice:?}"));
         }
@@ -463,6 +476,8 @@ pub trait StepHandler: Send {
     fn say(&mut self, text: ChatText);
     /// See [`StepDriver::preview`].
     fn preview(&mut self, preview: Option<Payload>);
+    /// See [`StepDriver::ai_answer`].
+    fn ai_answer(&mut self, id: u32, answer: Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>);
     /// See [`StepDriver::on_menu`].
     fn on_menu(&mut self);
     /// See [`StepDriver::lobby`].
@@ -514,6 +529,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn preview(&mut self, preview: Option<Payload>) {
         StepDriver::preview(self, preview);
+    }
+    fn ai_answer(&mut self, id: u32, answer: Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>) {
+        StepDriver::ai_answer(self, id, answer);
     }
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
         StepDriver::lobby(self, actions)
@@ -847,6 +865,19 @@ impl<G: RoomGate> StepDriver<G> {
         if let Err(error) = self.gate.preview(preview) {
             self.log.push(format!(
                 "the room was not shown the player's preview: {error}"
+            ));
+        }
+    }
+
+    /// Answers the agent's question `id` for an AI seat, in the room's game
+    /// only: outside it this game drives no AI.
+    pub fn ai_answer(&mut self, id: u32, answer: Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        if let Err(error) = self.gate.ai_answer(id, answer) {
+            self.log.push(format!(
+                "the agent did not get an AI player's answer: {error}"
             ));
         }
     }
@@ -1912,6 +1943,13 @@ pub(crate) mod tests {
         }
         fn preview(&mut self, preview: Option<Payload>) -> Result<(), SessionError> {
             self.previews.push(preview);
+            Ok(())
+        }
+        fn ai_answer(
+            &mut self,
+            _id: u32,
+            _answer: Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>,
+        ) -> Result<(), SessionError> {
             Ok(())
         }
         fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {

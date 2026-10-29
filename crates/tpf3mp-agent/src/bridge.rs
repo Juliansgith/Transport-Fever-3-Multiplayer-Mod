@@ -199,6 +199,10 @@ pub enum Control {
     Start,
     Speed(Speed),
     Kick(PlayerId),
+    /// Seat an AI player (docs/AI_PLAYERS.md); the room's owner only.
+    AddAi(tpf3mp_proto::AiDifficulty),
+    /// Remove an AI player; the room's owner only.
+    RemoveAi(PlayerId),
     Chat(ChatText),
     /// Show this banner in the room from now on.
     Banner(Option<tpf3mp_proto::BannerId>),
@@ -542,6 +546,8 @@ fn held_weight(event: &ClientEvent) -> usize {
 /// Couples one game's hook to one client.
 pub struct Bridge<L> {
     scan_plan: Result<tpf3mp_proto::ScanPlan, &'static str>,
+    /// The AI seats this game drives.
+    ai: crate::ai::AiDriver,
     link: L,
     options: BridgeOptions,
     follower: Option<TurnFollower>,
@@ -740,6 +746,7 @@ impl<L: HookLink> Bridge<L> {
             held_stream: None,
             held_events: VecDeque::new(),
             held_bytes: 0,
+            ai: crate::ai::AiDriver::default(),
             held: VecDeque::new(),
         }
     }
@@ -820,6 +827,7 @@ impl<L: HookLink> Bridge<L> {
             self.report_progress(client, now).await?;
             self.report_loading(client, now).await?;
             self.lobby_news();
+            self.drive_ai(client, now).await?;
             // Turns wait while the world they continue is being fetched.
             if !matches!(self.world, World::Fetching { .. })
                 && let (Some(follower), Some(playout)) = (&mut self.follower, &mut self.playout)
@@ -854,6 +862,29 @@ impl<L: HookLink> Bridge<L> {
                 () = tokio::time::sleep_until(wake.into()) => {}
             }
         }
+    }
+
+    /// The AI players this game drives (docs/AI_PLAYERS.md): their
+    /// questions to the hook, their actions and memos to the room. Their
+    /// minds look only while this game plays the room's world.
+    async fn drive_ai(&mut self, client: &Client, now: Instant) -> Result<(), BridgeFault> {
+        if !self.ai.driving() {
+            return Ok(());
+        }
+        let ready = self.begun && self.hook_ready && self.world == World::Ready;
+        let speed = self.speed.map_or(100, |speed| speed.0);
+        for out in self.ai.tick(now, speed, ready) {
+            match out {
+                crate::ai::AiOut::Ask { id, ask } => {
+                    self.outbox.push_back(ToHook::AiAsk { id, ask })
+                }
+                crate::ai::AiOut::Intent { seat, seq, payload } => {
+                    client.send_ai_intent(seat, seq, payload).await?;
+                }
+                crate::ai::AiOut::Memo { seat, memo } => client.send_ai_memo(seat, memo).await?,
+            }
+        }
+        Ok(())
     }
 
     /// Tells the hook the session is over, as far as the link still takes
@@ -990,6 +1021,7 @@ impl<L: HookLink> Bridge<L> {
                         .await?;
                     self.commands += 1;
                 }
+                ToAgent::AiAnswer { id, answer } => self.ai.answer(id, answer),
                 ToAgent::Ran { step } if current => {
                     self.progress = Some(step);
                     self.status(|status| status.step = Some(step));
@@ -1516,7 +1548,8 @@ impl<L: HookLink> Bridge<L> {
                         mods: self.load_lists(),
                     });
                     if let Some(room) = &self.room {
-                        self.outbox.push_back(ToHook::Room(room_info(room)));
+                        self.outbox
+                            .push_back(ToHook::Room(room_info(room, Some(client.player()))));
                     }
                 }
                 let next_step = start.sealed_through.saturating_add(1);
@@ -1575,6 +1608,12 @@ impl<L: HookLink> Bridge<L> {
                 self.outbox.push_back(ToHook::Diverged { step, lanes });
             }
             ClientEvent::Upload { event, snapshot } => self.upload(event, snapshot, client),
+            ClientEvent::AiDrive(seats) => self.ai.drive(seats),
+            ClientEvent::AiRejected {
+                seat,
+                client_seq,
+                reason,
+            } => self.ai.rejected(seat, client_seq, reason),
             ClientEvent::Preview { from, preview } => {
                 // Only to a game that plays the room's world, and only the
                 // latest of each member: one waiting is replaced.
@@ -1604,7 +1643,8 @@ impl<L: HookLink> Bridge<L> {
                 // The game's Multiplayer window shows the room once the game
                 // began.
                 if self.begun {
-                    self.outbox.push_back(ToHook::Room(room_info(&room)));
+                    self.outbox
+                        .push_back(ToHook::Room(room_info(&room, Some(client.player()))));
                 }
                 self.start_news(self.room.as_ref(), &room, client);
                 // The room gave up on the save on its way (it did not start
@@ -1949,6 +1989,8 @@ impl<L: HookLink> Bridge<L> {
             Control::Start => Request::StartGame,
             Control::Speed(speed) => Request::SetSpeed(speed),
             Control::Kick(player) => Request::Kick(player),
+            Control::AddAi(difficulty) => Request::AddAi { difficulty },
+            Control::RemoveAi(player) => Request::RemoveAi(player),
             Control::Chat(text) => Request::Chat(text),
             Control::Banner(banner) => Request::SetBanner(banner),
             Control::Declare(declaration) => {
@@ -2224,7 +2266,9 @@ fn generated_world_can_start(
         })
 }
 
-fn room_info(room: &RoomView) -> RoomInfo {
+/// The room for the game's Multiplayer window; `me` tells it which AI
+/// players this game drives.
+fn room_info(room: &RoomView, me: Option<PlayerId>) -> RoomInfo {
     let members = room
         .members
         .iter()
@@ -2244,6 +2288,19 @@ fn room_info(room: &RoomView) -> RoomInfo {
         name: room.name.clone(),
         owner: room.owner,
         members: BoundedVec::new(members).unwrap_or_default(),
+        ais: BoundedVec::new(
+            room.ais
+                .iter()
+                .take(tpf3mp_proto::MAX_AI_SEATS)
+                .map(|ai| tpf3mp_bridge::LobbyAi {
+                    player: ai.player,
+                    name: ai.name.clone(),
+                    difficulty: ai.difficulty,
+                    yours: me.is_some() && ai.driver == me,
+                })
+                .collect(),
+        )
+        .unwrap_or_default(),
     }
 }
 
@@ -2827,6 +2884,7 @@ mod tests {
             members: Vec::new(),
             competitive: false,
             start: None,
+            ais: Vec::new(),
         }
     }
 
@@ -3229,8 +3287,9 @@ mod tests {
             members: vec![member(1, "Ann", true), member(2, "Bo", false)],
             competitive: false,
             start: None,
+            ais: Vec::new(),
         };
-        let info = room_info(&room);
+        let info = room_info(&room, None);
         assert_eq!(info.name.as_str(), "Sunday line");
         assert_eq!(info.owner, room.owner);
         let members: Vec<(&str, bool)> = info
@@ -3244,7 +3303,7 @@ mod tests {
         let mut pictured = room.clone();
         pictured.members[0].banner = Some(Text::new("dry").unwrap());
         pictured.members[1].banner = Some(Text::new("lasse").unwrap());
-        let info = room_info(&pictured);
+        let info = room_info(&pictured, None);
         assert_eq!(
             info.members[0].banner.as_ref().map(Text::as_str),
             Some("dry")
@@ -3283,6 +3342,7 @@ mod tests {
                     banner: None,
                 })
                 .to_vec(),
+            ais: Vec::new(),
         };
         assert!(!generated_world_can_start(Some(&room), owner, 0, false));
         assert!(!generated_world_can_start(Some(&room), guest, 1, false));

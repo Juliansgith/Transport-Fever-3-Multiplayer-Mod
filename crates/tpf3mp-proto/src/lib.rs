@@ -38,21 +38,22 @@ pub use content::{
     native_term_version_is_full, own_mod_short,
 };
 pub use control::{
-    AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
-    ContentFingerprint, ContentStatus, CreateRoom, GameMessage, Hello, IntentRejection, JoinRoom,
-    LaneDigest, ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_NATIVE_INDEX_PAGES,
-    MAX_PREVIEW, MAX_ROOM_MEMBERS, MemberView, NATIVE_INDEX_PAGE, NativeIndexPage, PORTRAITS,
-    ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing,
-    RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage,
-    Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
+    AUTH_DOMAIN, AUTH_EXPORTER_LABEL, AiDifficulty, AiSeat, AiView, BANNERS, BannerId, ChatText,
+    ClientMessage, ContentFingerprint, ContentStatus, CreateRoom, GameMessage, Hello,
+    IntentRejection, JoinRoom, LaneDigest, ListedRoom, LoadingStage, MAX_AI_SEATS,
+    MAX_CHECKPOINT_LANES, MAX_NATIVE_INDEX_PAGES, MAX_PREVIEW, MAX_ROOM_MEMBERS, MemberView,
+    NATIVE_INDEX_PAGE, NativeIndexPage, PORTRAITS, ROOMS_PER_PAGE, Reject, RejectReason, Request,
+    RequestError, Response, Resume, RoomListing, RoomPage, RoomPhase, RoomSettings, RoomView,
+    RulesName, RulesOffer, Secret, ServerMessage, Speed, StartSave, StartView, Welcome, is_banner,
+    is_portrait,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText, LogSource,
     MAX_DIAGNOSTIC_EVENTS, Telemetry, TelemetryLine, TelemetryLines, redact,
 };
 pub use ids::{
-    CODE_LEN, Code, CodeError, Invite, InviteError, LogSession, PlayerId, RoomId, SessionId,
-    Signature,
+    AI_SEAT_PREFIX, CODE_LEN, Code, CodeError, Invite, InviteError, LogSession, PlayerId, RoomId,
+    SessionId, Signature,
 };
 pub use room_mods::{
     GAME_SETTINGS, MAX_ROOM_DECLARATION_BYTES, MAX_ROOM_MODS, MAX_ROOM_PARAMS, MODIO_SOURCE,
@@ -105,7 +106,11 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// version 22 carries a full SHA-256 package identity in each native room
 /// term, while keeping ordinary mod versions limited to 32 bytes.
 /// Version 23 negotiates the world-check scan plan before joining a room.
-pub const PROTOCOL_VERSION: u32 = 23;
+/// Version 24 seats AI players: [`Request::AddAi`], [`Request::RemoveAi`],
+/// [`RoomView::ais`], [`EventBody::AiJoined`], [`EventBody::AiLeft`], and the
+/// driver's [`ServerMessage::AiDrive`], [`GameMessage::AiIntent`] and
+/// [`GameMessage::AiMemo`] (docs/AI_PLAYERS.md).
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

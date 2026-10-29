@@ -454,6 +454,37 @@ function Link:preview(action)
 	return true
 end
 
+-- In the GUI: the room's owner seats an AI player ("add", "easy" | "normal"
+-- | "hard") or removes one ("remove", its id), through the launcher. True,
+-- or nil and why.
+function Link:aiSeat(kind, value)
+	if type(self.native.aiSeat) ~= "function" then return nil, "this hook seats no AI players" end
+	local called, took, why = pcall(self.native.aiSeat, kind, value)
+	if not called then return nil, tostring(took) end
+	if took ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
+end
+
+-- In the GUI: the next question an AI player this game drives asks about
+-- the world (tpf3mp/ai.lua), { id =, seat =, question = }, or nil: none
+-- waits, or this hook drives no AI.
+function Link:aiAsk()
+	if type(self.native.aiAsk) ~= "function" then return nil end
+	local ok, ask = pcall(self.native.aiAsk)
+	if not ok or type(ask) ~= "table" then return nil end
+	return ask
+end
+
+-- In the GUI: the answer to AI question `id`: a table, or with `ok` false
+-- why there is none. True, or nil and why the hook did not take it.
+function Link:aiAnswer(id, ok, answer)
+	if type(self.native.aiAnswer) ~= "function" then return nil, "this hook drives no AI" end
+	local called, took, why = pcall(self.native.aiAnswer, id, ok, answer)
+	if not called then return nil, tostring(took) end
+	if took ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
+end
+
 -- In the GUI: what the other members' build tools show that changed since
 -- the last call, { { from =, action = } }, `from` a player id (64 hex
 -- digits), no `action` for one that shows nothing now; {} from a hook

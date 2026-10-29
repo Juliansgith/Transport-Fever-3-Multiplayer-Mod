@@ -198,6 +198,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         added,
         [
             "tpf3mp.acceptance",
+            "tpf3mp.ai",
             "tpf3mp.apply",
             "tpf3mp.banners",
             "tpf3mp.bridge",
@@ -5754,6 +5755,76 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
         logged
             .iter()
             .any(|l| l == "snapping 5000 +e-2:-1>7777 -e6000"),
+        "{logged:?}"
+    );
+}
+
+/// An AI player's depot (tpf3mp-ai, place::depot): its connection splits
+/// the street through a new junction and runs the depot's entrance edge to
+/// it, its entrance 2 m short, as the construction tool leaves a depot's.
+/// Every game builds the depot with the split street, leaving the entrance
+/// edge to the depot, which makes it itself; then refreshes the depot,
+/// which snaps the entrance onto the junction. A separate road onto the
+/// entrance the game refused (2026-10-29, "Construction Not Possible").
+#[test]
+fn an_ai_depot_splits_its_street_and_its_refresh_snaps_it_onto_the_junction() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    let ok: bool = lua
+        .load(
+            "ACTION = { BuildConstruction = { file = '::/depots/road/road_depot/road_depot.con', \
+                 transform = { basis = { 0, -1, 0, 1, 0, 0, 0, 0, 1 }, origin = { x = 87, y = 0, z = 0 } }, \
+                 params = { { key = 'seed', value = { Int = 7 } }, { key = 'year', value = { Int = 1925 } } }, \
+                 name = 'Rossi Transport Depot', \
+                 connection = { \
+                     vertices = { \
+                         { pos = { x = 50, y = 0, z = 0 }, resolve = { Split = { network = 'Street', \
+                             ends = { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } } } }, \
+                         { pos = { x = 52, y = 0, z = 0 }, resolve = 'New' } }, \
+                     links = { { from = 0, to = 1, tangent0 = { x = 2, y = 0, z = 0 }, \
+                         tangent1 = { x = 2, y = 0, z = 0 }, structure = 'Ground', owned = true, \
+                         kind = { network = 'Street', template = '::/street/country.street_template' } } }, \
+                     removals = {}, removed_nodes = {} } } } \
+             return schema_check(ACTION)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(ok, "the schema takes it");
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let built: String = lua
+        .load(
+            "local p = SENT[1].proposal local s = p.streetProposal \
+             local out = { #SENT, p.constructionsToAdd[1].fileName, #s.nodesToAdd, #s.edgesToAdd, \
+                 table.concat(s.edgesToRemove, ',') } \
+             for _, n in ipairs(s.nodesToAdd) do \
+                 out[#out + 1] = n.entity .. '@' .. n.comp.position.x .. ',' .. n.comp.position.y end \
+             for _, e in ipairs(s.edgesToAdd) do \
+                 out[#out + 1] = e.comp.node0 .. '>' .. e.comp.node1 .. ':' .. e.comp.roadTemplate end \
+             local r = SENT[2] \
+             out[#out + 1] = r.proposal.refreshed .. ':' .. tostring(r.context) \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        built,
+        "2|::/depots/road/road_depot/road_depot.con|1|2|100|-3@50,0\
+         |8>-3:::/street/country.street_template\
+         |-3>9:::/street/country.street_template\
+         |5000:nil",
+        "the depot and its street split at the junction, not its entrance edge; then its refresh"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.starts_with("snapping 5000 ")),
         "{logged:?}"
     );
 }
@@ -12985,6 +13056,95 @@ fn the_game_script_seeds_math_random_with_the_room_steps_seed_each_update() {
 }
 
 /// Pure: the roster of companies (tpf3mp/companies.lua).
+/// An AI player (docs/AI_PLAYERS.md, D32) founds one company of its own
+/// and plays for no other; no player joins it; and every game refuses an
+/// AI's action before it has founded its company.
+#[test]
+fn an_ai_player_founds_one_company_of_its_own_and_nobody_joins_it() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = {} }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                forEachEntityWithComponent = function(fn, kind)
+                    for e in pairs(COMP[kind] or {}) do fn(e) end
+                end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name, color = color } end,
+                makeEntitySetNameCmd = function(e, name) return { rename = e, name = name } end,
+            },
+        }
+        NEXT = 900
+        function send(cmd)
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        AI = C.AI_PREFIX .. string.rep("0", 31) .. "7"
+        AI2 = C.AI_PREFIX .. string.rep("0", 31) .. "8"
+        A = string.rep("a", 64)
+        R = C.ensure(nil, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    assert_eq!(
+        eval("return tostring(C.isAi(AI)) .. tostring(C.isAi(A)) .. tostring(C.isAi(nil))"),
+        "truefalsefalse"
+    );
+    // The AI founds its company and plays for it.
+    assert_eq!(
+        eval(
+            "local ok, why, id = C.run(R, AI, { Create = { name = 'Rossi Transport' } }, send, api) \
+             return tostring(ok) .. ' ' .. tostring(id) .. ' ' .. C.of(R, AI).name"
+        ),
+        "true 1 Rossi Transport"
+    );
+    // One company: a second is refused, the AI keeps the first.
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, AI, { Create = { name = 'More' } }, send, api) \
+             return tostring(ok) .. ': ' .. why"
+        ),
+        "false: an AI player keeps the one company it founded"
+    );
+    // No player joins it; the AI joins no other.
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, A, { Join = 1 }, send, api) return tostring(ok) .. ': ' .. why"
+        ),
+        "false: Rossi Transport is an AI player's company"
+    );
+    assert_eq!(eval("return tostring(C.of(R, A).id)"), "0");
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, AI2, { Join = 1 }, send, api) return tostring(ok) .. ': ' .. why"
+        ),
+        "false: Rossi Transport is an AI player's company"
+    );
+    // Every player starts in the room's first company: joining it is
+    // nothing new, and an AI there acts in nothing (apply.run refuses).
+    assert_eq!(
+        eval("return tostring(C.run(R, AI2, { Join = 0 }, send, api))"),
+        "true"
+    );
+    // Joining its own again changes nothing.
+    assert_eq!(
+        eval("return tostring(C.run(R, AI, { Join = 1 }, send, api))"),
+        "true"
+    );
+}
+
 #[test]
 fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
     let lua = gui();

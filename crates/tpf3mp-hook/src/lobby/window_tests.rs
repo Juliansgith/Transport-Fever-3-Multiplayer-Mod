@@ -204,6 +204,7 @@ fn in_room(members: Vec<LobbyMember>, you_own: bool) -> LobbyView {
             competitive: false,
             start: None,
             upload: None,
+            ais: BoundedVec::default(),
         }),
         chat: BoundedVec::new(vec![LobbyLine {
             from: Text::new("Bob").unwrap(),
@@ -585,6 +586,62 @@ fn in_the_room_the_owner_starts_once_everyone_is_ready() {
     call(&lua, "tick", ());
     click(&lua, "Start the game");
     assert_eq!(sent(&lua), [LobbyAction::Start]);
+}
+
+/// The owner seats AI players by difficulty and removes them, asked
+/// first; a guest sees them and can do neither (docs/AI_PLAYERS.md).
+#[test]
+fn the_owner_seats_and_removes_ai_players_and_a_guest_only_sees_them() {
+    let lua = menu();
+    let ai = PlayerId::ai_seat(&tpf3mp_proto::RoomId(tpf3mp_proto::FixedBytes([3; 16])), 0);
+    let with_ai = |you_own: bool| {
+        let mut view = in_room(
+            vec![
+                member(1, "Ann", true, you_own, true),
+                member(2, "Bob", false, !you_own, true),
+            ],
+            you_own,
+        );
+        if let Some(room) = view.room.as_mut() {
+            room.ais = BoundedVec::new(vec![tpf3mp_bridge::LobbyAi {
+                player: ai,
+                name: Text::new("Rossi Transport").unwrap(),
+                difficulty: tpf3mp_proto::AiDifficulty::Hard,
+                yours: you_own,
+            }])
+            .unwrap();
+        }
+        view
+    };
+    show(&lua, Some(&with_ai(true)));
+    open(&lua, None);
+    let shown = texts(&lua);
+    for word in [
+        "Rossi Transport",
+        "AI player, Hard",
+        "your game drives it",
+        "Add an AI player:",
+    ] {
+        assert!(shown.contains(word), "{word}: {shown}");
+    }
+    click(&lua, "Normal");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::AddAi {
+            difficulty: tpf3mp_proto::AiDifficulty::Normal
+        }]
+    );
+    // Removing asks first.
+    click(&lua, "Remove Rossi Transport from the room");
+    click(&lua, "Remove");
+    assert_eq!(sent(&lua), [LobbyAction::RemoveAi { player: ai }]);
+
+    show(&lua, Some(&with_ai(false)));
+    call(&lua, "tick", ());
+    let shown = texts(&lua);
+    assert!(shown.contains("AI player, Hard"), "{shown}");
+    assert!(!shown.contains("Add an AI player:"), "{shown}");
+    assert!(!has_button(&lua, "Normal"));
 }
 
 /// A room in its lobby, Ann owning it if `you_own` (else Bob), both ready,

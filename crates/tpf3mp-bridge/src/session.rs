@@ -97,6 +97,12 @@ pub enum Notice {
         from: PlayerId,
         preview: Option<Payload>,
     },
+    /// A question about the world for an AI seat this game drives, which
+    /// [`Session::ai_answer`] answers.
+    AiAsk {
+        id: u32,
+        ask: crate::ai::AiAsk,
+    },
 }
 
 /// What the game does about its next step.
@@ -711,6 +717,15 @@ impl Session {
         self.send(&ToAgent::Preview { preview })
     }
 
+    /// Answers the agent's question `id` for an AI seat ([`Notice::AiAsk`]).
+    pub fn ai_answer(
+        &mut self,
+        id: u32,
+        answer: Result<crate::ai::AiAnswer, Text<256>>,
+    ) -> Result<(), SessionError> {
+        self.send(&ToAgent::AiAnswer { id, answer })
+    }
+
     /// Hands the launcher an action the player took in the main menu's
     /// Multiplayer window (D17).
     pub fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
@@ -859,6 +874,7 @@ impl Session {
             Gated::Chat { from, text } => game.notice(Notice::Chat { from, text }),
             Gated::Room(room) => game.notice(Notice::Room(room)),
             Gated::Preview { from, preview } => game.notice(Notice::Preview { from, preview }),
+            Gated::AiAsk { id, ask } => game.notice(Notice::AiAsk { id, ask }),
             Gated::Lobby(view) => self.remember_lobby(*view),
             Gated::Nothing => {}
         }
@@ -1343,6 +1359,7 @@ mod tests {
             has_password: false,
             members: Default::default(),
             competitive: false,
+            ais: Default::default(),
         });
         say(&agent, &ToHook::Lobby(Box::new(view.clone())));
         session.poll_lobby().unwrap();

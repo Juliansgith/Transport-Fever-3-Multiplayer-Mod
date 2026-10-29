@@ -731,6 +731,24 @@ end
 -- A room member as a card: their banner, name, and what marks them.
 -- `extra`: more of the card's corners (the owner's Remove), as layout
 -- children of its picture.
+-- An AI player of the room (docs/AI_PLAYERS.md) as its card: its name, its
+-- difficulty, and whose game drives it.
+lobby.AI_DIFFICULTIES = { { "easy", _("Easy") }, { "normal", _("Normal") }, { "hard", _("Hard") } }
+function lobby.aiLine(ai)
+	local name = ai.difficulty
+	for _i, d in ipairs(lobby.AI_DIFFICULTIES) do
+		if d[1] == ai.difficulty then name = d[2] end
+	end
+	local marks = { string.format(_("AI player, %s"), name) }
+	if ai.yours then marks[#marks + 1] = _("your game drives it") end
+	return table.concat(marks, " · ")
+end
+
+function lobby.aiCard(ai, extra)
+	return pictureCard(lobby.bannerPicture(lobby.bannerOf({ id = ai.id })), ai.name, lobby.aiLine(ai),
+		nil, nil, true, MEMBER_WIDTH, MEMBER_HEIGHT, extra or {})
+end
+
 function lobby.memberCard(member, playing, extra)
 	local marks = {}
 	if member.you then marks[#marks + 1] = _("You") end
@@ -2437,7 +2455,44 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 		cells[#cells + 1] = lobby.memberCard(member, playing, extra)
 		if #cells >= 3 then flush() end
 	end
+	-- The AI players, each with a Remove for the owner, asked first.
+	for _i, ai in ipairs(room.ais or {}) do
+		local extra = {}
+		if room.you_own then
+			local item
+			if confirm and confirm.kind == "remove_ai" and confirm.id == ai.id then
+				item = row({
+					button(_("Remove"), function()
+						send({ action = "remove_ai", player = ai.id }, string.format(_("Removing %s..."), ai.name))
+					end, "error-tape", canAct),
+					gap(4),
+					button(_("Keep"), function() confirmS:set(nil) end),
+				})
+			else
+				item = button_react_util.makeIconButton(nil, ICON.kick, function()
+					confirmS:set({ kind = "remove_ai", id = ai.id, name = ai.name })
+				end, string.format(_("Remove %s from the room"), ai.name))
+			end
+			extra[1] = builtin.FloatingLayoutChild{ h = 0.03, v = 0.06, item = item }
+		end
+		if #cells > 0 then cells[#cells + 1] = gap(12) end
+		cells[#cells + 1] = lobby.aiCard(ai, extra)
+		if #cells >= 3 then flush() end
+	end
 	flush()
+	-- The owner seats AI players: a computer plays each, as a company of
+	-- its own (docs/AI_PLAYERS.md).
+	if room.you_own and #(room.ais or {}) < 7 then
+		local adds = { label(_("Add an AI player:"), "font-scale-body"), gap(8) }
+		for _i, d in ipairs(lobby.AI_DIFFICULTIES) do
+			adds[#adds + 1] = button(d[2], function()
+				send({ action = "add_ai", difficulty = d[1] }, string.format(_("Seating a %s AI player..."), d[2]))
+			end, nil, canAct)
+			adds[#adds + 1] = gap(6)
+		end
+		memberRows[#memberRows + 1] = row(adds)
+		memberRows[#memberRows + 1] = gap(10)
+	end
 
 	local lines = state.chat or {}
 	local chatRows = {}

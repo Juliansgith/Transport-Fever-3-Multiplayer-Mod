@@ -918,6 +918,9 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"drawn", native_drawn),
                 (b"drawcost", native_drawcost),
                 (b"undraw", native_undraw),
+                (b"aiAsk", native_ai_ask),
+                (b"aiSeat", native_ai_seat),
+                (b"aiAnswer", native_ai_answer),
             ] {
                 if api.touserdata.is_none() && matches!(name, b"laneRows" | b"junctionConfig") {
                     continue;
@@ -1495,11 +1498,13 @@ pub fn notice(notice: &Notice) {
             room.chosen_speed = None;
             room.diverged = None;
             crate::previews::clear();
+            crate::ai::clear();
         }
         Notice::Refused { .. } => {}
         Notice::Preview { from, preview } => {
             crate::previews::heard(*from, preview.clone(), std::time::Instant::now());
         }
+        Notice::AiAsk { id, ask } => crate::ai::asked(*id, ask.clone()),
     }
 }
 
@@ -1681,6 +1686,157 @@ unsafe extern "C-unwind" fn native_previews(l: State) -> c_int {
     );
     // SAFETY: Lua calls this with its own state, on its thread.
     unsafe { push_or_nil(api, l, Some(&list)) }
+}
+
+/// `aiAsk()`: the next question an AI seat this game drives asks about the
+/// world (docs/AI_PLAYERS.md), `{ id =, seat = "<64 hex digits>", question
+/// = ... }`: `question` is `"Company"`, `"Towns"`, `{ Streets = { at =, radius
+/// = } }`, `{ Models = { mode = } }` or `{ Verdict = <action table> }`; or
+/// nothing while none waits. A question this game cannot put as a table is
+/// answered at once with why.
+unsafe extern "C-unwind" fn native_ai_ask(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    while let Some((id, ask)) = crate::ai::next() {
+        match ai_question(&ask) {
+            Ok(question) => {
+                let table = LuaValue::Table(vec![
+                    (LuaValue::string("id"), LuaValue::Number(f64::from(id))),
+                    (
+                        LuaValue::string("seat"),
+                        LuaValue::string(&crate::lobby::hex(&ask.seat)),
+                    ),
+                    (LuaValue::string("question"), question),
+                ]);
+                // SAFETY: Lua calls this with its own state, on its thread.
+                return unsafe { push_or_nil(api, l, Some(&table)) };
+            }
+            Err(why) => crate::ai::answer(id, Err(Text::lossy(&why))),
+        }
+    }
+    0
+}
+
+/// `aiSeat(kind, value)`: the room's owner, from the game's Multiplayer
+/// window, seats an AI player (`"add"`, `"easy"`, `"normal"` or `"hard"`)
+/// or removes one (`"remove"`, its id); the launcher carries it out as the
+/// main menu's lobby would. `true`, or `false` and why.
+unsafe extern "C-unwind" fn native_ai_seat(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (kind, value) = unsafe { (string_arg(api, l, 1, 16), string_arg(api, l, 2, 64)) };
+    let action = match (kind.as_deref(), value.as_deref()) {
+        (Some("add"), Some(difficulty)) => crate::lobby::parse_action(&format!(
+            r#"{{"action":"add_ai","difficulty":"{}"}}"#,
+            difficulty.escape_default()
+        )),
+        (Some("remove"), Some(id)) => crate::lobby::parse_action(&format!(
+            r#"{{"action":"remove_ai","player":"{}"}}"#,
+            id.escape_default()
+        )),
+        _ => Err("aiSeat(\"add\", difficulty) or aiSeat(\"remove\", id)".to_owned()),
+    };
+    let outcome = action.and_then(crate::lobby::queue);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// An AI's question as the table the mod reads.
+fn ai_question(ask: &tpf3mp_bridge::ai::AiAsk) -> Result<LuaValue, String> {
+    use tpf3mp_bridge::ai::AiQuestion;
+    match &ask.question {
+        AiQuestion::Verdict(payload) => {
+            let action = Action::from_payload(payload).map_err(|error| error.to_string())?;
+            let table = action_to_lua(&action).map_err(|error| error.to_string())?;
+            Ok(LuaValue::Table(vec![(LuaValue::string("Verdict"), table)]))
+        }
+        other => tpf3mp_proto::lua::to_lua(other).map_err(|error| error.to_string()),
+    }
+}
+
+/// `aiAnswer(id, ok, answer)`: the mod's answer to question `id`, a table
+/// as `tpf3mp_bridge::ai::AiAnswer` names its fields (positions in metres),
+/// or with `ok` false why it has none. `true`, or `false` and why the answer
+/// does not read; the agent hears that instead.
+unsafe extern "C-unwind" fn native_ai_answer(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let read = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as above.
+        unsafe { ai_answer_from(api, l) }
+    }))
+    .unwrap_or_else(|_| Err((None, "the hook failed reading the AI answer".into())));
+    // SAFETY: as above.
+    unsafe { (api.settop)(l, top) };
+    let outcome = match read {
+        Ok((id, answer)) => {
+            crate::ai::answer(id, answer);
+            Ok(())
+        }
+        Err((Some(id), why)) => {
+            crate::ai::answer(id, Err(Text::lossy(&why)));
+            Err(why)
+        }
+        Err((None, why)) => Err(why),
+    };
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// The answer on the stack: its id, and the answer or why there is none.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread.
+#[allow(clippy::type_complexity)]
+unsafe fn ai_answer_from(
+    api: &LuaApi,
+    l: State,
+) -> Result<(u32, Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>), (Option<u32>, String)> {
+    // SAFETY: the caller's.
+    unsafe {
+        if (api.gettop)(l) < 3 || (api.type_of)(l, 1) != TNUMBER {
+            return Err((None, "aiAnswer(id, ok, answer)".into()));
+        }
+        let number = (api.tonumberx)(l, 1, std::ptr::null_mut());
+        if !(0.0..=f64::from(u32::MAX)).contains(&number) || number.fract() != 0.0 {
+            return Err((None, "an answer's id is a question's".into()));
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let id = number as u32;
+        if (api.toboolean)(l, 2) == 0 {
+            let why = string_arg(api, l, 3, 256).unwrap_or_else(|| "no answer".to_owned());
+            return Ok((id, Err(Text::lossy(&why))));
+        }
+        if (api.type_of)(l, 3) != TTABLE {
+            return Err((Some(id), "an answer is a table".into()));
+        }
+        let mut nodes = 0;
+        let tree = read(api, l, 3, 0, &mut nodes).map_err(|why| (Some(id), why))?;
+        let answer = tpf3mp_proto::lua::from_lua::<tpf3mp_bridge::ai::AiAnswer>(&tree)
+            .map_err(|error| (Some(id), format!("the answer does not read: {error}")))?;
+        // The link carries a message of at most MAX_MESSAGE: one larger
+        // would be refused there, so the agent hears why here.
+        let size = tpf3mp_bridge::encode(&tpf3mp_bridge::ToAgent::AiAnswer {
+            id,
+            answer: Ok(answer.clone()),
+        })
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX);
+        if size > tpf3mp_bridge::MAX_MESSAGE {
+            return Err((
+                Some(id),
+                format!("the answer is {size} bytes, over the link's message size"),
+            ));
+        }
+        Ok((id, Ok(answer)))
+    }
 }
 
 /// The local player, as the room's `Begin` names it.
@@ -2028,6 +2184,36 @@ fn room_status() -> Option<LuaValue> {
     if let Some(step) = room.diverged {
         fields.push((LuaValue::string("diverged"), LuaValue::Number(step as f64)));
     }
+    // The room's AI players (docs/AI_PLAYERS.md).
+    #[allow(clippy::cast_precision_loss)]
+    let ais = LuaValue::Table(
+        info.ais
+            .iter()
+            .enumerate()
+            .map(|(index, ai)| {
+                (
+                    LuaValue::Number((index + 1) as f64),
+                    LuaValue::Table(vec![
+                        (
+                            LuaValue::string("id"),
+                            LuaValue::string(&crate::lobby::hex(&ai.player)),
+                        ),
+                        (LuaValue::string("name"), LuaValue::string(ai.name.as_str())),
+                        (
+                            LuaValue::string("difficulty"),
+                            LuaValue::string(match ai.difficulty {
+                                tpf3mp_proto::AiDifficulty::Easy => "easy",
+                                tpf3mp_proto::AiDifficulty::Normal => "normal",
+                                tpf3mp_proto::AiDifficulty::Hard => "hard",
+                            }),
+                        ),
+                        (LuaValue::string("yours"), LuaValue::Boolean(ai.yours)),
+                    ]),
+                )
+            })
+            .collect(),
+    );
+    fields.push((LuaValue::string("ais"), ais));
     Some(LuaValue::Table(fields))
 }
 
@@ -4627,6 +4813,7 @@ my_timetables";
                 },
             ])
             .unwrap(),
+            ais: BoundedVec::default(),
         }));
         notice(&Notice::Speed(Speed(200)));
         notice(&Notice::Chat {

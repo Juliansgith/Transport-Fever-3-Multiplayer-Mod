@@ -12,7 +12,21 @@ what was measured is in
 [investigation/AI_PLAYERS_2026-10-29.md](../investigation/AI_PLAYERS_2026-10-29.md);
 the work is Part 5 of [PLAN.md](PLAN.md).
 
-**Status: planned. Nothing is built yet.**
+**Status (2026-10-29): seats, drivers and town bus lines built.** The
+first milestone is in: AI seats in the server and its log (protocol 24,
+log format 11), the driver and its hand-over with the memo, the mod's
+world reads and verdicts (bridge 30, `tpf3mp/ai.lua`), the AI rules every
+game applies, adding and removing AI players in both Multiplayer windows,
+and the `tpf3mp-ai` mind. Of the second milestone, the AI borrows to
+start, and builds and runs bus lines in towns at all three difficulties: in a
+two-game rig room on the big fixture (2026-10-29), a Hard, a Normal and an
+Easy AI opened seven bus lines in seven minutes, each founded, borrowed
+for, stopped, given a depot joined to the street and bought buses for,
+with no action refused and no divergence between the games. Still open
+in the first milestone: a verdict costs the driver's game a frame of
+about 25 ms, over its 1.5 ms budget (investigation, "The first AI
+games"). Trucks, track, water and air are still to come; see "The work,
+in milestones".
 
 ## What players see
 
@@ -99,26 +113,32 @@ tested on its own and with the regression model (below).
 
 ### What the driver's game does
 
-The mod, in the HUD's Lua state, does three things for the AI and only
-when its game drives one:
+The mod, in the HUD's Lua state (`tpf3mp/ai.lua`), answers the questions
+of the AIs its game drives, one after another while 1.5 ms of the frame
+lasts, and at least one a frame:
 
-- **Reads the world** in slices of at most 1.5 ms a frame: the map once
-  (`makeMapFromGame`, the terrain at 32 m over many frames, the cargo
-  chain), then what changed (`getTerrainEntityRevisions`, entity
-  revisions, lines, stations, vehicles, money).
+- **Reads the world** the AI asks about: its company (money, the year,
+  its loan offers from the game script's roster, its stations, its
+  depots and whether each reaches the street, its lines and vehicles),
+  the towns and their districts' centres, the streets near a place (each
+  edge's ends and curve middle, template, owner, objects), the vehicle
+  models of a transport mode.
 - **Answers verdicts.** For an action the AI considers, it makes the
   proposal as the AI's company would build it (`apply.proposalOf`, as
   build previews do) and returns the game's verdict (`makeProposalData`:
   refused or not and why, the cost, what it would hit). A verdict can
   take tens of milliseconds for a long track, so the AI asks for short
   pieces, a few a second at most.
-- **Reports outcomes.** Whether each AI action was applied, and what it
-  made (the stations, lines and vehicles, found as the mod finds a
-  player's), or why it was refused.
+- **No outcomes of their own.** The AI confirms each action by asking
+  about its company again until it sees what it built, never by trusting
+  that it happened, and gives the step up after a few reads.
 
-These are new bridge messages (`AiWorld`, `AiVerdict`, `AiOutcome`, and
-`AiDryRun` from the agent) and new protocol messages (`AiDrive`,
-`AiIntent`, the memo); both versions change.
+These are the bridge messages `ToHook::AiAsk` and `ToAgent::AiAnswer`
+(bridge 30) and the protocol messages `AiDrive`, `AiIntent` and the memo
+(protocol 24). Once a minute while it answers, the driver's hook.log says
+what the answers cost its frames: by kind of question, how many, the mean
+and the slowest, and its slowest frame of them (`ai: answers in 60 s:
+...`).
 
 ## How the AI plays
 
@@ -162,7 +182,12 @@ faster AI.
   towns and to industries: stops or truck stations within reach of an
   industry's stock, depots, and new street where none joins them, found
   on the street graph first (`findPath`) and over the terrain only for
-  the missing part.
+  the missing part. A road depot faces a street, its entrance 2 m short
+  of a junction its build splits into the street's curve, as the
+  construction tool leaves one; every game's refresh of the depot then
+  snaps the entrance onto it, in the same action (`tpf3mp/apply.lua`,
+  `BuildConstruction`). A separate road onto a construction's entrance
+  the game refuses ("Construction Not Possible", 2026-10-29).
 - **Track and trains.** The station: a through or terminus station near
   the town's centre or the industry, turned to the route, its platforms
   as long as its trains, tested with its verdict. The route: a search over

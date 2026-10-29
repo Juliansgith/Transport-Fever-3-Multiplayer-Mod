@@ -962,6 +962,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Ready { .. } => "ready",
         Action::Start => "start",
         Action::Kick { .. } => "kick",
+        Action::AddAi { .. } => "add_ai",
+        Action::RemoveAi { .. } => "remove_ai",
         Action::Chat { .. } => "chat",
         Action::Leave => "leave",
         Action::ChooseMod { .. } => "choose_mod",
@@ -1383,6 +1385,17 @@ async fn act(
         Action::Kick { player } => {
             let player = api::parse_player(&player).ok_or("that is not a player")?;
             forward(session, Control::Kick(player)).await
+        }
+        Action::AddAi { difficulty } => {
+            let difficulty =
+                api::ai_difficulty(&difficulty).ok_or("an AI player is easy, normal or hard")?;
+            forward(session, Control::AddAi(difficulty)).await
+        }
+        Action::RemoveAi { player } => {
+            let player = api::parse_player(&player)
+                .filter(tpf3mp_proto::PlayerId::is_ai)
+                .ok_or("that is not an AI player")?;
+            forward(session, Control::RemoveAi(player)).await
         }
         Action::Chat { text } => {
             let text = Text::new(text.trim()).map_err(|_| "that message is too long".to_owned())?;
@@ -4281,6 +4294,7 @@ mod tests {
             members: Vec::new(),
             competitive: false,
             start: Some(start("mptest")),
+            ais: Vec::new(),
         };
         assert!(names_start_again(&room, "mptest"));
         assert!(names_start_again(&room, " mptest "));

@@ -615,6 +615,9 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if let Some(preview) = crate::previews::take_out(Instant::now()) {
             driver.preview(preview);
         }
+        for (id, answer) in crate::ai::take_answers() {
+            driver.ai_answer(id, answer);
+        }
         // The main menu's Multiplayer window, whose lobby the step just read.
         crate::lobby::exchange(driver.as_mut());
         IN_ROOM.store(driver.in_room(), Ordering::Release);
