@@ -1,6 +1,6 @@
 //! Rate limits.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A token bucket: `burst` tokens at most, refilled continuously at
 /// `per_second`. Counts in thousandths of a token, so small rates stay
@@ -29,7 +29,16 @@ impl TokenBucket {
     pub(crate) fn take(&mut self, now: Instant, cost: u64) -> bool {
         let elapsed_ms =
             u64::try_from(now.saturating_duration_since(self.last).as_millis()).unwrap_or(u64::MAX);
-        self.last = now;
+        // Only the whole milliseconds counted: the rest refills on a later
+        // call, so a sender whose messages come less than a millisecond
+        // apart is still refilled at the rate.
+        self.last = if now < self.last {
+            now
+        } else {
+            self.last
+                .checked_add(Duration::from_millis(elapsed_ms))
+                .unwrap_or(now)
+        };
         self.milli = self
             .milli
             .saturating_add(elapsed_ms.saturating_mul(u64::from(self.per_second)))
@@ -60,6 +69,19 @@ mod tests {
         // 100 ms at 10 per second refills exactly one token.
         assert!(bucket.take(start + Duration::from_millis(100), 1));
         assert!(!bucket.take(start + Duration::from_millis(100), 1));
+    }
+
+    #[test]
+    fn calls_less_than_a_millisecond_apart_are_refilled_at_the_rate() {
+        let start = Instant::now();
+        let mut bucket = TokenBucket::new(4000, 10);
+        bucket.last = start;
+        let gap = Duration::from_micros(250);
+        let taken = (1..=4000u32)
+            .filter(|n| bucket.take(start + gap * *n, 1))
+            .count();
+        // The burst of ten, then a second at 4,000 a second.
+        assert_eq!(taken, 4000);
     }
 
     #[test]
