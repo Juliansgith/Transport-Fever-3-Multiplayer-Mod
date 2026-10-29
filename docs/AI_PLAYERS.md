@@ -12,7 +12,15 @@ what was measured is in
 [investigation/AI_PLAYERS_2026-10-29.md](../investigation/AI_PLAYERS_2026-10-29.md);
 the work is Part 5 of [PLAN.md](PLAN.md).
 
-**Status: planned. Nothing is built yet.**
+**Status (2026-10-29): seats, drivers and town bus lines built.** The
+first milestone is in: AI seats in the server and its log (protocol 24,
+log format 11), the driver and its hand-over with the memo, the mod's
+world reads and verdicts (bridge 30, `tpf3mp/ai.lua`), the AI rules every
+game applies, adding and removing AI players in both Multiplayer windows,
+and the `tpf3mp-ai` mind. Of the second milestone, the AI borrows to
+start, and builds and runs bus lines in towns at all three difficulties.
+Trucks, track, water and air are still to come; see "The work, in
+milestones".
 
 ## What players see
 

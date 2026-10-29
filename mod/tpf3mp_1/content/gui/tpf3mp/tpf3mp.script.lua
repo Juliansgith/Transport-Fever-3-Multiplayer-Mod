@@ -1009,6 +1009,43 @@ function data()
 			}, false, PLAYERS_WIDTH - 24, 10, true)
 			players[#players + 1] = gap(8)
 		end
+		-- The AI players (docs/AI_PLAYERS.md): the room's owner adds and
+		-- removes them here as in the main menu's lobby.
+		local owner = false
+		for _, p in ipairs(status.players or {}) do
+			if p.me and p.owner then owner = true end
+		end
+		local DIFFICULTY = { easy = "Easy", normal = "Normal", hard = "Hard" }
+		for _, ai in ipairs(status.ais or {}) do
+			local tags = { "AI", DIFFICULTY[ai.difficulty] or tostring(ai.difficulty) }
+			if ai.yours then tags[#tags + 1] = "your game drives it" end
+			local cells = {
+				label(ai.name, "font-scale-body", PLAYERS_WIDTH - 40, 16),
+				label(table.concat(tags, " · "), "font-scale-annotation", nil, 16),
+			}
+			if owner then
+				cells[#cells + 1] = builtin.Button{ meta = { class = "secondary", tooltip = "Remove " .. tostring(ai.name) },
+					content = builtin.TextView{ meta = { class = "font-scale-annotation" }, text = "Remove" },
+					onClick = function()
+						local ok, why = link:aiSeat("remove", ai.id)
+						notice = ok and ("Removing " .. tostring(ai.name) .. "...") or ("Not removed: " .. tostring(why))
+					end }
+			end
+			players[#players + 1] = box(cells, false, PLAYERS_WIDTH - 24, 10, true)
+			players[#players + 1] = gap(8)
+		end
+		if owner and #(status.ais or {}) < 7 then
+			local adds = { label("Add an AI player:", "font-scale-annotation") }
+			for _, d in ipairs({ { "easy", "Easy" }, { "normal", "Normal" }, { "hard", "Hard" } }) do
+				adds[#adds + 1] = builtin.Button{ meta = { class = "secondary", tooltip = "Seat a " .. d[2] .. " AI player" },
+					content = builtin.TextView{ meta = { class = "font-scale-annotation" }, text = d[2] },
+					onClick = function()
+						local ok, why = link:aiSeat("add", d[1])
+						notice = ok and ("Seating a " .. d[2] .. " AI player...") or ("Not seated: " .. tostring(why))
+					end }
+			end
+			players[#players + 1] = box(adds, true, PLAYERS_WIDTH - 24)
+		end
 		local companies = {}
 		companyRows(companies, status, shared, drafts)
 		if #companies == 0 then companies[1] = label("Waiting for the companies...", "font-scale-annotation") end

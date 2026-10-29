@@ -165,6 +165,12 @@ struct Args {
     #[arg(long)]
     mods: Option<PathBuf>,
 
+    /// AI players the host seats in the room before it starts, by
+    /// difficulty: `easy`, `normal` or `hard`, comma-separated
+    /// (docs/AI_PLAYERS.md). The host's game drives them.
+    #[arg(long, value_delimiter = ',', value_parser = ["easy", "normal", "hard"])]
+    ai: Vec<String>,
+
     #[command(flatten)]
     tunnel: TunnelArgs,
 }
@@ -494,6 +500,16 @@ async fn set_up_room(args: &Args, server: &str, players: &[Player]) -> Result<()
         .and_then(|room| room.invite)
         .context("the room has no invite")?;
     println!("rig: invite: {invite}");
+    for difficulty in &args.ai {
+        act(
+            host,
+            Action::AddAi {
+                difficulty: difficulty.clone(),
+            },
+        )
+        .await?;
+        println!("rig: seated a {difficulty} AI player");
+    }
     for guest in guests {
         // The invite's code where the server goes connects and joins.
         act(

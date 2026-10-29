@@ -1548,7 +1548,8 @@ impl<L: HookLink> Bridge<L> {
                         mods: self.load_lists(),
                     });
                     if let Some(room) = &self.room {
-                        self.outbox.push_back(ToHook::Room(room_info(room)));
+                        self.outbox
+                            .push_back(ToHook::Room(room_info(room, Some(client.player()))));
                     }
                 }
                 let next_step = start.sealed_through.saturating_add(1);
@@ -1642,7 +1643,8 @@ impl<L: HookLink> Bridge<L> {
                 // The game's Multiplayer window shows the room once the game
                 // began.
                 if self.begun {
-                    self.outbox.push_back(ToHook::Room(room_info(&room)));
+                    self.outbox
+                        .push_back(ToHook::Room(room_info(&room, Some(client.player()))));
                 }
                 self.start_news(self.room.as_ref(), &room, client);
                 // The room gave up on the save on its way (it did not start
@@ -2264,7 +2266,9 @@ fn generated_world_can_start(
         })
 }
 
-fn room_info(room: &RoomView) -> RoomInfo {
+/// The room for the game's Multiplayer window; `me` tells it which AI
+/// players this game drives.
+fn room_info(room: &RoomView, me: Option<PlayerId>) -> RoomInfo {
     let members = room
         .members
         .iter()
@@ -2292,7 +2296,7 @@ fn room_info(room: &RoomView) -> RoomInfo {
                     player: ai.player,
                     name: ai.name.clone(),
                     difficulty: ai.difficulty,
-                    yours: false,
+                    yours: me.is_some() && ai.driver == me,
                 })
                 .collect(),
         )
@@ -3285,7 +3289,7 @@ mod tests {
             start: None,
             ais: Vec::new(),
         };
-        let info = room_info(&room);
+        let info = room_info(&room, None);
         assert_eq!(info.name.as_str(), "Sunday line");
         assert_eq!(info.owner, room.owner);
         let members: Vec<(&str, bool)> = info
@@ -3299,7 +3303,7 @@ mod tests {
         let mut pictured = room.clone();
         pictured.members[0].banner = Some(Text::new("dry").unwrap());
         pictured.members[1].banner = Some(Text::new("lasse").unwrap());
-        let info = room_info(&pictured);
+        let info = room_info(&pictured, None);
         assert_eq!(
             info.members[0].banner.as_ref().map(Text::as_str),
             Some("dry")

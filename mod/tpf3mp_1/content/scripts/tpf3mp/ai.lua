@@ -119,10 +119,28 @@ function ai.company(seat, roster, registry)
 	local out = {
 		money = 0,
 		year = whole(api.engine.util.getYear and api.engine.util.getYear() or 0),
-		stations = {}, depots = {}, lines = {}, vehicles = {},
+		stations = {}, depots = {}, lines = {}, vehicles = {}, offers = {}, loans = 0,
 	}
 	if c and c.id ~= 0 then out.company = c.id end
 	if entity == nil then return { Company = out } end
+	-- Its loan offers, those not cooling down, and its loans
+	-- (tpf3mp/companies.lua, "loans").
+	if c.id ~= 0 then
+		for _, group in ipairs(roster.loanOffers or {}) do
+			if group.company == c.id then
+				for _, offer in ipairs(group.availableLoans or {}) do
+					if type(offer) == "table" and offer.cooldownUntil == nil and type(offer.type) == "string"
+						and type(offer.amount) == "number" and #out.offers < 8 then
+						out.offers[#out.offers + 1] = { type = offer.type, amount = whole(offer.amount),
+							duration = whole(offer.duration or 0), percentage = offer.percentage or 0 }
+					end
+				end
+			end
+		end
+		for _, loan in ipairs(roster.loans or {}) do
+			if loan.company == c.id and out.loans < 255 then out.loans = out.loans + 1 end
+		end
+	end
 	local finance = api.engine.util.finance
 	out.money = whole(finance and finance.getPlayersBalance and finance.getPlayersBalance(entity) or 0)
 	local companies = module("companies")

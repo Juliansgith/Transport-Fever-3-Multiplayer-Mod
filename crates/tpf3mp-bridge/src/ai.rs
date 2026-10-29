@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use tpf3mp_proto::{
     BoundedVec, Payload, PlayerId, Text,
-    action::{LineId, Pos, ResName, StationId, TownId, VehicleId},
+    action::{LineId, LoanTerms, Pos, ResName, StationId, TownId, VehicleId},
 };
 
 /// Most towns a [`AiAnswer::Towns`] lists: the largest.
@@ -77,6 +77,12 @@ pub struct AiCompany {
     pub depots: BoundedVec<AiDepot, MAX_AI_OWNED>,
     pub lines: BoundedVec<AiLine, MAX_AI_OWNED>,
     pub vehicles: BoundedVec<AiVehicle, MAX_AI_OWNED>,
+    /// The loans the game offers the company now, on their terms: a
+    /// founded company starts with no money and borrows (tpf3mp/companies.lua,
+    /// "loans").
+    pub offers: BoundedVec<LoanTerms, 8>,
+    /// The loans it owes.
+    pub loans: u8,
 }
 
 /// A station group of the company's.

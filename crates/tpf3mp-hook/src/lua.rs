@@ -919,6 +919,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"drawcost", native_drawcost),
                 (b"undraw", native_undraw),
                 (b"aiAsk", native_ai_ask),
+                (b"aiSeat", native_ai_seat),
                 (b"aiAnswer", native_ai_answer),
             ] {
                 if api.touserdata.is_none() && matches!(name, b"laneRows" | b"junctionConfig") {
@@ -1717,6 +1718,32 @@ unsafe extern "C-unwind" fn native_ai_ask(l: State) -> c_int {
     0
 }
 
+/// `aiSeat(kind, value)`: the room's owner, from the game's Multiplayer
+/// window, seats an AI player (`"add"`, `"easy"`, `"normal"` or `"hard"`)
+/// or removes one (`"remove"`, its id); the launcher carries it out as the
+/// main menu's lobby would. `true`, or `false` and why.
+unsafe extern "C-unwind" fn native_ai_seat(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (kind, value) = unsafe { (string_arg(api, l, 1, 16), string_arg(api, l, 2, 64)) };
+    let action = match (kind.as_deref(), value.as_deref()) {
+        (Some("add"), Some(difficulty)) => crate::lobby::parse_action(&format!(
+            r#"{{"action":"add_ai","difficulty":"{}"}}"#,
+            difficulty.escape_default()
+        )),
+        (Some("remove"), Some(id)) => crate::lobby::parse_action(&format!(
+            r#"{{"action":"remove_ai","player":"{}"}}"#,
+            id.escape_default()
+        )),
+        _ => Err("aiSeat(\"add\", difficulty) or aiSeat(\"remove\", id)".to_owned()),
+    };
+    let outcome = action.and_then(crate::lobby::queue);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
 /// An AI's question as the table the mod reads.
 fn ai_question(ask: &tpf3mp_bridge::ai::AiAsk) -> Result<LuaValue, String> {
     use tpf3mp_bridge::ai::AiQuestion;
@@ -2157,6 +2184,36 @@ fn room_status() -> Option<LuaValue> {
     if let Some(step) = room.diverged {
         fields.push((LuaValue::string("diverged"), LuaValue::Number(step as f64)));
     }
+    // The room's AI players (docs/AI_PLAYERS.md).
+    #[allow(clippy::cast_precision_loss)]
+    let ais = LuaValue::Table(
+        info.ais
+            .iter()
+            .enumerate()
+            .map(|(index, ai)| {
+                (
+                    LuaValue::Number((index + 1) as f64),
+                    LuaValue::Table(vec![
+                        (
+                            LuaValue::string("id"),
+                            LuaValue::string(&crate::lobby::hex(&ai.player)),
+                        ),
+                        (LuaValue::string("name"), LuaValue::string(ai.name.as_str())),
+                        (
+                            LuaValue::string("difficulty"),
+                            LuaValue::string(match ai.difficulty {
+                                tpf3mp_proto::AiDifficulty::Easy => "easy",
+                                tpf3mp_proto::AiDifficulty::Normal => "normal",
+                                tpf3mp_proto::AiDifficulty::Hard => "hard",
+                            }),
+                        ),
+                        (LuaValue::string("yours"), LuaValue::Boolean(ai.yours)),
+                    ]),
+                )
+            })
+            .collect(),
+    );
+    fields.push((LuaValue::string("ais"), ais));
     Some(LuaValue::Table(fields))
 }
 

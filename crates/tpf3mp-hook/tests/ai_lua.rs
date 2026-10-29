@@ -125,7 +125,12 @@ const GAME: &str = r#"
     SEAT = "747066336d702d61692d736561743a3a" .. string.rep("0", 31) .. "1"
     ROSTER = { next = 2, list = { { id = 0, entity = 25, name = "Company" },
         { id = 1, entity = 77, name = "Rossi Transport", founder = SEAT } },
-        members = { { player = SEAT, company = 1 } } }
+        members = { { player = SEAT, company = 1 } },
+        loanOffers = { { company = 1, availableLoans = {
+            { type = "Small", amount = 500000, duration = 1.5768e10, percentage = 0.05 },
+            { type = "Large", cooldownUntil = 99 },
+            { type = "Medium", amount = 1000000.0, duration = 3.1536e10, percentage = 0.045 } } } },
+        loans = { { company = 1, id = 1 }, { company = 2, id = 2 } } }
     REGISTRY = {
         groups = { bound = { { 4, 310 } } },
         lines = { bound = { { 2, 500 } } },
@@ -211,6 +216,17 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
     assert_eq!(line.stops.iter().map(|s| s.0).collect::<Vec<_>>(), [4, 4]);
     assert_eq!(line.vehicles.iter().map(|v| v.0).collect::<Vec<_>>(), [6]);
     assert_eq!(line.problems, 2);
+    let offers: Vec<(&str, i64, i64)> = company
+        .offers
+        .iter()
+        .map(|o| (o.kind.as_str(), o.amount, o.percentage))
+        .collect();
+    assert_eq!(
+        offers,
+        [("Small", 500_000, 50_000), ("Medium", 1_000_000, 45_000)],
+        "the offers not cooling down, interest in millionths"
+    );
+    assert_eq!(company.loans, 1, "its own loans only");
     let bus = &company.vehicles[0];
     assert_eq!(bus.id.0, 6);
     assert_eq!(bus.line.map(|l| l.0), Some(2));

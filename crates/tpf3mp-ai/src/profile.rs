@@ -32,6 +32,12 @@ pub struct Profile {
     /// Whether its model choice weighs capacity and speed for the money
     /// (true), or takes the cheapest bus (false).
     pub best_models: bool,
+    /// The most loans it owes at once: a founded company starts with no
+    /// money, so every difficulty borrows to start; harder ones borrow on
+    /// to grow.
+    pub loans_most: u8,
+    /// Whether it takes the largest loan offered (true), or the smallest.
+    pub big_loans: bool,
 }
 
 impl Profile {
@@ -48,6 +54,8 @@ impl Profile {
                 stops_most: 2,
                 reserve_percent: 30,
                 best_models: false,
+                loans_most: 1,
+                big_loans: false,
             },
             AiDifficulty::Normal => Self {
                 difficulty,
@@ -60,6 +68,8 @@ impl Profile {
                 stops_most: 3,
                 reserve_percent: 15,
                 best_models: true,
+                loans_most: 2,
+                big_loans: false,
             },
             AiDifficulty::Hard => Self {
                 difficulty,
@@ -72,6 +82,8 @@ impl Profile {
                 stops_most: 3,
                 reserve_percent: 5,
                 best_models: true,
+                loans_most: 4,
+                big_loans: true,
             },
         }
     }

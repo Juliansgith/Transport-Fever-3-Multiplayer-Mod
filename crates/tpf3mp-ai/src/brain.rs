@@ -21,8 +21,8 @@ use tpf3mp_proto::{
     AiDifficulty, BoundedVec, IntentRejection, Payload, PlayerId, Text,
     action::{
         Action, AssignLine, BuyVehicle, CompanyOp, ConsistPart, ConstructionRef, CreateLine,
-        LineData, LineId, LineStop, LoadMode, Pos, StationId, StopRules, Terminal, Tint, TownId,
-        VehicleId,
+        LineData, LineId, LineStop, LoadMode, LoanOp, Pos, StationId, StopRules, Terminal, Tint,
+        TownId, VehicleId,
     },
 };
 
@@ -52,6 +52,9 @@ pub const GIVE_UP_FOR: Duration = Duration::from_secs(900);
 pub const BUS: &str = "BUS";
 /// The game's number for buses (`TransportMode.BUS`), as lines list modes.
 pub const BUS_MODE: u16 = 3;
+/// Below this much money a mind borrows, while its difficulty lets it: a
+/// bus line costs about this much in the 1920s.
+pub const BORROW_BELOW: i64 = 400_000;
 
 /// What the brain wants of its driver now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +100,8 @@ enum Stage {
     Look,
     /// Its company's founding sent: reading until it plays for it.
     Founding { tries: u32 },
+    /// A loan taken: reading until it owes one more.
+    Borrowing { before: u8, tries: u32 },
     /// Choosing a town.
     Survey,
     /// Reading the streets by a centre of the project's town.
@@ -309,6 +314,7 @@ impl Brain {
             }
             Stage::Look
             | Stage::Founding { .. }
+            | Stage::Borrowing { .. }
             | Stage::StopBuilt { .. }
             | Stage::DepotBuilt { .. }
             | Stage::Joined { .. }
@@ -464,6 +470,27 @@ impl Brain {
                     return self.think(&company, now);
                 }
                 self.retry(Stage::Founding { tries: tries + 1 }, tries, now);
+                None
+            }
+            Stage::Borrowing { before, tries } => {
+                if company.loans > before {
+                    self.say(format!("borrowed; it has {}", company.money));
+                    self.stage = Stage::Look;
+                    return self.think(&company, now);
+                }
+                if tries >= CONFIRM_TRIES {
+                    self.say("its loan did not come".into());
+                    self.rest(now);
+                } else {
+                    self.retry(
+                        Stage::Borrowing {
+                            before,
+                            tries: tries + 1,
+                        },
+                        tries,
+                        now,
+                    );
+                }
                 None
             }
             Stage::StopBuilt {
@@ -657,8 +684,32 @@ impl Brain {
             .or_else(|| self.topping.as_ref().map(|(_, depot)| depot.clone()))
     }
 
-    /// A look at its company: tune its lines, else start a new one.
-    fn think(&mut self, company: &AiCompany, _now: Instant) -> Option<Out> {
+    /// A look at its company: borrow when short, tune its lines, else start
+    /// a new one.
+    fn think(&mut self, company: &AiCompany, now: Instant) -> Option<Out> {
+        if company.money < BORROW_BELOW && company.loans < self.profile.loans_most {
+            let offer = if self.profile.big_loans {
+                company.offers.iter().max_by_key(|o| o.amount)
+            } else {
+                company.offers.iter().min_by_key(|o| o.amount)
+            };
+            if let Some(offer) = offer.cloned() {
+                let action = Action::Loan(Box::new(LoanOp::Take {
+                    next: offer.clone(),
+                    offer,
+                }));
+                self.stage = Stage::Borrowing {
+                    before: company.loans,
+                    tries: 0,
+                };
+                let out = self.act(&action, now);
+                if out.is_none() {
+                    self.stage = Stage::Look;
+                    self.wake = Some(now + SETTLE);
+                }
+                return out;
+            }
+        }
         // Its lines first: one short of its count gets a bus.
         let depot = company.depots.iter().find(|d| d.connected).cloned();
         if let Some(depot) = depot {

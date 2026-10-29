@@ -13,7 +13,9 @@ use tpf3mp_bridge::ai::{
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
-    action::{Action, CompanyOp, LineId, Pos, Resolve, StationId, TownId, VehicleId},
+    action::{
+        Action, CompanyOp, LineId, LoanOp, LoanTerms, Pos, Resolve, StationId, TownId, VehicleId,
+    },
 };
 
 const STEP: Duration = Duration::from_millis(100);
@@ -32,6 +34,8 @@ fn pos(x: f64, y: f64) -> Pos {
 struct World {
     company: Option<u32>,
     money: i64,
+    offers: Vec<LoanTerms>,
+    loans: u8,
     towns: Vec<AiTown>,
     streets: Vec<AiStreet>,
     stations: Vec<AiStation>,
@@ -76,7 +80,10 @@ impl World {
         }
         Self {
             company: None,
-            money: 2_000_000,
+            // A founded company starts with no money, and borrows.
+            money: 0,
+            offers: vec![loan("Small", 500_000), loan("Large", 2_000_000)],
+            loans: 0,
             towns,
             streets,
             stations: Vec::new(),
@@ -105,6 +112,8 @@ impl World {
                 depots: BoundedVec::new(self.depots.clone()).unwrap(),
                 lines: BoundedVec::new(self.lines.clone()).unwrap(),
                 vehicles: BoundedVec::new(self.vehicles.clone()).unwrap(),
+                offers: BoundedVec::new(self.offers.clone()).unwrap(),
+                loans: self.loans,
             }),
             AiQuestion::Towns => AiAnswer::Towns(BoundedVec::new(self.towns.clone()).unwrap()),
             AiQuestion::Streets { at, radius } => {
@@ -197,6 +206,15 @@ impl World {
         self.actions.push((now, action.clone()));
         match action {
             Action::CompanyOp(CompanyOp::Create { .. }) => self.company = Some(1),
+            Action::Loan(op) => {
+                let LoanOp::Take { offer, .. } = *op else {
+                    panic!("only taking")
+                };
+                assert!(self.offers.contains(&offer), "an offer it was given");
+                self.offers.retain(|o| *o != offer);
+                self.money += offer.amount;
+                self.loans += 1;
+            }
             Action::PlaceStop(stop) => {
                 let id = self.id();
                 self.stations.push(AiStation {
@@ -292,6 +310,20 @@ impl World {
                     >= buses
             })
             .count()
+    }
+}
+
+fn loan(kind: &str, amount: i64) -> LoanTerms {
+    LoanTerms {
+        kind: Text::new(kind).unwrap(),
+        amount,
+        duration: 31_536_000_000,
+        percentage: 50_000,
+        birth_day: None,
+        cooldown_until: None,
+        last_pay_day: None,
+        times_paid: None,
+        id: None,
     }
 }
 
@@ -402,6 +434,8 @@ fn an_easy_ai_is_slower_buys_the_cheapest_bus_and_runs_one() {
             .iter()
             .all(|v| v.model.as_str() == "vehicle/bus/cheap.mdl")
     );
+    assert_eq!(world.loans, 1, "Easy borrows once, the small loan");
+    assert!(world.offers.iter().any(|o| o.kind.as_str() == "Large"));
     for pair in world.actions.windows(2) {
         assert!(pair[1].0 - pair[0].0 >= Duration::from_secs(20));
     }
@@ -419,6 +453,11 @@ fn a_hard_ai_serves_town_after_town_while_its_money_lasts() {
         Duration::from_secs(900),
     );
     assert_eq!(world.lines_with_buses(3), 2, "both towns, three buses each");
+    assert!(
+        matches!(&world.actions[1].1, Action::Loan(op)
+            if matches!(&**op, LoanOp::Take { offer, .. } if offer.kind.as_str() == "Large")),
+        "Hard borrows the large loan right after founding"
+    );
     let memo = brain.memo();
     assert!(
         tpf3mp_ai::brain::serves(&memo, TownId(1)) && tpf3mp_ai::brain::serves(&memo, TownId(2))
@@ -483,6 +522,7 @@ fn a_new_driver_carries_on_from_the_memo() {
 fn without_money_it_waits_and_asks_nothing_dear() {
     let mut world = World::new();
     world.money = 50_000;
+    world.offers.clear();
     let mut brain = Brain::new(seat(), "Okafor Freight", AiDifficulty::Hard, None);
     play(
         &mut brain,

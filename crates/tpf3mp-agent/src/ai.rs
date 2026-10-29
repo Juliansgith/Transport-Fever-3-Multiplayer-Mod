@@ -218,6 +218,8 @@ mod tests {
             depots: BoundedVec::default(),
             lines: BoundedVec::default(),
             vehicles: BoundedVec::default(),
+            offers: BoundedVec::default(),
+            loans: 0,
         })
     }
 

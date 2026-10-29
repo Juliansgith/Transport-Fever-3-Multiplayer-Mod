@@ -454,6 +454,17 @@ function Link:preview(action)
 	return true
 end
 
+-- In the GUI: the room's owner seats an AI player ("add", "easy" | "normal"
+-- | "hard") or removes one ("remove", its id), through the launcher. True,
+-- or nil and why.
+function Link:aiSeat(kind, value)
+	if type(self.native.aiSeat) ~= "function" then return nil, "this hook seats no AI players" end
+	local called, took, why = pcall(self.native.aiSeat, kind, value)
+	if not called then return nil, tostring(took) end
+	if took ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
+end
+
 -- In the GUI: the next question an AI player this game drives asks about
 -- the world (tpf3mp/ai.lua), { id =, seat =, question = }, or nil: none
 -- waits, or this hook drives no AI.
