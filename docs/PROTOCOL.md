@@ -486,7 +486,18 @@ These travel on the control stream.
   engine IDs remain local. Schema 10 payloads are refused by schema 11
   clients. The enclosing control protocol and bridge layout are unchanged.
   - The server validates it: the room is running, the sender is a member,
-    rate and size limits hold, and the ruleset accepts it.
+    rate and size limits hold, and the ruleset accepts it. The server for
+    real games (`tpf3mp-server`, and the rig with real games) offers the
+    game's own rules through `GameActions`: an intent must decode as an
+    action of the server's schema (version, every bound, nothing left over)
+    or it is refused with `IntentRejected(Refused { code: 65535 })`
+    (`MALFORMED_ACTION`) and never ordered. A game handed an action it
+    cannot read holds its world for good, so one such payload from a broken
+    or hostile client would otherwise stop every game of the room, and every
+    game that later joined and replayed it. The server and the players'
+    games must therefore share the action schema version exactly (a server
+    of another schema refuses every action): deploy the server together
+    with a release whose actions changed.
   - Accepted: the intent enters the next turn as a `Command` event. The event
     names the player and the client sequence number, so the sender can match
     it.

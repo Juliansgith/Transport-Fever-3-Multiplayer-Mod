@@ -38,7 +38,10 @@ pub use crate::{
         SESSION_QUOTA, SessionOf as DiagnosticsSession, Summary as DiagnosticsSummary,
     },
     native_index::NativeRegistry,
-    ruleset::{AcceptAll, NATIVE, RulesChoice, RulesMenu, Ruleset, RulesetFactory},
+    ruleset::{
+        AcceptAll, GameActions, MALFORMED_ACTION, NATIVE, RulesChoice, RulesMenu, Ruleset,
+        RulesetFactory,
+    },
     snapshots::SnapshotConfig,
     tunnel::{AddressRange, TunnelConfig},
 };
