@@ -36,19 +36,26 @@ fn scripts() -> PathBuf {
 }
 
 const GAME: &str = r#"
+    -- Each node's street edges.
+    SEGMENTS = { [402] = { 410 }, [403] = { 410 } }
     local CT = { CONSTRUCTION = 1, STATION_GROUP = 2, STATION = 3, BASE_NODE = 4, LINE = 5, NAME = 6,
         TRANSPORT_VEHICLE = 7, TOWN_BUILDING = 8, TOWN = 9, BASE_EDGE = 10, BASE_EDGE_STREET = 11,
-        PLAYER_OWNED = 12 }
+        PLAYER_OWNED = 12, EDGE_OBJECT = 13 }
     local COMP = {
         [CT.CONSTRUCTION] = {
             [300] = { fileName = "stations/street/small_stops/small_new_twosided.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 100.5,200.25,10,1 }, stations = { 301 }, depots = {} },
             [400] = { fileName = "::/depots/road/road_depot/road_depot.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 500,600,12,1 }, stations = {}, depots = { 401 },
-                frozenNodes = { 402, 403 } },
+                -- As the game has a road depot: its apron's inner end
+                -- frozen, its frozen entrance edge from there to the
+                -- entrance (build 40425).
+                frozenNodes = { 402 }, frozenEdges = { 410 } },
         },
-        [CT.STATION_GROUP] = { [310] = { stations = { 301 } } },
-        [CT.STATION] = { [301] = { terminals = { {}, {} } } },
+        [CT.STATION_GROUP] = { [310] = { stations = { 301 } }, [320] = { stations = { 321 } } },
+        [CT.STATION] = { [301] = { terminals = { {}, {} } }, [321] = { terminals = { {}, {} } } },
+        -- A street stop: an object on its edge, in no construction.
+        [CT.EDGE_OBJECT] = { [321] = { param = 0.5, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6267.5,-5560,8,1 } } },
         [CT.BASE_NODE] = { [402] = { position = { x = 500, y = 580, z = 12 } },
                            [403] = { position = { x = 500, y = 565, z = 12 } } },
         [CT.LINE] = { [500] = { stops = { { stationGroup = 310 }, { stationGroup = 310 } } } },
@@ -57,13 +64,16 @@ const GAME: &str = r#"
         [CT.TOWN_BUILDING] = { [800] = { town = 701 }, [801] = { town = 701 }, [802] = { town = 700 } },
         [CT.TOWN] = { [700] = {}, [701] = {} },
         [CT.BASE_EDGE] = {
+            [410] = { node0 = 403, node1 = 402 },
             [900] = { position0 = { x = 0, y = 0, z = 1 }, position1 = { x = 30, y = 40, z = 1 },
                 roadTemplate = "::/street/town_small.street_template", objects = {}, type = 0 },
             [901] = { position0 = { x = 1000, y = 0, z = 0 }, position1 = { x = 1100, y = 0, z = 0 },
+                tangent0 = { x = 100, y = 80, z = 0 }, tangent1 = { x = 100, y = -80, z = 0 },
                 roadTemplate = "::/street/country.street_template", objects = { {1, 0} }, type = 1 },
         },
         [CT.BASE_EDGE_STREET] = { [900] = {}, [901] = {} },
-        [CT.PLAYER_OWNED] = { [310] = { player = 77 }, [401] = { player = 77 }, [901] = { player = 77 } },
+        [CT.PLAYER_OWNED] = { [310] = { player = 77 }, [320] = { player = 77 }, [401] = { player = 77 },
+            [901] = { player = 77 } },
     }
     local MODELS = {
         ["vehicle/bus/old.mdl"] = { id = 8, metadata = { transportVehicle = { transportModes = { 3 },
@@ -103,7 +113,7 @@ const GAME: &str = r#"
                     getLineVehicles = function(l) return l == 500 and { 600 } or {} end,
                     getDepotVehicles = function() return {} end,
                 },
-                streetSystem = { getNodeSegments = function(n) return n == 402 and { 1, 2 } or { 1 } end },
+                streetSystem = { getNodeSegments = function(n) return SEGMENTS[n] or {} end },
             },
         },
         res = { modelRep = {
@@ -132,7 +142,7 @@ const GAME: &str = r#"
             { type = "Medium", amount = 1000000.0, duration = 3.1536e10, percentage = 0.045 } } } },
         loans = { { company = 1, id = 1 }, { company = 2, id = 2 } } }
     REGISTRY = {
-        groups = { bound = { { 4, 310 } } },
+        groups = { bound = { { 4, 310 }, { 5, 320 } } },
         lines = { bound = { { 2, 500 } } },
         vehicles = { bound = { { 6, 600 } } },
         towns = { bound = { { 1, 700 }, { 2, 701 } } },
@@ -188,7 +198,14 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
     assert_eq!(company.company, Some(1));
     assert_eq!(company.money, 1_234_568, "whole units, rounded");
     assert_eq!(company.year, 1925);
-    assert_eq!(company.stations.len(), 1);
+    assert_eq!(company.stations.len(), 2);
+    let stop = &company.stations[1];
+    assert_eq!(stop.id.0, 5);
+    assert_eq!(
+        (stop.pos.x, stop.pos.y),
+        (6_267_500, -5_560_000),
+        "a street stop by its edge object"
+    );
     let station = &company.stations[0];
     assert_eq!(station.id.0, 4);
     assert_eq!(
@@ -210,6 +227,18 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
         "its farthest frozen node"
     );
     assert!(!depot.connected, "only its own edge meets the entrance");
+    // Snapped by the game's refresh: the entrance is a junction of the
+    // street, its halves meeting the depot's own edge there.
+    lua.load("SEGMENTS[403] = { 410, 411, 412 }")
+        .exec()
+        .unwrap();
+    let AiAnswer::Company(company) = answer(&lua, "'Company'") else {
+        panic!("not a company")
+    };
+    let depot = &company.depots[0];
+    assert!(depot.connected, "the street meets its entrance");
+    let gate = depot.entrance.unwrap();
+    assert_eq!((gate.x, gate.y), (500_000, 565_000), "where it meets it");
     let line = &company.lines[0];
     assert_eq!(line.id.0, 2);
     assert_eq!(line.name.as_str(), "Line 1");
@@ -263,6 +292,16 @@ fn towns_streets_and_models_read_as_the_ai_reads_them() {
     assert!(!streets[0].owned && !streets[0].structure);
     assert!(streets[1].owned && streets[1].structure);
     assert_eq!(streets[1].objects, 1);
+    // Its curve's middle, where a stop or a split goes: the chord's on a
+    // straight edge, off it on a bent one (the Hermite curve at one half).
+    assert_eq!(
+        (streets[0].mid.x, streets[0].mid.y, streets[0].mid.z),
+        (15_000, 20_000, 1_000)
+    );
+    assert_eq!(
+        (streets[1].mid.x, streets[1].mid.y, streets[1].mid.z),
+        (1_050_000, 20_000, 0)
+    );
 
     let AiAnswer::Models(models) = answer(&lua, "{ Models = { mode = 'BUS' } }") else {
         panic!("not models")

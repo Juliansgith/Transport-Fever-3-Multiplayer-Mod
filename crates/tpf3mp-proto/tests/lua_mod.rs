@@ -5759,6 +5759,76 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
     );
 }
 
+/// An AI player's depot (tpf3mp-ai, place::depot): its connection splits
+/// the street through a new junction and runs the depot's entrance edge to
+/// it, its entrance 2 m short, as the construction tool leaves a depot's.
+/// Every game builds the depot with the split street, leaving the entrance
+/// edge to the depot, which makes it itself; then refreshes the depot,
+/// which snaps the entrance onto the junction. A separate road onto the
+/// entrance the game refused (2026-10-29, "Construction Not Possible").
+#[test]
+fn an_ai_depot_splits_its_street_and_its_refresh_snaps_it_onto_the_junction() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    let ok: bool = lua
+        .load(
+            "ACTION = { BuildConstruction = { file = '::/depots/road/road_depot/road_depot.con', \
+                 transform = { basis = { 0, -1, 0, 1, 0, 0, 0, 0, 1 }, origin = { x = 87, y = 0, z = 0 } }, \
+                 params = { { key = 'seed', value = { Int = 7 } }, { key = 'year', value = { Int = 1925 } } }, \
+                 name = 'Rossi Transport Depot', \
+                 connection = { \
+                     vertices = { \
+                         { pos = { x = 50, y = 0, z = 0 }, resolve = { Split = { network = 'Street', \
+                             ends = { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } } } }, \
+                         { pos = { x = 52, y = 0, z = 0 }, resolve = 'New' } }, \
+                     links = { { from = 0, to = 1, tangent0 = { x = 2, y = 0, z = 0 }, \
+                         tangent1 = { x = 2, y = 0, z = 0 }, structure = 'Ground', owned = true, \
+                         kind = { network = 'Street', template = '::/street/country.street_template' } } }, \
+                     removals = {}, removed_nodes = {} } } } \
+             return schema_check(ACTION)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(ok, "the schema takes it");
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let built: String = lua
+        .load(
+            "local p = SENT[1].proposal local s = p.streetProposal \
+             local out = { #SENT, p.constructionsToAdd[1].fileName, #s.nodesToAdd, #s.edgesToAdd, \
+                 table.concat(s.edgesToRemove, ',') } \
+             for _, n in ipairs(s.nodesToAdd) do \
+                 out[#out + 1] = n.entity .. '@' .. n.comp.position.x .. ',' .. n.comp.position.y end \
+             for _, e in ipairs(s.edgesToAdd) do \
+                 out[#out + 1] = e.comp.node0 .. '>' .. e.comp.node1 .. ':' .. e.comp.roadTemplate end \
+             local r = SENT[2] \
+             out[#out + 1] = r.proposal.refreshed .. ':' .. tostring(r.context) \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        built,
+        "2|::/depots/road/road_depot/road_depot.con|1|2|100|-3@50,0\
+         |8>-3:::/street/country.street_template\
+         |-3>9:::/street/country.street_template\
+         |5000:nil",
+        "the depot and its street split at the junction, not its entrance edge; then its refresh"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.starts_with("snapping 5000 ")),
+        "{logged:?}"
+    );
+}
+
 /// As the game: a built construction is listed, and refreshed on request,
 /// its refresh snapping its entrance onto node 7777.
 const STATION_REFRESH: &str = "api.type.ComponentType.CONSTRUCTION = 2 \

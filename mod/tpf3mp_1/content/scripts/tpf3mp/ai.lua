@@ -89,26 +89,57 @@ local function constructions()
 	return byStation, depots
 end
 
--- A depot construction's entrance: of its frozen street nodes, the one
--- farthest from its origin (a road depot's apron ends 35 m before it), and
--- whether another edge than its own meets it there.
+-- Where a station stands that no construction holds: a street stop is an
+-- object on its street's edge (EDGE_OBJECT, its transform), seen on build
+-- 40425; else the middle of its bounding box.
+local function objectAt(station)
+	local eo = component(station, "EDGE_OBJECT")
+	if eo and eo.transf then return { x = eo.transf[13], y = eo.transf[14], z = eo.transf[15] } end
+	local bv = component(station, "BOUNDING_VOLUME")
+	if bv and bv.bbox then
+		local a, b = bv.bbox.min, bv.bbox.max
+		return { x = (a.x + b.x) / 2, y = (a.y + b.y) / 2, z = (a.z + b.z) / 2 }
+	end
+	return nil
+end
+
+-- A depot construction's entrance, and whether it reaches the street
+-- network. A road depot's frozen nodes hold only its apron's inner end; its
+-- frozen entrance edge runs from there to the entrance (build 40425, read
+-- from the console). Where the game's refresh snapped it, that end is a
+-- junction of the street, where edges not its own meet it: the entrance,
+-- connected. Else the end of its own edges farthest from its origin (a road
+-- depot's apron ends 35 m before it), a dead end.
 local function entrance(c, origin)
-	local best, bestD, connected = nil, -1, false
 	local streets = api.engine.system and api.engine.system.streetSystem
-	for _, node in ipairs(c.frozenNodes or {}) do
-		local n = component(node, "BASE_NODE")
-		if n and n.position then
-			local p = n.position
-			local dx, dy = p.x - origin.x, p.y - origin.y
-			local d = dx * dx + dy * dy
-			if d > bestD then
-				best, bestD = { x = p.x, y = p.y, z = p.z }, d
-				local segments = streets and streets.getNodeSegments and streets.getNodeSegments(node)
-				connected = segments ~= nil and #segments > 1
-			end
+	local own, nodes, seen = {}, {}, {}
+	local function add(node)
+		if type(node) == "number" and not seen[node] then
+			seen[node] = true
+			nodes[#nodes + 1] = node
 		end
 	end
-	return best, connected
+	for _, node in ipairs(c.frozenNodes or {}) do add(node) end
+	for _, e in ipairs(c.frozenEdges or {}) do
+		own[e] = true
+		local edge = component(e, "BASE_EDGE")
+		if edge then add(edge.node0) add(edge.node1) end
+	end
+	local best, bestD = nil, -1
+	for _, node in ipairs(nodes) do
+		local n = component(node, "BASE_NODE")
+		if n and n.position then
+			local p = { x = n.position.x, y = n.position.y, z = n.position.z }
+			local ok, segments = pcall(function() return streets.getNodeSegments(node) end)
+			for _, segment in ipairs(ok and segments or {}) do
+				if not own[segment] then return p, true end
+			end
+			local dx, dy = p.x - origin.x, p.y - origin.y
+			local d = dx * dx + dy * dy
+			if d > bestD then best, bestD = p, d end
+		end
+	end
+	return best, false
 end
 
 function ai.company(seat, roster, registry)
@@ -152,7 +183,7 @@ function ai.company(seat, roster, registry)
 			local id = reg and regmod.id(reg, "groups", g)
 			local group = component(g, "STATION_GROUP")
 			local first = group and group.stations and group.stations[1]
-			local at = first and byStation[first]
+			local at = first and (byStation[first] or objectAt(first))
 			if id and at then
 				local terminals = 0
 				for _, s in ipairs(group.stations or {}) do
@@ -266,10 +297,17 @@ function ai.streets(at, radius)
 		if edge and component(e, "BASE_EDGE_STREET") and edge.position0 and edge.position1 then
 			local a, b = edge.position0, edge.position1
 			local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
+			-- Its curve's middle (the Hermite curve at one half), where a
+			-- split of it must lie; the chord's on an edge without tangents.
+			local ta, tb = edge.tangent0, edge.tangent1
+			local mid = { x = (a.x + b.x) / 2, y = (a.y + b.y) / 2, z = (a.z + b.z) / 2 }
+			if ta and tb then
+				mid = { x = mid.x + (ta.x - tb.x) / 8, y = mid.y + (ta.y - tb.y) / 8, z = mid.z + (ta.z - tb.z) / 8 }
+			end
 			local mx, my = (a.x + b.x) / 2 - at.x, (a.y + b.y) / 2 - at.y
 			local owned = component(e, "PLAYER_OWNED")
 			streets[#streets + 1] = {
-				a = pos(a), b = pos(b), template = text(edge.roadTemplate, 128),
+				a = pos(a), b = pos(b), mid = pos(mid), template = text(edge.roadTemplate, 128),
 				length = whole(math.sqrt(dx * dx + dy * dy + dz * dz)),
 				owned = owned ~= nil and type(owned.player) == "number" and owned.player >= 0,
 				objects = math.min(#(edge.objects or {}), 255),
@@ -363,8 +401,10 @@ function ai.answer(ask, roster, registry)
 end
 
 -- Answers the questions waiting, while the frame's budget lasts. `link` is
--- the hook's (tpf3mp/bridge.lua); `room` = { roster =, registry = }, the
--- registry a table or a function that reads it.
+-- the hook's (tpf3mp/bridge.lua); `room` = { roster =, registry = }, each a
+-- table or a function that reads it. The roster is the game script's whole
+-- one (tpf3mp/companies.lua): the GUI's own copy keeps only the player's
+-- company's loan offers.
 function ai.serve(link, room, budget)
 	if not (link and link.aiAsk) then return 0 end
 	local t0 = os.clock()
@@ -372,7 +412,9 @@ function ai.serve(link, room, budget)
 	while (os.clock() - t0) * 1000 < (budget or ai.BUDGET_MS) do
 		local ask = link:aiAsk()
 		if ask == nil then break end
-		local ok, answer = pcall(ai.answer, ask, room and room.roster, room and room.registry)
+		local roster = room and room.roster
+		if type(roster) == "function" then roster = roster() end
+		local ok, answer = pcall(ai.answer, ask, roster, room and room.registry)
 		if ok and type(answer) == "table" then
 			link:aiAnswer(ask.id, true, answer)
 		else

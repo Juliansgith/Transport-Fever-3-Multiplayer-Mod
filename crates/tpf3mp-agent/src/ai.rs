@@ -14,6 +14,10 @@ use tracing::{info, warn};
 
 /// How often a seat's memo goes to the room while it changes.
 const MEMO_EVERY: Duration = Duration::from_secs(30);
+/// How long a seat handed to this game waits before its mind looks: the
+/// room hands seats to a game that keeps up with it, which may have loaded
+/// the room's world a moment ago and still be replaying turns.
+const SETTLE_IN: Duration = Duration::from_secs(5);
 
 /// What the driver hands on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +80,9 @@ impl AiDriver {
                 }
                 None => {
                     let memo = seat.memo.as_ref().map(Payload::as_bytes);
-                    let brain = Brain::new(seat.player, seat.name.as_str(), seat.difficulty, memo);
+                    let mut brain =
+                        Brain::new(seat.player, seat.name.as_str(), seat.difficulty, memo);
+                    brain.hold(Instant::now() + SETTLE_IN);
                     kept.push(Seat {
                         memo: brain.memo(),
                         brain,
@@ -227,7 +233,11 @@ mod tests {
     fn a_seat_asks_its_game_then_founds_its_company_through_the_room() {
         let mut driver = AiDriver::default();
         driver.drive(vec![seat(0)]);
-        let now = Instant::now();
+        assert!(
+            driver.tick(Instant::now(), 100, true).is_empty(),
+            "nothing while it settles in"
+        );
+        let now = Instant::now() + SETTLE_IN;
         assert!(
             driver.tick(now, 100, false).is_empty(),
             "nothing before the world plays"
@@ -241,12 +251,15 @@ mod tests {
         // Not founded yet: its first action founds its company.
         driver.answer(*id, Ok(company(None)));
         let out = driver.tick(now, 100, true);
+        // Its founding first (the test's clock runs ahead of the real one,
+        // so the next look may follow at once).
         let [
             AiOut::Intent {
                 seat: who,
                 seq,
                 payload,
             },
+            ..,
         ] = out.as_slice()
         else {
             panic!("{out:?}")
@@ -262,13 +275,13 @@ mod tests {
     fn an_answer_for_a_seat_let_go_is_dropped() {
         let mut driver = AiDriver::default();
         driver.drive(vec![seat(0)]);
-        let out = driver.tick(Instant::now(), 100, true);
+        let out = driver.tick(Instant::now() + SETTLE_IN, 100, true);
         let [AiOut::Ask { id, .. }] = out.as_slice() else {
             panic!("{out:?}")
         };
         driver.drive(vec![seat(1)]);
         driver.answer(*id, Ok(company(None)));
-        let later = driver.tick(Instant::now(), 100, true);
+        let later = driver.tick(Instant::now() + SETTLE_IN, 100, true);
         assert!(
             later.iter().all(|o| !matches!(o, AiOut::Intent { .. })),
             "{later:?}"

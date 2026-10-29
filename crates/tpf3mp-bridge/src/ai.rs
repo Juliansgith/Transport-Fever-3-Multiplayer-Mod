@@ -159,6 +159,8 @@ pub struct AiStreet {
     /// Its ends, as an action's `EdgeEnds` names them.
     pub a: Pos,
     pub b: Pos,
+    /// Its curve's middle: where the AI stops buses on it, or splits it.
+    pub mid: Pos,
     /// Its street template, as a road build names one.
     pub template: ResName,
     /// Its length, in metres.

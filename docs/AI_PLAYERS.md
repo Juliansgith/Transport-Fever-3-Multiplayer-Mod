@@ -170,7 +170,12 @@ faster AI.
   towns and to industries: stops or truck stations within reach of an
   industry's stock, depots, and new street where none joins them, found
   on the street graph first (`findPath`) and over the terrain only for
-  the missing part.
+  the missing part. A road depot faces a street, its entrance 2 m short
+  of a junction its build splits into the street's curve, as the
+  construction tool leaves one; every game's refresh of the depot then
+  snaps the entrance onto it, in the same action (`tpf3mp/apply.lua`,
+  `BuildConstruction`). A separate road onto a construction's entrance
+  the game refuses ("Construction Not Possible", 2026-10-29).
 - **Track and trains.** The station: a through or terminus station near
   the town's centre or the industry, turned to the route, its platforms
   as long as its trains, tested with its verdict. The route: a search over

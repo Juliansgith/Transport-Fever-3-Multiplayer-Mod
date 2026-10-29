@@ -45,6 +45,12 @@ struct World {
     /// What the verdicts refuse.
     refuse_depot_side: Option<f64>,
     refuse_stops_in: Option<u32>,
+    /// Whether a depot's refresh snaps its entrance onto the junction its
+    /// connection splits into the street, as the game's does.
+    snaps: bool,
+    /// Depot builds the room orders but no game applies, as one whose
+    /// junction is another company's (2026-10-29).
+    drop_depots: u32,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -92,6 +98,8 @@ impl World {
             vehicles: Vec::new(),
             refuse_depot_side: None,
             refuse_stops_in: None,
+            snaps: true,
+            drop_depots: 0,
             actions: Vec::new(),
             next_id: 1,
         }
@@ -121,7 +129,7 @@ impl World {
                     .streets
                     .iter()
                     .filter(|s| {
-                        let m = mid(s);
+                        let m = s.mid;
                         let (dx, dy) = (f64::from(m.x - at.x), f64::from(m.y - at.y));
                         dx.hypot(dy) <= f64::from(*radius) * 1000.0
                     })
@@ -176,10 +184,14 @@ impl World {
                     // +y: its -y axis then points down (0, -1).
                     (s > 0.0) == (side.1 < 0.0 || side.0 < 0.0)
                 });
-                !refused
-            }
-            Action::BuildRoad(road) => {
-                matches!(road.polyline.vertices[0].resolve, Resolve::Node(_))
+                // Its connection splits an empty street of the world's.
+                let splits = build.connection.as_ref().is_some_and(|c| {
+                    c.vertices.iter().any(|v| {
+                        matches!(&v.resolve, Resolve::Split(e) if self.streets.iter().any(
+                            |s| s.a == e.ends.a && s.b == e.ends.b && s.objects == 0))
+                    })
+                });
+                !refused && splits
             }
             _ => true,
         };
@@ -232,6 +244,7 @@ impl World {
                 }
                 self.money -= 10_000;
             }
+            Action::BuildConstruction(_) if self.drop_depots > 0 => self.drop_depots -= 1,
             Action::BuildConstruction(build) => {
                 let [cos, sin, ..] = build.transform.basis;
                 let o = build.transform.origin;
@@ -241,19 +254,20 @@ impl World {
                     y: o.y - (35.0 * f64::from(cos) / 1e6 * 1000.0) as i32,
                     z: o.z,
                 };
+                // The split's junction, which the refresh snaps the
+                // entrance onto: 2 m from it.
+                let connection = build.connection.unwrap();
+                let junction = connection.vertices[0].pos;
+                let gap =
+                    f64::from(junction.x - entrance.x).hypot(f64::from(junction.y - entrance.y));
+                assert!((gap - 2_000.0).abs() < 2.0, "{gap}");
                 self.depots.push(AiDepot {
                     file: build.file,
                     at: o,
-                    entrance: Some(entrance),
-                    connected: false,
+                    entrance: Some(if self.snaps { junction } else { entrance }),
+                    connected: self.snaps,
                 });
                 self.money -= 120_000;
-            }
-            Action::BuildRoad(road) => {
-                let from = road.polyline.vertices[0].pos;
-                if let Some(d) = self.depots.iter_mut().find(|d| d.entrance == Some(from)) {
-                    d.connected = true;
-                }
             }
             Action::CreateLine(create) => {
                 let id = self.id();
@@ -327,18 +341,15 @@ fn loan(kind: &str, amount: i64) -> LoanTerms {
     }
 }
 
-fn mid(s: &AiStreet) -> Pos {
-    Pos {
-        x: (s.a.x + s.b.x) / 2,
-        y: (s.a.y + s.b.y) / 2,
-        z: (s.a.z + s.b.z) / 2,
-    }
-}
-
 fn street(a: Pos, b: Pos) -> AiStreet {
     AiStreet {
         a,
         b,
+        mid: Pos {
+            x: (a.x + b.x) / 2,
+            y: (a.y + b.y) / 2,
+            z: (a.z + b.z) / 2,
+        },
         template: Text::new("::/street/town_small.street_template").unwrap(),
         length: 100,
         owned: false,
@@ -537,4 +548,141 @@ fn without_money_it_waits_and_asks_nothing_dear() {
         world.actions.len()
     );
     assert!(brain.take_said().iter().any(|l| l == "waits for money"));
+}
+
+#[test]
+fn a_depot_that_does_not_reach_the_street_ends_the_line_before_it_opens() {
+    let mut world = World::new();
+    world.snaps = false;
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(120),
+    );
+    assert!(!world.depots.is_empty(), "it built a depot");
+    assert!(
+        world.lines.is_empty(),
+        "no line without a depot on the street"
+    );
+    assert!(
+        !world
+            .actions
+            .iter()
+            .any(|(_, a)| matches!(a, Action::BuildRoad(_))),
+        "and no road of its own onto the depot's entrance"
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "its depot did not reach the street"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn stops_a_project_left_behind_do_not_make_their_town_served_and_are_taken_up() {
+    let mut world = World::new();
+    // Its company, with money, and a stop in Didcot (town 1) on no line.
+    world.company = Some(1);
+    world.money = 5_000_000;
+    world.stations.push(AiStation {
+        id: StationId(900),
+        pos: pos(20.0, 30.0),
+        terminals: 2,
+        waiting: 0,
+    });
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(60),
+    );
+    assert!(
+        world
+            .lines
+            .first()
+            .is_some_and(|l| l.name.as_str().starts_with("Didcot")),
+        "Hard's best town is still Didcot: {:?}",
+        world.lines
+    );
+    // And its line takes the stop up instead of building another there.
+    assert!(
+        world.lines[0].stops.contains(&StationId(900)),
+        "{:?}",
+        world.lines[0].stops
+    );
+    assert!(
+        brain
+            .take_said()
+            .iter()
+            .any(|l| l == "takes up a stop of its own in Didcot")
+    );
+}
+
+/// The street a depot build splits.
+fn split_street(action: &Action) -> Option<(Pos, Pos)> {
+    let Action::BuildConstruction(build) = action else {
+        return None;
+    };
+    build
+        .connection
+        .as_ref()?
+        .vertices
+        .iter()
+        .find_map(|v| match &v.resolve {
+            Resolve::Split(e) => Some((e.ends.a, e.ends.b)),
+            _ => None,
+        })
+}
+
+#[test]
+fn a_depot_no_game_built_is_not_tried_again_on_the_same_street() {
+    let mut world = World::new();
+    world.drop_depots = 1;
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(120),
+    );
+    let tried: Vec<(Pos, Pos)> = world
+        .actions
+        .iter()
+        .filter_map(|(_, a)| split_street(a))
+        .collect();
+    assert!(tried.len() >= 2, "{tried:?}");
+    assert_ne!(tried[0], tried[1], "the next street, not its other side");
+    assert!(world.depots.iter().any(|d| d.connected));
+    assert!(!world.lines.is_empty(), "and its line opened");
+}
+
+#[test]
+fn a_depot_never_splits_a_companys_street() {
+    let mut world = World::new();
+    for street in &mut world.streets {
+        street.owned = true;
+    }
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(120),
+    );
+    assert!(
+        !world
+            .actions
+            .iter()
+            .any(|(_, a)| matches!(a, Action::BuildConstruction(_))),
+        "no depot on a company's street"
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter().any(|l| l == "found no place for a depot"),
+        "{said:?}"
+    );
 }

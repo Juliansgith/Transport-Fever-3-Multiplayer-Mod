@@ -9,9 +9,10 @@
 //!
 //! Its first plays are road passenger lines: it founds its company, picks a
 //! town, stops buses on the town's own streets by its districts' centres,
-//! puts a road depot beside a street and joins it, opens the line and buys
-//! buses onto it; then it keeps each line's buses at its difficulty's count
-//! and moves on to the next town while its money lasts.
+//! puts a road depot beside a street, joined to it as the construction tool
+//! joins one, opens the line and buys buses onto it; then it keeps each
+//! line's buses at its difficulty's count and moves on to the next town
+//! while its money lasts.
 
 use std::time::{Duration, Instant};
 
@@ -46,6 +47,13 @@ pub const STOP_SEARCH: u32 = 260;
 pub const MATCH_DISTANCE: f64 = 30.0;
 /// The least distance between two of a line's stops, in metres.
 pub const STOP_SPACING: f64 = 220.0;
+/// How near a district's centre a stop of its own on no line must stand
+/// for a project there to take it up, in metres: a project its last driver
+/// left (a world reloaded, say) leaves its stops behind.
+pub const STOP_REUSE: f64 = 260.0;
+/// How near a town a depot of its own on the street must stand to serve a
+/// line there, in metres.
+pub const DEPOT_REACH: f64 = 1_500.0;
 /// Towns it gives up on stay given up on for this long.
 pub const GIVE_UP_FOR: Duration = Duration::from_secs(900);
 /// Bus models' transport mode, by the game's name.
@@ -79,15 +87,14 @@ struct Project {
     town: AiTown,
     /// Districts' centres still to find a street by, nearest first.
     centres: Vec<Pos>,
-    /// The streets found by each centre, best first.
+    /// The streets found by each centre, best first, and the centre.
     sites: Vec<Vec<AiStreet>>,
+    site_at: Vec<Pos>,
     /// Every street seen around the town, for a depot.
     streets: Vec<AiStreet>,
     /// Where it stopped buses, and the station there once seen.
     stops: Vec<(P, Option<StationId>)>,
     depot: Option<AiDepot>,
-    /// The street the depot stands by, for its join.
-    depot_street: Option<AiStreet>,
     /// Depot placements still to try: street index and side.
     depot_tries: Vec<(usize, f64)>,
     line: Option<LineId>,
@@ -116,12 +123,11 @@ enum Stage {
     },
     /// Asking the verdict on the next depot placement.
     DepotVerdict,
-    /// A depot sent: reading until it stands.
-    DepotBuilt { at: Pos, tries: u32 },
-    /// The join's verdict asked.
-    JoinVerdict,
-    /// The join sent: reading until the depot reaches the street.
-    Joined { tries: u32 },
+    /// A depot sent, by the street of that index: reading until it stands,
+    /// its entrance on the street.
+    DepotBuilt { at: Pos, street: usize, tries: u32 },
+    /// Its depot on the street: opening the line once its hands are free.
+    Opening,
     /// The line sent: reading until it exists.
     LineMade { tries: u32 },
     /// Reading the bus models of the year.
@@ -204,6 +210,12 @@ impl Brain {
 
     pub fn profile(&self) -> &Profile {
         &self.profile
+    }
+
+    /// Asks nothing until `until`: its game has just been handed the seat,
+    /// perhaps right after loading a world it is still catching up in.
+    pub fn hold(&mut self, until: Instant) {
+        self.wake = Some(until);
     }
 
     /// What it keeps for its next driver.
@@ -317,7 +329,7 @@ impl Brain {
             | Stage::Borrowing { .. }
             | Stage::StopBuilt { .. }
             | Stage::DepotBuilt { .. }
-            | Stage::Joined { .. }
+            | Stage::Opening
             | Stage::LineMade { .. }
             | Stage::Bought { .. }
             | Stage::Assigned { .. } => self.ask(AiQuestion::Company, now),
@@ -345,18 +357,6 @@ impl Brain {
                     None
                 }
             },
-            Stage::JoinVerdict => {
-                let project = self.project.as_ref()?;
-                let entrance = project.depot.as_ref()?.entrance?;
-                let street = project.depot_street.clone()?;
-                match place::join(entrance, &street) {
-                    Some(road) => self.verdict(&Action::BuildRoad(road), now),
-                    None => {
-                        self.give_up_project(now);
-                        None
-                    }
-                }
-            }
             Stage::Models => self.ask(
                 AiQuestion::Models {
                     mode: Text::lossy(BUS),
@@ -529,24 +529,35 @@ impl Brain {
                 }
                 None
             }
-            Stage::DepotBuilt { at, tries } => {
+            Stage::DepotBuilt { at, street, tries } => {
                 let found = company
                     .depots
                     .iter()
-                    .find(|d| P::of(d.at).flat_distance(P::of(at)) <= 2.0 && d.entrance.is_some())
+                    .find(|d| P::of(d.at).flat_distance(P::of(at)) <= 2.0)
                     .cloned();
                 match found {
-                    Some(depot) => {
-                        let project = self.project.as_mut()?;
-                        project.depot = Some(depot);
-                        self.stage = Stage::JoinVerdict;
+                    // Built and snapped onto the street in one action.
+                    Some(depot) if depot.connected => {
+                        self.project.as_mut()?.depot = Some(depot);
+                        return self.make_line(now);
+                    }
+                    Some(_) if tries >= CONFIRM_TRIES => {
+                        self.say("its depot did not reach the street".into());
+                        self.give_up_project(now);
                     }
                     None if tries >= CONFIRM_TRIES => {
+                        // Not built: what refused it there (whose the
+                        // street's junctions are, say) refuses its other
+                        // side too.
+                        if let Some(project) = self.project.as_mut() {
+                            project.depot_tries.retain(|(i, _)| *i != street);
+                        }
                         self.stage = Stage::DepotVerdict;
                     }
-                    None => self.retry(
+                    _ => self.retry(
                         Stage::DepotBuilt {
                             at,
+                            street,
                             tries: tries + 1,
                         },
                         tries,
@@ -555,28 +566,7 @@ impl Brain {
                 }
                 None
             }
-            Stage::Joined { tries } => {
-                let project = self.project.as_mut()?;
-                let at = project.depot.as_ref()?.at;
-                let joined = company
-                    .depots
-                    .iter()
-                    .find(|d| d.at == at)
-                    .is_some_and(|d| d.connected);
-                if joined {
-                    if let Some(depot) = project.depot.as_mut() {
-                        depot.connected = true;
-                    }
-                    return self.make_line(now);
-                }
-                if tries >= CONFIRM_TRIES {
-                    self.say("its depot did not reach the street".into());
-                    self.give_up_project(now);
-                } else {
-                    self.retry(Stage::Joined { tries: tries + 1 }, tries, now);
-                }
-                None
-            }
+            Stage::Opening => self.make_line(now),
             Stage::LineMade { tries } => {
                 let project = self.project.as_mut()?;
                 let stops: Vec<StationId> = project.stops.iter().filter_map(|(_, s)| *s).collect();
@@ -729,10 +719,18 @@ impl Brain {
 
     fn on_towns(&mut self, towns: Vec<AiTown>, now: Instant) {
         self.given_up.retain(|(_, until)| *until > now);
+        // Its stations a line of its stops at: a stop a project left behind
+        // serves no one.
         let served: Vec<P> = self
             .company
             .as_ref()
-            .map(|c| c.stations.iter().map(|s| P::of(s.pos)).collect())
+            .map(|c| {
+                c.stations
+                    .iter()
+                    .filter(|s| c.lines.iter().any(|l| l.stops.contains(&s.id)))
+                    .map(|s| P::of(s.pos))
+                    .collect()
+            })
             .unwrap_or_default();
         let candidates: Vec<AiTown> = towns
             .into_iter()
@@ -769,10 +767,10 @@ impl Brain {
             town,
             centres,
             sites: Vec::new(),
+            site_at: Vec::new(),
             streets: Vec::new(),
             stops: Vec::new(),
             depot: None,
-            depot_street: None,
             depot_tries: Vec::new(),
             line: None,
         });
@@ -799,6 +797,7 @@ impl Brain {
         });
         usable.truncate(4);
         project.sites.push(usable);
+        project.site_at.push(centre.pos());
         for street in streets {
             if !project
                 .streets
@@ -818,14 +817,37 @@ impl Brain {
 
     /// On to stop number `site`, or to the depot once every centre has one
     /// (or has none to have).
-    fn next_stop(&mut self, site: usize, now: Instant) {
+    fn next_stop(&mut self, mut site: usize, now: Instant) {
+        let orphans = self.orphan_stops();
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        while site < project.sites.len() {
+            // A stop of its own by this centre that no line stops at, not
+            // too near the line's others: taken up, not built again.
+            let centre = project.site_at.get(site).map(|c| P::of(*c));
+            let taken = centre.and_then(|centre| {
+                orphans.iter().copied().find(|(at, id)| {
+                    at.flat_distance(centre) <= STOP_REUSE
+                        && project
+                            .stops
+                            .iter()
+                            .all(|(p, s)| *s != Some(*id) && p.flat_distance(*at) >= STOP_SPACING)
+                })
+            });
+            let Some((at, id)) = taken else {
+                self.stage = Stage::StopVerdict { site, choice: 0 };
+                return;
+            };
+            project.stops.push((at, Some(id)));
+            let town = project.town.name.as_str().to_owned();
+            self.said
+                .push(format!("takes up a stop of its own in {town}"));
+            site += 1;
+        }
         let Some(project) = self.project.as_ref() else {
             return;
         };
-        if site < project.sites.len() {
-            self.stage = Stage::StopVerdict { site, choice: 0 };
-            return;
-        }
         let stops = project.stops.iter().filter(|(_, s)| s.is_some()).count();
         if stops < 2 {
             self.say("found no two places to stop buses".into());
@@ -835,26 +857,45 @@ impl Brain {
         self.plan_depot();
     }
 
+    /// Its stations no line of its stops at, where they stand.
+    fn orphan_stops(&self) -> Vec<(P, StationId)> {
+        self.company.as_ref().map_or_else(Vec::new, |c| {
+            c.stations
+                .iter()
+                .filter(|s| !c.lines.iter().any(|l| l.stops.contains(&s.id)))
+                .map(|s| (P::of(s.pos), s.id))
+                .collect()
+        })
+    }
+
     fn plan_depot(&mut self) {
-        // A depot it has, joined, serves this line too.
-        let joined = self
-            .company
-            .as_ref()
-            .and_then(|c| c.depots.iter().find(|d| d.connected).cloned());
+        let town = self.project.as_ref().map(|p| P::of(p.town.pos));
+        // A depot it has by the town, joined, serves this line too.
+        let joined = self.company.as_ref().and_then(|c| {
+            c.depots
+                .iter()
+                .find(|d| {
+                    d.connected && town.is_some_and(|t| P::of(d.at).flat_distance(t) <= DEPOT_REACH)
+                })
+                .cloned()
+        });
         let Some(project) = self.project.as_mut() else {
             return;
         };
         if let Some(depot) = joined {
             project.depot = Some(depot);
-            self.stage = Stage::JoinVerdict;
-            // Already joined: straight to the line.
-            self.stage = Stage::Joined { tries: 0 };
+            self.stage = Stage::Opening;
             return;
         }
         let stops: Vec<P> = project.stops.iter().map(|(p, _)| *p).collect();
         let mut tries = Vec::new();
         let mut order: Vec<usize> = (0..project.streets.len())
-            .filter(|&i| place::usable(&project.streets[i]) && project.streets[i].length >= 40)
+            // The town's streets, not a company's: a split of another's
+            // the room refuses (D21).
+            .filter(|&i| {
+                let s = &project.streets[i];
+                place::usable(s) && !s.owned && s.length >= 40
+            })
             .filter(|&i| {
                 let m = place::middle(&project.streets[i]);
                 stops.iter().all(|s| s.flat_distance(m) > 60.0)
@@ -881,11 +922,17 @@ impl Brain {
         let seed = (self.random() >> 33) as i64;
         let name = format!("{} Depot", self.name);
         let project = self.project.as_mut()?;
-        let (index, side) = project.depot_tries.first().copied()?;
-        let street = project.streets.get(index)?.clone();
-        let (_, build) = place::depot(&street, side, year, seed, &name);
-        project.depot_street = Some(street);
-        Some(build)
+        while let Some((index, side)) = project.depot_tries.first().copied() {
+            if let Some((_, build)) = project
+                .streets
+                .get(index)
+                .and_then(|street| place::depot(street, side, year, seed, &name))
+            {
+                return Some(build);
+            }
+            project.depot_tries.remove(0);
+        }
+        None
     }
 
     fn on_good_verdict(&mut self, action: &Action, now: Instant) -> Option<Out> {
@@ -925,19 +972,16 @@ impl Brain {
                 let at = build.transform.origin;
                 let out = self.act(action, now);
                 if out.is_some() {
-                    if let Some(project) = self.project.as_mut() {
-                        project.depot_tries.remove(0);
-                    }
-                    self.stage = Stage::DepotBuilt { at, tries: 0 };
-                } else {
-                    self.wake = Some(now + SETTLE);
-                }
-                out
-            }
-            (Stage::JoinVerdict, Action::BuildRoad(_)) => {
-                let out = self.act(action, now);
-                if out.is_some() {
-                    self.stage = Stage::Joined { tries: 0 };
+                    let street = self
+                        .project
+                        .as_mut()
+                        .filter(|p| !p.depot_tries.is_empty())
+                        .map_or(usize::MAX, |p| p.depot_tries.remove(0).0);
+                    self.stage = Stage::DepotBuilt {
+                        at,
+                        street,
+                        tries: 0,
+                    };
                 } else {
                     self.wake = Some(now + SETTLE);
                 }
@@ -957,15 +1001,12 @@ impl Brain {
                 self.skip_exhausted_site(site, now);
             }
             Stage::DepotVerdict => {
+                self.say(format!("a depot placement was refused: {why}"));
                 if let Some(project) = self.project.as_mut()
                     && !project.depot_tries.is_empty()
                 {
                     project.depot_tries.remove(0);
                 }
-            }
-            Stage::JoinVerdict => {
-                self.say(format!("could not join its depot: {why}"));
-                self.give_up_project(now);
             }
             _ => {}
         }
@@ -996,9 +1037,12 @@ impl Brain {
                     station: 0,
                     terminal: 0,
                 },
+                // A two-sided stop is a group of two stations, one each
+                // side, of one terminal each (build 40425): the other side
+                // is the line's other choice.
                 alternatives: BoundedVec::new(vec![Terminal {
-                    station: 0,
-                    terminal: 1,
+                    station: 1,
+                    terminal: 0,
                 }])
                 .unwrap_or_default(),
                 load_mode: LoadMode::LoadIfAvailable,
@@ -1031,7 +1075,7 @@ impl Brain {
         let out = self.act(&action, now);
         if out.is_none() {
             // Its hands are busy: the line waits for the next poll.
-            self.stage = Stage::Joined { tries: 0 };
+            self.stage = Stage::Opening;
             self.wake = Some(now + SETTLE);
         }
         out
