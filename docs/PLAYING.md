@@ -394,22 +394,25 @@ The room's owner can seat computer players: in the room's page of the
 game's Multiplayer window before the game, or in the Multiplayer window
 during it, pick **Add an AI player** and **Easy**, **Normal** or **Hard**.
 Each AI founds a company of its own under its name, borrows to start (a
-new company has no money), and builds bus lines: stops on a town's
-streets, a depot beside them, the line, and buses on it, then the next
-town while its money lasts. Players cannot join an AI's company, and what
+new company has no money), and takes turns between bus lines in towns
+and truck lines for cargo: stops on a town's streets, or by an industry
+that makes a cargo and the nearest one, joined by road, that takes it; a
+depot beside them, the line, and its vehicles, then the next while its
+money lasts. Players cannot join an AI's company, and what
 it owns is protected like anyone's. **Remove** stops an AI from deciding
 anything more; its company keeps running what it built.
 
 An AI has the same money, prices and rules as you, and acts no faster
 than a quick player: Easy at most every 20 seconds, Normal every 5, Hard
-every second. Harder ones weigh more towns, run more stops and buses, buy
-better buses and borrow more. One player's game drives all the AI players
+every second. Harder ones weigh more towns and cargos, carry cargo
+farther (Easy 4 km, Normal 6, Hard 8), run more stops and vehicles, buy
+better ones and borrow more. One player's game drives all the AI players
 (the owner's, while it keeps up with the room); if that player leaves,
 another player's game takes over where it stopped. With nobody to drive
 them, AI players wait.
 
-So far AI players run town buses. Trucks, trains, ships and planes come
-next (docs/AI_PLAYERS.md).
+So far AI players run town buses and cargo trucks. Trains, ships and
+planes come next (docs/AI_PLAYERS.md).
 
 ## Updates
 

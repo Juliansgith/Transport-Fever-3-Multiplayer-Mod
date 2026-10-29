@@ -15,7 +15,7 @@ the work is Part 5 of [PLAN.md](PLAN.md).
 **Status (2026-10-29): seats, drivers and town bus lines built.** The
 first milestone is in: AI seats in the server and its log (protocol 24,
 log format 11), the driver and its hand-over with the memo, the mod's
-world reads and verdicts (bridge 30, `tpf3mp/ai.lua`), the AI rules every
+world reads and verdicts (bridge 31, `tpf3mp/ai.lua`), the AI rules every
 game applies, adding and removing AI players in both Multiplayer windows,
 and the `tpf3mp-ai` mind. Of the second milestone, the AI borrows to
 start, and builds and runs bus lines in towns at all three difficulties: in a
@@ -120,9 +120,11 @@ lasts, and at least one a frame:
 - **Reads the world** the AI asks about: its company (money, the year,
   its loan offers from the game script's roster, its stations, its
   depots and whether each reaches the street, its lines and vehicles),
-  the towns and their districts' centres, the streets near a place (each
-  edge's ends and curve middle, template, owner, objects), the vehicle
-  models of a transport mode.
+  the towns and their districts' centres, the industries (what each
+  takes and made over the last year), the streets near a place (each
+  edge's ends and curve middle, template, owner, objects), whether trucks
+  can drive between two places, the vehicle models of a transport mode
+  (of a cargo: those that carry it).
 - **Answers verdicts.** For an action the AI considers, it makes the
   proposal as the AI's company would build it (`apply.proposalOf`, as
   build previews do) and returns the game's verdict (`makeProposalData`:
@@ -134,7 +136,7 @@ lasts, and at least one a frame:
   that it happened, and gives the step up after a few reads.
 
 These are the bridge messages `ToHook::AiAsk` and `ToAgent::AiAnswer`
-(bridge 30) and the protocol messages `AiDrive`, `AiIntent` and the memo
+(bridge 31) and the protocol messages `AiDrive`, `AiIntent` and the memo
 (protocol 24). Once a minute while it answers, the driver's hook.log says
 what the answers cost its frames: by kind of question, how many, the mean
 and the slowest, and its slowest frame of them (`ai: answers in 60 s:
@@ -187,7 +189,12 @@ faster AI.
   construction tool leaves one; every game's refresh of the depot then
   snaps the entrance onto it, in the same action (`tpf3mp/apply.lua`,
   `BuildConstruction`). A separate road onto a construction's entrance
-  the game refuses ("Construction Not Possible", 2026-10-29).
+  the game refuses ("Construction Not Possible", 2026-10-29). *Built so
+  far:* a town's bus line, and a cargo's truck line from an industry that
+  made it over the last year to the nearest that takes it, within the
+  difficulty's reach and joined by road already (`findPathNodeToNode` for
+  trucks), each stop on a street within 140 m of its industry (a stop's
+  catchment reaches 160 m); the two take turns.
 - **Track and trains.** The station: a through or terminus station near
   the town's centre or the industry, turned to the route, its platforms
   as long as its trains, tested with its verdict. The route: a search over

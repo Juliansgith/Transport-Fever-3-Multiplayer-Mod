@@ -7,23 +7,27 @@
 //! never by trusting that it happened. What it keeps for its next driver
 //! travels as its memo ([`Brain::memo`]).
 //!
-//! Its first plays are road passenger lines: it founds its company, picks a
-//! town, stops buses on the town's own streets by its districts' centres,
-//! puts a road depot beside a street, joined to it as the construction tool
-//! joins one, opens the line and buys buses onto it; then it keeps each
-//! line's buses at its difficulty's count and moves on to the next town
-//! while its money lasts.
+//! Its first plays are road lines: it founds its company, then takes turns
+//! between a town's buses and a cargo's trucks. For a town it stops buses
+//! on the town's own streets by its districts' centres; for a cargo it
+//! stops trucks on the streets by an industry that makes it and one that
+//! takes it, joined by road. It puts a road depot beside a street, joined
+//! to it as the construction tool joins one, opens the line and buys
+//! vehicles onto it; then it keeps each line's vehicles at its difficulty's
+//! count and moves on while its money lasts.
 
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tpf3mp_bridge::ai::{AiAnswer, AiCompany, AiDepot, AiModel, AiQuestion, AiStreet, AiTown};
+use tpf3mp_bridge::ai::{
+    AiAnswer, AiCompany, AiDepot, AiIndustry, AiModel, AiQuestion, AiRoute, AiStreet, AiTown,
+};
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, IntentRejection, Payload, PlayerId, Text,
     action::{
         Action, AssignLine, BuyVehicle, CompanyOp, ConsistPart, ConstructionRef, CreateLine,
-        LineData, LineId, LineStop, LoadMode, LoanOp, Pos, StationId, StopRules, Terminal, Tint,
-        TownId, VehicleId,
+        LineData, LineId, LineStop, LoadMode, LoanOp, Pos, ResName, StationId, StopRules, Terminal,
+        Tint, TownId, VehicleId,
     },
 };
 
@@ -62,6 +66,21 @@ pub const GIVE_UP_FOR: Duration = Duration::from_secs(900);
 pub const BUS: &str = "BUS";
 /// The game's number for buses (`TransportMode.BUS`), as lines list modes.
 pub const BUS_MODE: u16 = 3;
+/// Trucks' transport mode, by the game's name, and its number (build
+/// 40425).
+pub const TRUCK: &str = "TRUCK";
+pub const TRUCK_MODE: u16 = 4;
+/// How far around an industry it looks for a street to stop trucks on, and
+/// how near the industry the stop must stand, in metres: a street stop's
+/// catchment reaches 160 m (`small_stops/*.con`).
+pub const CARGO_SEARCH: u32 = 200;
+pub const CARGO_REACH: f64 = 140.0;
+/// The least an industry must have made of a cargo over the last year for
+/// trucks to carry it, and the least distance worth a truck line, in metres.
+pub const CARGO_LEAST: u32 = 30;
+pub const CARGO_NEAREST: f64 = 800.0;
+/// Cargo routes it puts to the game's pathfinder, at most, per choice.
+pub const ROUTE_TRIES: usize = 5;
 /// Below this much money a mind borrows, while its difficulty lets it: a
 /// bus line costs about this much in the 1920s.
 pub const BORROW_BELOW: i64 = 400_000;
@@ -75,18 +94,109 @@ pub enum Out {
     Act(Payload),
 }
 
-/// What it keeps for its next driver: the towns it serves, and those it
-/// gave up on.
+/// What it keeps for its next driver: the towns and cargo routes it
+/// serves ([`Serves::key`]), those it gave up on, and the cargo each of its
+/// truck lines carries, by the room's line id.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Memo {
     pub served: Vec<u32>,
     pub given_up: Vec<u32>,
+    pub cargo_lines: Vec<(u32, String)>,
 }
 
-/// A bus line it is building in a town.
+/// What a line serves.
+#[derive(Debug, Clone)]
+enum Serves {
+    /// A town's districts, by bus.
+    Town(AiTown),
+    /// A cargo from the industry that makes it to one that takes it, by
+    /// truck.
+    Cargo {
+        cargo: ResName,
+        from: AiIndustry,
+        to: AiIndustry,
+    },
+}
+
+/// The key a cargo route goes by: its maker's place and the cargo (one
+/// destination for each), with the top bit set, apart from towns' ids.
+fn route_key(from: Pos, cargo: &str) -> u32 {
+    // FNV-1a: the same in every driver's agent.
+    let mut h: u32 = 0x811c_9dc5;
+    for byte in from
+        .x
+        .to_le_bytes()
+        .into_iter()
+        .chain(from.y.to_le_bytes())
+        .chain(cargo.bytes())
+    {
+        h ^= u32::from(byte);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h | 0x8000_0000
+}
+
+/// A cargo's short name: its file's stem (`::/cargos/grain/grain.cargo`
+/// is `grain`).
+fn cargo_name(cargo: &str) -> &str {
+    cargo
+        .rsplit('/')
+        .next()
+        .and_then(|file| file.split('.').next())
+        .unwrap_or(cargo)
+}
+
+impl Serves {
+    fn key(&self) -> u32 {
+        match self {
+            Self::Town(town) => town.id.0,
+            Self::Cargo { cargo, from, .. } => route_key(from.pos, cargo.as_str()),
+        }
+    }
+
+    /// What it says of the line: "a bus line in Didcot", "a truck line
+    /// carrying grain from ... to ...".
+    fn describe(&self) -> String {
+        match self {
+            Self::Town(town) => format!("a bus line in {}", town.name.as_str()),
+            Self::Cargo { cargo, from, to } => format!(
+                "a truck line carrying {} from {} to {}",
+                cargo_name(cargo.as_str()),
+                from.name.as_str(),
+                to.name.as_str()
+            ),
+        }
+    }
+
+    /// Where its depot goes: the town, or the industry that makes the cargo.
+    fn pos(&self) -> Pos {
+        match self {
+            Self::Town(town) => town.pos,
+            Self::Cargo { from, .. } => from.pos,
+        }
+    }
+
+    fn cargo(&self) -> Option<&ResName> {
+        match self {
+            Self::Town(_) => None,
+            Self::Cargo { cargo, .. } => Some(cargo),
+        }
+    }
+
+    /// How far around a site it asks for streets, and how near its centre
+    /// a stop must stand (none: anywhere it asked).
+    fn search(&self) -> (u32, Option<f64>) {
+        match self {
+            Self::Town(_) => (STOP_SEARCH, None),
+            Self::Cargo { .. } => (CARGO_SEARCH, Some(CARGO_REACH)),
+        }
+    }
+}
+
+/// A line it is building.
 #[derive(Debug, Clone)]
 struct Project {
-    town: AiTown,
+    serves: Serves,
     /// Districts' centres still to find a street by, nearest first.
     centres: Vec<Pos>,
     /// The streets found by each centre, best first, and the centre.
@@ -113,6 +223,10 @@ enum Stage {
     Borrowing { before: u8, tries: u32 },
     /// Choosing a town.
     Survey,
+    /// Choosing a cargo to carry.
+    SurveyIndustries,
+    /// Asking whether its next pick of cargo route is joined by road.
+    Route,
     /// Reading the streets by a centre of the project's town.
     Streets,
     /// Asking the verdict on the next stop.
@@ -160,8 +274,12 @@ pub struct Brain {
     project: Option<Project>,
     /// The bus it buys this year, once read.
     model: Option<AiModel>,
-    /// The line it adds a bus to outside a project.
+    /// The line it adds a vehicle to outside a project.
     topping: Option<(LineId, AiDepot)>,
+    /// Cargo routes still to put to the pathfinder, its pick first.
+    routes: Vec<(ResName, AiIndustry, AiIndustry)>,
+    /// Whether its next project carries cargo (it takes turns).
+    next_cargo: bool,
     /// Towns given up on, until when.
     given_up: Vec<(u32, Instant)>,
     /// What happened last, for the driver's log.
@@ -201,6 +319,8 @@ impl Brain {
             project: None,
             model: None,
             topping: None,
+            routes: Vec::new(),
+            next_cargo: false,
             given_up: Vec::new(),
             said: Vec::new(),
         }
@@ -286,11 +406,8 @@ impl Brain {
 
     fn give_up_project(&mut self, now: Instant) {
         if let Some(project) = self.project.take() {
-            let id = project.town.id.0;
-            self.say(format!(
-                "gave up on a line in {}",
-                project.town.name.as_str()
-            ));
+            let id = project.serves.key();
+            self.say(format!("gave up on {}", project.serves.describe()));
             self.given_up.push((id, now + GIVE_UP_FOR));
             if !self.memo.given_up.contains(&id) {
                 self.memo.given_up.push(id);
@@ -336,15 +453,20 @@ impl Brain {
             | Stage::Bought { .. }
             | Stage::Assigned { .. } => self.ask(AiQuestion::Company, now),
             Stage::Survey => self.ask(AiQuestion::Towns, now),
+            Stage::SurveyIndustries => self.ask(AiQuestion::Industries, now),
+            Stage::Route => {
+                let (_, from, to) = self.routes.first()?;
+                let question = AiQuestion::Route {
+                    from: from.pos,
+                    to: to.pos,
+                };
+                self.ask(question, now)
+            }
             Stage::Streets => {
-                let at = self.project.as_ref()?.centres.first().copied()?;
-                self.ask(
-                    AiQuestion::Streets {
-                        at,
-                        radius: STOP_SEARCH,
-                    },
-                    now,
-                )
+                let project = self.project.as_ref()?;
+                let at = project.centres.first().copied()?;
+                let (radius, _) = project.serves.search();
+                self.ask(AiQuestion::Streets { at, radius }, now)
             }
             Stage::StopVerdict { site, choice } => {
                 let year = self.year();
@@ -359,12 +481,17 @@ impl Brain {
                     None
                 }
             },
-            Stage::Models => self.ask(
-                AiQuestion::Models {
-                    mode: Text::lossy(BUS),
-                },
-                now,
-            ),
+            Stage::Models => {
+                let cargo = self.cargo_now();
+                let mode = if cargo.is_some() { TRUCK } else { BUS };
+                self.ask(
+                    AiQuestion::Models {
+                        mode: Text::lossy(mode),
+                        cargo,
+                    },
+                    now,
+                )
+            }
         }
     }
 
@@ -410,6 +537,14 @@ impl Brain {
             }
             (AiQuestion::Models { .. }, AiAnswer::Models(models)) => {
                 self.on_models(models.into_inner(), now)
+            }
+            (AiQuestion::Industries, AiAnswer::Industries(industries)) => {
+                self.on_industries(industries.into_inner(), now);
+                None
+            }
+            (AiQuestion::Route { .. }, AiAnswer::Route(route)) => {
+                self.on_route(&route, now);
+                None
             }
             (AiQuestion::Verdict(payload), AiAnswer::Verdict(verdict)) => {
                 if verdict.ok && verdict.cost <= self.spendable().max(0) {
@@ -578,8 +713,14 @@ impl Brain {
                     .find(|l| l.stops.iter().copied().eq(stops.iter().copied()))
                 {
                     project.line = Some(line.id);
-                    let town = project.town.name.as_str().to_owned();
-                    self.say(format!("opened a bus line in {town}"));
+                    let described = project.serves.describe();
+                    if let Some(cargo) = project.serves.cargo() {
+                        let entry = (line.id.0, cargo.as_str().to_owned());
+                        if !self.memo.cargo_lines.contains(&entry) {
+                            self.memo.cargo_lines.push(entry);
+                        }
+                    }
+                    self.say(format!("opened {described}"));
                     self.stage = Stage::Models;
                 } else if tries >= CONFIRM_TRIES {
                     self.give_up_project(now);
@@ -669,6 +810,19 @@ impl Brain {
             .or_else(|| self.topping.as_ref().map(|(line, _)| *line))
     }
 
+    /// The cargo of the line it is filling, if it carries one.
+    fn cargo_now(&self) -> Option<ResName> {
+        if let Some(project) = &self.project {
+            return project.serves.cargo().cloned();
+        }
+        let (line, _) = self.topping.as_ref()?;
+        self.memo
+            .cargo_lines
+            .iter()
+            .find(|(id, _)| *id == line.0)
+            .map(|(_, cargo)| Text::lossy(cargo))
+    }
+
     fn depot_now(&self) -> Option<AiDepot> {
         self.project
             .as_ref()
@@ -715,8 +869,105 @@ impl Brain {
                 return None;
             }
         }
-        self.stage = Stage::Survey;
+        // Then a new line: a town's buses and a cargo's trucks in turn.
+        let cargo = self.next_cargo;
+        self.next_cargo = !cargo;
+        self.stage = if cargo {
+            Stage::SurveyIndustries
+        } else {
+            Stage::Survey
+        };
         None
+    }
+
+    /// The industries: a cargo to carry, from an industry that made it over
+    /// the last year to the nearest that takes it, within its difficulty's
+    /// reach, not carried yet; the best few put to the pathfinder in turn.
+    fn on_industries(&mut self, industries: Vec<AiIndustry>, now: Instant) {
+        self.given_up.retain(|(_, until)| *until > now);
+        let mut picks: Vec<(f64, (ResName, AiIndustry, AiIndustry))> = Vec::new();
+        for from in &industries {
+            for output in from.outputs.iter().filter(|o| o.per_year >= CARGO_LEAST) {
+                let key = route_key(from.pos, output.cargo.as_str());
+                if self.memo.served.contains(&key) || self.given_up.iter().any(|(id, _)| *id == key)
+                {
+                    continue;
+                }
+                let nearest = industries
+                    .iter()
+                    .filter(|to| to.inputs.iter().any(|c| c == &output.cargo))
+                    .map(|to| (P::of(from.pos).flat_distance(P::of(to.pos)), to))
+                    .filter(|(d, _)| *d >= CARGO_NEAREST && *d <= self.profile.cargo_most)
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((d, to)) = nearest {
+                    // More cargo, fewer kilometres.
+                    let score = f64::from(output.per_year) / (1.0 + d / 1000.0);
+                    picks.push((score, (output.cargo.clone(), from.clone(), to.clone())));
+                }
+            }
+        }
+        picks.sort_by(|a, b| b.0.total_cmp(&a.0));
+        picks.truncate(self.profile.towns_weighed.max(1));
+        if picks.is_empty() {
+            self.say("found no cargo to carry".into());
+            self.stage = Stage::Survey;
+            return;
+        }
+        if self.spendable() < 150_000 {
+            self.say("waits for money".into());
+            self.rest(now);
+            return;
+        }
+        let among = self.profile.pick_among.min(picks.len()).max(1);
+        #[allow(clippy::cast_possible_truncation)]
+        let pick = (self.random() % among as u64) as usize;
+        let first = picks.remove(pick);
+        self.routes = std::iter::once(first.1)
+            .chain(picks.into_iter().map(|(_, p)| p))
+            .take(ROUTE_TRIES)
+            .collect();
+        self.stage = Stage::Route;
+    }
+
+    /// The pathfinder's answer for its first pick: a project if trucks can
+    /// drive it, else the next pick, a while apart from this one.
+    fn on_route(&mut self, route: &AiRoute, now: Instant) {
+        if self.routes.is_empty() {
+            self.stage = Stage::Survey;
+            return;
+        }
+        let (cargo, from, to) = self.routes.remove(0);
+        if !route.connected {
+            self.given_up
+                .push((route_key(from.pos, cargo.as_str()), now + GIVE_UP_FOR));
+            if self.routes.is_empty() {
+                self.say("found no cargo it can carry by road".into());
+                self.stage = Stage::Survey;
+            } else {
+                self.stage = Stage::Route;
+            }
+            return;
+        }
+        self.routes.clear();
+        let centres = vec![from.pos, to.pos];
+        let serves = Serves::Cargo { cargo, from, to };
+        self.say(format!("plans {}", serves.describe()));
+        self.start(serves, centres);
+    }
+
+    fn start(&mut self, serves: Serves, centres: Vec<Pos>) {
+        self.project = Some(Project {
+            serves,
+            centres,
+            sites: Vec::new(),
+            site_at: Vec::new(),
+            streets: Vec::new(),
+            stops: Vec::new(),
+            depot: None,
+            depot_tries: Vec::new(),
+            line: None,
+        });
+        self.stage = Stage::Streets;
     }
 
     fn on_towns(&mut self, towns: Vec<AiTown>, now: Instant) {
@@ -764,19 +1015,9 @@ impl Brain {
             .copied()
             .take(self.profile.stops_most)
             .collect();
-        self.say(format!("plans a bus line in {}", town.name.as_str()));
-        self.project = Some(Project {
-            town,
-            centres,
-            sites: Vec::new(),
-            site_at: Vec::new(),
-            streets: Vec::new(),
-            stops: Vec::new(),
-            depot: None,
-            depot_tries: Vec::new(),
-            line: None,
-        });
-        self.stage = Stage::Streets;
+        let serves = Serves::Town(town);
+        self.say(format!("plans {}", serves.describe()));
+        self.start(serves, centres);
     }
 
     fn on_streets(&mut self, streets: Vec<AiStreet>, now: Instant) {
@@ -787,9 +1028,11 @@ impl Brain {
             return;
         };
         let centre = P::of(centre);
+        let (_, reach) = project.serves.search();
         let mut usable: Vec<AiStreet> = streets
             .iter()
             .filter(|s| place::usable(s))
+            .filter(|s| reach.is_none_or(|r| place::middle(s).flat_distance(centre) <= r))
             .cloned()
             .collect();
         usable.sort_by(|a, b| {
@@ -824,13 +1067,14 @@ impl Brain {
         let Some(project) = self.project.as_mut() else {
             return;
         };
+        let reuse = project.serves.search().1.unwrap_or(STOP_REUSE);
         while site < project.sites.len() {
             // A stop of its own by this centre that no line stops at, not
             // too near the line's others: taken up, not built again.
             let centre = project.site_at.get(site).map(|c| P::of(*c));
             let taken = centre.and_then(|centre| {
                 orphans.iter().copied().find(|(at, id)| {
-                    at.flat_distance(centre) <= STOP_REUSE
+                    at.flat_distance(centre) <= reuse
                         && project
                             .stops
                             .iter()
@@ -842,9 +1086,9 @@ impl Brain {
                 return;
             };
             project.stops.push((at, Some(id)));
-            let town = project.town.name.as_str().to_owned();
+            let described = project.serves.describe();
             self.said
-                .push(format!("takes up a stop of its own in {town}"));
+                .push(format!("takes up a stop of its own for {described}"));
             site += 1;
         }
         let Some(project) = self.project.as_ref() else {
@@ -871,7 +1115,7 @@ impl Brain {
     }
 
     fn plan_depot(&mut self) {
-        let town = self.project.as_ref().map(|p| P::of(p.town.pos));
+        let town = self.project.as_ref().map(|p| P::of(p.serves.pos()));
         // A depot it has by the town, joined, serves this line too.
         let joined = self.company.as_ref().and_then(|c| {
             c.depots
@@ -904,7 +1148,7 @@ impl Brain {
             })
             .collect();
         // Away from the town's middle, where there is room.
-        let centre = P::of(project.town.pos);
+        let centre = P::of(project.serves.pos());
         order.sort_by(|&a, &b| {
             place::middle(&project.streets[b])
                 .flat_distance(centre)
@@ -1062,13 +1306,19 @@ impl Brain {
                 waypoints: BoundedVec::default(),
             })
             .collect();
-        let name = format!("{} Bus", project.town.name.as_str());
+        let (name, mode) = match &project.serves {
+            Serves::Town(town) => (format!("{} Bus", town.name.as_str()), BUS_MODE),
+            Serves::Cargo { cargo, from, .. } => (
+                format!("{} {}", from.name.as_str(), cargo_name(cargo.as_str())),
+                TRUCK_MODE,
+            ),
+        };
         let action = Action::CreateLine(CreateLine {
             name: Text::lossy(&name),
             color: tint(&self.seat),
             line: LineData {
                 stops: BoundedVec::new(stops).ok()?,
-                modes: BoundedVec::new(vec![BUS_MODE]).ok()?,
+                modes: BoundedVec::new(vec![mode]).ok()?,
                 custom_filters: false,
                 reservation_priority: 0,
             },
@@ -1163,13 +1413,18 @@ impl Brain {
             return self.buy(now);
         }
         if let Some(project) = self.project.take() {
-            let id = project.town.id.0;
+            let id = project.serves.key();
             if !self.memo.served.contains(&id) {
                 self.memo.served.push(id);
             }
+            let vehicles = if project.serves.cargo().is_some() {
+                "truck(s)"
+            } else {
+                "bus(es)"
+            };
             self.say(format!(
-                "runs {running} bus(es) in {}",
-                project.town.name.as_str()
+                "runs {running} {vehicles} on {}",
+                project.serves.describe()
             ));
         }
         self.topping = None;

@@ -41,11 +41,14 @@ const GAME: &str = r#"
                  [952] = { 901, 961 }, [953] = { 901 } }
     local CT = { CONSTRUCTION = 1, STATION_GROUP = 2, STATION = 3, BASE_NODE = 4, LINE = 5, NAME = 6,
         TRANSPORT_VEHICLE = 7, TOWN_BUILDING = 8, TOWN = 9, BASE_EDGE = 10, BASE_EDGE_STREET = 11,
-        PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15 }
+        PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15, INDUSTRY = 16 }
     local COMP = {
         [CT.CONSTRUCTION] = {
             [300] = { fileName = "stations/street/small_stops/small_new_twosided.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 100.5,200.25,10,1 }, stations = { 301 }, depots = {} },
+            [1001] = { fileName = "::/industries/farm/farm.con", transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6484,-6720,20,1 } },
+            [1011] = { fileName = "::/industries/livestock_farm/livestock_farm.con",
+                transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 4964,-648,30,1 } },
             [400] = { fileName = "::/depots/road/road_depot/road_depot.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 500,600,12,1 }, stations = {}, depots = { 401 },
                 -- As the game has a road depot: its apron's inner end
@@ -56,6 +59,8 @@ const GAME: &str = r#"
         [CT.STATION_GROUP] = { [310] = { stations = { 301 } }, [320] = { stations = { 321 } } },
         -- Its depot, and another company's.
         [CT.VEHICLE_DEPOT] = { [401] = {}, [431] = {} },
+        [CT.INDUSTRY] = { [1000] = { construction = 1001, stockList = 1002 },
+                          [1010] = { construction = 1011, stockList = 1012 } },
         [CT.STATION] = { [301] = { terminals = { {}, {} } }, [321] = { terminals = { {}, {} } } },
         -- A street stop: an object on its edge, in no construction.
         [CT.EDGE_OBJECT] = { [321] = { param = 0.5, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6267.5,-5560,8,1 } } },
@@ -93,7 +98,27 @@ const GAME: &str = r#"
         ["vehicle/truck/t.mdl"] = { id = 10, metadata = { transportVehicle = { transportModes = { 4 },
             compartments = {} }, availability = { yearFrom = 1900, yearTo = 0 }, cost = { price = 1 },
             maintenance = {}, roadVehicle = { topSpeed = 10 } } },
+        -- Trucks by cargo class, as the game's files give them.
+        ["vehicle/truck/bulk.mdl"] = { id = 11, metadata = { transportVehicle = { transportModes = { 4 },
+            compartments = { { loadConfigs = { { cargoEntry = { capacity = 12, cargoTypeSet = {
+                cargoClassesIncluded = { "BULK" }, cargoClassesExcluded = {},
+                cargoTypesIncluded = {}, cargoTypesExcluded = {} } } } } } } },
+            availability = { yearFrom = 1900, yearTo = 0 }, cost = { price = 20000 },
+            maintenance = { runningCosts = 3000, lifespan = 20 }, roadVehicle = { topSpeed = 8 } } },
+        ["vehicle/truck/box.mdl"] = { id = 12, metadata = { transportVehicle = { transportModes = { 4 },
+            compartments = { { loadConfigs = { { cargoEntry = { capacity = 9, cargoTypeSet = {
+                cargoClassesIncluded = { "GOODS" }, cargoClassesExcluded = {},
+                cargoTypesIncluded = {}, cargoTypesExcluded = {} } } } } } } },
+            availability = { yearFrom = 1900, yearTo = 0 }, cost = { price = 21000 },
+            maintenance = { runningCosts = 3000, lifespan = 20 }, roadVehicle = { topSpeed = 8 } } },
     }
+    -- Cargo types: grain is bulk; goods are goods.
+    local CARGOS = { [1] = { name = "::/cargos/grain/grain.cargo", classes = { "UNIVERSAL", "BULK" } },
+                     [2] = { name = "::/cargos/goods/goods.cargo", classes = { "UNIVERSAL", "GOODS" } } }
+    -- Industries: a farm that made 104 grain of 107, a livestock farm that
+    -- takes grain; their stock lists by entity.
+    STOCKS = { [1002] = { {}, { 1 } }, [1012] = { { 1 }, {} } }
+    ROAD_JOINS = true
     api = {
         type = { ComponentType = CT, Vec2f = { new = function(x, y) return { x = x, y = y } end },
                  enum = { TransportMode = { BUS = 3, TRUCK = 4 } } },
@@ -112,7 +137,18 @@ const GAME: &str = r#"
                 line = { getLineIssues = function() return { {}, {} } end },
                 town = { getTownDistrictCenter = function(t, use)
                     return { x = t * 10 + use, y = 1, z = 2 } end },
-                octree = { findEntitiesInCircle = function() return { 901, 900 } end },
+                octree = { findEntitiesInCircle = function() return { 901, 900 } end,
+                    findTransportNetworkNodesInCircle = function(p) return { p.x > 5000 and 71 or 72 } end },
+                pathfinding = { findPathNodeToNode = function(a, b, modes)
+                    if ROAD_JOINS and a[1] ~= b[1] and modes[1] == 4 then return { 1, 2, 3 } end
+                    return {} end },
+                getEntityName = function(e) return ({ [1000] = "Hunstanton Crop Farm",
+                    [1010] = "Clun Livestock Farm" })[e] end,
+                stock = {
+                    getInputsOutputsFromRules = function(list) return STOCKS[list] end,
+                    getCargoProducedPerYear = function(list, id) return list == 1002 and id == 1 and 104.4 or 0 end,
+                    getCargoMaxProductionPerYear = function(list, id) return list == 1002 and id == 1 and 107 or 0 end,
+                },
             },
             system = {
                 lineSystem = { getLinesForPlayer = function(e) return e == 77 and { 500 } or {} end },
@@ -128,7 +164,11 @@ const GAME: &str = r#"
                 },
             },
         },
-        res = { modelRep = {
+        res = { cargoTypeRep = {
+            find = function(name) for id, c in pairs(CARGOS) do if c.name == name then return id end end return -1 end,
+            get = function(id) return CARGOS[id] and { cargoClasses = CARGOS[id].classes } end,
+            getName = function(id) return CARGOS[id] and CARGOS[id].name end,
+        }, modelRep = {
             forEachModelWithMetadata = function(_, fn)
                 local names = {}
                 for name in pairs(MODELS) do names[#names + 1] = name end
@@ -391,4 +431,69 @@ fn serving_answers_each_question_and_logs_what_the_answers_cost() {
             && logged.contains("1 frame(s) answered, the slowest "),
         "{logged}"
     );
+}
+
+#[test]
+fn industries_routes_and_trucks_by_cargo_read_as_the_ai_reads_them() {
+    let lua = lua();
+    let AiAnswer::Industries(industries) = answer(&lua, "'Industries'") else {
+        panic!("not industries")
+    };
+    assert_eq!(industries.len(), 2);
+    let farm = &industries[0];
+    assert_eq!(farm.name.as_str(), "Hunstanton Crop Farm");
+    assert_eq!((farm.pos.x, farm.pos.y), (6_484_000, -6_720_000));
+    assert!(farm.inputs.is_empty());
+    assert_eq!(
+        farm.outputs[0].cargo.as_str(),
+        "::/cargos/grain/grain.cargo"
+    );
+    assert_eq!(
+        (farm.outputs[0].per_year, farm.outputs[0].most),
+        (104, 107),
+        "made over the last year, and at most"
+    );
+    assert_eq!(
+        industries[1].inputs[0].as_str(),
+        "::/cargos/grain/grain.cargo",
+        "the livestock farm takes grain"
+    );
+
+    // Joined by road for trucks, by the pathfinder from the nodes by each.
+    let route =
+        "{ Route = { from = { x = 6484, y = -6720, z = 0 }, to = { x = 4964, y = -648, z = 0 } } }";
+    let AiAnswer::Route(joined) = answer(&lua, route) else {
+        panic!("not a route")
+    };
+    assert!(joined.connected && joined.edges == 3);
+    lua.load("ROAD_JOINS = false").exec().unwrap();
+    let AiAnswer::Route(apart) = answer(&lua, route) else {
+        panic!("not a route")
+    };
+    assert!(!apart.connected && apart.edges == 0);
+
+    // Trucks for grain: those whose load takes a class of grain's.
+    let AiAnswer::Models(trucks) = answer(
+        &lua,
+        "{ Models = { mode = 'TRUCK', cargo = '::/cargos/grain/grain.cargo' } }",
+    ) else {
+        panic!("not models")
+    };
+    let names: Vec<(&str, u32)> = trucks
+        .iter()
+        .map(|m| (m.model.as_str(), m.capacity))
+        .collect();
+    assert_eq!(
+        names,
+        [("vehicle/truck/bulk.mdl", 12)],
+        "the bulk truck only"
+    );
+    let AiAnswer::Models(trucks) = answer(
+        &lua,
+        "{ Models = { mode = 'TRUCK', cargo = '::/cargos/goods/goods.cargo' } }",
+    ) else {
+        panic!("not models")
+    };
+    assert_eq!(trucks[0].model.as_str(), "vehicle/truck/box.mdl");
+    assert_eq!(trucks.len(), 1);
 }
