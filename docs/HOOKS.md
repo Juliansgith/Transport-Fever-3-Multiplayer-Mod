@@ -301,6 +301,13 @@ the payload may wrap around the end of the buffer.
   then checks `abi_version` and `header_size`, reads the ring sizes, and sets
   its own pid and heartbeat. The hook fails closed (runs solo) if no mapping is
   present.
+- **Polling.** The agent reads the hook's ring every 2 ms. A Windows timer
+  sleeps to the system's tick, 15.6 ms unless the process asked for a
+  finer one, and since Windows 10 2004 the game's own request does not
+  reach the agent's process. So the agent asks for 1 ms
+  (`tpf3mp_ipc::FineTimer`, `timeBeginPeriod`) while it plays a room, and
+  gives it back when the room ends: a step's report, a player's action and
+  the next release wait about 2 ms in the agent, not up to 16.
 - **Heartbeat.** Each side bumps its own counter and reads the peer's. A counter
   that stops advancing means the peer is gone.
   The agent gives a loaded game's hook 60 s (a load 600 s). A game that
@@ -742,7 +749,9 @@ call of the speed getter, as TPF2MP's speed hook
   agent's one-step releases), at most 16 a call and never past a
   checkpoint step, whose lanes must be the world's right after it, an even
   share ("Even steps" below); the call then reports each (`after_step`).
-  A room faster than the game's own pace catches up that way, up to 16x.
+  A room faster than the game's own pace catches up that way, up to 16x,
+  and a game that has run far behind for 5 s on end up to 64 a call
+  ("Catching up" below).
   When the room withholds the next step (paused, or a player behind), 0:
   the game's paused path, and the world stands still.
 - **The room's world.** A `Load` without a file (the world every player
@@ -800,6 +809,37 @@ runs exactly once per call with the count chosen and its arguments
 untouched; `session::tests` read releases ahead over a real link;
 `detour::x86_64::tests` redirect one call in hand-written code.
 
+#### Catching up
+
+A game that joins a running room loads the room's snapshot, then replays
+every step ordered since it was saved. Measured on build 40425 with the
+step trace (2026-10-29, the rig's big fixture at 4x, the second game
+joining 7 minutes after the first): each call of the game's step costs
+90-100 ms beyond `GameSim::Step` itself (the game's per-frame work around
+it: the GUI's sync, the renderer's handover, the scripts' updates), so 16
+steps a call replayed 25.4 steps a second against the room's 19.8, and
+every call was cut at 16 or at a checkpoint (`16 16 16 2`): the game
+closed 3,550 steps in 607 s, 5.8 steps a second.
+
+`crate::cadence::CatchUp` keeps the steps run per call over the last 5 s.
+When the window is at least four-fifths full and ran more than 1.25 times
+the room's pace (`Cadence::pace_now`), the game is catching up, and the
+call runs up to `CATCH_UP_STEPS_PER_CALL` (64) of the released steps,
+still never past a checkpoint, an event, a save or a load; the step trace
+names such a call `catch-up`. A burst of one call (a save's freeze, a
+reconnect of a second) never fills the window, so a game that follows the
+room keeps its even steps; a world loaded resets it.
+
+On the same run with the cap raised the calls ran 50 steps (the
+checkpoints cut them: every 50 steps), and the game replayed 29.6 steps a
+second, closing 4,450 steps in 454 s, 9.8 steps a second (the same 3,550
+in about 360 s instead of 607), with the simulation's threads busy 91 % of
+the time instead of 78 %. Every one of the 278 checkpoints both games
+logged agreed. A call of 50 steps takes about 1.5 s, so the joining game
+shows a frame that often until it has caught up, as it showed one every
+0.5 s before; the step itself, about 30 ms an update, now bounds the
+catch-up: at 4x a game replays at most about 1.5 times the room's pace.
+
 #### Even steps
 
 The game calls its step on its own clock, about every 200 ms at every
@@ -831,7 +871,7 @@ rules in order:
 - **far behind** (more than 1.5 s of the room's pace, at least 16 steps:
   a reconnect, a load; below the server's pacing window, so a game that
   falls behind catches up before it holds the room back): all of them, at
-  most 16 a call, as before;
+  most 16 a call, as before (64 while catching up, above);
 - **the room is paused**, or **nothing new was released for 400 ms** (the
   room waits for a member): all of them, so every game stops at the
   frontier;

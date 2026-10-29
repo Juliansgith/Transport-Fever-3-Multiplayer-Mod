@@ -2378,6 +2378,10 @@ pub async fn play<L: HookLink>(
     mut events: Events,
     rejoin: &Rejoin,
 ) -> Result<BridgeEnd, BridgeFault> {
+    // The ring is polled and the steps played out on Tokio timers: on
+    // Windows they wake at the system tick (15.6 ms) without this, 1 ms
+    // with it (tpf3mp_ipc::FineTimer), for as long as a game is bridged.
+    let _timer = tpf3mp_ipc::FineTimer::new();
     let mut losses = Losses::new(rejoin.give_up_after, Instant::now());
     loop {
         let session = client.welcome().session_id;

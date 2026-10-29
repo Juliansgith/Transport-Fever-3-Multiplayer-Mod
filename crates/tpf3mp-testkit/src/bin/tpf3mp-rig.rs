@@ -246,7 +246,12 @@ async fn run(args: Args) -> Result<ExitCode> {
     let game = GameCommand::new(&args)?;
 
     let (server, trust, local) = if args.server.eq_ignore_ascii_case("local") {
-        let local = LocalServer::start(&root.join("server"), args.players, !args.no_snapshots)?;
+        let local = LocalServer::start(
+            &root.join("server"),
+            args.players,
+            !args.no_snapshots,
+            args.game != "fake",
+        )?;
         println!(
             "rig: local server on {}, certificate in {}",
             local.address,
@@ -918,13 +923,18 @@ impl LocalServer {
     /// Listens on a free loopback port, keeping world snapshots in `dir` so
     /// players can join running games (unless `snapshots` is false), and
     /// writes its certificate there for agents started by hand.
-    fn start(dir: &Path, players: u8, snapshots: bool) -> Result<Self> {
+    fn start(dir: &Path, players: u8, snapshots: bool, real_game: bool) -> Result<Self> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1", "::1"])?;
         let cert = dir.join("dev-cert.der");
         fs::write(&cert, identity.leaf()).with_context(|| format!("writing {}", cert.display()))?;
         let trust = ServerTrust::Pinned(identity.leaf().clone());
         let mut config = ServerConfig::new(([127, 0, 0, 1], 0).into(), identity);
+        // Real games check every intent as the production server does; the
+        // fake game's intents are no actions.
+        if real_game {
+            config.rules = tpf3mp_server::RulesMenu::native_checked();
+        }
         // Every player connects from this PC, one address; leave room for
         // a few more started by hand.
         let players = usize::from(players);

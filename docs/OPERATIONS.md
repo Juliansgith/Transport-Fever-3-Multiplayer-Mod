@@ -822,7 +822,16 @@ tunnel instead, through the reverse proxy.
   memory and CPU. It mounts only its certificates (read-only) and its own
   data volume.
 - The admin endpoint has no authentication. The compose file publishes it
-  on the host's loopback only.
+  on the host's loopback only. It refuses browsers even there: a request
+  with an `Origin` header, or with a `Host` that is not an IP address or
+  `localhost` (DNS rebinding), is answered `403`, so a web page the
+  operator opens cannot post a notice to every player or read the rooms
+  through a forwarded port. Call it by address (`curl
+  http://127.0.0.1:9470/...`), as `tpf3mp-ctl` and `collect-logs.sh` do.
+- Wrong invites are counted for 65,536 addresses at once. When that many
+  are counted, the oldest address not yet stopped (20 wrong invites) is
+  forgotten to count a new one; only a table of stopped addresses refuses
+  newcomers until their ten minutes end.
 - One network address holds at most 8 sessions and 4 handshakes in progress
   (`--max-sessions-per-address`, `--max-handshakes-per-address`). An IPv6
   /64 counts as one address. A household or LAN party with more players

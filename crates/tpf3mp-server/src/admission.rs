@@ -76,8 +76,12 @@ pub(crate) enum Decision {
 /// million codes. A player who mistypes a few times is not held up.
 const WRONG_INVITES: u32 = 20;
 const WRONG_INVITE_WINDOW: Duration = Duration::from_secs(600);
-/// Addresses whose wrong invites are counted at once. While that many are
-/// within their windows, joins from any other address are refused.
+/// Addresses whose wrong invites are counted at once. When that many are
+/// within their windows, the oldest address not yet stopped is forgotten to
+/// count a new one; only a table of nothing but stopped addresses refuses
+/// joins from any other. (Refusing everyone uncounted let one wrong try
+/// from each of 65,536 addresses, the /64s of one IPv6 /48, stop every new
+/// player from joining any room.)
 const WRONG_INVITE_ADDRESSES: usize = 65_536;
 
 /// Wrong invites from one address in its current window.
@@ -142,11 +146,20 @@ impl Admission {
         entry.count = entry.count.saturating_add(1);
     }
 
-    /// Whether another address can be counted, forgetting those whose
-    /// windows ended when the table is full.
+    /// Whether another address can be counted: when the table is full,
+    /// forgetting those whose windows ended, else the oldest not stopped.
     fn has_room_for_one_more(wrong: &mut HashMap<Origin, WrongInvites>, now: Instant) -> bool {
         if wrong.len() >= WRONG_INVITE_ADDRESSES {
             wrong.retain(|_, entry| !entry.ended(now));
+        }
+        if wrong.len() >= WRONG_INVITE_ADDRESSES
+            && let Some(oldest) = wrong
+                .iter()
+                .filter(|(_, entry)| entry.count < WRONG_INVITES)
+                .min_by_key(|(_, entry)| entry.since)
+                .map(|(origin, _)| *origin)
+        {
+            wrong.remove(&oldest);
         }
         wrong.len() < WRONG_INVITE_ADDRESSES
     }
@@ -392,16 +405,33 @@ mod tests {
     }
 
     #[test]
-    fn a_full_table_of_wrong_invites_refuses_the_uncounted() {
+    fn a_full_table_of_single_wrong_invites_does_not_lock_everyone_out() {
         let admission = Admission::new(limits());
         let start = Instant::now();
+        // One wrong try from each of 65,536 /64s (one IPv6 /48).
         for n in 0..WRONG_INVITE_ADDRESSES {
             admission.wrong_invite(Origin::V6(n as u64), start);
         }
+        assert!(admission.may_join(HOME, start), "a new player still joins");
+        assert!(
+            admission.may_join(Origin::V6(1), start),
+            "the counted go on"
+        );
+    }
+
+    #[test]
+    fn a_full_table_of_stopped_addresses_refuses_the_uncounted() {
+        let admission = Admission::new(limits());
+        let start = Instant::now();
+        for n in 0..WRONG_INVITE_ADDRESSES {
+            for _ in 0..WRONG_INVITES {
+                admission.wrong_invite(Origin::V6(n as u64), start);
+            }
+        }
         assert!(!admission.may_join(HOME, start));
         assert!(
-            admission.may_join(Origin::V6(0), start),
-            "the counted go on"
+            !admission.may_join(Origin::V6(0), start),
+            "the stopped stay stopped"
         );
         // Once their windows end, they make room.
         assert!(admission.may_join(HOME, start + WRONG_INVITE_WINDOW));

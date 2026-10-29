@@ -147,6 +147,48 @@ async fn a_snapshot_arrives_identical() {
     assert_eq!(client.retained().unwrap(), [manifest.id()]);
 }
 
+/// A stream serving a snapshot yields to the control and turn streams of
+/// its connection: a player uploading the room's save keeps reporting its
+/// progress and sending its actions.
+#[tokio::test]
+async fn a_served_snapshot_yields_to_the_connections_other_streams() {
+    let (server_dir, client_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (server, client) = (store(&server_dir), store(&client_dir));
+    let data = random_bytes(3, 300_000);
+    let manifest = server.ingest(data.as_slice(), params()).unwrap();
+    let Pipe {
+        fetcher: (mut send, mut recv),
+        server: (mut server_send, mut server_recv),
+        _alive,
+    } = pipe().await;
+    assert_eq!(server_send.priority().unwrap(), 0, "quinn's default");
+    let serving = tokio::spawn({
+        let server = server.clone();
+        let manifest = manifest.clone();
+        async move {
+            let served =
+                bulk::serve(&mut server_send, &mut server_recv, &server, &manifest, IDLE).await;
+            (served, server_send.priority().unwrap())
+        }
+    });
+    let fetched = bulk::fetch(
+        &mut send,
+        &mut recv,
+        &client,
+        &manifest.id(),
+        Completion::Retain,
+        IDLE,
+        |_| {},
+    )
+    .await;
+    let _ = send.finish();
+    assert!(fetched.is_ok());
+    let (served, priority) = serving.await.unwrap();
+    assert!(served.is_ok());
+    assert_eq!(priority, bulk::BULK_PRIORITY);
+    const { assert!(bulk::BULK_PRIORITY < 0) };
+}
+
 #[tokio::test]
 async fn a_returning_client_fetches_only_what_changed() {
     let (server_dir, client_dir, out_dir) = (

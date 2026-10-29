@@ -317,6 +317,46 @@ async fn ruleset_refusals_reach_only_the_sender() {
     server.shut_down().await;
 }
 
+/// A real game's room refuses an intent that is no action the games can
+/// read: ordered, it would make every game hold its world for good (and
+/// every game that joined later and replayed it). A readable action is
+/// ordered as before.
+#[tokio::test]
+async fn a_room_of_real_games_refuses_an_action_no_game_can_read() {
+    use tpf3mp_proto::action::Action;
+    let server = RunningServer::start(|config| config.rules = RulesMenu::native_checked()).await;
+    let clients = vec![server.client("ann").await, server.client("bob").await];
+    let (players, _) = start(clients, FAST).await;
+    let readable = Action::NotificationSeen { notification: 12 }
+        .to_payload()
+        .unwrap();
+    players[0]
+        .client()
+        .send_intent(1, payload(&[0xde, 0xad, 0xbe, 0xef]))
+        .await
+        .unwrap();
+    players[0]
+        .client()
+        .send_intent(2, readable.clone())
+        .await
+        .unwrap();
+    let mut players = play_all(players, |p| commands(p).len() == 1).await;
+    players[0].play_until(|p| !p.rejections.is_empty()).await;
+    assert_eq!(
+        players[0].rejections,
+        vec![(
+            1,
+            IntentRejection::Refused {
+                code: tpf3mp_server::MALFORMED_ACTION
+            }
+        )]
+    );
+    assert!(players[1].rejections.is_empty());
+    assert_eq!(commands(&players[1]), commands(&players[0]));
+    assert_eq!(commands(&players[1])[0].2, readable.as_bytes().to_vec());
+    server.shut_down().await;
+}
+
 #[tokio::test]
 async fn pausing_stops_the_clock_but_not_building() {
     let server = RunningServer::start(|_| {}).await;

@@ -363,6 +363,11 @@ impl Cadence {
         f64::from(self.steps_per_second) * f64::from(self.speed) / 100.0
     }
 
+    /// The room's pace now, steps a second; 0 while paused.
+    pub fn pace_now(&self) -> f64 {
+        if self.paused { 0.0 } else { self.pace() }
+    }
+
     /// The game's call period as measured.
     pub fn period(&self) -> Duration {
         Duration::from_secs_f64(self.period)
@@ -524,6 +529,64 @@ fn toward_checkpoint(nominal: u64, to_checkpoint: u64, behind: bool) -> u64 {
         spread
     } else {
         spread.min(nominal + (nominal / 2).max(1))
+    }
+}
+
+/// How long [`CatchUp`] looks back.
+pub const CATCH_UP_WINDOW: Duration = Duration::from_secs(5);
+/// Steps run against the room's pace over the window above which a game is
+/// catching up (a join, a rejoin, a reload): it runs as fast as it can.
+pub const CATCH_UP_RATIO: f64 = 1.25;
+
+/// Whether this game has been catching up with the room lately: over the
+/// last [`CATCH_UP_WINDOW`] it ran clearly more steps than the room's pace.
+/// A game at the room's pace runs the pace (a backlog after a freeze is
+/// repaid within a call or two); one replaying minutes of history after a
+/// join runs 1.4 (4x) to 6 (1x) times it for as long as that takes. Only
+/// the hook's own calls are counted, so it needs no word from the agent and
+/// sees past the event that stops a batch.
+#[derive(Debug, Default, Clone)]
+pub struct CatchUp {
+    calls: std::collections::VecDeque<(Instant, u32)>,
+}
+
+impl CatchUp {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A room call at `now` that ran `steps`.
+    pub fn note(&mut self, now: Instant, steps: u32) {
+        self.calls.push_back((now, steps));
+        while let Some(&(at, _)) = self.calls.front() {
+            if now.saturating_duration_since(at) > CATCH_UP_WINDOW {
+                self.calls.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Forgets every call (a load, leaving the room's game).
+    pub fn reset(&mut self) {
+        self.calls.clear();
+    }
+
+    /// Whether the calls of the last window ran more than
+    /// [`CATCH_UP_RATIO`] times `pace` steps a second; only once the window
+    /// is nearly full, so a burst of a call or two never counts.
+    pub fn catching_up(&self, now: Instant, pace: f64) -> bool {
+        let Some(&(first, _)) = self.calls.front() else {
+            return false;
+        };
+        let span = now.saturating_duration_since(first);
+        if pace <= 0.0 || span < CATCH_UP_WINDOW.mul_f64(0.8) {
+            return false;
+        }
+        let steps: u64 = self.calls.iter().map(|&(_, n)| u64::from(n)).sum();
+        #[allow(clippy::cast_precision_loss)]
+        let rate = steps as f64 / span.as_secs_f64();
+        rate > CATCH_UP_RATIO * pace
     }
 }
 
@@ -1112,5 +1175,59 @@ mod tests {
         let after = &counts[50..];
         assert!(after.iter().all(|n| *n <= 6), "{after:?}");
         assert!(after[20..].iter().all(|n| (3..=5).contains(n)), "{after:?}");
+    }
+}
+
+#[cfg(test)]
+mod catch_up_tests {
+    use super::*;
+
+    fn calls(c: &mut CatchUp, start: Instant, seconds: f64, per_call: u32, period: f64) -> Instant {
+        let mut t = 0.0;
+        while t < seconds {
+            c.note(start + Duration::from_secs_f64(t), per_call);
+            t += period;
+        }
+        start + Duration::from_secs_f64(seconds)
+    }
+
+    #[test]
+    fn a_game_at_the_rooms_pace_is_not_catching_up() {
+        let mut c = CatchUp::new();
+        let start = Instant::now();
+        // 4x: 20 steps a second, four a call every 200 ms.
+        let now = calls(&mut c, start, 10.0, 4, 0.2);
+        assert!(!c.catching_up(now, 20.0));
+        // A short freeze's backlog repaid in one call of 16 does not count.
+        // (A longer one may for a few seconds; that only lets a call run
+        // more of what is released, and a repaid backlog leaves nothing.)
+        c.note(now, 16);
+        assert!(!c.catching_up(now, 20.0));
+    }
+
+    #[test]
+    fn a_game_replaying_history_is_catching_up_until_it_is_back() {
+        let mut c = CatchUp::new();
+        let start = Instant::now();
+        // 16 steps every 430 ms against a 4x room: 37 a second.
+        let now = calls(&mut c, start, 6.0, 16, 0.43);
+        assert!(c.catching_up(now, 20.0));
+        assert!(!c.catching_up(now, 0.0), "paused: not catching up");
+        // Back at the frontier: the room's pace again.
+        let now = calls(&mut c, now, 6.0, 4, 0.2);
+        assert!(!c.catching_up(now, 20.0));
+    }
+
+    #[test]
+    fn a_short_window_never_counts() {
+        let mut c = CatchUp::new();
+        let start = Instant::now();
+        let now = calls(&mut c, start, 2.0, 16, 0.2);
+        assert!(
+            !c.catching_up(now, 5.0),
+            "two seconds is not enough to tell"
+        );
+        c.reset();
+        assert!(!c.catching_up(now, 5.0));
     }
 }

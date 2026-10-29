@@ -234,6 +234,9 @@ async fn main() -> Result<()> {
     };
 
     let mut config = ServerConfig::new(args.listen, identity);
+    // Real games' rooms: an intent no game can read is refused, never
+    // ordered (ruleset::GameActions).
+    config.rules = tpf3mp_server::RulesMenu::native_checked();
     config.max_sessions = args.max_sessions;
     config.max_sessions_per_address = args.max_sessions_per_address;
     config.max_handshakes_per_address = args.max_handshakes_per_address;
