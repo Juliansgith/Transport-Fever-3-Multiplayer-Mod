@@ -3950,6 +3950,10 @@ than the link's message is refused with why. A verdict makes the
 proposal as the seat's company would build it (`apply.proposalOf`, as
 build previews do) and asks `makeProposalData`: nothing is sent or built.
 The questions are dropped while a world loads; the agent asks again.
+Once a minute while it answers, the mod logs what the answers cost the
+frames, by kind of question (how many, the mean and the slowest) and the
+slowest frame of them: `ai: answers in 60 s: Verdict 12 (mean ..., slowest
+...), ...`.
 
 ### Build previews
 

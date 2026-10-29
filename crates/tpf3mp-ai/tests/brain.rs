@@ -355,6 +355,7 @@ fn street(a: Pos, b: Pos) -> AiStreet {
         owned: false,
         objects: 0,
         structure: false,
+        company_junction: false,
     }
 }
 
@@ -661,28 +662,34 @@ fn a_depot_no_game_built_is_not_tried_again_on_the_same_street() {
 }
 
 #[test]
-fn a_depot_never_splits_a_companys_street() {
-    let mut world = World::new();
-    for street in &mut world.streets {
-        street.owned = true;
+fn a_depot_never_splits_a_companys_street_or_one_at_a_companys_junction() {
+    for junction in [false, true] {
+        let mut world = World::new();
+        for street in &mut world.streets {
+            if junction {
+                street.company_junction = true;
+            } else {
+                street.owned = true;
+            }
+        }
+        let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Hard, None);
+        play(
+            &mut brain,
+            &mut world,
+            Instant::now(),
+            Duration::from_secs(120),
+        );
+        assert!(
+            !world
+                .actions
+                .iter()
+                .any(|(_, a)| matches!(a, Action::BuildConstruction(_))),
+            "no depot there (junction {junction})"
+        );
+        let said = brain.take_said();
+        assert!(
+            said.iter().any(|l| l == "found no place for a depot"),
+            "{said:?}"
+        );
     }
-    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Hard, None);
-    play(
-        &mut brain,
-        &mut world,
-        Instant::now(),
-        Duration::from_secs(120),
-    );
-    assert!(
-        !world
-            .actions
-            .iter()
-            .any(|(_, a)| matches!(a, Action::BuildConstruction(_))),
-        "no depot on a company's street"
-    );
-    let said = brain.take_said();
-    assert!(
-        said.iter().any(|l| l == "found no place for a depot"),
-        "{said:?}"
-    );
 }

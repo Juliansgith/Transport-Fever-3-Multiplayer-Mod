@@ -171,6 +171,12 @@ pub struct AiStreet {
     pub objects: u8,
     /// A bridge or tunnel.
     pub structure: bool,
+    /// A junction at one of its ends has lane settings, and a company's
+    /// edge meets it there: a split of it rebuilds those settings, which
+    /// the room refuses for an edge not the acting company's (D21,
+    /// `tpf3mp/junctions.lua`), though the game's verdict, a preview,
+    /// leaves the settings out.
+    pub company_junction: bool,
 }
 
 /// A vehicle model a company may buy.

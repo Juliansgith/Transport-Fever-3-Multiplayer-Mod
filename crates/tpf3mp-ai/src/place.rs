@@ -269,6 +269,7 @@ mod tests {
             owned: false,
             objects: 0,
             structure: false,
+            company_junction: false,
         }
     }
 

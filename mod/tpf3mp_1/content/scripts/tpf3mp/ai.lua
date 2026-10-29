@@ -73,20 +73,43 @@ local function companyOf(roster, seat)
 end
 
 -- The construction origin of each station and depot, read once an answer.
-local function constructions()
-	local byStation, depots = {}, {}
-	for _, e in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.CONSTRUCTION) or {}) do
-		local c = component(e, "CONSTRUCTION")
-		if c and c.transf then
-			local t = c.transf
-			local origin = { x = t[13], y = t[14], z = t[15] }
-			for _, s in ipairs(c.stations or {}) do byStation[s] = origin end
-			if c.depots and #c.depots > 0 then
-				depots[#depots + 1] = { entity = e, construction = c, origin = origin }
+-- The construction an entity is part of (a station, a depot), by the
+-- game's own index, as its entity and component; nil where none is. Never
+-- a scan of every construction: 3,470 on the big fixture took 3 to 18 ms a
+-- question (2026-10-29), a stutter in the driving game.
+local function constructionOf(entity, lookups)
+	local system = api.engine.system and api.engine.system.streetConnectorSystem
+	for _, lookup in ipairs(lookups) do
+		local ok, con = pcall(function() return system[lookup](entity) end)
+		if ok and type(con) == "number" and con >= 0 then
+			local c = component(con, "CONSTRUCTION")
+			if c and c.transf then return con, c end
+		end
+	end
+	return nil
+end
+
+local function origin(c)
+	local t = c.transf
+	return { x = t[13], y = t[14], z = t[15] }
+end
+
+-- The depot constructions `entity` owns a depot of, each once.
+local function depotsOf(entity)
+	local companies = module("companies")
+	local out, seen = {}, {}
+	local ok, kind = pcall(function() return api.type.ComponentType.VEHICLE_DEPOT end)
+	if not ok or kind == nil then return out end
+	for _, depot in ipairs(api.engine.getEntitiesWithComponent(kind) or {}) do
+		if companies.ownerOf(api, depot) == entity then
+			local con, c = constructionOf(depot, { "getConstructionEntityForDepot", "getConstructionEntityForSubconstruction" })
+			if con and not seen[con] then
+				seen[con] = true
+				out[#out + 1] = { entity = con, construction = c, origin = origin(c) }
 			end
 		end
 	end
-	return byStation, depots
+	return out
 end
 
 -- Where a station stands that no construction holds: a street stop is an
@@ -175,7 +198,7 @@ function ai.company(seat, roster, registry)
 	local finance = api.engine.util.finance
 	out.money = whole(finance and finance.getPlayersBalance and finance.getPlayersBalance(entity) or 0)
 	local companies = module("companies")
-	local byStation, depots = constructions()
+	local depots = depotsOf(entity)
 	-- Station groups: owned by the company, named by the room's ids.
 	for _, g in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.STATION_GROUP) or {}) do
 		if #out.stations >= ai.MAX_OWNED then break end
@@ -183,7 +206,13 @@ function ai.company(seat, roster, registry)
 			local id = reg and regmod.id(reg, "groups", g)
 			local group = component(g, "STATION_GROUP")
 			local first = group and group.stations and group.stations[1]
-			local at = first and (byStation[first] or objectAt(first))
+			local holder
+			if first then
+				local _, c = constructionOf(first, { "getConstructionEntityForStation",
+					"getConstructionEntityForSubconstruction" })
+				holder = c
+			end
+			local at = first and (holder and origin(holder) or objectAt(first))
 			if id and at then
 				local terminals = 0
 				for _, s in ipairs(group.stations or {}) do
@@ -196,13 +225,11 @@ function ai.company(seat, roster, registry)
 	end
 	for _, d in ipairs(depots) do
 		if #out.depots >= ai.MAX_OWNED then break end
-		if companies.ownerOf(api, d.construction.depots[1]) == entity then
-			local gate, connected = entrance(d.construction, d.origin)
-			out.depots[#out.depots + 1] = {
-				file = text(d.construction.fileName, 128), at = pos(d.origin),
-				entrance = gate and pos(gate) or nil, connected = connected,
-			}
-		end
+		local gate, connected = entrance(d.construction, d.origin)
+		out.depots[#out.depots + 1] = {
+			file = text(d.construction.fileName, 128), at = pos(d.origin),
+			entrance = gate and pos(gate) or nil, connected = connected,
+		}
 	end
 	local lines = api.engine.system.lineSystem.getLinesForPlayer(entity) or {}
 	local vehicles = api.engine.system.transportVehicleSystem
@@ -288,6 +315,26 @@ function ai.towns(registry)
 	return { Towns = each(towns, ai.MAX_TOWNS) }
 end
 
+-- Whether a company owns `edge`.
+local function companys(edge)
+	local owned = component(edge, "PLAYER_OWNED")
+	return owned ~= nil and type(owned.player) == "number" and owned.player >= 0
+end
+
+-- Whether `node` has lane settings and a company's edge meets it: a split
+-- of an edge ending there rebuilds the settings, and the room refuses that
+-- where an edge they name is not the acting company's (D21,
+-- junctions.into); the game's verdict, a preview, leaves them out.
+local function companyJunction(node)
+	if type(node) ~= "number" or component(node, "BASE_NODE_CONFIG") == nil then return false end
+	local streets = api.engine.system and api.engine.system.streetSystem
+	local ok, segments = pcall(function() return streets.getNodeSegments(node) end)
+	for _, segment in ipairs(ok and segments or {}) do
+		if companys(segment) then return true end
+	end
+	return false
+end
+
 function ai.streets(at, radius)
 	local C = api.type.ComponentType
 	local found = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(at.x, at.y), radius, C.BASE_EDGE) or {}
@@ -305,13 +352,13 @@ function ai.streets(at, radius)
 				mid = { x = mid.x + (ta.x - tb.x) / 8, y = mid.y + (ta.y - tb.y) / 8, z = mid.z + (ta.z - tb.z) / 8 }
 			end
 			local mx, my = (a.x + b.x) / 2 - at.x, (a.y + b.y) / 2 - at.y
-			local owned = component(e, "PLAYER_OWNED")
 			streets[#streets + 1] = {
 				a = pos(a), b = pos(b), mid = pos(mid), template = text(edge.roadTemplate, 128),
 				length = whole(math.sqrt(dx * dx + dy * dy + dz * dz)),
-				owned = owned ~= nil and type(owned.player) == "number" and owned.player >= 0,
+				owned = companys(e),
 				objects = math.min(#(edge.objects or {}), 255),
 				structure = edge.type ~= nil and edge.type ~= 0,
+				company_junction = companyJunction(edge.node0) or companyJunction(edge.node1),
 				d = mx * mx + my * my,
 			}
 		end
@@ -400,6 +447,47 @@ function ai.answer(ask, roster, registry)
 	error("a question of no kind", 0)
 end
 
+-- What the answers cost the driving game, by kind of question, and its
+-- slowest frame of them, logged once a minute while it answers: for the
+-- driver's frame budget (docs/AI_PLAYERS.md, "The driver"), never for the
+-- world. os.clock is the elapsed time on Windows.
+ai.COSTS_EVERY = 60
+local costs = { kinds = {}, order = {}, frames = 0, slowest = 0, since = nil }
+
+local function kindOf(ask)
+	local q = type(ask) == "table" and ask.question
+	if type(q) == "string" then return q end
+	if type(q) == "table" then return tostring((next(q))) end
+	return "?"
+end
+
+local function spent(kind, seconds)
+	local k = costs.kinds[kind]
+	if k == nil then
+		k = { n = 0, s = 0, max = 0 }
+		costs.kinds[kind] = k
+		costs.order[#costs.order + 1] = kind
+	end
+	k.n, k.s = k.n + 1, k.s + seconds
+	if seconds > k.max then k.max = seconds end
+end
+
+local function report(link, now)
+	if costs.since == nil then costs.since = now return end
+	if now - costs.since < ai.COSTS_EVERY or costs.frames == 0 then return end
+	local parts = {}
+	for _, kind in ipairs(costs.order) do
+		local k = costs.kinds[kind]
+		parts[#parts + 1] = string.format("%s %d (mean %.1f ms, slowest %.1f ms)", kind, k.n,
+			k.s * 1000 / k.n, k.max * 1000)
+	end
+	if type(link.log) == "function" then
+		pcall(link.log, link, string.format("ai: answers in %.0f s: %s; %d frame(s) answered, the slowest %.1f ms",
+			now - costs.since, table.concat(parts, ", "), costs.frames, costs.slowest * 1000))
+	end
+	costs = { kinds = {}, order = {}, frames = 0, slowest = 0, since = now }
+end
+
 -- Answers the questions waiting, while the frame's budget lasts. `link` is
 -- the hook's (tpf3mp/bridge.lua); `room` = { roster =, registry = }, each a
 -- table or a function that reads it. The roster is the game script's whole
@@ -414,7 +502,9 @@ function ai.serve(link, room, budget)
 		if ask == nil then break end
 		local roster = room and room.roster
 		if type(roster) == "function" then roster = roster() end
+		local t1 = os.clock()
 		local ok, answer = pcall(ai.answer, ask, roster, room and room.registry)
+		spent(kindOf(ask), os.clock() - t1)
 		if ok and type(answer) == "table" then
 			link:aiAnswer(ask.id, true, answer)
 		else
@@ -422,6 +512,12 @@ function ai.serve(link, room, budget)
 		end
 		served = served + 1
 	end
+	local now = os.clock()
+	if served > 0 then
+		costs.frames = costs.frames + 1
+		if now - t0 > costs.slowest then costs.slowest = now - t0 end
+	end
+	report(link, now)
 	return served
 end
 

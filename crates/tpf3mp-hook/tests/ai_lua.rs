@@ -37,10 +37,11 @@ fn scripts() -> PathBuf {
 
 const GAME: &str = r#"
     -- Each node's street edges.
-    SEGMENTS = { [402] = { 410 }, [403] = { 410 } }
+    SEGMENTS = { [402] = { 410 }, [403] = { 410 }, [950] = { 900 }, [951] = { 900, 960 },
+                 [952] = { 901, 961 }, [953] = { 901 } }
     local CT = { CONSTRUCTION = 1, STATION_GROUP = 2, STATION = 3, BASE_NODE = 4, LINE = 5, NAME = 6,
         TRANSPORT_VEHICLE = 7, TOWN_BUILDING = 8, TOWN = 9, BASE_EDGE = 10, BASE_EDGE_STREET = 11,
-        PLAYER_OWNED = 12, EDGE_OBJECT = 13 }
+        PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15 }
     local COMP = {
         [CT.CONSTRUCTION] = {
             [300] = { fileName = "stations/street/small_stops/small_new_twosided.con",
@@ -53,6 +54,8 @@ const GAME: &str = r#"
                 frozenNodes = { 402 }, frozenEdges = { 410 } },
         },
         [CT.STATION_GROUP] = { [310] = { stations = { 301 } }, [320] = { stations = { 321 } } },
+        -- Its depot, and another company's.
+        [CT.VEHICLE_DEPOT] = { [401] = {}, [431] = {} },
         [CT.STATION] = { [301] = { terminals = { {}, {} } }, [321] = { terminals = { {}, {} } } },
         -- A street stop: an object on its edge, in no construction.
         [CT.EDGE_OBJECT] = { [321] = { param = 0.5, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6267.5,-5560,8,1 } } },
@@ -65,13 +68,16 @@ const GAME: &str = r#"
         [CT.TOWN] = { [700] = {}, [701] = {} },
         [CT.BASE_EDGE] = {
             [410] = { node0 = 403, node1 = 402 },
-            [900] = { position0 = { x = 0, y = 0, z = 1 }, position1 = { x = 30, y = 40, z = 1 },
+            [900] = { position0 = { x = 0, y = 0, z = 1 }, position1 = { x = 30, y = 40, z = 1 }, node0 = 950, node1 = 951,
                 roadTemplate = "::/street/town_small.street_template", objects = {}, type = 0 },
-            [901] = { position0 = { x = 1000, y = 0, z = 0 }, position1 = { x = 1100, y = 0, z = 0 },
+            [901] = { position0 = { x = 1000, y = 0, z = 0 }, position1 = { x = 1100, y = 0, z = 0 }, node0 = 952, node1 = 953,
                 tangent0 = { x = 100, y = 80, z = 0 }, tangent1 = { x = 100, y = -80, z = 0 },
                 roadTemplate = "::/street/country.street_template", objects = { {1, 0} }, type = 1 },
         },
         [CT.BASE_EDGE_STREET] = { [900] = {}, [901] = {} },
+        -- Junctions with lane settings: 951, where only the town's edges
+        -- meet; 952, where a company's (901) does.
+        [CT.BASE_NODE_CONFIG] = { [951] = {}, [952] = {} },
         [CT.PLAYER_OWNED] = { [310] = { player = 77 }, [320] = { player = 77 }, [401] = { player = 77 },
             [901] = { player = 77 } },
     }
@@ -93,6 +99,7 @@ const GAME: &str = r#"
                  enum = { TransportMode = { BUS = 3, TRUCK = 4 } } },
         engine = {
             getEntitiesWithComponent = function(ct)
+                if NO_SCAN and ct == CT.CONSTRUCTION then error("a scan of every construction") end
                 local out = {}
                 for e in pairs(COMP[ct] or {}) do out[#out + 1] = e end
                 table.sort(out)
@@ -114,6 +121,11 @@ const GAME: &str = r#"
                     getDepotVehicles = function() return {} end,
                 },
                 streetSystem = { getNodeSegments = function(n) return SEGMENTS[n] or {} end },
+                -- The game's index of what construction holds a part.
+                streetConnectorSystem = {
+                    getConstructionEntityForDepot = function(d) return ({ [401] = 400, [431] = 430 })[d] or -1 end,
+                    getConstructionEntityForStation = function(s) return s == 301 and 300 or -1 end,
+                },
             },
         },
         res = { modelRep = {
@@ -228,8 +240,10 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
     );
     assert!(!depot.connected, "only its own edge meets the entrance");
     // Snapped by the game's refresh: the entrance is a junction of the
-    // street, its halves meeting the depot's own edge there.
-    lua.load("SEGMENTS[403] = { 410, 411, 412 }")
+    // street, its halves meeting the depot's own edge there. And read
+    // without a scan of every construction: the game's index finds the
+    // company's own (3,470 constructions took up to 18 ms, 2026-10-29).
+    lua.load("SEGMENTS[403] = { 410, 411, 412 } NO_SCAN = true")
         .exec()
         .unwrap();
     let AiAnswer::Company(company) = answer(&lua, "'Company'") else {
@@ -239,6 +253,12 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
     assert!(depot.connected, "the street meets its entrance");
     let gate = depot.entrance.unwrap();
     assert_eq!((gate.x, gate.y), (500_000, 565_000), "where it meets it");
+    assert_eq!(company.depots.len(), 1, "its own depot only");
+    assert_eq!(
+        (company.stations[0].pos.x, company.stations[0].pos.y),
+        (100_500, 200_250),
+        "a station by its construction"
+    );
     let line = &company.lines[0];
     assert_eq!(line.id.0, 2);
     assert_eq!(line.name.as_str(), "Line 1");
@@ -292,6 +312,10 @@ fn towns_streets_and_models_read_as_the_ai_reads_them() {
     assert!(!streets[0].owned && !streets[0].structure);
     assert!(streets[1].owned && streets[1].structure);
     assert_eq!(streets[1].objects, 1);
+    // A split of the town's edge rebuilds only the town's junction; of the
+    // company's, a junction a company's edge meets.
+    assert!(!streets[0].company_junction);
+    assert!(streets[1].company_junction);
     // Its curve's middle, where a stop or a split goes: the chord's on a
     // straight edge, off it on a bent one (the Hermite curve at one half).
     assert_eq!(
@@ -330,4 +354,41 @@ fn a_question_of_no_kind_is_an_error_not_an_answer() {
         .eval()
         .unwrap();
     assert_eq!(err, "false a question of no kind");
+}
+
+#[test]
+fn serving_answers_each_question_and_logs_what_the_answers_cost() {
+    let lua = lua();
+    let (answered, logged): (String, String) = lua
+        .load(
+            r#"
+            local asks = { { id = 7, seat = SEAT, question = "Towns" },
+                           { id = 8, seat = SEAT, question = { Bogus = {} } } }
+            local answered, logged = {}, {}
+            local link = {
+                aiAsk = function(self) return table.remove(asks, 1) end,
+                aiAnswer = function(self, id, ok) answered[#answered + 1] = id .. ":" .. tostring(ok) end,
+                log = function(self, line) logged[#logged + 1] = line end,
+            }
+            AI.COSTS_EVERY = 0
+            local room = { roster = function() return ROSTER end, registry = REGISTRY }
+            -- The first call starts the count, the second reports it.
+            AI.serve(link, room, 1000)
+            AI.serve(link, room, 1000)
+            return table.concat(answered, ","), table.concat(logged, "|")
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        answered, "7:true,8:false",
+        "an answer, then why there is none"
+    );
+    assert!(
+        logged.starts_with("ai: answers in ")
+            && logged.contains("Towns 1 (mean ")
+            && logged.contains("Bogus 1 (mean ")
+            && logged.contains("1 frame(s) answered, the slowest "),
+        "{logged}"
+    );
 }

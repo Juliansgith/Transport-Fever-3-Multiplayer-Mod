@@ -54,6 +54,8 @@ pub const STOP_REUSE: f64 = 260.0;
 /// How near a town a depot of its own on the street must stand to serve a
 /// line there, in metres.
 pub const DEPOT_REACH: f64 = 1_500.0;
+/// How many streets around a town it tries a depot by, each side of each.
+pub const DEPOT_STREETS: usize = 8;
 /// Towns it gives up on stay given up on for this long.
 pub const GIVE_UP_FOR: Duration = Duration::from_secs(900);
 /// Bus models' transport mode, by the game's name.
@@ -894,7 +896,7 @@ impl Brain {
             // the room refuses (D21).
             .filter(|&i| {
                 let s = &project.streets[i];
-                place::usable(s) && !s.owned && s.length >= 40
+                place::usable(s) && !s.owned && !s.company_junction && s.length >= 40
             })
             .filter(|&i| {
                 let m = place::middle(&project.streets[i]);
@@ -908,7 +910,7 @@ impl Brain {
                 .flat_distance(centre)
                 .total_cmp(&place::middle(&project.streets[a]).flat_distance(centre))
         });
-        for i in order.into_iter().take(4) {
+        for i in order.into_iter().take(DEPOT_STREETS) {
             tries.push((i, 1.0));
             tries.push((i, -1.0));
         }
