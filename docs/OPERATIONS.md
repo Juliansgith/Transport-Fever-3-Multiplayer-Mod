@@ -828,6 +828,10 @@ tunnel instead, through the reverse proxy.
   operator opens cannot post a notice to every player or read the rooms
   through a forwarded port. Call it by address (`curl
   http://127.0.0.1:9470/...`), as `tpf3mp-ctl` and `collect-logs.sh` do.
+- Wrong invites are counted for 65,536 addresses at once. When that many
+  are counted, the oldest address not yet stopped (20 wrong invites) is
+  forgotten to count a new one; only a table of stopped addresses refuses
+  newcomers until their ten minutes end.
 - One network address holds at most 8 sessions and 4 handshakes in progress
   (`--max-sessions-per-address`, `--max-handshakes-per-address`). An IPv6
   /64 counts as one address. A household or LAN party with more players
