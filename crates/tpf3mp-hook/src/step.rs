@@ -77,6 +77,16 @@ use crate::lanedump::{self, DumpOrder, LaneDumps};
 /// itself runs up to 64 in a call (its debug steps).
 pub const MAX_STEPS_PER_CALL: u32 = 16;
 
+/// Most steps one call runs while the game is catching up with the room
+/// ([`crate::cadence::CatchUp`]): the game's own limit for a call (its
+/// debug steps, 64), still cut at every checkpoint (50 steps by default)
+/// and every event. Each call costs the game about 90 ms besides its
+/// updates (measured on a 150 MB world, build 40425: 24 calls of up to 16
+/// updates in 10.3 s, 8.1 s of them in the step), and a checkpoint every 50
+/// steps cut catch-up into 16 + 16 + 16 + 2: four calls where one does.
+/// A game catching up shows fast-forwarded motion anyway.
+pub const CATCH_UP_STEPS_PER_CALL: u32 = 64;
+
 /// Experimental cap on ordinary catch-up. Ordered drains retain the default
 /// bound, so smaller batches do not slow actions or replayed room history.
 /// No extra steps are released.
@@ -630,6 +640,8 @@ pub struct StepDriver<G> {
     /// The batch interval times each call ([`crate::interval`]).
     batch_interval: bool,
     max_batch_updates: u32,
+    /// Whether the game has been catching up with the room lately.
+    catch_up: crate::cadence::CatchUp,
     /// The driver ran the room's game after the last call: leaving it (an
     /// end, the menu, playing alone) starts a new epoch for the interval.
     was_running: bool,
@@ -669,6 +681,7 @@ impl<G: RoomGate> StepDriver<G> {
             handed_at: None,
             batch_interval: false,
             max_batch_updates: MAX_STEPS_PER_CALL,
+            catch_up: crate::cadence::CatchUp::new(),
             was_running: false,
             choice: None,
             log: Vec::new(),
@@ -1270,6 +1283,18 @@ impl<G: RoomGate> StepDriver<G> {
                     } else {
                         self.max_batch_updates
                     };
+                    // Replaying history after a join or a reload: as many as
+                    // the game runs in a call, to the next checkpoint or
+                    // event (the gate cuts there either way).
+                    let catching_up = max_batch == MAX_STEPS_PER_CALL
+                        && self
+                            .catch_up
+                            .catching_up(Instant::now(), self.cadence.pace_now());
+                    let max_batch = if catching_up {
+                        CATCH_UP_STEPS_PER_CALL
+                    } else {
+                        max_batch
+                    };
                     return match self.gate.batch(&mut self.game, max_batch) {
                         Ok(cap) => {
                             let interval = self.checkpoint_interval.max(1);
@@ -1289,8 +1314,9 @@ impl<G: RoomGate> StepDriver<G> {
                                 self.why = "reserve";
                                 return Updates::Exactly(0);
                             }
-                            self.why = "run";
+                            self.why = if catching_up { "catch-up" } else { "run" };
                             let steps = choice.steps.max(1);
+                            self.catch_up.note(Instant::now(), steps);
                             let last = first.saturating_add(u64::from(steps) - 1);
                             self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
                             self.checkpoint_step = last;
@@ -1512,6 +1538,7 @@ impl<G: RoomGate> StepDriver<G> {
         // so do the batches the interval times (new GameSims).
         self.cadence
             .reset(next_step.saturating_sub(1), Instant::now());
+        self.catch_up.reset();
         crate::interval::SLOTS.next_epoch();
         self.room_world = Some(self.control.world_mark());
         crate::order::measure::room_step(next_step);
