@@ -204,6 +204,7 @@ fn in_room(members: Vec<LobbyMember>, you_own: bool) -> LobbyView {
             competitive: false,
             start: None,
             upload: None,
+            ais: BoundedVec::default(),
         }),
         chat: BoundedVec::new(vec![LobbyLine {
             from: Text::new("Bob").unwrap(),

@@ -40,7 +40,7 @@ function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
 	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
-		"bridge", "guard", "hudguard", "worldload", "junctions", "apply", "previews" }
+		"bridge", "guard", "hudguard", "worldload", "junctions", "apply", "previews", "ai" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -1195,6 +1195,13 @@ function data()
 			if link then
 				local took, why = pcall(require("tpf3mp.previews").take, link, previewProposal, drawPreview)
 				if not took then say("taking the build previews failed: " .. tostring(why)) end
+			end
+			-- The questions of the AI players this game drives
+			-- (tpf3mp/ai.lua; docs/AI_PLAYERS.md): a few a frame.
+			if link then
+				local served, why = pcall(require("tpf3mp.ai").serve, link,
+					{ roster = ui().companies, registry = registryNow })
+				if not served then say("answering the AI players failed: " .. tostring(why)) end
 			end
 			if link and guardedCmd then
 				local delivered, why = pcall(function()

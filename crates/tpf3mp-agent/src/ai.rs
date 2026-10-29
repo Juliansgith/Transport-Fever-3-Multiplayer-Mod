@@ -18,6 +18,15 @@ impl AiDriver {
         self.seats = seats;
     }
 
+    /// The game's answer to question `id`.
+    pub(crate) fn answer(
+        &mut self,
+        id: u32,
+        answer: Result<tpf3mp_bridge::ai::AiAnswer, tpf3mp_proto::Text<256>>,
+    ) {
+        let _ = (id, answer);
+    }
+
     /// The room refused an action sent for `seat`.
     pub(crate) fn rejected(&mut self, seat: PlayerId, client_seq: u64, reason: IntentRejection) {
         warn!(%seat, client_seq, ?reason, "the room refused an AI player's action");

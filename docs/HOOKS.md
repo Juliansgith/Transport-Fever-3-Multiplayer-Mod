@@ -3930,6 +3930,26 @@ Not covered: a construction's or another tool's click whose proposal maps crossi
 nodes (read, never carried; none is known); the preview the other members
 see (sent before the click, without the type); the cost of a type (the
 replay builds at the game's cost for its proposal).
+### AI players' questions
+
+An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
+whose game drives it, and asks that game about the world (bridge 30):
+the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
+seat's company, the towns, the streets near a place, the vehicle models
+of a transport mode, or the game's verdict on an action), the session
+hands it on as `Notice::AiAsk`, and `crate::ai` keeps it until the GUI
+takes it. The mod's GUI state (`tpf3mp/ai.lua`, every frame within 1.5
+ms) calls `tpf3mp_native.aiAsk()` for the next question, a table
+`{ id, seat, question }` (a verdict's action as the table `apply` reads),
+and answers with `tpf3mp_native.aiAnswer(id, ok, answer)`: a table in the
+game's units, which the hook converts with `tpf3mp_proto::lua::from_lua`
+by the same rules as an action (positions in metres, every bound checked)
+and sends as `ToAgent::AiAnswer`, or why it has none. An answer larger
+than the link's message is refused with why. A verdict makes the
+proposal as the seat's company would build it (`apply.proposalOf`, as
+build previews do) and asks `makeProposalData`: nothing is sent or built.
+The questions are dropped while a world loads; the agent asks again.
+
 ### Build previews
 
 What a player's build tool shows before the click, the road, track,

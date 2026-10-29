@@ -1279,6 +1279,7 @@ mod tests {
                 })
                 .collect(),
             competitive: false,
+            ais: Vec::new(),
         }
     }
 

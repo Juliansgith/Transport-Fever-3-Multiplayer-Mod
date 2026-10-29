@@ -101,6 +101,20 @@ pub struct Room {
     /// For the owner: the save they picked on its way to the room, and how
     /// much of it went up, in percent.
     pub upload: Option<(String, u8)>,
+    /// The room's AI players.
+    pub ais: Vec<AiPlayer>,
+}
+
+/// An AI player of the room (docs/AI_PLAYERS.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiPlayer {
+    /// Its seat's id, as 64 hex digits: what `remove_ai` names.
+    pub id: String,
+    pub name: String,
+    /// `easy`, `normal` or `hard`.
+    pub difficulty: &'static str,
+    /// Whether this player's game drives it.
+    pub yours: bool,
 }
 
 /// The save a room starts from.
@@ -327,6 +341,14 @@ enum WindowAction {
     },
     /// Find the installed mods again.
     RescanMods,
+    /// The room's owner seats an AI player: `easy`, `normal` or `hard`.
+    AddAi {
+        difficulty: String,
+    },
+    /// The room's owner removes the AI player with this id (64 hex digits).
+    RemoveAi {
+        player: String,
+    },
 }
 
 /// One mod of the owner's selection, as the window names it.
@@ -553,6 +575,19 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             }
         }
         WindowAction::RescanMods => LobbyAction::RescanMods,
+        WindowAction::AddAi { difficulty } => LobbyAction::AddAi {
+            difficulty: match difficulty.as_str() {
+                "easy" => tpf3mp_proto::AiDifficulty::Easy,
+                "normal" => tpf3mp_proto::AiDifficulty::Normal,
+                "hard" => tpf3mp_proto::AiDifficulty::Hard,
+                _ => return Err("an AI player is easy, normal or hard".into()),
+            },
+        },
+        WindowAction::RemoveAi { player: id } => LobbyAction::RemoveAi {
+            player: player(&id)
+                .filter(PlayerId::is_ai)
+                .ok_or("that is not an AI player")?,
+        },
     })
 }
 
@@ -576,6 +611,8 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::ChooseStart { .. } => "choose_start",
         LobbyAction::ChooseRoomMods { .. } => "choose_room_mods",
         LobbyAction::RescanMods => "rescan_mods",
+        LobbyAction::AddAi { .. } => "add_ai",
+        LobbyAction::RemoveAi { .. } => "remove_ai",
     }
 }
 
@@ -702,6 +739,20 @@ impl LobbyState {
                     .upload
                     .as_ref()
                     .map(|upload| (upload.save.as_str().to_owned(), upload.percent.min(100))),
+                ais: room
+                    .ais
+                    .iter()
+                    .map(|ai| AiPlayer {
+                        id: hex(&ai.player),
+                        name: ai.name.as_str().to_owned(),
+                        difficulty: match ai.difficulty {
+                            tpf3mp_proto::AiDifficulty::Easy => "easy",
+                            tpf3mp_proto::AiDifficulty::Normal => "normal",
+                            tpf3mp_proto::AiDifficulty::Hard => "hard",
+                        },
+                        yours: ai.yours,
+                    })
+                    .collect(),
                 members: room
                     .members
                     .iter()
@@ -1020,6 +1071,16 @@ impl LobbyState {
                         member.missing,
                         member.changed,
                         member.extra
+                    ));
+                }
+                out.push_str(" }, ais = {");
+                for ai in &room.ais {
+                    out.push_str(&format!(
+                        " {{ id = {}, name = {}, difficulty = {}, yours = {} }},",
+                        lua_str(&ai.id),
+                        lua_str(&ai.name),
+                        lua_str(ai.difficulty),
+                        ai.yours
                     ));
                 }
                 out.push_str(" }");
@@ -1359,6 +1420,7 @@ mod tests {
                     save: Text::new("Güterzug").unwrap(),
                     percent: 35,
                 }),
+                ais: BoundedVec::default(),
             }),
             chat: BoundedVec::new(vec![LobbyLine {
                 from: Text::new("Bo").unwrap(),
@@ -1558,6 +1620,12 @@ mod tests {
         fn chosen_speed(&mut self, _speedup: u64) {}
         fn say(&mut self, _text: tpf3mp_proto::ChatText) {}
         fn preview(&mut self, _preview: Option<tpf3mp_proto::Payload>) {}
+        fn ai_answer(
+            &mut self,
+            _id: u32,
+            _answer: Result<tpf3mp_bridge::ai::AiAnswer, tpf3mp_proto::Text<256>>,
+        ) {
+        }
         fn on_menu(&mut self) {}
         fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
             self.heard.extend(actions);

@@ -63,6 +63,8 @@ pub enum Gated {
         from: PlayerId,
         preview: Option<Payload>,
     },
+    /// Answer a question about the world for an AI seat this game drives.
+    AiAsk { id: u32, ask: crate::ai::AiAsk },
     /// Nothing to do but check [`Gate::may_run`] again.
     Nothing,
 }
@@ -157,7 +159,9 @@ impl Gate {
         // The lobby is for the menu's window and changes nothing here: it
         // may come at any time, a load included. So may another member's
         // preview, which a world on its way has nowhere to show.
-        if self.loading && matches!(message, ToHook::Preview { .. }) {
+        // An AI's question too: a world on its way has nothing to answer
+        // from, and the agent asks again.
+        if self.loading && matches!(message, ToHook::Preview { .. } | ToHook::AiAsk { .. }) {
             return Ok(Gated::Nothing);
         }
         if self.loading && !matches!(message, ToHook::End { .. } | ToHook::Lobby(_)) {
@@ -201,6 +205,7 @@ impl Gate {
             ToHook::Room(room) => Ok(Gated::Room(room)),
             ToHook::Lobby(view) => Ok(Gated::Lobby(view)),
             ToHook::Preview { from, preview } => Ok(Gated::Preview { from, preview }),
+            ToHook::AiAsk { id, ask } => Ok(Gated::AiAsk { id, ask }),
             ToHook::Hello { .. } => Err(GateError::Unexpected("a hello")),
             ToHook::Begin { .. } => Err(GateError::Unexpected("the start of a game")),
         }

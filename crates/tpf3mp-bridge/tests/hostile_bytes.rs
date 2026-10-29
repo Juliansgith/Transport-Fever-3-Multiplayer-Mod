@@ -97,6 +97,16 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             from: PlayerId(FixedBytes([2; 32])),
             preview: None,
         },
+        ToHook::AiAsk {
+            id: 3,
+            ask: tpf3mp_bridge::ai::AiAsk {
+                seat: PlayerId(FixedBytes([5; 32])),
+                question: tpf3mp_bridge::ai::AiQuestion::Streets {
+                    at: tpf3mp_proto::action::Pos { x: 1, y: -2, z: 3 },
+                    radius: 250,
+                },
+            },
+        },
         ToHook::Room(RoomInfo {
             name: Text::new("Sunday line").unwrap(),
             owner: PlayerId(FixedBytes([1; 32])),
@@ -118,6 +128,13 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     connected: false,
                 },
             ])
+            .unwrap(),
+            ais: BoundedVec::new(vec![tpf3mp_bridge::LobbyAi {
+                player: PlayerId(FixedBytes([9; 32])),
+                name: Text::new("Rossi Transport").unwrap(),
+                difficulty: tpf3mp_proto::AiDifficulty::Hard,
+                yours: false,
+            }])
             .unwrap(),
         }),
         ToHook::Lobby(Box::new(LobbyView {
@@ -156,6 +173,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 }])
                 .unwrap(),
                 competitive: false,
+                ais: BoundedVec::default(),
                 start: Some(tpf3mp_bridge::LobbyStart {
                     name: Text::new("mptest").unwrap(),
                     map: Text::new("temperate").unwrap(),
@@ -245,6 +263,21 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         },
         ToAgent::Preview {
             preview: Some(Payload::new(vec![6; 300]).unwrap()),
+        },
+        ToAgent::AiAnswer {
+            id: 7,
+            answer: Ok(tpf3mp_bridge::ai::AiAnswer::Verdict(
+                tpf3mp_bridge::ai::AiVerdict {
+                    ok: false,
+                    cost: 120_000,
+                    messages: BoundedVec::new(vec![Text::new("Collision").unwrap()]).unwrap(),
+                    collisions: 2,
+                },
+            )),
+        },
+        ToAgent::AiAnswer {
+            id: 8,
+            answer: Err(Text::new("no world yet").unwrap()),
         },
         ToAgent::Speed {
             speed: Speed::PAUSED,

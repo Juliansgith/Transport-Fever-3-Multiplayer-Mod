@@ -674,6 +674,7 @@ mod tests {
             has_password: false,
             members: Vec::new(),
             competitive: false,
+            ais: Vec::new(),
         });
         assert!(stays(&state));
     }

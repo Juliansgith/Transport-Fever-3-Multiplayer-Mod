@@ -3976,6 +3976,16 @@ function apply.run(action, ctx)
 	if handler == nil then
 		return false, "this version of the mod does not apply " .. tostring(kind) .. " yet"
 	end
+	-- An AI player acts for its own company only: it founds one before
+	-- anything else, and never acts for the room's first (D32).
+	local player = ctx and ctx.player
+	if companiesModule.isAi(player) then
+		local mine = ctx.roster and companiesModule.of(ctx.roster, player)
+		local founding = kind == "CompanyOp" and type(body) == "table" and next(body) == "Create"
+		if not founding and (mine == nil or mine.id == 0) then
+			return false, "an AI player founds its company before anything else"
+		end
+	end
 	local actorBefore, localBefore = "unavailable", "unavailable"
 	if kind == "CompanyOp" then
 		local readActor, valueActor = pcall(diagnosticActor, ctx and ctx.roster, ctx and ctx.player)

@@ -198,6 +198,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         added,
         [
             "tpf3mp.acceptance",
+            "tpf3mp.ai",
             "tpf3mp.apply",
             "tpf3mp.banners",
             "tpf3mp.bridge",
@@ -12985,6 +12986,95 @@ fn the_game_script_seeds_math_random_with_the_room_steps_seed_each_update() {
 }
 
 /// Pure: the roster of companies (tpf3mp/companies.lua).
+/// An AI player (docs/AI_PLAYERS.md, D32) founds one company of its own
+/// and plays for no other; no player joins it; and every game refuses an
+/// AI's action before it has founded its company.
+#[test]
+fn an_ai_player_founds_one_company_of_its_own_and_nobody_joins_it() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = {} }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                forEachEntityWithComponent = function(fn, kind)
+                    for e in pairs(COMP[kind] or {}) do fn(e) end
+                end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name, color = color } end,
+                makeEntitySetNameCmd = function(e, name) return { rename = e, name = name } end,
+            },
+        }
+        NEXT = 900
+        function send(cmd)
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        AI = C.AI_PREFIX .. string.rep("0", 31) .. "7"
+        AI2 = C.AI_PREFIX .. string.rep("0", 31) .. "8"
+        A = string.rep("a", 64)
+        R = C.ensure(nil, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    assert_eq!(
+        eval("return tostring(C.isAi(AI)) .. tostring(C.isAi(A)) .. tostring(C.isAi(nil))"),
+        "truefalsefalse"
+    );
+    // The AI founds its company and plays for it.
+    assert_eq!(
+        eval(
+            "local ok, why, id = C.run(R, AI, { Create = { name = 'Rossi Transport' } }, send, api) \
+             return tostring(ok) .. ' ' .. tostring(id) .. ' ' .. C.of(R, AI).name"
+        ),
+        "true 1 Rossi Transport"
+    );
+    // One company: a second is refused, the AI keeps the first.
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, AI, { Create = { name = 'More' } }, send, api) \
+             return tostring(ok) .. ': ' .. why"
+        ),
+        "false: an AI player keeps the one company it founded"
+    );
+    // No player joins it; the AI joins no other.
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, A, { Join = 1 }, send, api) return tostring(ok) .. ': ' .. why"
+        ),
+        "false: Rossi Transport is an AI player's company"
+    );
+    assert_eq!(eval("return tostring(C.of(R, A).id)"), "0");
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, AI2, { Join = 1 }, send, api) return tostring(ok) .. ': ' .. why"
+        ),
+        "false: Rossi Transport is an AI player's company"
+    );
+    // Every player starts in the room's first company: joining it is
+    // nothing new, and an AI there acts in nothing (apply.run refuses).
+    assert_eq!(
+        eval("return tostring(C.run(R, AI2, { Join = 0 }, send, api))"),
+        "true"
+    );
+    // Joining its own again changes nothing.
+    assert_eq!(
+        eval("return tostring(C.run(R, AI, { Join = 1 }, send, api))"),
+        "true"
+    );
+}
+
 #[test]
 fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
     let lua = gui();

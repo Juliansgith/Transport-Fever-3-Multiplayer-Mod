@@ -33,6 +33,7 @@ use std::{
 
 use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 
+pub mod ai;
 pub mod at_menu;
 pub mod autoload;
 pub mod build_data;

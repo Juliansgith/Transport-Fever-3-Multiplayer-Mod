@@ -199,6 +199,10 @@ pub enum Control {
     Start,
     Speed(Speed),
     Kick(PlayerId),
+    /// Seat an AI player (docs/AI_PLAYERS.md); the room's owner only.
+    AddAi(tpf3mp_proto::AiDifficulty),
+    /// Remove an AI player; the room's owner only.
+    RemoveAi(PlayerId),
     Chat(ChatText),
     /// Show this banner in the room from now on.
     Banner(Option<tpf3mp_proto::BannerId>),
@@ -993,6 +997,7 @@ impl<L: HookLink> Bridge<L> {
                         .await?;
                     self.commands += 1;
                 }
+                ToAgent::AiAnswer { id, answer } => self.ai.answer(id, answer),
                 ToAgent::Ran { step } if current => {
                     self.progress = Some(step);
                     self.status(|status| status.step = Some(step));
@@ -1958,6 +1963,8 @@ impl<L: HookLink> Bridge<L> {
             Control::Start => Request::StartGame,
             Control::Speed(speed) => Request::SetSpeed(speed),
             Control::Kick(player) => Request::Kick(player),
+            Control::AddAi(difficulty) => Request::AddAi { difficulty },
+            Control::RemoveAi(player) => Request::RemoveAi(player),
             Control::Chat(text) => Request::Chat(text),
             Control::Banner(banner) => Request::SetBanner(banner),
             Control::Declare(declaration) => {
@@ -2253,6 +2260,19 @@ fn room_info(room: &RoomView) -> RoomInfo {
         name: room.name.clone(),
         owner: room.owner,
         members: BoundedVec::new(members).unwrap_or_default(),
+        ais: BoundedVec::new(
+            room.ais
+                .iter()
+                .take(tpf3mp_proto::MAX_AI_SEATS)
+                .map(|ai| tpf3mp_bridge::LobbyAi {
+                    player: ai.player,
+                    name: ai.name.clone(),
+                    difficulty: ai.difficulty,
+                    yours: false,
+                })
+                .collect(),
+        )
+        .unwrap_or_default(),
     }
 }
 
