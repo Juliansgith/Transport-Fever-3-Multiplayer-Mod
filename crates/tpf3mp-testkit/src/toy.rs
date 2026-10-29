@@ -144,11 +144,11 @@ impl Ledger {
     /// the server never orders one, but every replica checks anyway.
     pub fn apply(&mut self, event: &Event) -> Option<Effect> {
         match &event.body {
-            EventBody::PlayerJoined { player, .. } => {
+            EventBody::PlayerJoined { player, .. } | EventBody::AiJoined { player, .. } => {
                 self.money.entry(*player).or_insert(START_MONEY);
                 None
             }
-            EventBody::PlayerLeft { .. } | EventBody::Save => None,
+            EventBody::PlayerLeft { .. } | EventBody::AiLeft { .. } | EventBody::Save => None,
             EventBody::Command {
                 player, payload, ..
             } => {

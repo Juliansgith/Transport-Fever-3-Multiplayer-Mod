@@ -83,6 +83,7 @@ fn room(phase: RoomPhase, owner: PlayerId) -> RoomView {
         members: Vec::new(),
         competitive: false,
         start: None,
+        ais: Vec::new(),
     }
 }
 

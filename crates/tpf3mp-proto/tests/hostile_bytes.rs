@@ -100,6 +100,12 @@ fn room_view() -> RoomView {
             },
             arrived: false,
         }),
+        ais: vec![tpf3mp_proto::AiView {
+            player: PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 0),
+            name: Text::new("Rossi Rail").unwrap(),
+            difficulty: tpf3mp_proto::AiDifficulty::Hard,
+            driver: Some(player(1)),
+        }],
     }
 }
 
@@ -265,6 +271,25 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 size: 120 << 20,
             }),
         }),
+        ClientMessage::Request {
+            id: 14,
+            request: Request::AddAi {
+                difficulty: tpf3mp_proto::AiDifficulty::Normal,
+            },
+        },
+        ClientMessage::Request {
+            id: 15,
+            request: Request::RemoveAi(PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 2)),
+        },
+        ClientMessage::Game(GameMessage::AiIntent {
+            seat: PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 0),
+            client_seq: 7,
+            payload: Payload::new(vec![9, 8, 7]).unwrap(),
+        }),
+        ClientMessage::Game(GameMessage::AiMemo {
+            seat: PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 0),
+            memo: Payload::new(vec![1; 40]).unwrap(),
+        }),
     ];
     let server = [
         ServerMessage::Welcome(Welcome {
@@ -319,6 +344,20 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ServerMessage::ContentDiff(None),
         ServerMessage::RoomMods(Some(Box::new(room_declaration().room_mods()))),
         ServerMessage::RoomMods(None),
+        ServerMessage::AiDrive {
+            seats: vec![tpf3mp_proto::AiSeat {
+                player: PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 0),
+                name: Text::new("Rossi Rail").unwrap(),
+                difficulty: tpf3mp_proto::AiDifficulty::Easy,
+                memo: Some(Payload::new(vec![4; 12]).unwrap()),
+            }],
+        },
+        ServerMessage::AiDrive { seats: vec![] },
+        ServerMessage::AiRejected {
+            seat: PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 0),
+            client_seq: 7,
+            reason: IntentRejection::Refused { code: 65535 },
+        },
     ];
     let turns = [
         TurnMessage::Start(TurnStart {
@@ -372,6 +411,22 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 },
                 Event {
                     seq: 15,
+                    step: 402,
+                    body: EventBody::AiJoined {
+                        player: PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 0),
+                        name: Text::new("Rossi Rail").unwrap(),
+                        difficulty: tpf3mp_proto::AiDifficulty::Hard,
+                    },
+                },
+                Event {
+                    seq: 16,
+                    step: 402,
+                    body: EventBody::AiLeft {
+                        player: PlayerId::ai_seat(&RoomId(FixedBytes([3; 16])), 0),
+                    },
+                },
+                Event {
+                    seq: 17,
                     step: 402,
                     body: EventBody::Save,
                 },

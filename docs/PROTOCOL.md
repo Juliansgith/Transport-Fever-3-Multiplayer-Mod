@@ -296,7 +296,7 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   native mods do not match its manifest's one for one (`InvalidContent`).
   An owner cannot start a game with native terms until its valid room
   declaration supplies their settings.
-  The room log's start record (format 10) keeps each native mod's full
+  The room log's start record (format 10, 11 since AI players) keeps each native mod's full
   settings beside the manifest terms, and a restored game tells new members
   the same settings. Format-9 and native-free format-8 logs remain readable through explicit legacy layouts and recover with the default rolling-v1 scan plan. Format 10 persists the agreed scan plan. Turn record layouts are unchanged, so recovered older logs can safely append turns and compact into format 10. Historical
   format-9 records with ten-digit native terms still decode, but recovery
@@ -563,6 +563,47 @@ These travel on the control stream.
 Game messages that arrive when the sender is not in a running room are
 ignored; an intent is answered with `IntentRejected(GameNotRunning)`. Such
 messages can be in flight when a player leaves, so they are not violations.
+
+## AI players
+
+Protocol 24 seats AI players (docs/AI_PLAYERS.md, D32): companies a
+computer plays through one member's game.
+
+- **Seats.** The room's owner seats one with `Request::AddAi { difficulty }`
+  (Easy, Normal or Hard) and removes one with `Request::RemoveAi(player)`,
+  in the lobby or in a running game; others are refused `NotOwner`, and a
+  room seats at most seven (`TooManyAis`). A seat's id is
+  `PlayerId::ai_seat(room, n)`: the 16 bytes `tpf3mp-ai-seat::`, then 16 of
+  SHA-256 over the room and the seat number, which is the lowest free one.
+  So an AI seated again in a seat has the id, and so the company, the last
+  one there had. Nobody can sign in as a seat: the server refuses a
+  `Hello` whose identity key starts with those bytes, even with a good
+  proof. `RoomView::ais` lists the seats, each with its driver.
+- **Events.** `EventBody::AiJoined { player, name, difficulty }` seats an
+  AI in the game: ordered at once in a running game, after the players'
+  `PlayerJoined` when the game begins for seats taken in the lobby.
+  `EventBody::AiLeft { player }` removes it. Every game learns its AIs from
+  these, in the same order; the room log keeps them, and a compacted log's
+  base keeps the seats (log format 11; format-10 logs still read, with no
+  AI players).
+- **The driver.** The room hands every seat to one member whose game keeps
+  up with the room (streaming, and following within the pacing window):
+  the seats' driver while it keeps up, else the room's owner, else the
+  earliest-joined such member; none in the lobby. It tells the member
+  `ServerMessage::AiDrive { seats }`, all of its seats with each one's
+  memo, whenever that changes, an empty list to stop, and again on a new
+  link after a reconnect.
+- **Actions.** The driver sends `GameMessage::AiIntent { seat, client_seq,
+  payload }`. The room orders it as `EventBody::Command` with the seat as
+  `player` when the sender drives that seat, within the seat's own rate and
+  size limits and the room's rules (`GameActions` checks the action); it
+  answers a refusal with `ServerMessage::AiRejected { seat, client_seq,
+  reason }`, `NotDriver` for a sender that does not drive the seat (any
+  more). The connection meters AI actions with the driver's own intents.
+- **Memo.** `GameMessage::AiMemo { seat, memo }` (at most a payload's
+  size, two a second) is what the AI keeps for its next driver. The room
+  holds the latest in memory, hands it on with the seat, and logs none: a
+  restarted server's AI reads its world anew.
 
 ## Resuming
 

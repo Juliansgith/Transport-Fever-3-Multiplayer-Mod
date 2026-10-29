@@ -48,7 +48,9 @@ use tpf3mp_proto::{
 /// only when its manifest has no native mods. Version 10 persists the
 /// room's exact scan plan; explicit version-8/9 readers supply rolling-v1.
 /// The persisted turn-frame layout is unchanged.
-pub(crate) const FORMAT_VERSION: u16 = 10;
+pub(crate) const FORMAT_VERSION: u16 = 11;
+/// Format 10: before a compacted log's base kept the AI players.
+pub(crate) const LEGACY_PRE_AI_FORMAT_VERSION: u16 = 10;
 pub(crate) const LEGACY_NATIVE_FORMAT_VERSION: u16 = 9;
 pub(crate) const LEGACY_NATIVE_FREE_FORMAT_VERSION: u16 = 8;
 /// Largest start record: one whose base holds the rules' state.
@@ -105,7 +107,7 @@ struct StartRecordV8 {
     invite_tag: Vec<u8>,
     password_tag: Option<Vec<u8>>,
     members: Vec<StartMember>,
-    base: Option<Base>,
+    base: Option<BaseV10>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -148,8 +150,48 @@ struct StartRecordV9 {
     invite_tag: Vec<u8>,
     password_tag: Option<Vec<u8>>,
     members: Vec<StartMember>,
-    base: Option<Base>,
+    base: Option<BaseV10>,
     native_mods: Vec<NativeMod>,
+}
+
+/// The format-10 layout: the current fields, its base without AI players.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StartRecordV10 {
+    version: u16,
+    history: u64,
+    id: RoomId,
+    name: Text<48>,
+    rules: RulesName,
+    manifest: Option<StoredManifest>,
+    owner: PlayerId,
+    max_players: u8,
+    settings: RoomSettings,
+    invite_tag: Vec<u8>,
+    password_tag: Option<Vec<u8>>,
+    members: Vec<StartMember>,
+    base: Option<BaseV10>,
+    native_mods: Vec<NativeMod>,
+}
+
+impl From<StartRecordV10> for StartRecord {
+    fn from(old: StartRecordV10) -> Self {
+        Self {
+            version: old.version,
+            history: old.history,
+            id: old.id,
+            name: old.name,
+            rules: old.rules,
+            manifest: old.manifest,
+            owner: old.owner,
+            max_players: old.max_players,
+            settings: old.settings,
+            invite_tag: old.invite_tag,
+            password_tag: old.password_tag,
+            members: old.members,
+            base: old.base.map(Base::from),
+            native_mods: old.native_mods,
+        }
+    }
 }
 
 impl From<StartRecordV8> for StartRecord {
@@ -167,7 +209,7 @@ impl From<StartRecordV8> for StartRecord {
             invite_tag: old.invite_tag,
             password_tag: old.password_tag,
             members: old.members,
-            base: old.base,
+            base: old.base.map(Base::from),
             native_mods: Vec::new(),
         }
     }
@@ -188,7 +230,7 @@ impl From<StartRecordV9> for StartRecord {
             invite_tag: old.invite_tag,
             password_tag: old.password_tag,
             members: old.members,
-            base: old.base,
+            base: old.base.map(Base::from),
             native_mods: old.native_mods,
         }
     }
@@ -200,6 +242,9 @@ pub(crate) fn deserialize_start(
 ) -> Result<StartRecord, postcard::Error> {
     match version {
         FORMAT_VERSION => postcard::from_bytes(payload),
+        LEGACY_PRE_AI_FORMAT_VERSION => {
+            postcard::from_bytes::<StartRecordV10>(payload).map(StartRecord::from)
+        }
         LEGACY_NATIVE_FORMAT_VERSION => {
             postcard::from_bytes::<StartRecordV9>(payload).map(StartRecord::from)
         }
@@ -226,7 +271,7 @@ pub(crate) fn format8_payload(start: &StartRecord) -> Vec<u8> {
         invite_tag: start.invite_tag.clone(),
         password_tag: start.password_tag.clone(),
         members: start.members.clone(),
-        base: start.base.clone(),
+        base: start.base.clone().map(BaseV10::from),
     };
     postcard::to_stdvec(&legacy).expect("format-8 fixture serializes")
 }
@@ -246,10 +291,31 @@ pub(crate) fn format9_payload(start: &StartRecord) -> Vec<u8> {
         invite_tag: start.invite_tag.clone(),
         password_tag: start.password_tag.clone(),
         members: start.members.clone(),
-        base: start.base.clone(),
+        base: start.base.clone().map(BaseV10::from),
         native_mods: start.native_mods.clone(),
     };
     postcard::to_stdvec(&legacy).expect("format-9 fixture serializes")
+}
+
+#[cfg(test)]
+pub(crate) fn format10_payload(start: &StartRecord) -> Vec<u8> {
+    let legacy = StartRecordV10 {
+        version: LEGACY_PRE_AI_FORMAT_VERSION,
+        history: start.history,
+        id: start.id,
+        name: start.name.clone(),
+        rules: start.rules.clone(),
+        manifest: start.manifest.clone(),
+        owner: start.owner,
+        max_players: start.max_players,
+        settings: start.settings,
+        invite_tag: start.invite_tag.clone(),
+        password_tag: start.password_tag.clone(),
+        members: start.members.clone(),
+        base: start.base.clone().map(BaseV10::from),
+        native_mods: start.native_mods.clone(),
+    };
+    postcard::to_stdvec(&legacy).expect("format-10 fixture serializes")
 }
 
 /// A running game's state after a turn, which a compacted log starts from
@@ -279,6 +345,65 @@ pub(crate) struct Base {
     pub(crate) banned: Vec<PlayerId>,
     /// The canonical rules' state (`Ruleset::save`).
     pub(crate) rules: Vec<u8>,
+    /// The AI players seated, in the order they joined.
+    pub(crate) ais: Vec<crate::room::AiRecord>,
+}
+
+/// A base before format 11: no AI players.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BaseV10 {
+    first_turn: u64,
+    first_event: u64,
+    sealed_before: u64,
+    after_turn: u64,
+    next_event: u64,
+    sealed_through: u64,
+    speed: Speed,
+    histories: Vec<(u64, u64)>,
+    content: Option<ContentFingerprint>,
+    seated: Vec<(PlayerId, Text<32>, Platform)>,
+    banned: Vec<PlayerId>,
+    rules: Vec<u8>,
+}
+
+impl From<BaseV10> for Base {
+    fn from(old: BaseV10) -> Self {
+        Self {
+            first_turn: old.first_turn,
+            first_event: old.first_event,
+            sealed_before: old.sealed_before,
+            after_turn: old.after_turn,
+            next_event: old.next_event,
+            sealed_through: old.sealed_through,
+            speed: old.speed,
+            histories: old.histories,
+            content: old.content,
+            seated: old.seated,
+            banned: old.banned,
+            rules: old.rules,
+            ais: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<Base> for BaseV10 {
+    fn from(new: Base) -> Self {
+        Self {
+            first_turn: new.first_turn,
+            first_event: new.first_event,
+            sealed_before: new.sealed_before,
+            after_turn: new.after_turn,
+            next_event: new.next_event,
+            sealed_through: new.sealed_through,
+            speed: new.speed,
+            histories: new.histories,
+            content: new.content,
+            seated: new.seated,
+            banned: new.banned,
+            rules: new.rules,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -750,6 +875,44 @@ mod tests {
         );
     }
 
+    /// Format 11 keeps a compacted base's AI players; a format-10 base, from
+    /// before AI players, reads back with none.
+    #[test]
+    fn a_base_keeps_its_ai_players_and_a_format10_base_has_none() {
+        let mut start = start();
+        let seat = PlayerId::ai_seat(&start.id, 3);
+        start.base = Some(Base {
+            first_turn: 1,
+            first_event: 1,
+            sealed_before: 0,
+            after_turn: 0,
+            next_event: 4,
+            sealed_through: 0,
+            speed: Speed::NORMAL,
+            histories: vec![(1, 0)],
+            content: None,
+            seated: Vec::new(),
+            banned: Vec::new(),
+            rules: Vec::new(),
+            ais: vec![(
+                seat,
+                Text::new("Moreau Rail").unwrap(),
+                tpf3mp_proto::AiDifficulty::Normal,
+            )],
+        });
+        let bytes = postcard::to_stdvec(&start).unwrap();
+        let restored = deserialize_start(&bytes, FORMAT_VERSION).unwrap();
+        assert_eq!(
+            restored.base.as_ref().unwrap().ais,
+            start.base.as_ref().unwrap().ais
+        );
+        let old =
+            deserialize_start(&format10_payload(&start), LEGACY_PRE_AI_FORMAT_VERSION).unwrap();
+        let old_base = old.base.unwrap();
+        assert!(old_base.ais.is_empty());
+        assert_eq!(old_base.next_event, 4, "the rest of the base as it was");
+    }
+
     #[test]
     fn format9_start_restores_native_settings_with_the_rolling_plan() {
         let (manifest, native) = native_declaration();
@@ -915,6 +1078,7 @@ mod tests {
             seated: Vec::new(),
             banned: Vec::new(),
             rules: vec![9; 100],
+            ais: Vec::new(),
         });
         let mut log = RoomLog::compacted(&dir, &compacted, &[b"turn 41", b"turn 42"]).unwrap();
         let path = RoomLog::path_for(&dir, &start().id);

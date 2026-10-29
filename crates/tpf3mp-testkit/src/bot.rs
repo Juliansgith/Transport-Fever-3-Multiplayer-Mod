@@ -197,6 +197,8 @@ impl Bot {
                     }
                     self.advance().await?;
                 }
+                // Bots drive no AI players.
+                ClientEvent::AiDrive(_) | ClientEvent::AiRejected { .. } => {}
                 ClientEvent::IntentRejected { client_seq, .. } => {
                     self.in_flight.remove(&client_seq);
                     self.report.rejected += 1;

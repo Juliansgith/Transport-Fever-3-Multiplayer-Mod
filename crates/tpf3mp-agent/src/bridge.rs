@@ -542,6 +542,8 @@ fn held_weight(event: &ClientEvent) -> usize {
 /// Couples one game's hook to one client.
 pub struct Bridge<L> {
     scan_plan: Result<tpf3mp_proto::ScanPlan, &'static str>,
+    /// The AI seats this game drives.
+    ai: crate::ai::AiDriver,
     link: L,
     options: BridgeOptions,
     follower: Option<TurnFollower>,
@@ -740,6 +742,7 @@ impl<L: HookLink> Bridge<L> {
             held_stream: None,
             held_events: VecDeque::new(),
             held_bytes: 0,
+            ai: crate::ai::AiDriver::default(),
             held: VecDeque::new(),
         }
     }
@@ -1575,6 +1578,12 @@ impl<L: HookLink> Bridge<L> {
                 self.outbox.push_back(ToHook::Diverged { step, lanes });
             }
             ClientEvent::Upload { event, snapshot } => self.upload(event, snapshot, client),
+            ClientEvent::AiDrive(seats) => self.ai.drive(seats),
+            ClientEvent::AiRejected {
+                seat,
+                client_seq,
+                reason,
+            } => self.ai.rejected(seat, client_seq, reason),
             ClientEvent::Preview { from, preview } => {
                 // Only to a game that plays the room's world, and only the
                 // latest of each member: one waiting is replaced.
@@ -2827,6 +2836,7 @@ mod tests {
             members: Vec::new(),
             competitive: false,
             start: None,
+            ais: Vec::new(),
         }
     }
 
@@ -3229,6 +3239,7 @@ mod tests {
             members: vec![member(1, "Ann", true), member(2, "Bo", false)],
             competitive: false,
             start: None,
+            ais: Vec::new(),
         };
         let info = room_info(&room);
         assert_eq!(info.name.as_str(), "Sunday line");
@@ -3283,6 +3294,7 @@ mod tests {
                     banner: None,
                 })
                 .to_vec(),
+            ais: Vec::new(),
         };
         assert!(!generated_world_can_start(Some(&room), owner, 0, false));
         assert!(!generated_world_can_start(Some(&room), guest, 1, false));

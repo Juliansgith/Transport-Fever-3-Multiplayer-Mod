@@ -4281,6 +4281,7 @@ mod tests {
             members: Vec::new(),
             competitive: false,
             start: Some(start("mptest")),
+            ais: Vec::new(),
         };
         assert!(names_start_again(&room, "mptest"));
         assert!(names_start_again(&room, " mptest "));

@@ -285,6 +285,12 @@ pub struct Player {
     /// the room at the load gate.
     pub reports_progress: bool,
     pub lanes: Option<Lanes>,
+    /// The AI seats the room last handed this player to drive.
+    pub ai_seats: Vec<tpf3mp_proto::AiSeat>,
+    /// How often the room said which AI seats this player drives.
+    pub ai_drives: usize,
+    /// The room's refusals of actions sent for AI seats, in order.
+    pub ai_rejections: Vec<(PlayerId, u64, IntentRejection)>,
 }
 
 impl Player {
@@ -304,6 +310,9 @@ impl Player {
             previews: Vec::new(),
             reports_progress: true,
             lanes: None,
+            ai_seats: Vec::new(),
+            ai_drives: 0,
+            ai_rejections: Vec::new(),
         }
     }
 
@@ -364,6 +373,15 @@ impl Player {
             ClientEvent::Preview { from, preview } => self.previews.push((from, preview)),
             ClientEvent::ContentDiff(_) | ClientEvent::Notice(_) | ClientEvent::RoomMods(_) => {}
             ClientEvent::Kicked => self.kicked = true,
+            ClientEvent::AiDrive(seats) => {
+                self.ai_seats = seats;
+                self.ai_drives += 1;
+            }
+            ClientEvent::AiRejected {
+                seat,
+                client_seq,
+                reason,
+            } => self.ai_rejections.push((seat, client_seq, reason)),
             ClientEvent::Closed(_) => self.closed = true,
         }
     }
