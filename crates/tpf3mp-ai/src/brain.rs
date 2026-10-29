@@ -1273,11 +1273,26 @@ impl Brain {
 
     fn make_line(&mut self, now: Instant) -> Option<Out> {
         let project = self.project.as_ref()?;
-        let stops: Vec<LineStop> = project
-            .stops
-            .iter()
-            .filter_map(|(_, s)| *s)
-            .map(|group| LineStop {
+        // What each stop loads, cargo type by cargo type, as a player's
+        // line keeps it (one entry for each type, build 40425): a town's
+        // passengers (type 0) at every stop; a cargo's type at its maker's
+        // stop only.
+        let full = tpf3mp_proto::action::Fraction(1_000_000);
+        let rules_at = |stop: usize| -> Option<(Vec<bool>, Vec<tpf3mp_proto::action::Fraction>)> {
+            match &project.serves {
+                Serves::Town(_) => Some((vec![true], vec![full])),
+                Serves::Cargo { cargo, from, .. } => {
+                    let index = usize::from(from.outputs.iter().find(|o| &o.cargo == cargo)?.index);
+                    let mut load = vec![false; index + 1];
+                    load[index] = stop == 0;
+                    Some((load, vec![full; index + 1]))
+                }
+            }
+        };
+        let mut stops: Vec<LineStop> = Vec::new();
+        for (i, group) in project.stops.iter().filter_map(|(_, s)| *s).enumerate() {
+            let (load, max_load) = rules_at(i)?;
+            stops.push(LineStop {
                 group,
                 terminal: Terminal {
                     station: 0,
@@ -1296,16 +1311,15 @@ impl Brain {
                 max_wait: 0,
                 max_extra_wait: 0,
                 rules: StopRules {
-                    load: BoundedVec::new(vec![true]).unwrap_or_default(),
-                    max_load: BoundedVec::new(vec![tpf3mp_proto::action::Fraction(1_000_000)])
-                        .unwrap_or_default(),
+                    load: BoundedVec::new(load).ok()?,
+                    max_load: BoundedVec::new(max_load).ok()?,
                     force_unload: false,
                     destroy_for_config_change: false,
                     destroy_for_refresh: false,
                 },
                 waypoints: BoundedVec::default(),
-            })
-            .collect();
+            });
+        }
         let (name, mode) = match &project.serves {
             Serves::Town(town) => (format!("{} Bus", town.name.as_str()), BUS_MODE),
             Serves::Cargo { cargo, from, .. } => (

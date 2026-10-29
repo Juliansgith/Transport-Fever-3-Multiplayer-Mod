@@ -306,6 +306,21 @@ impl World {
             Action::CreateLine(create) => {
                 let id = self.id();
                 self.line_modes.push((LineId(id), create.line.modes[0]));
+                // As the game: a truck line loads its cargo (grain, type 7)
+                // at its first stop, or its trucks are useless; a bus line
+                // its passengers (type 0) everywhere.
+                let rules: Vec<Vec<bool>> = create
+                    .line
+                    .stops
+                    .iter()
+                    .map(|s| s.rules.load.iter().copied().collect())
+                    .collect();
+                if create.line.modes[0] == 4 {
+                    assert_eq!(rules[0].get(7), Some(&true), "{rules:?}");
+                    assert!(rules[1].iter().all(|l| !l), "{rules:?}");
+                } else {
+                    assert!(rules.iter().all(|r| r == &[true]), "{rules:?}");
+                }
                 self.lines.push(AiLine {
                     id: LineId(id),
                     name: Text::lossy(create.name.as_str()),
@@ -391,6 +406,7 @@ fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]
                 .iter()
                 .map(|(c, n)| AiOutput {
                     cargo: Text::new(*c).unwrap(),
+                    index: if *c == GRAIN { 7 } else { 9 },
                     per_year: *n,
                     most: *n,
                 })

@@ -184,6 +184,9 @@ pub struct AiIndustry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiOutput {
     pub cargo: ResName,
+    /// The game's number for the cargo type: a stop's load rules list one
+    /// entry for each, by this number (build 40425).
+    pub index: u16,
     /// How much it made over the last year, and could make at most.
     pub per_year: u32,
     pub most: u32,

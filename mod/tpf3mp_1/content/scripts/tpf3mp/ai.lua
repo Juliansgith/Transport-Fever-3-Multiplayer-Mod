@@ -476,6 +476,7 @@ function ai.industries()
 				if #outputs < 8 then
 					outputs[#outputs + 1] = {
 						cargo = text(api.res.cargoTypeRep.getName(id), 128),
+						index = id,
 						per_year = whole(math.max(stock.getCargoProducedPerYear(industry.stockList, id) or 0, 0)),
 						most = whole(math.max(stock.getCargoMaxProductionPerYear(industry.stockList, id) or 0, 0)),
 					}

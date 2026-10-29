@@ -448,6 +448,7 @@ fn industries_routes_and_trucks_by_cargo_read_as_the_ai_reads_them() {
         farm.outputs[0].cargo.as_str(),
         "::/cargos/grain/grain.cargo"
     );
+    assert_eq!(farm.outputs[0].index, 1, "the game's number for grain");
     assert_eq!(
         (farm.outputs[0].per_year, farm.outputs[0].most),
         (104, 107),
