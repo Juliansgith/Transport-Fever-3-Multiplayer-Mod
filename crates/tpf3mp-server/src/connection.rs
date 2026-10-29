@@ -79,11 +79,22 @@ const DIAGNOSTICS_BURST: u32 = 16;
 /// each kind on its own so a flood of one never starves another: dropping
 /// a member's progress reports would make its room wait for it.
 ///
-/// Checkpoints have no limit here. A flood would starve the sender's own
-/// honest reports, and every round would then wait for them; the room
-/// instead ignores reports for closed rounds at almost no cost.
 const PROGRESS_PER_SECOND: u32 = 200;
 const PROGRESS_BURST: u32 = 400;
+/// Checkpoint and save reports: a game reports one every checkpoint
+/// interval and one per save, so at most [`HONEST_REPORTS_PER_SECOND`] at
+/// the highest settings a room accepts, and under two a second at the
+/// defaults. They share the room's one command queue with every member's
+/// progress and intents, which the room is offered without waiting, so a
+/// flood at line rate from one connection could fill it at the room's
+/// least stall and drop the others'. Past this, a report is dropped (its
+/// round closes at its deadline without it); an honest game never is.
+const REPORTS_PER_SECOND: u32 = 4_000;
+const REPORTS_BURST: u32 = 8_000;
+/// 240 steps a second (the most `RoomSettings` takes) at 16x
+/// (`Speed::MAX`), a checkpoint every step.
+const HONEST_REPORTS_PER_SECOND: u32 = 240 * 16;
+const _: () = assert!(HONEST_REPORTS_PER_SECOND < REPORTS_PER_SECOND);
 /// Above the room's own per-player limit, which answers with reasons; this
 /// only keeps a flood out of the room's queue.
 const INTENTS_PER_SECOND: u32 = 40;
@@ -346,9 +357,7 @@ struct Client {
     requests: TokenBucket,
     joins: TokenBucket,
     lists: TokenBucket,
-    progress: TokenBucket,
-    intents: TokenBucket,
-    previews: TokenBucket,
+    game: GameMeters,
     diagnostics: TokenBucket,
     /// Bytes of diagnostics this session has had kept.
     diagnostics_kept: u64,
@@ -393,9 +402,7 @@ impl Client {
             requests: TokenBucket::new(REQUESTS_PER_SECOND, REQUEST_BURST),
             joins: TokenBucket::new(JOINS_PER_SECOND, JOIN_BURST),
             lists: TokenBucket::new(LISTS_PER_SECOND, LIST_BURST),
-            progress: TokenBucket::new(PROGRESS_PER_SECOND, PROGRESS_BURST),
-            intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
-            previews: TokenBucket::new(PREVIEWS_PER_SECOND, PREVIEW_BURST),
+            game: GameMeters::new(),
             diagnostics: TokenBucket::new(DIAGNOSTICS_PER_SECOND, DIAGNOSTICS_BURST),
             diagnostics_kept: 0,
             runs: Vec::new(),
@@ -506,18 +513,7 @@ impl Client {
                     }
                 }
                 ClientMessage::Game(message) => {
-                    let allowed = match &message {
-                        GameMessage::Intent { .. } => self.intents.take(now, 1),
-                        GameMessage::Progress { .. } => self.progress.take(now, 1),
-                        // The room keeps at most about two a second; more
-                        // are never needed.
-                        GameMessage::Loading(_) => self.progress.take(now, 1),
-                        GameMessage::Preview(_) => self.previews.take(now, 1),
-                        // Like checkpoints: the room ignores reports of
-                        // saves it is not deciding.
-                        GameMessage::Checkpoint { .. } | GameMessage::Saved { .. } => true,
-                    };
-                    if allowed {
+                    if self.game.admit(&message, now) {
                         self.game(message)?;
                     } else if let GameMessage::Intent { client_seq, .. } = message {
                         self.reject_intent(client_seq, IntentRejection::RateLimited);
@@ -1176,6 +1172,40 @@ async fn forward_announcements(
     }
 }
 
+/// The limits on a session's game messages, one bucket per kind so a
+/// flood of one never starves another.
+struct GameMeters {
+    progress: TokenBucket,
+    intents: TokenBucket,
+    previews: TokenBucket,
+    /// Checkpoint and save reports.
+    reports: TokenBucket,
+}
+
+impl GameMeters {
+    fn new() -> Self {
+        Self {
+            progress: TokenBucket::new(PROGRESS_PER_SECOND, PROGRESS_BURST),
+            intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
+            previews: TokenBucket::new(PREVIEWS_PER_SECOND, PREVIEW_BURST),
+            reports: TokenBucket::new(REPORTS_PER_SECOND, REPORTS_BURST),
+        }
+    }
+
+    /// Whether `message` may go on to the room now.
+    fn admit(&mut self, message: &GameMessage, now: std::time::Instant) -> bool {
+        match message {
+            GameMessage::Intent { .. } => self.intents.take(now, 1),
+            GameMessage::Progress { .. } => self.progress.take(now, 1),
+            // The room keeps at most about two a second; more are never
+            // needed.
+            GameMessage::Loading(_) => self.progress.take(now, 1),
+            GameMessage::Preview(_) => self.previews.take(now, 1),
+            GameMessage::Checkpoint { .. } | GameMessage::Saved { .. } => self.reports.take(now, 1),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tpf3mp_proto::{FixedBytes, MAX_PREVIEW, Payload, PlayerId, ServerMessage};
@@ -1186,6 +1216,46 @@ mod tests {
         ServerMessage::Preview {
             from: PlayerId(FixedBytes([7; 32])),
             preview: (len > 0).then(|| Payload::new(vec![0; len]).unwrap()),
+        }
+    }
+
+    /// A connection flooding checkpoint reports is cut at the burst, then
+    /// at the rate, and its progress still goes through: the flood never
+    /// reaches the room's command queue, which every member shares.
+    #[test]
+    fn a_flood_of_checkpoint_reports_is_cut_and_spares_progress() {
+        let now = std::time::Instant::now();
+        let mut meters = GameMeters::new();
+        let report = |step| GameMessage::Checkpoint {
+            step,
+            lanes: Vec::new(),
+        };
+        let passed = (1..=20_000)
+            .filter(|step| meters.admit(&report(*step), now))
+            .count();
+        assert_eq!(passed, REPORTS_BURST as usize);
+        assert!(meters.admit(&GameMessage::Progress { step: 1 }, now));
+        let saved = GameMessage::Saved {
+            event: 1,
+            lanes: Vec::new(),
+            world: None,
+        };
+        assert!(
+            !meters.admit(&saved, now),
+            "saves share the reports' budget"
+        );
+        let later = now + Duration::from_secs(1);
+        let refilled = (20_001..=40_000)
+            .filter(|step| meters.admit(&report(*step), later))
+            .count();
+        assert_eq!(refilled, REPORTS_PER_SECOND as usize);
+        // A game of a room at its highest settings is never cut: ten
+        // seconds of a report every 1/3,840 s.
+        let mut honest = GameMeters::new();
+        let gap = Duration::from_secs(1) / HONEST_REPORTS_PER_SECOND;
+        for step in 0..u64::from(HONEST_REPORTS_PER_SECOND) * 10 {
+            let at = now + gap * u32::try_from(step).unwrap();
+            assert!(honest.admit(&report(step), at), "{step}");
         }
     }
 

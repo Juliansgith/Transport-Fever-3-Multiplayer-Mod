@@ -819,8 +819,12 @@ one *log session*.
   - Game messages, per connection and per kind: progress reports 200 per
     second with a burst of 400 (excess ones are dropped), intents 40 per
     second with a burst of 80, build previews 5 per second with a burst of
-    10 (excess ones are dropped). Checkpoints are not limited here: the
-    room ignores reports for closed rounds.
+    10 (excess ones are dropped), checkpoint and save reports 4,000 per
+    second with a burst of 8,000 (excess ones are dropped). A game reports
+    at most 3,840 a second at the highest settings a room takes (240 steps
+    a second at 16x, a checkpoint every step) and under two at the
+    defaults; the limit keeps a flood at line rate out of the room's
+    command queue, which every member's progress and intents share.
   - Requests that change nothing, such as setting ready twice, do not send
     everyone the room again.
 - **Password guessing.** A room takes 10 wrong passwords per minute from
