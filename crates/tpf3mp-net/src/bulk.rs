@@ -126,6 +126,13 @@ fn chunk_id(hash: &ChunkHash) -> ChunkId {
     ChunkId(hash.0.0)
 }
 
+/// The QUIC priority of a stream that serves a snapshot: below the control
+/// and turn streams (0, quinn's default) on the same connection. A player
+/// uploading the room's save after it was taken (168 MB on a 150 MB world)
+/// otherwise queued the progress reports and actions behind it, and the room
+/// paces on its slowest member; a joiner's download queued its turns.
+pub const BULK_PRIORITY: i32 = -1;
+
 /// Serves `manifest` from `store` until the fetching side finishes its half
 /// of the stream. Anything outside the manifest is a violation. A chunk the
 /// store cannot produce ends the stream with `Unavailable`.
@@ -151,6 +158,8 @@ pub async fn serve_with_progress(
     idle: Duration,
     mut progress: impl FnMut(Served),
 ) -> Result<Served, BulkError> {
+    // A stream already reset has no priority to set: serving fails below.
+    let _ = send.set_priority(BULK_PRIORITY);
     let listed: HashMap<ChunkId, u64> = manifest
         .chunks()
         .iter()
