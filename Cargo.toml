@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 tpf3mp-proto = { path = "crates/tpf3mp-proto" }
+tpf3mp-ai = { path = "crates/tpf3mp-ai" }
 tpf3mp-net = { path = "crates/tpf3mp-net" }
 tpf3mp-agent = { path = "crates/tpf3mp-agent" }
 tpf3mp-server = { path = "crates/tpf3mp-server" }

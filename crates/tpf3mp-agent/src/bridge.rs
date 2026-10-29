@@ -827,6 +827,7 @@ impl<L: HookLink> Bridge<L> {
             self.report_progress(client, now).await?;
             self.report_loading(client, now).await?;
             self.lobby_news();
+            self.drive_ai(client, now).await?;
             // Turns wait while the world they continue is being fetched.
             if !matches!(self.world, World::Fetching { .. })
                 && let (Some(follower), Some(playout)) = (&mut self.follower, &mut self.playout)
@@ -861,6 +862,29 @@ impl<L: HookLink> Bridge<L> {
                 () = tokio::time::sleep_until(wake.into()) => {}
             }
         }
+    }
+
+    /// The AI players this game drives (docs/AI_PLAYERS.md): their
+    /// questions to the hook, their actions and memos to the room. Their
+    /// minds look only while this game plays the room's world.
+    async fn drive_ai(&mut self, client: &Client, now: Instant) -> Result<(), BridgeFault> {
+        if !self.ai.driving() {
+            return Ok(());
+        }
+        let ready = self.begun && self.hook_ready && self.world == World::Ready;
+        let speed = self.speed.map_or(100, |speed| speed.0);
+        for out in self.ai.tick(now, speed, ready) {
+            match out {
+                crate::ai::AiOut::Ask { id, ask } => {
+                    self.outbox.push_back(ToHook::AiAsk { id, ask })
+                }
+                crate::ai::AiOut::Intent { seat, seq, payload } => {
+                    client.send_ai_intent(seat, seq, payload).await?;
+                }
+                crate::ai::AiOut::Memo { seat, memo } => client.send_ai_memo(seat, memo).await?,
+            }
+        }
+        Ok(())
     }
 
     /// Tells the hook the session is over, as far as the link still takes

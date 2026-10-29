@@ -1,0 +1,18 @@
+[package]
+name = "tpf3mp-ai"
+description = "The AI players' minds: what a computer-run company plays (docs/AI_PLAYERS.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+postcard.workspace = true
+serde.workspace = true
+tpf3mp-bridge.workspace = true
+tpf3mp-proto.workspace = true
+
+[lints]
+workspace = true
