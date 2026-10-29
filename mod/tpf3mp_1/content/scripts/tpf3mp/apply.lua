@@ -208,6 +208,24 @@ local function run(command)
 	return true
 end
 
+-- Builds that wait for the next room step: the game applies a command
+-- after the update that sends it, so one that needs the world another
+-- command makes goes a step later, the same step in every game
+-- (tpf3mp_sim.script.lua flushes them at the next update).
+local deferred = {}
+
+function apply.hasDeferred() return #deferred > 0 end
+
+function apply.flushDeferred()
+	local list = {}
+	for i, f in ipairs(deferred) do list[i] = f end
+	for i = #deferred, 1, -1 do deferred[i] = nil end
+	for _, f in ipairs(list) do
+		local ok, why = pcall(f)
+		if not ok then log("a deferred build failed: " .. tostring(why)) end
+	end
+end
+
 -- For the game script's own commands (tpf3mp/companies.lua's monthly loan
 -- payments): the same send, which answers what the game made.
 apply.send = send
@@ -743,6 +761,57 @@ end
 local function replaceConstruction(build, proposal, entity)
 	local old, oldComponent = constructionAt(build.replaces)
 	mine(old, "construction")
+	-- An industry a road edits (tpf3mp/capture.lua industryEdit) stays the
+	-- world's: no company's, as the tool's own edit leaves it.
+	local file = build.file
+	local industry = type(file) == "string" and (file:find("^industr[iy]e?s?/")
+		or file:find("/industries/", 1, true) or file:find("/industry/", 1, true)) ~= nil
+	if industry then entity.playerEntity = -1 end
+	if industry then
+		-- As a SimpleProposal the game warned "Collision" and kept the old
+		-- industry (build 40425, 2026-10-28). So the game regenerates the
+		-- industry's edit itself, as the construction menu does, and the road
+		-- or track goes after it, alone, once the industry is out of its way.
+		local util = api.engine.util and api.engine.util.proposal
+		if not util or not util.createProposalReplaceConstruction then
+			error("the game cannot regenerate the industry edit", 0)
+		end
+		local full = util.createProposalReplaceConstruction(old, entity.params)
+		if full == nil then error("the game could not regenerate the industry edit", 0) end
+		local context = api.type.Context.new()
+		context.player = company()
+		context.gatherBuildings = true
+		context.gatherFields = true
+		if dry then error({ dry = true, proposal = full, context = context }, 0) end
+		log("replacing industry " .. tostring(old) .. " " .. tostring(build.file))
+		run(api.cmd.makeWorldBuildProposalCmd(full, context, true, true))
+		-- The game applies that command after this one returns (the industry
+		-- still stood here when read back, 2026-10-29, though its field went),
+		-- so the road is queued behind it, without a verdict asked of a world
+		-- that still has the industry in its way.
+		log("industry edit's road: " .. (build.connection and (#(build.connection.links or {}) .. " links, "
+			.. #(build.connection.vertices or {}) .. " vertices") or "none carried"))
+		if build.connection ~= nil and not dry then
+			-- Laid at the next step, once the industry's edit has applied:
+			-- sent with it, the road was taken and then dropped, the field
+			-- still in its way (2026-10-29).
+			local connection, player = build.connection, company()
+			deferred[#deferred + 1] = function()
+				local road = api.type.SimpleProposal.new()
+				-- All of it: the capture already left out the industry's own
+				-- streets, and a station's filter (dangling) dropped a road
+				-- joined to nothing ("building -e -n -c", 2026-10-29).
+				networkInto(road, nil, nil, nil, connection, false)
+				local later = api.type.Context.new()
+				later.player = player
+				later.gatherBuildings = true
+				later.gatherFields = true
+				local went, why = pcall(run, api.cmd.makeWorldBuildProposalCmd(road, later, true, true))
+				log("industry edit's road laid a step later: " .. (went and "taken" or ("refused: " .. tostring(why))))
+			end
+		end
+		return true
+	end
 	proposal.constructionsToAdd = { entity }
 	proposal.constructionsToRemove = { old }
 	proposal.old2new = { [old] = 0 }
@@ -773,8 +842,9 @@ local function replaceConstruction(build, proposal, entity)
 	if native and not sameParameter(component and component.params, entity.params, 0.0000011) then
 		error("the game did not apply the requested rail station parameters", 0)
 	end
-	-- The acting company's, whatever the engine made of it, as a new one.
-	settleConstruction(new, build.file)
+	-- The acting company's, whatever the engine made of it, as a new one;
+	-- an industry stays no company's.
+	if not industry then settleConstruction(new, build.file) end
 	-- The native replacement already includes its snapped track graph.
 	if native then return true, new end
 	-- The new one makes its entrances again itself, unsnapped, as a build
@@ -2024,6 +2094,10 @@ local function buildNetwork(network, templateName, style, polyline, crossingType
 	local context = api.type.Context.new()
 	context.player = company()
 	context.gatherBuildings = true
+	-- An industry's fields in the way too, as the tool takes them (the
+	-- capture lets an industry through behind industryFields): without it the
+	-- game's proposal check throws on the field (build 40425, 2026-10-28).
+	context.gatherFields = acceptance.industryFields == true
 	-- The crossings at the build's vertices on both networks before it, by
 	-- their nodes: one the build extends keeps its type (preferred).
 	local before, readBefore

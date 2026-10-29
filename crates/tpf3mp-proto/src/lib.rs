@@ -105,7 +105,8 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// version 22 carries a full SHA-256 package identity in each native room
 /// term, while keeping ordinary mod versions limited to 32 bytes.
 /// Version 23 negotiates the world-check scan plan before joining a room.
-pub const PROTOCOL_VERSION: u32 = 23;
+/// Version 24 raises [`MAX_ROOM_MEMBERS`] from 64 to 255.
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

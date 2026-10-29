@@ -778,6 +778,10 @@ Measured with `tpf3mp-loadtest` on one Windows desktop, with the server and
   tunnel's own cost; on a lossy link, TCP holds datagrams back behind each
   lost segment;
 - one full room of 64 players: p99 116 ms, no divergence;
+- one full room of 255 players (`--rooms 1 --bots 255 --steps 200
+  --paced`, on one 24-thread Windows PC, 2026-10-27): five runs of five,
+  about 40 s each, p99 110-114 ms, no divergence. Before room views were
+  sent once a tick, two runs of four failed while the room filled;
 - with every room logged and compacted past 8 KiB (`--data-dir`,
   `--compact-log-kib 8`), 3,000 steps: 121 compactions during the run,
   p99 114 ms, and memory level at about 150 MB.

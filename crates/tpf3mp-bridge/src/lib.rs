@@ -83,7 +83,12 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// in [`LobbyView::servers`] before a room list
 /// is fetched, so the game's invite form can ask for an explicit region.
 /// Version 29 carries the agreed world-check scan plan in [`ToHook::Begin`].
-pub const BRIDGE_VERSION: u32 = 29;
+/// Version 30 lets [`RoomInfo::members`] hold up to [`MAX_ROOM_MEMBERS`]
+/// (255), while the lobby shows at most [`MAX_LOBBY_MEMBERS`].
+pub const BRIDGE_VERSION: u32 = 30;
+/// Most members the lobby's view lists ([`LobbyRoom::members`]); a larger
+/// room's others are left out of the view, so it still fits one message.
+pub const MAX_LOBBY_MEMBERS: u8 = 64;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
@@ -452,7 +457,7 @@ pub struct LobbyRoom {
     pub you_own: bool,
     pub max_players: u8,
     pub has_password: bool,
-    pub members: BoundedVec<LobbyMember, { MAX_ROOM_MEMBERS as usize }>,
+    pub members: BoundedVec<LobbyMember, { MAX_LOBBY_MEMBERS as usize }>,
     /// Co-op (`false`) or competitive (`true`).
     pub competitive: bool,
     /// In the lobby: the save the room's game starts from, as the room
@@ -866,7 +871,7 @@ mod tests {
                 you_own: true,
                 max_players: 64,
                 has_password: true,
-                members: BoundedVec::new((0..MAX_ROOM_MEMBERS).map(member).collect()).unwrap(),
+                members: BoundedVec::new((0..MAX_LOBBY_MEMBERS).map(member).collect()).unwrap(),
                 competitive: false,
                 start: Some(LobbyStart {
                     name: Text::new("s".repeat(MAX_SAVE_NAME)).unwrap(),

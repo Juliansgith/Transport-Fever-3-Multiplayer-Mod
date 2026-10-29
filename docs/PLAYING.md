@@ -312,7 +312,9 @@ window too.
      it.) **How you play**, two pictures: **Co-op**, everyone for
      the room's one company, or **Competitive**, each player founding a
      company of their own in the game. Then the **room name** (your
-     name's room if you leave it empty), **Players**, 2 to 16, **Who can
+     name's room if you leave it empty), **Players**, 2 to 255 (the
+     lobby lists the first 64; in lockstep the room runs at its slowest
+     player's pace, so large rooms pause more often), **Who can
      find it**: **Private**, invite only (the default), or **Public**, in
      the room list, with your save's climate and year; the **Rules**, when
      the server offers more than one (`native` is the game's own rules and

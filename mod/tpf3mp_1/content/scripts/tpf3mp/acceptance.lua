@@ -85,6 +85,13 @@ local acceptance = {
     rejoinConstruction = false,
     bulldozeStops = true,
     keptStops = true,
+    -- A road, track or bulldozer edit across an industry (a farm's fields,
+    -- its buildings, its entrance road). Work in progress, OFF: the capture
+    -- and the industry's regenerated replacement work in the game, but the
+    -- road laid after it, at the next room step, was laid only sometimes
+    -- (build 40425, 2026-10-29). See
+    -- investigation/INDUSTRY_EDITS_2026-10-29.md before turning it on.
+    industryFields = false,
 }
 
 function acceptance.check(action)

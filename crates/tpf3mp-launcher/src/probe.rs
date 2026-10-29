@@ -114,7 +114,11 @@ pub fn probe_url(server: &str) -> Option<String> {
         && plain
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'));
-    valid.then(|| format!("https://{host}/tpf3mp/health"))
+    // A server named by its address is a playtest's (`--server`, a pinned
+    // development certificate): it has no HTTPS health page to ask, and
+    // asking would show a reachable server as offline.
+    let address = plain.parse::<std::net::IpAddr>().is_ok();
+    (valid && !address).then(|| format!("https://{host}/tpf3mp/health"))
 }
 
 /// An answer's status, or none at all: only the server's own "ok" is up.
@@ -135,10 +139,14 @@ mod tests {
             probe_url("tpf3mp.213-133-98-90.sslip.io:29470").as_deref(),
             Some("https://tpf3mp.213-133-98-90.sslip.io/tpf3mp/health")
         );
-        assert_eq!(
-            probe_url("[2001:db8::1]:29470").as_deref(),
-            Some("https://[2001:db8::1]/tpf3mp/health")
-        );
+        // A server by its address is a playtest's, with no health page.
+        for address in [
+            "127.0.0.1:29470",
+            "62.167.76.122:29470",
+            "[2001:db8::1]:29470",
+        ] {
+            assert_eq!(probe_url(address), None, "{address}");
+        }
         for bad in ["", "no-port", "host:port", "evil.example/x:29470", ":29470"] {
             assert_eq!(probe_url(bad), None, "{bad}");
         }

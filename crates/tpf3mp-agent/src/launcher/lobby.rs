@@ -90,7 +90,7 @@ fn whole_view(state: &State) -> LobbyView {
                         loading: member.loading,
                     })
                 })
-                .take(usize::from(tpf3mp_proto::MAX_ROOM_MEMBERS))
+                .take(usize::from(tpf3mp_bridge::MAX_LOBBY_MEMBERS))
                 .collect(),
         )
         .unwrap_or_default(),

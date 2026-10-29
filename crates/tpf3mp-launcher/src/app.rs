@@ -40,7 +40,11 @@ use crate::{
 /// asks it to repaint.
 const REFRESH: Duration = Duration::from_millis(250);
 /// Player counts a room can be created for, as the page offers them.
-const ROOM_SIZES: std::ops::RangeInclusive<u8> = 2..=16;
+/// The room sizes the Create form offers, up to the server's
+/// [`tpf3mp_proto::MAX_ROOM_MEMBERS`].
+const ROOM_SIZES: [u8; 23] = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 32, 48, 64, 96, 128, 192, 255,
+];
 /// Notices kept in the session log, newest last.
 const NOTICES_SHOWN: usize = 12;
 /// How often TPF3-MP's data folder is looked at for what the installer

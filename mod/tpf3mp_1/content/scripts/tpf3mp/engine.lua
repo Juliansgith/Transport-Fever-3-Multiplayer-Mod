@@ -608,21 +608,75 @@ end
 -- game's build clears again as the tool's does (ignoreErrors,
 -- tpf3mp/apply.lua). `changedOnly` leaves out the junction settings the
 -- build does not change (junctions.capture), for a rebuild of edges in place.
+-- An industry (a farm's fields its modules) is a construction of a file
+-- under industries/; a road across a field proposes the industry removed,
+-- put back of the same file without the field, or not. The room carries
+-- only the road: every game's build clears the field again as the tool's
+-- does (ignoreErrors, tpf3mp/apply.lua), or refuses it alike. Behind
+-- acceptance.lua's industryFields.
+local function industryFile(file)
+	-- TF3's stock industries are ::/industries/<name>/<name>.con (a farm's
+	-- fields its field.module modules); TPF2's were industry/.
+	if type(file) ~= "string" then return false end
+	return (file:find("^industr[iy]e?s?/") or file:find("/industries/", 1, true)
+		or file:find("/industry/", 1, true)) ~= nil
+end
+
+-- What a proposal removes and adds, by file, for a refusal's log line:
+-- "removes ::/a.con (2 modules), adds ::/a.con (1 modules)".
+local function constructionsOf(proposal)
+	local function modules(params)
+		local m = params and get(params, "modules")
+		local n = 0
+		if type(m) == "table" then for _ in pairs(m) do n = n + 1 end end
+		return n
+	end
+	local parts = {}
+	for _, e in ipairs(list(get(proposal, "toRemove"))) do
+		local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+		local file = c and get(c, "fileName")
+		parts[#parts + 1] = "removes " .. tostring(file) .. " (" .. modules(c and get(c, "params")) .. " modules)"
+	end
+	for _, c in ipairs(list(get(proposal, "toAdd"))) do
+		parts[#parts + 1] = "adds " .. tostring(get(c, "fileName")) .. " (" .. modules(get(c, "params")) .. " modules)"
+	end
+	return table.concat(parts, ", ")
+end
+
 local function townBuildingsOnly(proposal)
+	local reshaped = {}
 	for _, e in ipairs(list(get(proposal, "toRemove"))) do
 		-- A town building is a construction that lists its town buildings
 		-- (as capture.construction tells them).
 		local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
 		local buildings = c and get(c, "townBuildings")
-		if buildings == nil or #list(buildings) == 0 then error("a build that removes a construction", 0) end
+		if buildings == nil or #list(buildings) == 0 then
+			local file = c and get(c, "fileName")
+			if not industryFile(file) then
+				error("a build that removes a construction: " .. constructionsOf(proposal), 0)
+			end
+			if module("acceptance").industryFields ~= true then
+				error("a build across an industry's field awaits two-player game acceptance: "
+					.. constructionsOf(proposal), 0)
+			end
+			reshaped[file] = (reshaped[file] or 0) + 1
+		end
 	end
 	for _, c in ipairs(list(get(proposal, "toAdd"))) do
 		local file = get(c, "fileName")
-		if type(file) ~= "string" or not file:find("/buildings/", 1, true) then
-			error("a build with constructions", 0)
+		if (reshaped[file] or 0) > 0 then
+			-- The industry put back, one for each removed.
+			reshaped[file] = reshaped[file] - 1
+		elseif type(file) ~= "string" or not file:find("/buildings/", 1, true) then
+			error("a build with constructions: " .. constructionsOf(proposal), 0)
 		end
 	end
+	-- An industry the tool removes and does not put back (a field it takes
+	-- whole) is fine too: the room carries only the road, and every game's
+	-- build clears what is in its way alike.
 end
+
+engine.industryFile = industryFile
 
 function engine.fromProposal(proposal, network, constructions, changedOnly)
 	local street = get(proposal, "proposal")

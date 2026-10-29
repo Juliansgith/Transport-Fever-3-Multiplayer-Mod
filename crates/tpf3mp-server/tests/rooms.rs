@@ -850,3 +850,41 @@ async fn every_member_hears_the_rooms_mods_from_its_owner() {
     assert_eq!(bob.room_mods().await, None);
     server.shut_down().await;
 }
+
+/// A room filling up sends its members one view a tick, not one per join or
+/// ready change: with N members, a view each per change is N² views, which
+/// filled members' queues and disconnected them at a few hundred.
+#[tokio::test]
+async fn a_burst_of_joins_and_ready_changes_sends_few_views() {
+    const GUESTS: usize = 12;
+    let server = RunningServer::start(|config| config.tick = Duration::from_secs(1)).await;
+    let mut ann = server.client("ann").await;
+    let mut create = room("table", FAST);
+    create.max_players = 1 + GUESTS as u8;
+    let (invite, _) = ann.client.create_room(create).await.unwrap();
+    let mut guests = Vec::new();
+    for i in 0..GUESTS {
+        let guest = server.client(&format!("guest{i}")).await;
+        guest.client.join_room(join(&invite)).await.unwrap();
+        guests.push(guest);
+    }
+    for guest in &guests {
+        guest.client.declare_content(content(1)).await.unwrap();
+        guest.client.set_ready(true).await.unwrap();
+    }
+    let mut views = 0;
+    let everyone = ann
+        .wait_for(|event| match event {
+            ClientEvent::RoomUpdate(room) => {
+                views += 1;
+                (room.members.len() == 1 + GUESTS
+                    && room.members.iter().filter(|m| m.ready).count() == GUESTS)
+                    .then_some(room)
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(everyone.members.len(), 1 + GUESTS);
+    // 2 × GUESTS changes; a view for each would be 24.
+    assert!(views <= 4, "{views} views for {} changes", 2 * GUESTS);
+}

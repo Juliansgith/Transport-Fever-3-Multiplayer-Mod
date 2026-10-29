@@ -87,6 +87,8 @@ local MOD_PLACEHOLDER = "::/gui/menu/images/mod_placeholder.tga"
 local FIELD = 400
 -- Player counts a room can be created for, as the launcher offers them.
 local MIN_PLAYERS, MAX_PLAYERS, DEFAULT_PLAYERS = 2, 16, 4
+-- Larger rooms, up to the server's 255 (tpf3mp_proto MAX_ROOM_MEMBERS).
+local LARGE_ROOMS = { 24, 32, 48, 64, 96, 128, 192, 255 }
 -- How often the window asks the hook for the lobby, in seconds, and how
 -- many of those asks an action is shown as under way at most.
 local POLL = 0.4
@@ -2314,6 +2316,10 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 		end
 		local playersItems = {}
 		for n = MIN_PLAYERS, MAX_PLAYERS do
+			playersItems[#playersItems + 1] = { n, string.format(_("%d players"), n) }
+		end
+		for i = 1, #LARGE_ROOMS do
+			local n = LARGE_ROOMS[i]
 			playersItems[#playersItems + 1] = { n, string.format(_("%d players"), n) }
 		end
 		local public = publicS:old() == "public"

@@ -60,6 +60,12 @@ acceptance on 2026-10-19 passed). Enable a channel only after ordinary two-playe
 acceptance demonstrates matching outcomes, ownership and money. The gate file
 is part of the installed-mod fingerprint.
 
+Roads, tracks and bulldozer edits across an industry (a farm's fields, its
+buildings, its entrance road) are implemented as the industry's regenerated
+replacement plus the road, deferred one room step, behind `industryFields`,
+**off**: the road after the replacement was laid only sometimes in the game
+([the work-in-progress note](../investigation/INDUSTRY_EDITS_2026-10-29.md)).
+
 ## Deliberately excluded
 
 - Automatic creation of competitive companies.

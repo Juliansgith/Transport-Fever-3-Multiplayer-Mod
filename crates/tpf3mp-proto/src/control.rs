@@ -18,7 +18,7 @@ pub const AUTH_DOMAIN: &[u8] = b"tpf3mp-auth-v1";
 pub const AUTH_EXPORTER_LABEL: &[u8] = b"EXPORTER-tpf3mp-auth";
 
 /// Largest number of members a room can have.
-pub const MAX_ROOM_MEMBERS: u8 = 64;
+pub const MAX_ROOM_MEMBERS: u8 = 255;
 /// Largest number of lanes in one [`GameMessage::Checkpoint`].
 pub const MAX_CHECKPOINT_LANES: usize = 32;
 /// Largest payload of a [`GameMessage::Preview`]: a long road's or a

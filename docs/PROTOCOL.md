@@ -198,9 +198,14 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   server only carries it, in the room view and the room list; players
   found their companies in the game as D21 lets them. Not logged: a
   restored room is co-op.
-- **Updates.** Members receive the full room view (`RoomUpdate`) whenever it
-  changes. Updates and responses are independent messages: a `RoomUpdate`
-  caused by a request can arrive before that request's `Response`.
+- **Updates.** Members receive the full room view (`RoomUpdate`) after it
+  changes: at most one a server tick (100 ms by default), holding every
+  change since the last, and always before any other message that follows
+  those changes. Updates and responses are independent messages: a
+  `RoomUpdate` caused by a request can arrive before or after that
+  request's `Response`.
+- **Room size (protocol 24).** A room holds up to 255 members
+  (`MAX_ROOM_MEMBERS`, 64 before).
 - **Content.** A client declares what its game runs with `DeclareContent`,
   once per connection, before joining a running game: a `ContentManifest`
   of the game's build and its active mods in load order, each a name of up

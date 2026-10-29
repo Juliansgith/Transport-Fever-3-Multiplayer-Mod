@@ -445,6 +445,10 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
                          -- 900 a town's house, 901 a station.
                          if kind == 2 and id == 900 then return {{ townBuildings = {{ 1 }} }} end
                          if kind == 2 and id == 901 then return {{ townBuildings = {{}} }} end
+                         -- 902 a farm, whose field the road crosses.
+                         if kind == 2 and id == 902 then
+                             return {{ townBuildings = {{}}, fileName = '::/industries/farm/farm.con' }}
+                         end
                          -- On the track 30-31: 556 a signal three quarters of the
                          -- way north, 557 a waypoint a quarter of the way, 558 a
                          -- signal half way, 559 a mod's signal three quarters.
@@ -806,6 +810,45 @@ fn a_road_through_a_town_house_is_carried_and_through_a_station_is_not() {
     )
     .unwrap_err();
     assert!(why.contains("removes a construction"), "{why}");
+}
+
+/// A road across a farm's field: the tool proposes the farm removed and put
+/// back of the same file. Carried once industryFields is on, as the road
+/// alone, whether or not the industry is put back; refused while it is off,
+/// and when it comes back as another file.
+#[test]
+fn a_road_across_an_industry_field_is_carried_behind_its_gate() {
+    let call = |gate: bool, add: &str| {
+        capture_with(
+            SPLIT_PROPOSAL,
+            &format!(
+                "(function() require('tpf3mp.acceptance').industryFields = {gate}
+                 return engine.captureBuild({{ toAdd = {add}, toRemove = {{ 902 }}, proposal = street }}, 'Street')
+                 end)()"
+            ),
+        )
+    };
+    let same = "{ { fileName = '::/industries/farm/farm.con' } }";
+    let why = call(false, same).unwrap_err();
+    assert!(why.contains("industry's field awaits"), "{why}");
+    let carried = call(true, same);
+    assert!(carried.is_ok(), "{carried:?}");
+    assert_eq!(
+        carried,
+        capture_with(
+            SPLIT_PROPOSAL,
+            "engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street')"
+        )
+    );
+    // A field taken whole: the industry is not put back.
+    let whole = call(true, "{}");
+    assert!(whole.is_ok(), "{whole:?}");
+    let why = call(
+        true,
+        "{ { fileName = '::/industries/coal_mine/coal_mine.con' } }",
+    )
+    .unwrap_err();
+    assert!(why.contains("with constructions"), "{why}");
 }
 
 /// A track modifier's proposal (INFERRED from the street tools' seen

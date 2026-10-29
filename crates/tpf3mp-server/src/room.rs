@@ -915,6 +915,13 @@ pub(crate) struct Room {
     /// In the lobby: the world the owner handed over for the game to start
     /// from, if any.
     start_world: Option<StartWorld>,
+    /// The room's view changed since members were last sent it
+    /// ([`Room::broadcast_view`]). Sent on the room's next tick, or before
+    /// any other message to a member, so a burst of joins or ready changes
+    /// sends one view a tick instead of one each: with N members a view per
+    /// change costs N views each, N² for a room filling up, enough to fill
+    /// their queues and stall the server at a few hundred members.
+    view_pending: bool,
     closed: bool,
     /// What the room list shows of the room.
     summary: SharedSummary,
@@ -1057,6 +1064,7 @@ impl Room {
             game_content: None,
             snapshots: spec.env.snapshots,
             start_world: None,
+            view_pending: false,
             closed: false,
             competitive: spec.competitive,
             summary: Arc::new(std::sync::Mutex::new(Summary {
@@ -1372,6 +1380,7 @@ impl Room {
             game_content,
             snapshots: env.snapshots,
             start_world: None,
+            view_pending: false,
             closed: false,
             competitive: false,
             // Private after a restart: the log keeps no listing.
@@ -1521,7 +1530,10 @@ impl Room {
                     Some(command) => self.handle(command),
                     None => break,
                 },
-                _ = ticker.tick() => self.on_tick(Instant::now()),
+                _ = ticker.tick() => {
+                    self.flush_view();
+                    self.on_tick(Instant::now());
+                }
                 done = compaction_done(&mut self.compaction) => self.finish_compaction(done),
             }
         }
@@ -1581,6 +1593,8 @@ impl Room {
             RoomCommand::Start { player, reply } => {
                 let result = self.start(player);
                 self.answer_and_broadcast(reply, result);
+                // A game starting is not batched: members learn it at once.
+                self.flush_view();
             }
             RoomCommand::StartWorld {
                 player,
@@ -3451,6 +3465,11 @@ impl Room {
     /// Sends a control message to a member, disconnecting members whose
     /// queue is full instead of buffering without bound.
     fn push(&mut self, index: usize, message: ServerMessage) {
+        // Whatever follows a change of the room follows its view too.
+        // (flush_view clears the flag before its own pushes.)
+        if self.view_pending {
+            self.flush_view();
+        }
         let member = &mut self.members[index];
         let Some(link) = &member.link else {
             return;
@@ -3461,6 +3480,10 @@ impl Room {
     }
 
     fn send_turn(&mut self, index: usize, feed: TurnFeed) {
+        // A game's turns, as its other messages, follow the room's view.
+        if self.view_pending {
+            self.flush_view();
+        }
         let member = &mut self.members[index];
         let Some(link) = &member.link else {
             return;
@@ -3485,6 +3508,16 @@ impl Room {
     }
 
     fn broadcast_view(&mut self) {
+        self.view_pending = true;
+        // The room list and the admin endpoint see the change at once.
+        self.refresh_summary();
+    }
+
+    /// Sends the view [`Room::broadcast_view`] asked for, if it is pending.
+    fn flush_view(&mut self) {
+        if !std::mem::take(&mut self.view_pending) {
+            return;
+        }
         self.refresh_summary();
         // The room's mods before the view: on the same ordered stream, so a
         // member asked by this view to get ready again has the mods and
@@ -4436,6 +4469,7 @@ mod tests {
             game_content: None,
             snapshots: None,
             start_world: None,
+            view_pending: false,
             closed: false,
             summary: Arc::new(std::sync::Mutex::new(Summary {
                 name: Text::new("digest guard").unwrap(),

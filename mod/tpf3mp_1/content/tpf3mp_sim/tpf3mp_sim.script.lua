@@ -644,12 +644,15 @@ function data()
 			local subsidies = l:room() and type(saved) == "table" and companies.subsidiesDue(saved.companies, day)
 			-- The entities the hook's edge watch reads in this update.
 			local watch = l:edgewatch()
+			-- Builds an earlier step's action left for this one (apply.lua).
+			local deferred = l:room() and apply.hasDeferred()
 			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies
 				and not loanInit and not loanRefresh and not quitTutorial
-				and not watch and not scanStep then
+				and not watch and not scanStep and not deferred then
 				return nil
 			end
-			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint, scanStep = scanStep,
+			return { deferred = deferred or nil,
+				actions = actions, origins = origins, seals = seals, checkpoint = checkpoint, scanStep = scanStep,
 				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
 				subsidies = subsidies and day or nil, loanInit = loanInit, loanRefresh = loanRefresh, watch = watch,
 				quitTutorial = quitTutorial }
@@ -669,6 +672,12 @@ function data()
 					tutorialError = tostring(why)
 					l:log("tutorial: Quit Tutorial cleanup failed: " .. tutorialError)
 				end
+			end
+			if work.deferred then
+				-- Before this step's actions, as the room ordered them.
+				l:replaying(true)
+				apply.flushDeferred()
+				l:replaying(false)
 			end
 			if work.actions or work.begin or work.monthly or work.sample or work.loanInit or work.loanRefresh then
 				local saved = state:get()

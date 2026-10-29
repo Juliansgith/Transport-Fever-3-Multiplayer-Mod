@@ -532,11 +532,20 @@ function capture.construction(proposal)
 		local action = { BuildConstruction = { file = file, transform = transform, params = list, name = name,
 			replaces = replaces } }
 		local ownSegments, ownNodes, others = ownRemovals(street, replaced.component)
-		if not others then return action end
+		-- A road or track across an industry is a build of its own, however
+		-- little it removes around it (industryEdit).
+		local industry = module("engine").industryFile(file)
+		if industry and module("acceptance").industryFields ~= true then
+			return nil, "editing an industry awaits two-player game acceptance"
+		end
+		if not others and not industry then return action end
 		local safeStreet = get(safeProposal, "proposal")
-		local connection, whyNot = capture.connection(withoutOwn(safeStreet, ownSegments, ownNodes))
+		local connection, whyNot = capture.connection(withoutOwn(safeStreet, ownSegments, ownNodes), nil, industry)
 		local around = "a construction edit that changes the streets around it"
 		if connection == nil then return nil, around .. ": " .. tostring(whyNot) end
+		-- An industry edit whose streets are all its own (the bulldozer taking
+		-- a farm's entrance road or a field): the replacement makes them again.
+		if connection == false and industry then return action end
 		if connection == false then return nil, around end
 		action.BuildConstruction.connection = connection
 		return action
@@ -741,7 +750,7 @@ end
 -- build, and the construction gives its own junctions the game's own
 -- settings, alike in every game. So a setting at a node left out, or whose
 -- turns name an edge left out, is left out too (junctions.without).
-local function joinedOnly(part)
+local function joinedOnly(part, keep)
 	local parent = {}
 	local function find(x)
 		while parent[x] ~= x do x = parent[x] end
@@ -763,9 +772,14 @@ local function joinedOnly(part)
 			if parent[n] ~= nil then joined[find(n)] = true end
 		end
 	end
+	-- `keep`, when given, says which edges are the build's instead.
+	local function kept(e)
+		if keep then return keep(e) end
+		return joined[find(e.node0)]
+	end
 	local edges, used = {}, {}
 	for _, e in ipairs(part.edges) do
-		if joined[find(e.node0)] then
+		if kept(e) then
 			edges[#edges + 1] = e
 			used[e.node0], used[e.node1] = true, true
 		end
@@ -777,7 +791,7 @@ local function joinedOnly(part)
 	end
 	local ownNodes, ownEdges = {}, {}
 	for _, e in ipairs(part.edges) do
-		if not joined[find(e.node0)] and at[e.node0] and at[e.node1] then
+		if not kept(e) and at[e.node0] and at[e.node1] then
 			ownEdges[#ownEdges + 1] = { network = e.network, ends = { a = at[e.node0], b = at[e.node1] } }
 			for _, n in ipairs({ e.node0, e.node1 }) do
 				ownNodes[#ownNodes + 1] = { network = e.network, at = at[n] }
@@ -795,7 +809,15 @@ end
 -- the road through a new junction and adds an edge from the junction to the
 -- station's own street node), as a polyline whose every link names its
 -- kind; false when it makes none; nil and why the room cannot carry them.
-function capture.connection(proposal, con)
+-- An industry's own streets are its entrances, of the game's construction
+-- street types (::/infrastructure/street/constructions/); what else an
+-- industry edit's street part builds is the player's road or track, joined
+-- to anything or not (tpf3mp/capture.lua industryEdit).
+local function notConstructionStreet(e)
+	return not tostring(e.template or ""):find("/constructions/", 1, true)
+end
+
+function capture.connection(proposal, con, industry)
 	if con ~= nil then
 		local safe, why = constructionObjects(proposal, con)
 		if safe == nil then return nil, why end
@@ -806,7 +828,7 @@ function capture.connection(proposal, con)
 	if not ok then return nil, tostring(part) end
 	if part == nil then return false end
 	local removes = #part.removed > 0 or #part.removedNodes > 0
-	joinedOnly(part)
+	joinedOnly(part, industry and notConstructionStreet or nil)
 	if #part.edges == 0 then
 		if removes then return nil, "a construction that removes streets and builds none" end
 		return false
@@ -822,6 +844,11 @@ function capture.connection(proposal, con)
 	-- The construction creates its own switches; those settings are not
 	-- separate network edits and may exceed the action's junction limit.
 	local kept = module("apply").ownJunctions(build.polyline)
+	-- An industry edit's junctions are the ones its replacement makes again:
+	-- a setting at its entrance names a road the old industry takes with it,
+	-- and every game refused it ("the junction's road or track changed",
+	-- build 40425, 2026-10-28). Each game gives them the game's own.
+	if industry then kept = {} end
 	build.polyline.junctions = kept
 	return build.polyline
 end
@@ -830,11 +857,36 @@ end
 -- TrackBuild), read off its proposal by tpf3mp/engine.lua and made an action
 -- by tpf3mp/roads.lua. Returns the action table; false for a proposal of
 -- nothing (the tool before its first point); or nil and why.
+-- A street or track build that edits an industry: the tool removes the
+-- industry and puts it back of the same file without what the build takes
+-- (a farm's fields its modules, its entrance road rejoined; build 40425,
+-- 2026-10-28: livestock_farm.con of 6 modules put back with 3). The game
+-- cannot take the road alone (its proposal check throws), so the build
+-- travels as that edit, the road its connection (capture.construction),
+-- behind acceptance.lua's industryFields. True when the proposal is one.
+local function industryEdit(proposal)
+	local engine = module("engine")
+	local toRemove, toAdd = get(proposal, "toRemove"), get(proposal, "toAdd")
+	local removed, file = 0, nil
+	for i = 1, (length(toRemove) or 0) do
+		local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
+		if (length(c and get(c, "townBuildings")) or 0) == 0 then
+			removed = removed + 1
+			file = c and get(c, "fileName")
+		end
+	end
+	if removed ~= 1 or not engine.industryFile(file) or length(toAdd) ~= 1 then return false end
+	if get(get(toAdd, 1), "fileName") ~= file then return false end
+	return module("acceptance").industryFields == true
+end
+
 function capture.street(proposal)
+	if industryEdit(proposal) then return capture.construction(proposal) end
 	return module("engine").captureBuild(proposal, "Street")
 end
 
 function capture.track(proposal)
+	if industryEdit(proposal) then return capture.construction(proposal) end
 	return module("engine").captureBuild(proposal, "Track")
 end
 

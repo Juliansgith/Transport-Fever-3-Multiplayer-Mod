@@ -45,8 +45,10 @@ pub const HOOK_FILE: &str = if cfg!(windows) {
 };
 
 /// How long a game started on Windows stays suspended for TPF3-MP's hook
-/// to finish installing its hooks. A timeout stops the launch.
-pub const HOOK_READY_WAIT: Duration = Duration::from_secs(120);
+/// to finish installing its hooks. A timeout stops the launch. Five
+/// minutes: on a busy PC the bootstrap has taken 111 s (2026-10-28), past
+/// the two minutes allowed before.
+pub const HOOK_READY_WAIT: Duration = Duration::from_secs(300);
 
 /// A game to start, and the hook to start it with.
 #[derive(Debug, Clone, PartialEq, Eq)]
