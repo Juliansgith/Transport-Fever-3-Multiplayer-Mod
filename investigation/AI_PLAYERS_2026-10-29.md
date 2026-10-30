@@ -378,6 +378,53 @@ A rail line now chooses its train before it builds anything: in the
 brain's stand-in world, a line built for a cargo no wagon carried was
 left without a train.
 
+## Depots (2026-10-30)
+
+In every two-game run of the day the Normal AI's road depot was refused
+before its bus line opened, and once a truck line was given up for want of
+one:
+
+- Runs 29, 30, 32, 33, 34 and 37: "no Street edge to split at vertex 1",
+  twice, in Hunstanton, where both AIs began their first bus line at the
+  same moment (the world reloaded when the joiner came in). Both read the
+  same streets and ranked them alike, farthest from the town's middle
+  first; the Hard AI's depot split that street first, and the Normal AI's
+  verdicts on both its sides found no edge between the ends it had read.
+  The next street was taken.
+- Run 33: sixteen "Collision" refusals for the depot of a meat line from
+  Heanor and Loscoe Livestock Farm to Penzance, then "found no place for a
+  depot". Its streets were read by the farm and by the Penzance district,
+  ranked farthest from the farm: all sixteen placements were in Penzance.
+- A probe in one game on the fixture (no AI; verdicts only, the AI's own
+  depot action through `apply.proposalOf`) priced the placements the AI
+  would try. The game said "Collision" of every one, critical for none:
+  the depot touches its own street's new halves (negative ids), and some
+  another street one block over, a railway, a junction, or the farm. And
+  the price: 207,000 to 230,000 on open ground by the farm, 207,000 to
+  1,050,000 in Hunstanton, 430,000 to 815,000 for every one in Penzance's
+  centre, a depot clearing the houses in its way. Run 33's sixteen were
+  verdicts the game would have built, dearer than the money the AI could
+  spend after its cement railway; the brain named the game's first word,
+  "Collision", where the reason was the price.
+- So the AI now reads the streets for its depot afresh once its stops
+  stand, around a truck line's industry rather than the district it
+  serves; prices up to six placements, in an order of its own (two AIs in
+  one town no longer pick the same street together), and builds the one
+  touching nothing that stands, the cheapest of those; reads again after a
+  split refused for a changed street; and says "too dear" with the price
+  where that is why.
+- Run 40 (two games, Hard and Normal AIs, the big fixture): four road
+  depots, each the best of six placements priced and built at the first
+  try, no refusal: both AIs' first bus lines in Hunstanton at the same
+  moment again (210,266 and 234,728), a bus line in Dinnington St John's
+  (213,050), and a fuel line's depot by Wallingford Oil Refinery
+  (209,323). The world checks alike in both games (43 windows).
+- Seen in passing: the Hard AI's second passenger line from Dinnington St
+  John's, to Basingstoke again, tried to share its first line's rail depot
+  ("Too Much Curvature" for the link) and built its own; that it chose
+  the same two towns again is a fault of the passenger pairs' key (a
+  district centre's place, which moves as a town grows).
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

@@ -131,7 +131,8 @@ lasts, and at least one a frame:
 - **Answers verdicts.** For an action the AI considers, it makes the
   proposal as the AI's company would build it (`apply.proposalOf`, as
   build previews do) and returns the game's verdict (`makeProposalData`:
-  refused or not and why, the cost, what it would hit). A verdict can
+  refused or not and why, the cost, how many things that stand it would
+  hit, not counting what the build itself makes). A verdict can
   take tens of milliseconds for a long track, so the AI asks for short
   pieces, a few a second at most.
 - **No outcomes of their own.** The AI confirms each action by asking
@@ -222,7 +223,20 @@ faster AI.
   construction tool leaves one; every game's refresh of the depot then
   snaps the entrance onto it, in the same action (`tpf3mp/apply.lua`,
   `BuildConstruction`). A separate road onto a construction's entrance
-  the game refuses ("Construction Not Possible", 2026-10-29). *Built so
+  the game refuses ("Construction Not Possible", 2026-10-29). Where the
+  depot goes: it reads the streets afresh once its stops stand (another
+  company's depot may have split one since), around the town out to its
+  districts, or within 300 m of the industry a truck line loads at; it
+  prices up to six placements on the eight likeliest streets (a town's
+  away from its middle, a cargo's nearest its industry), in an order of
+  its own, and builds the one that touches nothing that stands (another
+  street, a track, an industry), the cheapest of those. A depot clears the
+  town buildings in its way and pays for them: in the fixture's towns the
+  same depot cost 207,000 on open ground and up to a million among houses.
+  The game says "Collision" of every depot, its own street's new halves
+  counted, and builds it; the verdict's count leaves those out. Refused
+  because its street changed under it (no edge left to split), it reads
+  the streets again, twice at most (investigation, "Depots"). *Built so
   far:* a town's bus line, and a cargo's truck line from an industry that
   made it over the last year to the nearest town that needs more of it
   (the town window's cargo demand: supplied at least 10 a year short of

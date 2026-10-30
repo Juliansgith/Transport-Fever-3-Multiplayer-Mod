@@ -67,6 +67,19 @@ pub const STOP_REUSE: f64 = 260.0;
 pub const DEPOT_REACH: f64 = 1_500.0;
 /// How many streets around a town it tries a depot by, each side of each.
 pub const DEPOT_STREETS: usize = 8;
+/// How many depot placements the game would build it prices before it
+/// builds the best: one clear of what stands, the cheapest. A depot clears
+/// the town buildings in its way, and in the fixture's towns the same depot
+/// cost from 207,000 on open ground to over a million among houses
+/// (2026-10-30, investigation/AI_PLAYERS_2026-10-29.md, "Depots").
+pub const DEPOT_PRICED: usize = 6;
+/// How far around a town it reads the streets for its depot, at most, in
+/// metres, and around the industry a truck line loads at.
+pub const DEPOT_SEARCH: u32 = 700;
+pub const DEPOT_SEARCH_CARGO: u32 = 300;
+/// How many times it reads the streets again for its depot after the game
+/// found the street it chose changed under it (split by another's build).
+pub const DEPOT_READS: u32 = 2;
 /// Towns it gives up on stay given up on for this long.
 pub const GIVE_UP_FOR: Duration = Duration::from_secs(900);
 /// How long a chain's leg no road joins is left out of its chains.
@@ -252,10 +265,26 @@ struct Project {
     depot: Option<AiDepot>,
     /// Depot placements still to try: street index and side.
     depot_tries: Vec<(usize, f64)>,
+    /// Depot placements the game would build, priced: what it would cost,
+    /// how many things that stand it would touch, its street's index, and
+    /// the build itself.
+    depot_priced: Vec<Priced>,
+    /// How many times it read the streets for its depot.
+    depot_reads: u32,
     /// A cargo's truck station placements still to try, in the district
     /// that takes it: index into its site's streets, and side.
     station_tries: Vec<(usize, f64)>,
     line: Option<LineId>,
+}
+
+/// A depot placement the game would build: its cost, what it touches that
+/// stands, its street's index, and the build.
+#[derive(Debug, Clone)]
+struct Priced {
+    cost: i64,
+    touches: u16,
+    street: usize,
+    build: tpf3mp_proto::action::ConstructionBuild,
 }
 
 /// Where the brain is.
@@ -301,7 +330,11 @@ enum Stage {
         street: usize,
         tries: u32,
     },
-    /// Asking the verdict on the next depot placement.
+    /// Reading the streets afresh where its depot goes: another company's
+    /// build may have split one since its project read them.
+    DepotStreets,
+    /// Asking the verdict on the next depot placement, and once enough are
+    /// priced, building the best.
     DepotVerdict,
     /// A depot sent, by the street of that index: reading until it stands,
     /// its entrance on the street.
@@ -581,14 +614,25 @@ impl Brain {
                     None
                 }
             },
-            Stage::DepotVerdict => match self.next_depot() {
-                Some(build) => self.verdict(&Action::BuildConstruction(build), now),
-                None => {
-                    self.say("found no place for a depot".into());
-                    self.give_up_project(now);
-                    None
+            Stage::DepotStreets => {
+                let (at, radius) = self.depot_search()?;
+                self.ask(AiQuestion::Streets { at, radius }, now)
+            }
+            Stage::DepotVerdict => {
+                let priced = self.project.as_ref().map_or(0, |p| p.depot_priced.len());
+                if priced >= DEPOT_PRICED {
+                    return self.build_depot(now);
                 }
-            },
+                match self.next_depot() {
+                    Some(build) => self.verdict(&Action::BuildConstruction(build), now),
+                    None if priced > 0 => self.build_depot(now),
+                    None => {
+                        self.say("found no place for a depot".into());
+                        self.give_up_project(now);
+                        None
+                    }
+                }
+            }
             Stage::Models => {
                 let cargo = self.cargo_now();
                 let mode = if cargo.is_some() { TRUCK } else { BUS };
@@ -652,6 +696,12 @@ impl Brain {
                 self.rail_streets(streets.into_inner(), now);
                 None
             }
+            (AiQuestion::Streets { .. }, AiAnswer::Streets(streets))
+                if matches!(self.stage, Stage::DepotStreets) =>
+            {
+                self.depot_streets(streets.into_inner());
+                None
+            }
             (AiQuestion::Streets { .. }, AiAnswer::Streets(streets)) => {
                 self.on_streets(streets.into_inner(), now);
                 None
@@ -678,17 +728,31 @@ impl Brain {
                 // being refused (2026-10-30): the AI lays none such.
                 let collides = matches!(action, Action::BuildTrack(_))
                     && verdict.messages.iter().any(|m| m.as_str() == COLLISION);
-                if verdict.ok && !collides && verdict.cost <= self.spendable().max(0) {
+                let spendable = self.spendable().max(0);
+                if verdict.ok && !collides && verdict.cost <= spendable {
                     if let Stage::Rail(stage) = self.stage.clone() {
                         return self.rail_good_verdict(stage, &action, verdict.cost, now);
                     }
-                    self.on_good_verdict(&action, now)
+                    self.on_good_verdict(&action, &verdict, now)
                 } else {
-                    let why = verdict
-                        .messages
-                        .first()
-                        .map_or("too dear", |m| m.as_str())
-                        .to_owned();
+                    // Why: the game's word where it refuses; where it would
+                    // build, the price. A depot among houses the game builds
+                    // with "Collision" said of it, and one too dear was logged
+                    // as that (2026-10-30, run 33).
+                    let why = if !verdict.ok {
+                        verdict
+                            .messages
+                            .first()
+                            .map_or("refused", |m| m.as_str())
+                            .to_owned()
+                    } else if collides {
+                        COLLISION.to_owned()
+                    } else {
+                        format!(
+                            "too dear: {} over the {spendable} it may spend",
+                            verdict.cost
+                        )
+                    };
                     if let Stage::Rail(stage) = self.stage.clone() {
                         self.rail_bad_verdict(stage, &why, now);
                         return None;
@@ -827,6 +891,7 @@ impl Brain {
                         // side too.
                         if let Some(project) = self.project.as_mut() {
                             project.depot_tries.retain(|(i, _)| *i != street);
+                            project.depot_priced.retain(|p| p.street != street);
                         }
                         self.stage = Stage::DepotVerdict;
                     }
@@ -1297,6 +1362,8 @@ impl Brain {
             stops: Vec::new(),
             depot: None,
             depot_tries: Vec::new(),
+            depot_priced: Vec::new(),
+            depot_reads: 0,
             station_tries: Vec::new(),
             line: None,
         });
@@ -1534,11 +1601,48 @@ impl Brain {
             self.stage = Stage::Opening;
             return;
         }
+        project.depot_tries.clear();
+        project.depot_priced.clear();
+        project.depot_reads = 0;
+        self.stage = Stage::DepotStreets;
+    }
+
+    /// Where it reads the streets for its depot: around a town, out to its
+    /// districts' streets; around the industry a truck line loads at, which
+    /// its trucks leave the depot for. A depot by the district a cargo goes
+    /// to stood among its houses, dear (run 33).
+    fn depot_search(&self) -> Option<(Pos, u32)> {
+        let project = self.project.as_ref()?;
+        let at = project.serves.pos();
+        if project.serves.cargo().is_some() {
+            return Some((at, DEPOT_SEARCH_CARGO));
+        }
+        let far = project
+            .site_at
+            .iter()
+            .map(|c| P::of(*c).flat_distance(P::of(at)))
+            .fold(0.0, f64::max);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let radius = (far as u32 + STOP_SEARCH).clamp(STOP_SEARCH, DEPOT_SEARCH);
+        Some((at, radius))
+    }
+
+    /// The streets read afresh: the placements to price, by streets the
+    /// town's (D21: a split of a company's the room refuses), empty and long
+    /// enough, away from the line's stops; a town's away from its middle,
+    /// where there is room, a cargo's nearest its industry.
+    fn depot_streets(&mut self, streets: Vec<AiStreet>) {
+        // Its own order to price them in: two AIs in one town read the
+        // same streets at once, and one's depot split the street the other
+        // chose (runs 29 to 37).
+        let mut rng = self.random() | 1;
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        project.depot_reads += 1;
+        project.streets = streets;
         let stops: Vec<P> = project.stops.iter().map(|(p, _)| *p).collect();
-        let mut tries = Vec::new();
         let mut order: Vec<usize> = (0..project.streets.len())
-            // The town's streets, not a company's: a split of another's
-            // the room refuses (D21).
             .filter(|&i| {
                 let s = &project.streets[i];
                 place::usable(s) && !s.owned && !s.company_junction && s.length >= 40
@@ -1548,19 +1652,59 @@ impl Brain {
                 stops.iter().all(|s| s.flat_distance(m) > 60.0)
             })
             .collect();
-        // Away from the town's middle, where there is room.
         let centre = P::of(project.serves.pos());
-        order.sort_by(|&a, &b| {
-            place::middle(&project.streets[b])
-                .flat_distance(centre)
-                .total_cmp(&place::middle(&project.streets[a]).flat_distance(centre))
-        });
-        for i in order.into_iter().take(DEPOT_STREETS) {
-            tries.push((i, 1.0));
-            tries.push((i, -1.0));
+        let from = |i: usize| place::middle(&project.streets[i]).flat_distance(centre);
+        if project.serves.cargo().is_some() {
+            order.sort_by(|&a, &b| from(a).total_cmp(&from(b)));
+        } else {
+            order.sort_by(|&a, &b| from(b).total_cmp(&from(a)));
+        }
+        let mut tries: Vec<(usize, f64)> = order
+            .into_iter()
+            .take(DEPOT_STREETS)
+            .flat_map(|i| [(i, 1.0), (i, -1.0)])
+            .collect();
+        for k in (1..tries.len()).rev() {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            #[allow(clippy::cast_possible_truncation)]
+            tries.swap(k, (rng % (k as u64 + 1)) as usize);
         }
         project.depot_tries = tries;
+        project.depot_priced.clear();
         self.stage = Stage::DepotVerdict;
+    }
+
+    /// Builds the best depot placement priced: clear of what stands, then
+    /// the cheapest.
+    fn build_depot(&mut self, now: Instant) -> Option<Out> {
+        let project = self.project.as_ref()?;
+        let (best, priced) = project
+            .depot_priced
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| (p.touches, p.cost))
+            .map(|(i, p)| (i, p.clone()))?;
+        let count = project.depot_priced.len();
+        let out = self.act(&Action::BuildConstruction(priced.build.clone()), now);
+        if out.is_some() {
+            if let Some(project) = self.project.as_mut() {
+                project.depot_priced.remove(best);
+            }
+            self.say(format!(
+                "builds its depot for {}, the best of {count} placements priced",
+                priced.cost
+            ));
+            self.stage = Stage::DepotBuilt {
+                at: priced.build.transform.origin,
+                street: priced.street,
+                tries: 0,
+            };
+        } else {
+            self.wake = Some(now + SETTLE);
+        }
+        out
     }
 
     fn next_station(&mut self, site: usize) -> Option<tpf3mp_proto::action::ConstructionBuild> {
@@ -1605,7 +1749,12 @@ impl Brain {
         None
     }
 
-    fn on_good_verdict(&mut self, action: &Action, now: Instant) -> Option<Out> {
+    fn on_good_verdict(
+        &mut self,
+        action: &Action,
+        verdict: &tpf3mp_bridge::ai::AiVerdict,
+        now: Instant,
+    ) -> Option<Out> {
         match (self.stage.clone(), action) {
             (Stage::StopVerdict { site, choice }, Action::PlaceStop(stop)) => {
                 let at = P::of(stop.at);
@@ -1658,24 +1807,20 @@ impl Brain {
                 }
                 out
             }
+            // Priced, not yet built: the best of several goes up
+            // ([`Brain::build_depot`]).
             (Stage::DepotVerdict, Action::BuildConstruction(build)) => {
-                let at = build.transform.origin;
-                let out = self.act(action, now);
-                if out.is_some() {
-                    let street = self
-                        .project
-                        .as_mut()
-                        .filter(|p| !p.depot_tries.is_empty())
-                        .map_or(usize::MAX, |p| p.depot_tries.remove(0).0);
-                    self.stage = Stage::DepotBuilt {
-                        at,
+                let project = self.project.as_mut()?;
+                if !project.depot_tries.is_empty() {
+                    let (street, _) = project.depot_tries.remove(0);
+                    project.depot_priced.push(Priced {
+                        cost: verdict.cost,
+                        touches: verdict.collisions,
                         street,
-                        tries: 0,
-                    };
-                } else {
-                    self.wake = Some(now + SETTLE);
+                        build: build.clone(),
+                    });
                 }
-                out
+                None
             }
             _ => None,
         }
@@ -1700,9 +1845,17 @@ impl Brain {
             }
             Stage::DepotVerdict => {
                 self.say(format!("a depot placement was refused: {why}"));
-                if let Some(project) = self.project.as_mut()
-                    && !project.depot_tries.is_empty()
-                {
+                let Some(project) = self.project.as_mut() else {
+                    return;
+                };
+                // Its street is not as it read it: another's build split it
+                // since (both AIs chose the same street in one town, runs 29
+                // to 37). Read them again, the placements priced with them.
+                if street_changed(why) && project.depot_reads < DEPOT_READS {
+                    project.depot_tries.clear();
+                    project.depot_priced.clear();
+                    self.stage = Stage::DepotStreets;
+                } else if !project.depot_tries.is_empty() {
                     project.depot_tries.remove(0);
                 }
             }
@@ -1940,6 +2093,15 @@ impl Brain {
 /// at its livestock farm.
 fn output_terminal(terminals: u8) -> u16 {
     if terminals == 2 { 1 } else { 0 }
+}
+
+/// Whether the game refused a split because the street is not as the AI
+/// read it: no edge between its ends any more, or the split's place off it
+/// (tpf3mp/apply.lua, the polyline's `Split` vertices).
+fn street_changed(why: &str) -> bool {
+    why.contains("edge to split at vertex")
+        || why.contains("is not on the edge it splits")
+        || why.contains("splits the edge at its end")
 }
 
 /// Whether a town by its id is one the brain serves, as its memo says.

@@ -20,6 +20,11 @@ use tpf3mp_proto::{
 };
 
 const STEP: Duration = Duration::from_millis(100);
+/// The road depot TF3 builds road vehicles in, and the game's refusal of a
+/// split whose street is gone (tpf3mp/apply.lua).
+const ROAD_DEPOT: &str = tpf3mp_ai::place::ROAD_DEPOT;
+const SPLIT_GONE: &str =
+    "[string \"tpf3mp_1::/scripts/tpf3mp/apply.lua\"]:1744: no Street edge to split at vertex 1";
 
 fn pos(x: f64, y: f64) -> Pos {
     #[allow(clippy::cast_possible_truncation)]
@@ -92,6 +97,14 @@ struct World {
     /// Signals placed on its track; passenger stations built.
     signals: Vec<PlaceStop>,
     passenger_stations: u32,
+    /// Road depot verdicts that find another company's depot just built on
+    /// the street asked about, splitting it, as the other AI's was in one
+    /// town (runs 29 to 37); and what a road depot costs by its origin,
+    /// clearing houses (the fixture's towns, 2026-10-30).
+    rival_depots: u32,
+    depot_cost: Option<fn(Pos) -> i64>,
+    /// The road depots the verdicts would build: where, and at what price.
+    depot_quotes: Vec<(Pos, i64)>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -159,6 +172,9 @@ impl World {
             sold: Vec::new(),
             signals: Vec::new(),
             passenger_stations: 0,
+            rival_depots: 0,
+            depot_cost: None,
+            depot_quotes: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -177,7 +193,7 @@ impl World {
         self.next_id
     }
 
-    fn answer(&self, question: &AiQuestion) -> AiAnswer {
+    fn answer(&mut self, question: &AiQuestion) -> AiAnswer {
         match question {
             AiQuestion::Company => AiAnswer::Company(AiCompany {
                 company: self.company,
@@ -358,7 +374,21 @@ impl World {
             ),
             AiQuestion::Verdict(payload) => {
                 let action = Action::from_payload(payload).unwrap();
-                AiAnswer::Verdict(self.verdict(&action))
+                if self.rival_depots > 0
+                    && let Some((a, b)) = split_street(&action)
+                {
+                    // Another company's depot, just built there.
+                    self.rival_depots -= 1;
+                    self.split(a, b);
+                }
+                let verdict = self.verdict(&action);
+                if let Action::BuildConstruction(b) = &action
+                    && b.file.as_str() == ROAD_DEPOT
+                    && verdict.ok
+                {
+                    self.depot_quotes.push((b.transform.origin, verdict.cost));
+                }
+                AiAnswer::Verdict(verdict)
             }
         }
     }
@@ -423,15 +453,50 @@ impl World {
             }
             _ => true,
         };
+        // A road depot as the game judges one: its street gone, refused as
+        // apply.lua refuses the split; else "Collision" said of it, its own
+        // street split for its entrance, and built, at its price there.
+        let depot = matches!(action, Action::BuildConstruction(b) if b.file.as_str() == ROAD_DEPOT);
+        let gone = depot
+            && split_street(action)
+                .is_some_and(|(a, b)| !self.streets.iter().any(|s| s.a == a && s.b == b));
+        let cost = match action {
+            Action::BuildConstruction(b) if depot => {
+                self.depot_cost.map_or(10_000, |f| f(b.transform.origin))
+            }
+            _ => 10_000,
+        };
+        let said = if gone {
+            vec![SPLIT_GONE]
+        } else if !ok || depot {
+            vec!["Collision"]
+        } else {
+            Vec::new()
+        };
         AiVerdict {
             ok,
-            cost: 10_000,
-            messages: if ok {
-                BoundedVec::default()
-            } else {
-                BoundedVec::new(vec![Text::new("Collision").unwrap()]).unwrap()
-            },
+            cost,
+            messages: BoundedVec::new(said.into_iter().map(|m| Text::new(m).unwrap()).collect())
+                .unwrap(),
             collisions: 0,
+        }
+    }
+
+    /// The street from `a` to `b` in two at its middle, as a depot's or a
+    /// level crossing's split leaves it.
+    fn split(&mut self, a: Pos, b: Pos) {
+        let Some(k) = self.streets.iter().position(|s| s.a == a && s.b == b) else {
+            return;
+        };
+        let old = self.streets.remove(k);
+        for (from, to) in [(old.a, old.mid), (old.mid, old.b)] {
+            let mut half = street(from, to);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                half.length = (P::of(from).flat_distance(P::of(to))) as u32;
+            }
+            half.template = old.template.clone();
+            self.streets.push(half);
         }
     }
 
@@ -634,9 +699,12 @@ impl World {
                     z: o.z,
                 };
                 // The split's junction, which the refresh snaps the
-                // entrance onto: 2 m from it.
+                // entrance onto: 2 m from it. The street it splits is two.
                 let connection = build.connection.unwrap();
                 let junction = connection.vertices[0].pos;
+                if let Resolve::Split(e) = &connection.vertices[0].resolve {
+                    self.split(e.ends.a, e.ends.b);
+                }
                 let gap =
                     f64::from(junction.x - entrance.x).hypot(f64::from(junction.y - entrance.y));
                 assert!((gap - 2_000.0).abs() < 2.0, "{gap}");
@@ -1259,6 +1327,110 @@ fn a_depot_never_splits_a_companys_street_or_one_at_a_companys_junction() {
             "{said:?}"
         );
     }
+}
+
+/// What it said of refused depot placements.
+fn depot_refusals(said: &[String]) -> Vec<&String> {
+    said.iter()
+        .filter(|l| l.starts_with("a depot placement was refused"))
+        .collect()
+}
+
+#[test]
+fn a_depot_whose_street_another_company_split_reads_the_streets_again() {
+    // As in one town in runs 29 to 37: the other AI's depot split the
+    // street this one chose after it read the streets. Both sides of that
+    // street were refused, the game finding no edge to split.
+    let mut world = World::new();
+    world.rival_depots = 1;
+    let mut brain = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(120),
+    );
+    let said = brain.take_said();
+    let refused = depot_refusals(&said);
+    assert_eq!(refused.len(), 1, "one refusal, then a fresh read: {said:?}");
+    assert!(
+        refused[0].contains("no Street edge to split"),
+        "{refused:?}"
+    );
+    assert!(world.depots.iter().any(|d| d.connected), "{said:?}");
+    assert!(
+        world.lines_with_buses(2) >= 1,
+        "and its line runs: {said:?}"
+    );
+}
+
+#[test]
+fn a_depot_goes_where_it_is_cheapest_of_several_priced() {
+    // A depot clears the houses in its way: in the fixture's towns the
+    // same depot cost 207,000 on open ground and over a million among
+    // houses. Here its price varies from place to place.
+    let mut world = World::new();
+    world.depot_cost = Some(|o| {
+        200_000 + i64::from((o.x / 1000).rem_euclid(97) + (o.y / 1000).rem_euclid(89)) * 3_000
+    });
+    let mut brain = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(120),
+    );
+    let said = brain.take_said();
+    let built = world.depots.first().expect("a depot").at;
+    let quotes = &world.depot_quotes;
+    assert!(quotes.len() >= 2, "several priced: {quotes:?}");
+    let cheapest = quotes.iter().map(|(_, c)| *c).min().unwrap();
+    let paid = quotes.iter().find(|(at, _)| *at == built).map(|(_, c)| *c);
+    assert_eq!(paid, Some(cheapest), "the cheapest: {quotes:?}");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with(&format!("builds its depot for {cheapest}"))),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_truck_lines_depot_stands_by_the_industry_it_loads_at() {
+    // A sawmill between the towns, on a road of its own: its depot by it,
+    // not in the district its planks go to, among houses (run 33).
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        2_500.0,
+        0.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    for k in 0..4 {
+        let x = 2_300.0 + f64::from(k) * 100.0;
+        world
+            .streets
+            .push(street(pos(x, 40.0), pos(x + 100.0, 40.0)));
+    }
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    assert!(
+        world.line_modes.iter().any(|(_, m)| *m == 4),
+        "a truck line: {said:?}"
+    );
+    let near = |d: &&AiDepot| P::of(d.at).flat_distance(P::of(pos(2_500.0, 0.0))) <= 300.0;
+    assert!(
+        world.depots.iter().any(|d| near(&d)),
+        "a depot by the sawmill: {:?}",
+        world.depots.iter().map(|d| d.at).collect::<Vec<_>>()
+    );
 }
 
 #[test]
