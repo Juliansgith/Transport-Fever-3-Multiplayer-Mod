@@ -81,6 +81,11 @@ pub const CARGO_LEAST: u32 = 30;
 pub const CARGO_NEAREST: f64 = 800.0;
 /// Cargo routes it puts to the game's pathfinder, at most, per choice.
 pub const ROUTE_TRIES: usize = 5;
+/// Whether an AI plans truck lines for cargo. Off: in the real game its
+/// truck lines were built alike in every game, but no cargo reached their
+/// trucks (2026-10-30, runs 8 to 14; investigation/AI_PLAYERS_2026-10-29.md,
+/// "Trucks"), and an AI must not spend its money on trucks that idle.
+pub const CARRIES_CARGO: bool = false;
 /// Below this much money a mind borrows, while its difficulty lets it: a
 /// bus line costs about this much in the 1920s.
 pub const BORROW_BELOW: i64 = 400_000;
@@ -278,8 +283,10 @@ pub struct Brain {
     topping: Option<(LineId, AiDepot)>,
     /// Cargo routes still to put to the pathfinder, its pick first.
     routes: Vec<(ResName, AiIndustry, AiIndustry)>,
-    /// Whether its next project carries cargo (it takes turns).
+    /// Whether its next project carries cargo (it takes turns), and
+    /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
+    carries_cargo: bool,
     /// Towns given up on, until when.
     given_up: Vec<(u32, Instant)>,
     /// What happened last, for the driver's log.
@@ -321,6 +328,7 @@ impl Brain {
             topping: None,
             routes: Vec::new(),
             next_cargo: false,
+            carries_cargo: CARRIES_CARGO,
             given_up: Vec::new(),
             said: Vec::new(),
         }
@@ -338,6 +346,12 @@ impl Brain {
     /// perhaps right after loading a world it is still catching up in.
     pub fn hold(&mut self, until: Instant) {
         self.wake = Some(until);
+    }
+
+    /// Whether it plans truck lines for cargo as well as town buses (off
+    /// by default: [`CARRIES_CARGO`]).
+    pub fn carry_cargo(&mut self, on: bool) {
+        self.carries_cargo = on;
     }
 
     /// What it keeps for its next driver.
@@ -870,8 +884,8 @@ impl Brain {
             }
         }
         // Then a new line: a town's buses and a cargo's trucks in turn.
-        let cargo = self.next_cargo;
-        self.next_cargo = !cargo;
+        let cargo = self.next_cargo && self.carries_cargo;
+        self.next_cargo = !self.next_cargo;
         self.stage = if cargo {
             Stage::SurveyIndustries
         } else {

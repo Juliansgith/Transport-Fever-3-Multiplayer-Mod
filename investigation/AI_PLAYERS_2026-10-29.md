@@ -129,6 +129,36 @@ frame; in the game script's state it would hold a simulation step
 instead, which the room's pace leaves room for, once the mod's dry run is
 shown to leave nothing behind that a later applied action could read.
 
+## Trucks (2026-10-30)
+
+Truck lines for cargo are built, alike in every game, but no cargo has
+reached their trucks yet, so an AI plans none (`tpf3mp-ai`,
+`CARRIES_CARGO`). Runs 8 to 14 on the big fixture, every AI choosing
+crude oil from Penrith Oil Well (318 a year, its output stock full at
+600) to Wallingford Oil Refinery, 1 km by road:
+
+| run | the line | what the game did |
+|---|---|---|
+| 8 | street stop by each industry; load rules for passengers only | every truck "VehicleUseless" |
+| 9 | load rules by cargo number (crude oil is 18) | no issue, nothing loaded: a street stop only unloads (`small_stops.script.lua`, `cargoLoad = false`) |
+| 10, 11 | the AI's own one-platform truck station by the well, with and without its modules' metadata | built and snapped; nothing loaded |
+| 12 | both industries' own stations | nothing shipped in a game month |
+| 13 | the well's own station, a street stop by the refinery (as players' livestock line does) | nothing shipped |
+| 14 | the same, at the well station's second terminal alone (as players' farm and quarry lines) | nothing shipped in six game months |
+
+What is known: every industry has a station of its own, of two terminals
+for an input and an output, listed in the order its script's table gives
+them (`industryutil.lua`), each taking passengers and universal cargo;
+players' cargo lines load there (the fixture's farm, quarry, livestock
+farm and fishing grounds ship through them), and their truck terminals
+load cargo another line brought. Street stops catch the industries
+directly (`getStationCatchables`); construction stations show no
+catchables, the fixture's working ones included. Still open: why the
+well ships nothing to a line that stops at its station. To try next: a
+cargo other than crude oil (a farm's grain, as players' lines carry), a
+liquid truck rather than a universal one, and the game's own line window
+on the AI's line in the driver's game.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

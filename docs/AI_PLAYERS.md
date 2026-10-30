@@ -194,11 +194,13 @@ faster AI.
   far:* a town's bus line, and a cargo's truck line from an industry that
   made it over the last year to the nearest that takes it, within the
   difficulty's reach and joined by road already (`findPathNodeToNode` for
-  trucks). It loads at the station of the industry that makes the cargo
-  and unloads at a street stop within 140 m of the one that takes it, as
-  players' cargo lines do (build 40425: every industry has a station of
-  its own, of two terminals, which vehicles load at; a street stop only
-  unloads cargo, `small_stops.script.lua`).
+  trucks). It loads at the output terminal of the station of the
+  industry that makes the cargo and unloads at a street stop within 140 m
+  of the one that takes it, as players' cargo lines do (build 40425:
+  every industry has a station of its own, of an input and an output
+  terminal; a street stop only unloads cargo, `small_stops.script.lua`).
+  *Off for now:* no cargo has reached those trucks in the real game yet
+  (investigation, "Trucks"), so an AI plans bus lines only.
   The two kinds of line take turns.
 - **Track and trains.** The station: a through or terminus station near
   the town's centre or the industry, turned to the route, its platforms

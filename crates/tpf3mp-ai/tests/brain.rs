@@ -820,6 +820,7 @@ fn it_carries_cargo_by_truck_between_industries_joined_by_road() {
     let mut world = World::new();
     world.industries = farms();
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(true);
     play(
         &mut brain,
         &mut world,
@@ -880,6 +881,7 @@ fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
     world.industries = farms();
     world.roads_join = false;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(true);
     play(
         &mut brain,
         &mut world,
@@ -901,6 +903,7 @@ fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
         industry("Ely Livestock Farm", 4_050.0, 350.0, &[GRAIN], &[]),
     ];
     let mut easy = Brain::new(seat(), "Novak Transit", AiDifficulty::Easy, None);
+    easy.carry_cargo(true);
     play(
         &mut easy,
         &mut world,
@@ -912,5 +915,24 @@ fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
         easy.take_said()
             .iter()
             .any(|l| l == "found no cargo to carry")
+    );
+}
+
+#[test]
+fn it_plans_no_truck_lines_unless_told_to() {
+    let mut world = World::new();
+    world.industries = farms();
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    assert!(!world.lines.is_empty(), "bus lines");
+    assert!(
+        world.line_modes.iter().all(|(_, m)| *m == 3),
+        "no truck line by default: {:?}",
+        world.line_modes
     );
 }
