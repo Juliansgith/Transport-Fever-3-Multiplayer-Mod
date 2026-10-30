@@ -713,8 +713,19 @@ function ai.verdict(seat, action, roster)
 	for _, m in ipairs(state and state.warnings or {}) do
 		if #messages < ai.MAX_MESSAGES then messages[#messages + 1] = text("warning: " .. tostring(m), 160) end
 	end
+	-- What it collides with that stands: an entity of the world's, not one
+	-- the proposal makes (a negative id). A depot's own street, split for its
+	-- entrance, is always among the proposal's (2026-10-30, the fixture's
+	-- towns: "Collision" said of every depot, built all the same, critical
+	-- for none); another street, a track or an industry it reaches is not.
 	local collisions = 0
-	pcall(function() collisions = #(data.collisionInfo.collisionEntities or {}) end)
+	pcall(function()
+		for _, e in ipairs(data.collisionInfo.collisionEntities or {}) do
+			local ok, entity = pcall(function() return e.entity end)
+			if not ok or entity == nil then entity = e end
+			if type(entity) ~= "number" or entity >= 0 then collisions = collisions + 1 end
+		end
+	end)
 	return { Verdict = {
 		ok = not (state and state.critical) and data ~= nil,
 		cost = whole(data and data.costs or 0),

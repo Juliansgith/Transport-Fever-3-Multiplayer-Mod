@@ -328,6 +328,9 @@ pub struct AiVerdict {
     pub cost: i64,
     /// What the game says of it: why not, or what it warns of.
     pub messages: BoundedVec<Text<160>, MAX_AI_MESSAGES>,
-    /// What it would collide with.
+    /// How many things that stand it would collide with: another street, a
+    /// track, an industry; not what the build itself makes (a depot's own
+    /// street, split for its entrance, which the game names among its
+    /// collisions with "Collision" said of every depot it builds).
     pub collisions: u16,
 }

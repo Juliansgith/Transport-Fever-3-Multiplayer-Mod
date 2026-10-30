@@ -711,3 +711,36 @@ fn engines_and_rail_station_ends_read_as_the_ai_reads_them() {
             .all(|s| s.ends.is_empty())
     );
 }
+
+#[test]
+fn a_verdict_counts_what_stands_in_the_way_not_what_the_build_makes() {
+    // A road depot's verdict, as the game gave it in the fixture's towns:
+    // "Collision", not critical, its own street's new halves (negative ids)
+    // among what it touches, and here another street and an industry too.
+    let lua = lua();
+    lua.load(
+        r#"
+        local real = ug_require
+        ug_require = function(path)
+            if path:find("/apply.lua", 1, true) then
+                return { proposalOf = function() return {}, {} end, costText = function() return "" end }
+            end
+            return real(path)
+        end
+        api.engine.util.proposal = { makeProposalData = function()
+            return { costs = 212997.4, errorState = { critical = false, messages = { "Collision" } },
+                collisionInfo = { collisionEntities = { { entity = -2 }, { entity = -2 }, { entity = 200845 },
+                    { entity = -4 }, { entity = 162464 } } } }
+        end }
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Verdict(verdict) = answer(&lua, "{ Verdict = {} }") else {
+        panic!("not a verdict")
+    };
+    assert!(verdict.ok, "not critical: the game builds it");
+    assert_eq!(verdict.cost, 212_997);
+    assert_eq!(verdict.collisions, 2, "the street and the industry");
+    assert_eq!(verdict.messages[0].as_str(), "Collision");
+}
