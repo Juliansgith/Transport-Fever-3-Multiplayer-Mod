@@ -2687,15 +2687,23 @@ fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
         Duration::from_secs(1_200),
     );
     let said = brain.take_said();
-    let refused = said
+    // Every place by the sawmill refused in its trial, before anything was
+    // built; none once its stations stood.
+    let trial = said
         .iter()
         .filter(|l| {
-            l.starts_with("a rail depot placement was refused: touches 1 things that stand")
+            l.starts_with("a rail depot placement would be refused: touches 1 things that stand")
         })
         .count();
     assert_eq!(
-        refused, 3,
-        "each of its three distances by the sawmill: {said:?}"
+        trial, 7,
+        "each of its seven places by the sawmill: {said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("a rail depot placement was refused")),
+        "{said:?}"
     );
     let depots: Vec<&AiDepot> = world
         .depots
@@ -2737,11 +2745,19 @@ fn a_rail_depot_touching_what_stands_at_first_goes_further_out_at_that_end() {
         Duration::from_secs(1_200),
     );
     let said = brain.take_said();
-    let refused = said
+    // Its first place refused in its trial, the next taken once its
+    // stations stood.
+    let trial = said
         .iter()
-        .filter(|l| l.starts_with("a rail depot placement was refused"))
+        .filter(|l| l.starts_with("a rail depot placement would be refused"))
         .count();
-    assert_eq!(refused, 1, "{said:?}");
+    assert_eq!(trial, 1, "{said:?}");
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("a rail depot placement was refused")),
+        "{said:?}"
+    );
     let depot = world
         .depots
         .iter()
@@ -2752,6 +2768,53 @@ fn a_rail_depot_touching_what_stands_at_first_goes_further_out_at_that_end() {
         P::of(depot.at).flat_distance(P::of(pos(1_800.0, 900.0))) < 700.0,
         "still by the sawmill: {:?}",
         depot.at
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line carrying planks")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_rail_depot_blocked_straight_out_turns_aside_on_a_curved_track() {
+    // Straight out beyond a station met a player's railway at one station
+    // and streets at another (2026-10-31): the depot turns 30 degrees
+    // aside, its track one edge curving from the station's heading.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    world.rail_depot_touches = 3;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let trial = said
+        .iter()
+        .filter(|l| l.starts_with("a rail depot placement would be refused"))
+        .count();
+    assert_eq!(trial, 3, "its three straight places: {said:?}");
+    let depot = world
+        .depots
+        .iter()
+        .find(|d| d.file.as_str().contains("/rail/"))
+        .expect("a rail depot");
+    assert!(depot.connected, "joined by its curved track: {said:?}");
+    assert!(
+        P::of(depot.at).flat_distance(P::of(pos(1_800.0, 900.0))) < 700.0,
+        "still by the sawmill"
     );
     assert!(
         said.iter()

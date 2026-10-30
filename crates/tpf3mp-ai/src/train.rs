@@ -134,9 +134,14 @@ pub(super) struct RailProject {
     /// What its memo knows it by, served or given up on: a cargo's route
     /// key, or the two towns' pair ([`passenger_key`]).
     pub key: u32,
-    /// How far out its depot is tried at the end it tries now, as an index
-    /// into [`rail::DEPOT_GAPS`].
+    /// Where its depot is tried at the station it tries now, as an index
+    /// into [`rail::DEPOT_PLACES`]; and the heading its track runs into
+    /// the depot it built at, for the track that joins it.
     pub depot_far: usize,
+    pub depot_into: f64,
+    /// The station and place its depot's trial passed at, where its depot
+    /// is tried first once its stations stand.
+    pub depot_plan: Option<(usize, usize)>,
 }
 
 /// Whether a rail line was given up for something the land decides: no
@@ -216,6 +221,14 @@ pub(super) enum RailStage {
     /// nodes.
     Trial {
         piece: usize,
+    },
+    /// Then the verdict on its depot at place place ([`rail::DEPOT_PLACES`])
+    /// beyond station end's planned site, before anything is built: a line
+    /// with no place for a depot at either station is laid out elsewhere or
+    /// given up then, not once its stations and track stand.
+    DepotTrial {
+        end: usize,
+        place: usize,
     },
     /// Asking the verdict on the next piece of track.
     PieceVerdict,
@@ -367,6 +380,8 @@ impl Brain {
             passengers,
             key,
             depot_far: 0,
+            depot_into: 0.0,
+            depot_plan: None,
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
@@ -505,6 +520,20 @@ impl Brain {
                 let build = trial(&project.pieces.get(piece)?.build)?;
                 self.verdict(&Action::BuildTrack(build), now)
             }
+            RailStage::DepotTrial { end, place } => {
+                let year = self.year();
+                let project = self.rail.as_ref()?;
+                let station = project.tries[end].first()?;
+                let other = P::of(if end == 0 {
+                    project.to.pos()
+                } else {
+                    project.from.pos
+                });
+                let (_, (depot_end, out)) = station.ends_toward(other);
+                let (_, _, build) =
+                    rail::depot_place(depot_end, out, place, year, 0, "Rail Depot")?;
+                self.verdict(&Action::BuildConstruction(build), now)
+            }
             RailStage::PieceVerdict => {
                 let project = self.rail.as_ref()?;
                 let piece = project.pieces.get(project.piece)?.build.clone();
@@ -529,9 +558,8 @@ impl Brain {
                 });
                 let (_, (depot_end, out)) = built.station.ends_toward(other);
                 let name = format!("{} Rail Depot", project.from.name.as_str());
-                let gap = rail::DEPOT_GAPS[project.depot_far.min(rail::DEPOT_GAPS.len() - 1)];
-                match rail::depot_at(depot_end, out, gap, year, seed, &name) {
-                    Some((_, build)) => self.verdict(&Action::BuildConstruction(build), now),
+                match rail::depot_place(depot_end, out, project.depot_far, year, seed, &name) {
+                    Some((_, _, build)) => self.verdict(&Action::BuildConstruction(build), now),
                     None => {
                         self.give_up_rail("could not lay out a rail depot", now);
                         None
@@ -547,9 +575,10 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, _)) = built.station.ends_toward(other);
+                let (_, (depot_end, out)) = built.station.ends_toward(other);
                 let (_, join) = project.depot?;
-                match rail::link(depot_end, join, year) {
+                // Curving from the station's heading to the depot's.
+                match rail::depot_link(depot_end, out, join, project.depot_into, year) {
                     Some(link) => self.verdict(&Action::BuildTrack(link), now),
                     None => {
                         self.give_up_rail("could not lay out a depot's track", now);
@@ -786,15 +815,11 @@ impl Brain {
                     project.from.pos
                 });
                 let (_, (depot_end, out)) = built.station.ends_toward(other);
-                let (ox, oy) = (out.cos(), out.sin());
-                // Where it was tried: as far out as the verdict asked.
-                let gap = rail::DEPOT_GAPS[project.depot_far.min(rail::DEPOT_GAPS.len() - 1)];
-                let join = P {
-                    x: depot_end.x + ox * gap,
-                    y: depot_end.y + oy * gap,
-                    z: depot_end.z,
-                };
+                // Where it was tried: its join and the heading into it.
+                let (join, into, _) =
+                    rail::depot_place(depot_end, out, project.depot_far, 0, 0, "")?;
                 project.depot = Some((build.transform.origin, join));
+                project.depot_into = into;
                 RailStage::DepotBuilt { end, tries: 0 }
             }
             (RailStage::ShareVerdict, Action::BuildTrack(_)) => RailStage::ShareBuilt { tries: 0 },
@@ -805,14 +830,20 @@ impl Brain {
             (RailStage::SignalVerdict { lp, n, .. }, Action::PlaceStop(_)) => {
                 RailStage::SignalBuilt { lp, n }
             }
-            // A trial: nothing sent; the next piece, then the stations.
+            // A trial: nothing sent; the next piece, then its depot, then
+            // the stations.
             (RailStage::Trial { piece }, Action::BuildTrack(_)) => {
                 let count = self.rail.as_ref()?.pieces.len();
                 self.stage = Stage::Rail(if piece + 1 < count {
                     RailStage::Trial { piece: piece + 1 }
                 } else {
-                    RailStage::StationVerdict { end: 0 }
+                    RailStage::DepotTrial { end: 0, place: 0 }
                 });
+                return None;
+            }
+            (RailStage::DepotTrial { end, place }, Action::BuildConstruction(_)) => {
+                self.rail.as_mut()?.depot_plan = Some((end, place));
+                self.stage = Stage::Rail(RailStage::StationVerdict { end: 0 });
                 return None;
             }
             _ => {
@@ -884,6 +915,20 @@ impl Brain {
                     .as_ref()
                     .map_or(RailStage::Opening, |p| next_loop(p, lp));
                 self.stage = Stage::Rail(next);
+            }
+            // The next place, then the other station, then other sites.
+            RailStage::DepotTrial { end, place } => {
+                self.say(format!("a rail depot placement would be refused: {why}"));
+                if place + 1 < rail::DEPOT_PLACES.len() {
+                    self.stage = Stage::Rail(RailStage::DepotTrial {
+                        end,
+                        place: place + 1,
+                    });
+                } else if end == 0 {
+                    self.stage = Stage::Rail(RailStage::DepotTrial { end: 1, place: 0 });
+                } else {
+                    self.or_other_sites(false, "found no place for a rail depot", now);
+                }
             }
             RailStage::Trial { piece } => {
                 let laid = self.rail.as_ref().and_then(|p| {
@@ -961,7 +1006,7 @@ impl Brain {
                 self.say(format!("a rail depot placement was refused: {why}"));
                 let further = self.rail.as_mut().is_some_and(|p| {
                     p.depot_far += 1;
-                    if p.depot_far < rail::DEPOT_GAPS.len() {
+                    if p.depot_far < rail::DEPOT_PLACES.len() {
                         return true;
                     }
                     p.depot_far = 0;
@@ -977,10 +1022,14 @@ impl Brain {
             }
             RailStage::ShareVerdict => {
                 self.say(format!("could not share a rail depot: {why}"));
-                if let Some(project) = self.rail.as_mut() {
-                    project.share = None;
-                }
-                self.stage = Stage::Rail(RailStage::DepotVerdict { end: 0 });
+                let next = self
+                    .rail
+                    .as_mut()
+                    .map_or(RailStage::DepotVerdict { end: 0 }, |p| {
+                        p.share = None;
+                        first_depot(p)
+                    });
+                self.stage = Stage::Rail(next);
             }
             RailStage::LinkVerdict { .. } => {
                 self.give_up_rail(&format!("its depot's track was refused: {why}"), now);
@@ -1185,7 +1234,7 @@ impl Brain {
                     self.stage = Stage::Rail(next);
                 } else if tries >= CONFIRM_TRIES {
                     project.share = None;
-                    self.stage = Stage::Rail(RailStage::DepotVerdict { end: 0 });
+                    self.stage = Stage::Rail(first_depot(project));
                 } else {
                     self.retry(
                         Stage::Rail(RailStage::ShareBuilt { tries: tries + 1 }),
@@ -1611,6 +1660,14 @@ fn after_depot(project: &RailProject) -> RailStage {
     }
 }
 
+/// Where its depot is tried first once its stations stand: where its
+/// trial passed, else straight out beyond its first station.
+fn first_depot(project: &mut RailProject) -> RailStage {
+    let (end, place) = project.depot_plan.unwrap_or((0, 0));
+    project.depot_far = place;
+    RailStage::DepotVerdict { end }
+}
+
 /// What follows its passing loop number `lp`: its next loop, else its line.
 fn next_loop(project: &RailProject, lp: usize) -> RailStage {
     if lp + 1 < project.looped.len() {
@@ -1643,7 +1700,7 @@ impl Brain {
         if project.share.is_some() {
             RailStage::ShareVerdict
         } else {
-            RailStage::DepotVerdict { end: 0 }
+            first_depot(project)
         }
     }
 }

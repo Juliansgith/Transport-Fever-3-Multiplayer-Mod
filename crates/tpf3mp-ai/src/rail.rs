@@ -45,11 +45,23 @@ pub const PASSENGER_TRACK_X: f64 = 5.0;
 pub const DEPOT_JOIN: (f64, f64) = (-2.2, -70.0);
 /// How far beyond a station's outer end a depot's track joins, in metres.
 pub const DEPOT_GAP: f64 = 30.0;
-/// How far out a depot is tried at each of a line's ends, nearest first:
-/// a depot refused there (it would stand over what stands, say) is tried
-/// further out before the other end, its track to the station one straight
-/// edge whatever its length.
-pub const DEPOT_GAPS: [f64; 3] = [DEPOT_GAP, 90.0, 150.0];
+/// Where a depot is tried beyond each of a line's stations, in order: how
+/// far from the station's outer end its track joins, in metres, and how
+/// far it turns from the station's line, in radians. Straight out first,
+/// then turned 30 and 45 degrees either way, its track to the station one
+/// edge curving from the station's heading to the depot's (about 195 m of
+/// radius, over the line's least). Straight out met a player's railway at
+/// one station, streets at another, and a line was given up with its
+/// stations and track built (2026-10-31).
+pub const DEPOT_PLACES: [(f64, f64); 7] = [
+    (DEPOT_GAP, 0.0),
+    (90.0, 0.0),
+    (150.0, 0.0),
+    (100.0, std::f64::consts::FRAC_PI_6),
+    (100.0, -std::f64::consts::FRAC_PI_6),
+    (150.0, std::f64::consts::FRAC_PI_4),
+    (150.0, -std::f64::consts::FRAC_PI_4),
+];
 /// The grade a line keeps to where it can, the steepest it climbs at all
 /// (a plant on a hill above its town, 89 m over 3.6 km, 2026-10-30), and
 /// its tightest curve, in metres: well inside the simple track's limits
@@ -355,6 +367,31 @@ pub fn depot(
     depot_at(end, out_heading, DEPOT_GAP, year, seed, name)
 }
 
+/// A rail depot at place place ([`DEPOT_PLACES`]) beyond a station's
+/// end leaving at out: where its track joins, the heading its track
+/// runs into the depot at (what [`depot_link`] arrives at), and the build.
+/// The join lies at the end of an arc from the station's heading to the
+/// depot's: along the chord, half the turn off the station's line.
+pub fn depot_place(
+    end: P,
+    out: f64,
+    place: usize,
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<(P, f64, ConstructionBuild)> {
+    let &(gap, turn) = DEPOT_PLACES.get(place)?;
+    let (cx, cy) = unit(out + turn / 2.0);
+    let join = P {
+        x: end.x + cx * gap,
+        y: end.y + cy * gap,
+        z: end.z,
+    };
+    let heading = out + turn;
+    let (_, build) = depot_joined(join, heading, year, seed, name)?;
+    Some((join, heading, build))
+}
+
 /// [`depot`], its track joining gap metres beyond the station's end.
 pub fn depot_at(
     end: P,
@@ -370,6 +407,19 @@ pub fn depot_at(
         y: end.y + oy * gap,
         z: end.z,
     };
+    depot_joined(join, out_heading, year, seed, name)
+}
+
+/// A rail depot whose track joins at join, running into it at
+/// out_heading: where it joins, and the build.
+fn depot_joined(
+    join: P,
+    out_heading: f64,
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<(P, ConstructionBuild)> {
+    let (ox, oy) = unit(out_heading);
     // The depot's +y axis points away from the station; its join is at
     // DEPOT_JOIN on its own axes.
     let (xx, xy) = (oy, -ox);
@@ -1965,6 +2015,37 @@ pub fn link(from: P, to: P, year: i32) -> Option<TrackBuild> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_depot_turned_aside_joins_on_the_arc_and_runs_in_at_its_turn() {
+        let end = P {
+            x: 100.0,
+            y: 0.0,
+            z: 10.0,
+        };
+        // Straight out first: its join 30 m beyond the end, in line.
+        let (join, into, _) = depot_place(end, 0.0, 0, 1925, 1, "D").unwrap();
+        assert!((join.x - 130.0).abs() < 1e-9 && join.y.abs() < 1e-9);
+        assert!(into.abs() < 1e-12);
+        // Turned 30 degrees: its join 100 m along the chord, 15 degrees off
+        // the line; its track runs in at 30.
+        let (join, into, build) = depot_place(end, 0.0, 3, 1925, 1, "D").unwrap();
+        let half = std::f64::consts::FRAC_PI_6 / 2.0;
+        assert!((join.x - (100.0 + 100.0 * half.cos())).abs() < 1e-6);
+        assert!((join.y - 100.0 * half.sin()).abs() < 1e-6);
+        assert!((into - std::f64::consts::FRAC_PI_6).abs() < 1e-12);
+        // The arc's radius over the line's least.
+        assert!(100.0 / (2.0 * half.sin()) > MIN_RADIUS);
+        // The depot faces along its turn: its own +y axis (-sin, cos) of
+        // its basis is the heading it runs in at.
+        let [cos, sin, ..] = build.transform.basis;
+        let (ux, uy) = (-f64::from(sin) / 1e6, f64::from(cos) / 1e6);
+        assert!((ux - into.cos()).abs() < 1e-5 && (uy - into.sin()).abs() < 1e-5);
+        assert!(depot_place(end, 0.0, DEPOT_PLACES.len(), 1925, 1, "D").is_none());
+        // Its track to the station: one edge from the end's heading to the
+        // depot's.
+        let link = depot_link(end, 0.0, join, into, 1925).unwrap();
+        assert_eq!(link.polyline.links.len(), 1);
+    }
     fn p(x: f64, y: f64) -> P {
         P { x, y, z: 10.0 }
     }
