@@ -8,8 +8,10 @@
 //! [`Profile`] is how well and how fast it plays.
 
 pub mod brain;
+pub mod chain;
 pub mod place;
 pub mod profile;
+pub mod rail;
 
 pub use brain::{Brain, Memo, Out};
 pub use profile::Profile;

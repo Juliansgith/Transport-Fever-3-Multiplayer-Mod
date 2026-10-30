@@ -32,6 +32,8 @@ ai.MAX_MODELS = 48
 ai.MAX_OWNED = 160
 ai.MAX_MESSAGES = 8
 ai.MAX_NEEDS = 4
+ai.MAX_LAND = 24
+ai.MAX_ENDS = 8
 
 local function module(name)
 	if ug_require then return ug_require("tpf3mp_1::/scripts/tpf3mp/" .. name .. ".lua") end
@@ -166,6 +168,38 @@ local function entrance(c, origin)
 	return best, false
 end
 
+-- A rail station construction's track ends: each node one of its own
+-- track edges ends in that is none of its frozen nodes, where the world's
+-- track meets the station, and whether no edge of the world's meets it yet
+-- (read from the fixture's stations: a cargo station's two ends, at local
+-- (10, 40 s - 20) and (10, 40 e + 20) of its track modules, 2026-10-30).
+local function trackEnds(c)
+	local streets = api.engine.system and api.engine.system.streetSystem
+	local frozen, own, out, seen = {}, {}, {}, {}
+	for _, node in ipairs(c.frozenNodes or {}) do frozen[node] = true end
+	for _, e in ipairs(c.frozenEdges or {}) do own[e] = true end
+	for _, e in ipairs(c.frozenEdges or {}) do
+		local edge = component(e, "BASE_EDGE")
+		if edge and component(e, "BASE_EDGE_STREET") == nil then
+			for _, node in ipairs({ edge.node0, edge.node1 }) do
+				if type(node) == "number" and not frozen[node] and not seen[node] and #out < ai.MAX_ENDS then
+					seen[node] = true
+					local n = component(node, "BASE_NODE")
+					if n and n.position then
+						local open = true
+						local ok, segments = pcall(function() return streets.getNodeTrackSegments(node) end)
+						for _, segment in ipairs(ok and segments or {}) do
+							if not own[segment] then open = false end
+						end
+						out[#out + 1] = { pos = { x = n.position.x, y = n.position.y, z = n.position.z }, open = open }
+					end
+				end
+			end
+		end
+	end
+	return out
+end
+
 function ai.company(seat, roster, registry)
 	local reg = type(registry) == "function" and registry() or registry
 	local regmod = module("registry")
@@ -220,7 +254,8 @@ function ai.company(seat, roster, registry)
 					local station = component(s, "STATION")
 					terminals = terminals + #((station and station.terminals) or {})
 				end
-				out.stations[#out.stations + 1] = { id = id, pos = pos(at), terminals = terminals, waiting = 0 }
+				out.stations[#out.stations + 1] = { id = id, pos = pos(at), terminals = terminals, waiting = 0,
+					ends = holder and trackEnds(holder) or {} }
 			end
 		end
 	end
@@ -353,6 +388,42 @@ function ai.needs(town, centreOf, centre)
 	return each(needs, ai.MAX_NEEDS)
 end
 
+-- The land on a grid for a track's route (bridge AiQuestion::Land): each
+-- cell's height at its centre, in centimetres, and what stands on it. A
+-- construction, street or track whose bounds come within the cell's half
+-- diagonal of its centre marks the cell, by the game's octree, which finds
+-- a construction anywhere over its ground (2026-10-30: an industry from
+-- 120 m off its origin). An edge with no street of its own is a track.
+-- A 16 by 16 grid reads in about 7 ms on the rig's big fixture.
+local LAND = { WATER = 1, BUILT = 2, STREET = 4, TRACK = 8 }
+function ai.land(at, cells, step)
+	cells, step = tonumber(cells), tonumber(step)
+	if cells == nil or cells < 1 or cells > ai.MAX_LAND then error("a land grid of " .. tostring(cells) .. " cells", 0) end
+	if step == nil or step < 5 or step > 400 then error("a land step of " .. tostring(step) .. " m", 0) end
+	local V, CT = api.type.Vec2f.new, api.type.ComponentType
+	local octree, terrain = api.engine.util.octree, api.engine.terrain
+	local reach = step * 0.71
+	local heights, flags = {}, {}
+	for j = 0, cells - 1 do
+		for i = 0, cells - 1 do
+			local p = V(at.x + i * step, at.y + j * step)
+			local f = 0
+			heights[#heights + 1] = math.floor(terrain.getHeightAt(p) * 100 + 0.5)
+			if terrain.isOnWater(p) then f = f + LAND.WATER end
+			local built = octree.findEntitiesInCircle(p, reach, CT.CONSTRUCTION)
+			if built and #built > 0 then f = f + LAND.BUILT end
+			local street, track = false, false
+			for _, e in ipairs(octree.findEntitiesInCircle(p, reach, CT.BASE_EDGE) or {}) do
+				if component(e, "BASE_EDGE_STREET") then street = true else track = true end
+			end
+			if street then f = f + LAND.STREET end
+			if track then f = f + LAND.TRACK end
+			flags[#flags + 1] = f
+		end
+	end
+	return { Land = { heights = heights, flags = flags } }
+end
+
 -- Whether a company owns `edge`.
 local function companys(edge)
 	local owned = component(edge, "PLAYER_OWNED")
@@ -474,8 +545,25 @@ function ai.models(mode, cargo)
 				capacity = capacity + best
 			end
 			if cargo and capacity == 0 then return nil end
-			local land = meta.roadVehicle or meta.railVehicle or meta.waterVehicle or meta.airVehicle
+			-- TF3 keeps a road or rail vehicle's speed, weight and engines in
+			-- `landVehicle`, its length in `extent`, as the game's vehicle
+			-- store reads them (line_vehicle_mgmt/vehicle_store_util.tl).
+			local land = meta.landVehicle or meta.roadVehicle or meta.railVehicle or meta.waterVehicle
+				or meta.airVehicle
 			local speed = land and land.topSpeed or 0
+			local power, tractive, weight, length, electric = 0, 0, 0, 0, false
+			pcall(function()
+				local engine = meta.landVehicle.engines[1]
+				if engine then
+					power, tractive = engine.power or 0, engine.tractiveEffort or 0
+					-- Engine type 2 is electric, as the game's trams and the
+					-- C 6/8 have it (build 40425; 1 steam, 3 combustion, 0
+					-- none): it runs only under catenary.
+					electric = engine.type == 2
+				end
+			end)
+			pcall(function() weight = (meta.landVehicle.weightEmpty or 0) / 1000 end)
+			pcall(function() length = (meta.extent.bbMax.x - meta.extent.bbMin.x) * 10 end)
 			return {
 				model = text(name, 128),
 				price = whole(meta.cost and meta.cost.price or 0),
@@ -483,6 +571,8 @@ function ai.models(mode, cargo)
 				capacity = whole(capacity),
 				speed = whole(speed * 3.6),
 				lifespan = whole((meta.maintenance and meta.maintenance.lifespan or 0)),
+				power = whole(power), tractive = whole(tractive), weight = whole(weight), length = whole(length),
+				electric = electric,
 			}
 		end)
 		if ok and entry then out[#out + 1] = entry end
@@ -532,8 +622,12 @@ function ai.industries(registry)
 				terminals = math.min(#((s and s.terminals) or {}), 255)
 			end
 			local ok, name = pcall(api.engine.util.getEntityName, e)
-			out[#out + 1] = { name = text(ok and name or "", 48), pos = pos(origin(c)), station = station,
-				terminals = terminals, inputs = inputs, outputs = outputs }
+			-- On water, as fishing grounds stand: no road or rail reaches it.
+			local at = origin(c)
+			local wet = false
+			pcall(function() wet = api.engine.terrain.isOnWater(api.type.Vec2f.new(at.x, at.y)) == true end)
+			out[#out + 1] = { name = text(ok and name or "", 48), pos = pos(at), station = station,
+				terminals = terminals, inputs = inputs, outputs = outputs, water = wet }
 		end)
 	end
 	return { Industries = out }
@@ -621,6 +715,7 @@ function ai.answer(ask, roster, registry)
 	if type(q) == "table" and q.Models then return ai.models(q.Models.mode, q.Models.cargo) end
 	if q == "Industries" then return ai.industries(registry) end
 	if type(q) == "table" and q.Route then return ai.route(q.Route.from, q.Route.to) end
+	if type(q) == "table" and q.Land then return ai.land(q.Land.at, q.Land.cells, q.Land.step) end
 	if type(q) == "table" and q.Verdict then return ai.verdict(ask.seat, q.Verdict, roster) end
 	error("a question of no kind", 0)
 end

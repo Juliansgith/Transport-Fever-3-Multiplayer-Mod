@@ -32,9 +32,13 @@ use tpf3mp_proto::{
 };
 
 use crate::{
+    chain::{self, Leg, Taker},
     place::{self, P},
     profile::Profile,
 };
+
+#[path = "train.rs"]
+mod train;
 
 /// How long the brain waits for an answer before it asks again.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(15);
@@ -83,6 +87,8 @@ pub const CARGO_NEAREST: f64 = 800.0;
 /// The least a town must want of a cargo over what it is supplied for
 /// trucks to carry it there (the town window's cargo demand).
 pub const NEED_LEAST: u32 = 10;
+/// The least money a production chain is begun with.
+pub const CHAIN_MONEY: i64 = 1_500_000;
 /// How long a truck waits at a stop at most, and for more cargo, in the
 /// game's seconds in millionths: the game's line window's for a road stop.
 pub const CARGO_MAX_WAIT: i64 = 600_000_000;
@@ -115,6 +121,8 @@ pub struct Memo {
     pub served: Vec<u32>,
     pub given_up: Vec<u32>,
     pub cargo_lines: Vec<(u32, String)>,
+    /// Its rail lines, by the room's line id: kept out of its buses'.
+    pub rail_lines: Vec<u32>,
 }
 
 /// What a line serves.
@@ -122,25 +130,19 @@ pub struct Memo {
 enum Serves {
     /// A town's districts, by bus.
     Town(AiTown),
-    /// A cargo from the industry that makes it to a town that needs it, by
-    /// truck (unloading by the centre of the district that takes it, its
-    /// project's second centre).
+    /// A cargo from the industry that makes it to its taker, by truck: a
+    /// town that needs it (unloading by the centre of the district that
+    /// takes it, its project's second centre), or an industry that makes
+    /// something of it (unloading at its own station).
     Cargo {
         cargo: ResName,
         from: AiIndustry,
-        to: AiTown,
+        to: Taker,
     },
 }
 
-/// A cargo route it may carry: what [`Serves::Cargo`] holds, and where in
-/// the town it unloads.
-#[derive(Debug, Clone)]
-struct CargoRoute {
-    cargo: ResName,
-    from: AiIndustry,
-    to: AiTown,
-    at: Pos,
-}
+/// A cargo route it may carry: what [`Serves::Cargo`] holds.
+type CargoRoute = Leg;
 
 /// The key a cargo route goes by: its maker's place and the cargo (one
 /// destination for each), with the top bit set, apart from towns' ids.
@@ -189,7 +191,7 @@ impl Serves {
                 "a truck line carrying {} from {} to {}",
                 cargo_name(cargo.as_str()),
                 from.name.as_str(),
-                to.name.as_str()
+                to.name()
             ),
         }
     }
@@ -244,6 +246,8 @@ struct Project {
 /// Where the brain is.
 #[derive(Debug, Clone)]
 enum Stage {
+    /// Building a rail line ([`train::RailStage`]).
+    Rail(train::RailStage),
     /// Reading its company.
     Look,
     /// Its company's founding sent: reading until it plays for it.
@@ -323,6 +327,14 @@ pub struct Brain {
     routes: Vec<CargoRoute>,
     /// The towns read for a cargo to carry, with what they need.
     needing: Vec<AiTown>,
+    /// The rail line it is building.
+    rail: Option<train::RailProject>,
+    /// The legs of a production chain still to build, in order; the leg
+    /// it is building by train now; legs it tries by truck alone, by their
+    /// route keys, their train refused.
+    chain: std::collections::VecDeque<Leg>,
+    leg_now: Option<Leg>,
+    no_rail: Vec<u32>,
     /// Whether its next project carries cargo (it takes turns), and
     /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
@@ -368,6 +380,10 @@ impl Brain {
             topping: None,
             routes: Vec::new(),
             needing: Vec::new(),
+            rail: None,
+            chain: std::collections::VecDeque::new(),
+            leg_now: None,
+            no_rail: Vec::new(),
             next_cargo: false,
             carries_cargo: CARRIES_CARGO,
             given_up: Vec::new(),
@@ -460,6 +476,10 @@ impl Brain {
     }
 
     fn give_up_project(&mut self, now: Instant) {
+        if !self.chain.is_empty() {
+            self.say("gave up on the rest of its chain".into());
+            self.chain.clear();
+        }
         if let Some(project) = self.project.take() {
             let id = project.serves.key();
             self.say(format!("gave up on {}", project.serves.describe()));
@@ -493,6 +513,7 @@ impl Brain {
         }
         self.wake = None;
         match self.stage.clone() {
+            Stage::Rail(stage) => self.rail_poll(stage, now),
             Stage::Rest => {
                 self.stage = Stage::Look;
                 self.wake = Some(now + self.profile.think_after(speed));
@@ -515,7 +536,7 @@ impl Brain {
                 let route = self.routes.first()?;
                 let question = AiQuestion::Route {
                     from: route.from.pos,
-                    to: route.at,
+                    to: route.to.pos(),
                 };
                 self.ask(question, now)
             }
@@ -618,9 +639,16 @@ impl Brain {
                 self.on_route(&route, now);
                 None
             }
+            (AiQuestion::Land { .. }, AiAnswer::Land(land)) => {
+                self.rail_land(&land);
+                None
+            }
             (AiQuestion::Verdict(payload), AiAnswer::Verdict(verdict)) => {
                 if verdict.ok && verdict.cost <= self.spendable().max(0) {
                     let action = Action::from_payload(&payload).ok()?;
+                    if let Stage::Rail(stage) = self.stage.clone() {
+                        return self.rail_good_verdict(stage, &action, now);
+                    }
                     self.on_good_verdict(&action, now)
                 } else {
                     let why = verdict
@@ -628,6 +656,10 @@ impl Brain {
                         .first()
                         .map_or("too dear", |m| m.as_str())
                         .to_owned();
+                    if let Stage::Rail(stage) = self.stage.clone() {
+                        self.rail_bad_verdict(stage, &why, now);
+                        return None;
+                    }
                     self.on_bad_verdict(&why, now);
                     None
                 }
@@ -654,6 +686,7 @@ impl Brain {
     fn on_company(&mut self, now: Instant) -> Option<Out> {
         let company = self.company.clone()?;
         match self.stage.clone() {
+            Stage::Rail(stage) => self.rail_company(stage, &company, now),
             Stage::Look => {
                 if company.company.is_none() {
                     // Its first act: found its own company.
@@ -970,12 +1003,18 @@ impl Brain {
             let short = company
                 .lines
                 .iter()
+                .filter(|l| !self.memo.rail_lines.contains(&l.id.0))
                 .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first));
             if let Some(line) = short {
                 self.topping = Some((line.id, depot));
                 self.stage = Stage::Models;
                 return None;
             }
+        }
+        // Its chain's next leg, before anything new.
+        if !self.chain.is_empty() {
+            self.next_leg(now);
+            return None;
         }
         // Then a new line: a town's buses and a cargo's trucks in turn.
         let cargo = self.next_cargo && self.carries_cargo;
@@ -1001,8 +1040,8 @@ impl Brain {
         let towns = std::mem::take(&mut self.needing);
         let mut picks: Vec<(f64, CargoRoute)> = Vec::new();
         for from in &industries {
-            // It loads at the industry's own station.
-            if from.station.is_none() {
+            // It loads at the industry's own station, on land.
+            if from.station.is_none() || from.water {
                 continue;
             }
             for output in from.outputs.iter().filter(|o| o.per_year >= CARGO_LEAST) {
@@ -1031,14 +1070,71 @@ impl Brain {
                         CargoRoute {
                             cargo: output.cargo.clone(),
                             from: from.clone(),
-                            to: to.clone(),
-                            at,
+                            to: Taker::Town {
+                                town: to.clone(),
+                                at,
+                            },
                         },
                     ));
                 }
             }
         }
         picks.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // A production chain where a town's need has a maker that makes too
+        // little of it, in turn with single lines while its money allows
+        // one: the chain's legs in order, the first now.
+        let skip = |from: &AiIndustry, cargo: &ResName| {
+            let key = route_key(from.pos, cargo.as_str());
+            self.memo.served.contains(&key) || self.given_up.iter().any(|(id, _)| *id == key)
+        };
+        let found = chain::chains(
+            &industries,
+            &towns,
+            &chain::Limits {
+                reach: self.profile.cargo_most,
+                least_made: CARGO_LEAST,
+                least_short: NEED_LEAST,
+                nearest: CARGO_NEAREST,
+            },
+            skip,
+        );
+        if !found.is_empty()
+            && self.spendable() >= CHAIN_MONEY
+            && (picks.is_empty() || self.random().is_multiple_of(2))
+        {
+            let among = self.profile.pick_among.min(found.len()).max(1);
+            #[allow(clippy::cast_possible_truncation)]
+            let pick = (self.random() % among as u64) as usize;
+            let legs = found[pick].1.clone();
+            let first = &legs[0];
+            self.say(format!(
+                "plans a chain of {} lines bringing {} to {}",
+                legs.len(),
+                cargo_name(first.cargo.as_str()),
+                first.to.name()
+            ));
+            self.chain = legs.into_iter().collect();
+            self.next_leg(now);
+            return;
+        }
+        // Trains first: with money enough for a rail line, among the
+        // cargos far enough for one.
+        if self.spendable() >= train::RAIL_MONEY {
+            let far: Vec<CargoRoute> = picks
+                .iter()
+                .filter(|(_, r)| r.distance() >= train::RAIL_FROM)
+                .map(|(_, r)| r.clone())
+                .take(self.profile.pick_among.max(1))
+                .collect();
+            if !far.is_empty() {
+                #[allow(clippy::cast_possible_truncation)]
+                let pick = (self.random() % far.len() as u64) as usize;
+                self.leg_now = None;
+                if self.start_rail(far[pick].clone()) {
+                    return;
+                }
+            }
+        }
         picks.truncate(self.profile.towns_weighed.max(1));
         if picks.is_empty() {
             self.say("found no cargo to carry".into());
@@ -1068,15 +1164,18 @@ impl Brain {
             self.stage = Stage::Survey;
             return;
         }
-        let CargoRoute {
-            cargo,
-            from,
-            to,
-            at,
-        } = self.routes.remove(0);
+        let CargoRoute { cargo, from, to } = self.routes.remove(0);
         if !route.connected {
             self.given_up
                 .push((route_key(from.pos, cargo.as_str()), now + GIVE_UP_FOR));
+            // A chain's leg no road joins: the chain goes no further.
+            if !self.chain.is_empty() {
+                self.say("found no road for its chain's leg; gave up on the rest".into());
+                self.chain.clear();
+                self.routes.clear();
+                self.stage = Stage::Survey;
+                return;
+            }
             if self.routes.is_empty() {
                 self.say("found no cargo it can carry by road".into());
                 self.stage = Stage::Survey;
@@ -1092,14 +1191,49 @@ impl Brain {
         // the district that takes the cargo. A truck station of its own by the
         // industry loaded nothing (2026-10-30, runs 10, 11, 18 to 20). It
         // reads the streets by both: for its depot, and for that station.
-        let centres = vec![from.pos, at];
+        // Into an industry, it unloads at the industry's own station: it
+        // reads the streets by the maker alone, for its depot.
         let first = (P::of(from.pos), from.station);
+        let (centres, stops) = match &to {
+            Taker::Town { at, .. } => (vec![from.pos, *at], vec![first]),
+            Taker::Industry(industry) => (
+                vec![from.pos],
+                vec![first, (P::of(industry.pos), industry.station)],
+            ),
+        };
         let serves = Serves::Cargo { cargo, from, to };
         self.say(format!("plans {}", serves.describe()));
         self.start(serves, centres);
         if let Some(project) = self.project.as_mut() {
-            project.stops = vec![first];
+            project.stops = stops;
         }
+    }
+
+    /// Starts its chain's next leg: by train where it is far enough and its
+    /// money allows, else by truck within its reach, else the chain goes no
+    /// further.
+    fn next_leg(&mut self, now: Instant) {
+        let Some(leg) = self.chain.pop_front() else {
+            self.rest(now);
+            return;
+        };
+        let distance = leg.distance();
+        let key = route_key(leg.from.pos, leg.cargo.as_str());
+        if distance >= train::RAIL_FROM
+            && !self.no_rail.contains(&key)
+            && self.start_rail(leg.clone())
+        {
+            self.leg_now = Some(leg);
+            return;
+        }
+        if distance <= self.profile.cargo_most {
+            self.routes = vec![leg];
+            self.stage = Stage::Route;
+            return;
+        }
+        self.say("its chain's next leg is too far for trucks; gave up on the rest".into());
+        self.chain.clear();
+        self.rest(now);
     }
 
     fn start(&mut self, serves: Serves, centres: Vec<Pos>) {
@@ -1332,7 +1466,7 @@ impl Brain {
         let seed = (self.random() >> 33) as i64;
         let project = self.project.as_mut()?;
         let name = match &project.serves {
-            Serves::Cargo { to, .. } => format!("{} Freight", to.name.as_str()),
+            Serves::Cargo { to, .. } => format!("{} Freight", to.name()),
             Serves::Town(town) => format!("{} Freight", town.name.as_str()),
         };
         while let Some((index, side)) = project.station_tries.first().copied() {
@@ -1587,6 +1721,9 @@ impl Brain {
     }
 
     fn on_models(&mut self, models: Vec<AiModel>, now: Instant) -> Option<Out> {
+        if let Stage::Rail(stage) = self.stage.clone() {
+            return self.rail_models(stage, models, now);
+        }
         let usable: Vec<AiModel> = models.into_iter().filter(|m| m.capacity > 0).collect();
         let pick = if self.profile.best_models {
             // Seats and speed for the money, its running cost counted.

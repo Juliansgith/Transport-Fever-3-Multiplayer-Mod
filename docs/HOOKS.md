@@ -3941,19 +3941,29 @@ replay builds at the game's cost for its proposal).
 ### AI players' questions
 
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 32):
+whose game drives it, and asks that game about the world (bridge 33):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
-seat's company, the towns (since bridge version 32 with the cargo each
+seat's company (its rail stations with their track ends since bridge
+version 33: where the world's track meets each, and whether any does
+yet), the towns (since bridge version 32 with the cargo each
 needs, the least supplied first: how much it was supplied and may take,
 as its window's cargo demand reads them, and the centre of the district
 that takes it), the industries (each one's own station, what
 each takes, and what it
-made over the last year, as the game's industry window reads them), the
-streets near a place (each edge's ends, its curve's middle, template,
-owner, objects and structure), whether trucks can drive between two
-places (the game's pathfinder), the vehicle models of a transport mode
-(of a cargo: those whose loads take one of its classes, with their
-capacity for it), or the game's verdict on an action), the session
+made over the last year, as the game's industry window reads them, and
+since bridge version 33 whether it stands on water, as fishing grounds
+do), the streets near a place (each edge's ends, its curve's middle,
+template, owner, objects and structure), whether trucks can drive
+between two places (the game's pathfinder), the vehicle models of a
+transport mode (of a cargo: those whose loads take one of its classes,
+with their capacity for it; since bridge version 33 a land vehicle's
+engine power, tractive effort, empty weight, length and whether its
+engine is electric, from `landVehicle` and `extent` as the game's
+vehicle store reads them), the land on a grid of at most 24 by 24 cells
+(since bridge version 33: each cell's height and what the octree finds
+within its half diagonal, water, a construction, a street or a track;
+16 by 16 cells read in about 7 ms on the rig's big fixture), or the
+game's verdict on an action), the session
 hands it on as `Notice::AiAsk`, and `crate::ai` keeps it until the GUI
 takes it. The mod's GUI state (`tpf3mp/ai.lua`, every frame within 1.5
 ms) calls `tpf3mp_native.aiAsk()` for the next question, a table
