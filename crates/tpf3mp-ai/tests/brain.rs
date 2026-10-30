@@ -89,8 +89,9 @@ struct World {
     /// Vehicles replaced and sold.
     replaced: Vec<VehicleId>,
     sold: Vec<VehicleId>,
-    /// Signals placed on its track.
+    /// Signals placed on its track; passenger stations built.
     signals: Vec<PlaceStop>,
+    passenger_stations: u32,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -157,8 +158,17 @@ impl World {
             replaced: Vec::new(),
             sold: Vec::new(),
             signals: Vec::new(),
+            passenger_stations: 0,
             actions: Vec::new(),
             next_id: 1,
+        }
+    }
+
+    /// Its towns too small for a passenger train: a test of a cargo's
+    /// railway alone.
+    fn small_towns(&mut self) {
+        for town in &mut self.towns {
+            town.buildings = 120;
         }
     }
 
@@ -246,7 +256,15 @@ impl World {
                                 .clamp(0.0, 1.0);
                             (a.x + dx * t - x).hypot(a.y + dy * t - y) <= f64::from(*step) * 0.71
                         });
-                        flags.push(if street { land::STREET } else { 0 });
+                        // A station of its stands on built ground.
+                        let built = self.stations.iter().any(|s| {
+                            let o = P::of(s.pos);
+                            (o.x - x).hypot(o.y - y) <= 70.0 + f64::from(*step) * 0.71
+                        });
+                        flags.push(
+                            if street { land::STREET } else { 0 }
+                                | if built { land::BUILT } else { 0 },
+                        );
                     }
                 }
                 AiAnswer::Land(AiLand {
@@ -497,17 +515,29 @@ impl World {
                             .next()?
                             .parse()
                             .ok()?;
-                        (key.ends_with(".name") && (8_401_500..8_402_500).contains(&slot))
-                            .then_some((slot - 8_402_000) / 10)
+                        (key.ends_with(".name") && (8_400_500..8_402_500).contains(&slot))
+                            .then_some(slot)
                     })
                     .collect();
-                let (first, last) = (*slots.iter().min().unwrap(), *slots.iter().max().unwrap());
+                // Its track in its third row for cargo, 10 m across; in its
+                // second for passengers, 5 m across.
+                let passengers = slots.iter().all(|s| *s < 8_401_500);
+                let (row, x) = if passengers {
+                    (8_401_000, 5.0)
+                } else {
+                    (8_402_000, 10.0)
+                };
+                let js: Vec<i64> = slots.iter().map(|s| (s - row) / 10).collect();
+                let (first, last) = (*js.iter().min().unwrap(), *js.iter().max().unwrap());
                 let local = |lx: f64, ly: f64| place(&build.transform, lx, ly);
                 #[allow(clippy::cast_precision_loss)]
                 let ends = [
-                    local(10.0, 40.0 * first as f64 - 20.0),
-                    local(10.0, 40.0 * last as f64 + 20.0),
+                    local(x, 40.0 * first as f64 - 20.0),
+                    local(x, 40.0 * last as f64 + 20.0),
                 ];
+                if passengers {
+                    self.passenger_stations += 1;
+                }
                 let id = self.id();
                 self.rail_stations.push(StationId(id));
                 self.track_nodes.extend(ends);
@@ -675,9 +705,14 @@ impl World {
                             .iter()
                             .all(|s| self.rail_stations.contains(&s.group))
                     );
-                    assert!(rules[0].iter().skip(1).any(|l| *l), "{rules:?}");
+                    // Or passengers alone, both ways.
+                    let passengers = rules.iter().all(|r| r == &[true]);
                     assert!(
-                        rules[1].iter().enumerate().all(|(i, l)| *l == (i == 0)),
+                        passengers || rules[0].iter().skip(1).any(|l| *l),
+                        "{rules:?}"
+                    );
+                    assert!(
+                        passengers || rules[1].iter().enumerate().all(|(i, l)| *l == (i == 0)),
                         "{rules:?}"
                     );
                 } else {
@@ -1387,6 +1422,7 @@ fn it_plans_no_truck_lines_when_told_not_to() {
 #[test]
 fn a_cargo_too_far_for_trucks_goes_by_train() {
     let mut world = World::new();
+    world.small_towns();
     // A sawmill in open country 3.7 km from the district of Ely that
     // takes planks, and money enough for a rail line.
     world.industries = vec![industry(
@@ -1521,6 +1557,7 @@ fn a_starved_maker_is_carried_to_the_town_then_fed_its_inputs() {
 #[test]
 fn a_chains_leg_refused_by_train_goes_by_truck() {
     let mut world = World::new();
+    world.small_towns();
     // A mill north of Didcot's streets starved of grain, Ely's need of food,
     // and a farm in Ely 4.6 km from the mill, where no rail station may
     // stand; money for trains.
@@ -1609,6 +1646,7 @@ fn no_rail_line_is_built_for_a_cargo_no_wagon_carries() {
 #[test]
 fn a_rail_line_crosses_a_country_road_on_the_level() {
     let mut world = World::new();
+    world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
         1_800.0,
@@ -1733,6 +1771,7 @@ fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
 #[test]
 fn a_line_whose_track_would_be_refused_builds_no_station() {
     let mut world = World::new();
+    world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
         1_800.0,
@@ -1920,6 +1959,7 @@ fn a_hard_ai_feeds_a_starved_feeder_in_turn_three_levels_deep() {
 #[test]
 fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full() {
     let mut world = World::new();
+    world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
         1_800.0,
@@ -1969,7 +2009,149 @@ fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full()
     assert_eq!(trains(&world), 2, "{said:?}");
     assert!(
         said.iter()
-            .any(|l| l == "runs a second train through its passing loop"),
+            .any(|l| l == "runs another train through its passing loops"),
         "{said:?}"
     );
+}
+
+#[test]
+fn a_normal_ai_joins_two_large_towns_by_passenger_train() {
+    let mut world = World::new();
+    // Didcot and Ely, 300 and 200 buildings, 5 km apart; no cargo to carry;
+    // money for a rail line.
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers from")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line carrying passengers")),
+        "{said:?}"
+    );
+    // Two passenger stations, a line of passengers both ways, a train of
+    // coaches on it.
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
+    let line = world
+        .lines
+        .iter()
+        .find(|l| world.line_modes.contains(&(l.id, 7)))
+        .unwrap();
+    assert!(line.name.as_str().ends_with(" train"));
+    assert!(
+        world
+            .vehicles
+            .iter()
+            .any(|v| v.line == Some(line.id) && v.model.as_str().contains("engine"))
+    );
+}
+
+#[test]
+fn a_longer_line_gets_two_loops_and_runs_up_to_three_trains() {
+    let mut world = World::new();
+    world.small_towns();
+    // A sawmill 6.6 km from the district of Ely that takes planks.
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        -1_200.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 60_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let start = Instant::now();
+    play(&mut brain, &mut world, start, Duration::from_secs(1_500));
+    let said = brain.take_said();
+    assert!(
+        said.iter().any(|l| l.contains("2 passing loops")),
+        "{said:?}"
+    );
+    assert_eq!(world.signals.len(), 4, "{said:?}");
+    let line = world
+        .lines
+        .iter()
+        .find(|l| world.line_modes.contains(&(l.id, 7)))
+        .unwrap()
+        .id;
+    let trains = |w: &World| w.vehicles.iter().filter(|v| v.line == Some(line)).count();
+    // Planks piling up: trains added up to three, never a fourth.
+    let l = world.lines.iter_mut().find(|l| l.id == line).unwrap();
+    l.load = 45;
+    l.waiting = 200;
+    play(
+        &mut brain,
+        &mut world,
+        start + Duration::from_secs(1_500),
+        Duration::from_secs(1_800),
+    );
+    let said = brain.take_said();
+    assert_eq!(trains(&world), 3, "{said:?}");
+}
+
+#[test]
+fn a_second_rail_line_from_one_place_shares_the_first_ones_depot() {
+    let mut world = World::new();
+    world.small_towns();
+    // A sawmill making planks and goods, both wanted in Ely.
+    const GOODS: &str = "::/cargos/goods/goods.cargo";
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120), (GOODS, 90)],
+    )];
+    world.towns[1].needs = BoundedVec::new(vec![
+        AiNeed {
+            cargo: Text::new(PLANKS).unwrap(),
+            supply: 0,
+            limit: 60,
+            at: pos(5_320.0, -280.0),
+        },
+        AiNeed {
+            cargo: Text::new(GOODS).unwrap(),
+            supply: 0,
+            limit: 60,
+            at: pos(5_320.0, -280.0),
+        },
+    ])
+    .unwrap();
+    world.money = 60_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    let rail = world
+        .lines
+        .iter()
+        .filter(|l| world.line_modes.contains(&(l.id, 7)))
+        .count();
+    assert_eq!(rail, 2, "{said:?}");
+    assert!(
+        said.iter()
+            .any(|l| l == "shares a rail depot with another of its lines"),
+        "{said:?}"
+    );
+    // One rail depot, both lines' trains bought there.
+    let depots = world
+        .depots
+        .iter()
+        .filter(|d| d.file.as_str().contains("/rail/"))
+        .count();
+    assert_eq!(depots, 1, "{said:?}");
 }

@@ -37,6 +37,9 @@ pub const MODULE: f64 = 40.0;
 /// (`modular_station.script.lua`: `AddTrack(2, ...)`; the fixture's cargo
 /// station's ends read at local (10, -140) and (10, 180)).
 pub const STATION_TRACK_X: f64 = 10.0;
+/// The same for a passenger station: its 5 m platform in the first row,
+/// its track in the second (`AddPassenger(0)`, `AddTrack(1)`).
+pub const PASSENGER_TRACK_X: f64 = 5.0;
 /// Where a rail depot's track meets the world's, on its own axes (the
 /// fixture's depot: its boundary node at local (-2.2, -70)).
 pub const DEPOT_JOIN: (f64, f64) = (-2.2, -70.0);
@@ -115,16 +118,23 @@ fn track_module(year: i32) -> &'static str {
     }
 }
 
-/// A universal cargo platform of `year`'s era.
-fn platform_module(year: i32) -> String {
-    let era = if year >= 1990 {
+/// The station modules' era for `year` (`getEra`).
+fn era(year: i32) -> &'static str {
+    if year >= 1990 {
         "c"
     } else if year >= 1950 {
         "b"
     } else {
         "a"
-    };
-    format!("::/stations/rail/modular_station/platform_cargo_era_{era}.module")
+    }
+}
+
+/// A universal cargo platform of `year`'s era.
+fn platform_module(year: i32) -> String {
+    format!(
+        "::/stations/rail/modular_station/platform_cargo_era_{}.module",
+        era(year)
+    )
 }
 
 /// A unit vector at `heading` radians.
@@ -132,15 +142,16 @@ fn unit(heading: f64) -> (f64, f64) {
     (heading.cos(), heading.sin())
 }
 
-/// A one-track cargo station: its origin, the heading of its track (its
-/// own +y axis), and its track modules from `first` to `last` (0 its
-/// middle, each [`MODULE`] long).
+/// A one-track station, for cargo or for passengers: its origin, the
+/// heading of its track (its own +y axis), and its track modules from
+/// `first` to `last` (0 its middle, each [`MODULE`] long).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Station {
     pub origin: P,
     pub heading: f64,
     pub first: i32,
     pub last: i32,
+    pub passengers: bool,
 }
 
 impl Station {
@@ -152,6 +163,24 @@ impl Station {
             heading,
             first: -1,
             last: 1,
+            passengers: false,
+        }
+    }
+
+    /// The same for passengers.
+    pub fn for_passengers(origin: P, heading: f64) -> Self {
+        Self {
+            passengers: true,
+            ..Self::new(origin, heading)
+        }
+    }
+
+    /// How far across its own axes its track runs.
+    fn track_x(&self) -> f64 {
+        if self.passengers {
+            PASSENGER_TRACK_X
+        } else {
+            STATION_TRACK_X
         }
     }
 
@@ -169,16 +198,13 @@ impl Station {
 
     /// Its track's end towards `heading`, where the line leaves.
     pub fn inner(&self) -> P {
-        self.local(
-            STATION_TRACK_X,
-            f64::from(self.last) * MODULE + MODULE / 2.0,
-        )
+        self.local(self.track_x(), f64::from(self.last) * MODULE + MODULE / 2.0)
     }
 
     /// Its track's other end, where a depot joins.
     pub fn outer(&self) -> P {
         self.local(
-            STATION_TRACK_X,
+            self.track_x(),
             f64::from(self.first) * MODULE - MODULE / 2.0,
         )
     }
@@ -203,7 +229,7 @@ impl Station {
         let last = f64::from(self.last) * MODULE + MODULE / 2.0;
         let mut y = first;
         while y <= last + 1e-9 {
-            for x in [-15.0, 0.0, STATION_TRACK_X] {
+            for x in [-15.0, 0.0, self.track_x()] {
                 let p = self.local(x, y);
                 out.push((p.x, p.y));
             }
@@ -242,21 +268,40 @@ impl Station {
             int("year", i64::from(year)),
             int("tracks", 1),
             int("length", i64::try_from(length).ok()?),
-            // Universal, counted from 1.
-            int("specialization", 1),
         ];
-        let platform = platform_module(year);
+        // Cargo: universal platforms (specialization 1) in its first row,
+        // the track in its third. Passengers: passenger platforms in its
+        // first row (7400000), the track in its second.
+        let (platform, platforms, tracks, building) = if self.passengers {
+            (
+                format!(
+                    "::/stations/rail/modular_station/platform_passenger_era_{}.module",
+                    era(year)
+                ),
+                7_400_000,
+                8_401_000,
+                format!(
+                    "::/stations/rail/modular_station/main_building_1_era_{}.module",
+                    era(year)
+                ),
+            )
+        } else {
+            params.push(int("specialization", 1));
+            (
+                platform_module(year),
+                6_400_000,
+                8_402_000,
+                "::/stations/rail/modular_station/main_building_1_cargo.module".to_owned(),
+            )
+        };
         for j in self.first..=self.last {
-            params.extend(module(6_400_000 + 10 * i64::from(j), &platform));
-            params.extend(module(8_402_000 + 10 * i64::from(j), track_module(year)));
+            params.extend(module(platforms + 10 * i64::from(j), &platform));
+            params.extend(module(tracks + 10 * i64::from(j), track_module(year)));
         }
         // A through station's building: its slot by whether its module
         // count is even.
         let k = if modules % 2 == 0 { 0 } else { 2 };
-        params.extend(module(
-            3_400_000 + 10 * k,
-            "::/stations/rail/modular_station/main_building_1_cargo.module",
-        ));
+        params.extend(module(3_400_000 + 10 * k, &building));
         Some(ConstructionBuild {
             file: res(STATION),
             transform: transform(self.origin, self.heading),
@@ -339,13 +384,14 @@ pub fn depot(
     ))
 }
 
-/// Station placements around `target` for a line towards `other`: on
+/// Station placements around `target` for a line towards `other`, for
+/// cargo or for `passengers`: on
 /// rings of `radii` metres, 16 bearings round, each turned so its building
 /// (on its own -x side) faces `target`, at the ground's height; those whose
 /// ground the land shows built on, a street, a track or water left out.
 /// The nearest ring first, and on each the bearings nearest `other` first.
 #[allow(clippy::cast_precision_loss)]
-pub fn sites(land: &Land, target: P, other: P, radii: &[f64]) -> Vec<Station> {
+pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) -> Vec<Station> {
     let towards = (other.y - target.y).atan2(other.x - target.x);
     let mut out = Vec::new();
     for r in radii {
@@ -358,17 +404,37 @@ pub fn sites(land: &Land, target: P, other: P, radii: &[f64]) -> Vec<Station> {
                     y,
                     z: land.height(x, y),
                 };
+                // A cargo station turned round its target, its building
+                // facing it; a town's passenger station at its edge turned
+                // to the other town, so its line runs straight out.
+                let heading = if passengers {
+                    (other.y - y).atan2(other.x - x)
+                } else {
+                    a + std::f64::consts::FRAC_PI_2
+                };
                 (
                     angle_between(a, towards),
-                    Station::new(origin, a + std::f64::consts::FRAC_PI_2),
+                    Station {
+                        passengers,
+                        ..Station::new(origin, heading)
+                    },
                 )
             })
             .filter(|(_, s)| {
-                s.footprint().iter().all(|(x, y)| {
-                    land.flags_at(*x, *y).is_some_and(|f| {
-                        f & (land::BUILT | land::STREET | land::TRACK | land::WATER) == 0
-                    })
-                })
+                let clear = |x: f64, y: f64, also: u8| {
+                    land.flags_at(x, y)
+                        .is_some_and(|f| f & (land::BUILT | land::TRACK | land::WATER | also) == 0)
+                };
+                // Its ground free, and room for its line to leave it: the
+                // route starts straight out, two cells beyond its lead.
+                let ((end, out), _) = s.ends_toward(other);
+                let (ux, uy) = unit(out);
+                s.footprint()
+                    .iter()
+                    .all(|(x, y)| clear(*x, *y, land::STREET))
+                    && [LEAD, LEAD + STEP, LEAD + 2.0 * STEP]
+                        .iter()
+                        .all(|d| clear(end.x + ux * d, end.y + uy * d, 0))
             })
             .collect();
         ring.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -600,29 +666,36 @@ impl Ord for Open {
 }
 
 /// What a step of route costs in money, or none where it may not go: over
-/// built land or another track. Its track; a bridge over the water it
-/// crosses; the cheapest of earth, bridge or tunnel for the height its
+/// built land. Its track; a bridge over the water it crosses, and over
+/// another railway, at the height that clears it; the cheapest of earth, bridge or tunnel for the height its
 /// slope asks beyond the line's grade (half that rise, on average, over
 /// the step); a level crossing where it meets a street, which it crosses
 /// and never follows; and [`CLIMB`] for every metre the ground rises or
 /// falls, so it keeps to the level where it can.
 fn step_cost(land: &Land, prices: &Prices, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
     let len = (b.0 - a.0).hypot(b.1 - a.1);
-    let (mut wet, mut street) = (0u8, false);
+    let (mut wet, mut rail, mut street) = (0u8, 0u8, false);
     for k in 1..=4 {
         let t = f64::from(k) / 4.0;
         let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
         let f = land.flags_at(x, y)?;
-        if f & (land::BUILT | land::TRACK) != 0 {
+        if f & land::BUILT != 0 {
             return None;
         }
         street |= f & land::STREET != 0;
         wet += u8::from(f & land::WATER != 0);
+        rail += u8::from(f & land::TRACK != 0);
     }
     let flat = prices.ground(0.0);
     let over_water = prices.bridge(8.0).unwrap_or(flat);
-    let dry = f64::from(4 - wet) / 4.0;
-    let mut cost = len * (dry * flat + (1.0 - dry) * over_water);
+    let over_rail = prices.bridge(OVER + 2.0).unwrap_or(flat);
+    let (wet, rail) = (f64::from(wet) / 4.0, f64::from(rail) / 4.0);
+    let dry = (1.0 - wet - rail).max(0.0);
+    let mut cost = len * (dry * flat + wet * over_water + rail * over_rail);
+    // The ramps up to clear a railway, as dear again as the bridge.
+    if rail > 0.0 {
+        cost += len * rail * over_rail;
+    }
     let rise = (land.height(b.0, b.1) - land.height(a.0, a.1)).abs();
     let h = (rise - MAX_GRADE * len).max(0.0) / 2.0;
     if h > 0.0 {
@@ -935,16 +1008,30 @@ pub enum Hold {
     Clear(f64),
 }
 
-/// Ground heights and water at an edge's eighths, the points it is priced
-/// at.
-fn samples(land: &Land, a: P, b: P) -> [(f64, f64, bool); 4] {
-    let mut out = [(0.0, 0.0, false); 4];
+/// One of the points an edge is priced at: how far along it, the ground's
+/// height there, and whether water or another railway lies there.
+#[derive(Debug, Clone, Copy, Default)]
+struct Sample {
+    t: f64,
+    ground: f64,
+    wet: bool,
+    rail: bool,
+}
+
+/// An edge's samples, at its eighths.
+fn samples(land: &Land, a: P, b: P) -> [Sample; 4] {
+    let mut out = [Sample::default(); 4];
     for (k, s) in out.iter_mut().enumerate() {
         #[allow(clippy::cast_precision_loss)]
         let t = (2 * k + 1) as f64 / 8.0;
         let (x, y) = (a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-        let wet = land.flags_at(x, y).is_some_and(|f| f & land::WATER != 0);
-        *s = (t, land.height(x, y), wet);
+        let f = land.flags_at(x, y).unwrap_or(0);
+        *s = Sample {
+            t,
+            ground: land.height(x, y),
+            wet: f & land::WATER != 0,
+            rail: f & land::TRACK != 0,
+        };
     }
     out
 }
@@ -952,22 +1039,32 @@ fn samples(land: &Land, a: P, b: P) -> [(f64, f64, bool); 4] {
 /// What an edge `len` long costs from height `z0` to `z1` over `ground`,
 /// built as `kind`, if it can be: on the ground nowhere over water; a
 /// bridge only [`costs::BRIDGE_LEAST`] above the ground, or over water; a
-/// tunnel only [`costs::TUNNEL_LEAST`] under it, nowhere under water. What it
+/// tunnel only [`costs::TUNNEL_LEAST`] under it, nowhere under water. Over
+/// another railway only a bridge [`OVER`] above it or a tunnel [`UNDER`]
+/// below it, the railway taken at the ground's height. What it
 /// is weighed at, its climb and any grade beyond [`MAX_GRADE`] counted, and
 /// what the game charges for it.
 fn edge_cost(
     prices: &Prices,
-    ground: &[(f64, f64, bool); 4],
+    ground: &[Sample; 4],
     len: f64,
     z0: f64,
     z1: f64,
     kind: Kind,
 ) -> Option<(f64, f64)> {
     let mut sum = 0.0;
-    for &(t, g, wet) in ground {
+    for &Sample {
+        t,
+        ground: g,
+        wet,
+        rail,
+    } in ground
+    {
         let h = z0 + (z1 - z0) * t - g;
         let metre = match kind {
-            Kind::Ground if wet => None,
+            Kind::Ground if wet || rail => None,
+            Kind::Bridge if rail && h < OVER => None,
+            Kind::Tunnel if rail && -h < UNDER => None,
             Kind::Ground => Some(prices.ground(h)),
             // Over water the ground is the bed: the bridge's height there
             // is priced as a middling one.
@@ -1016,7 +1113,7 @@ pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> 
     if n < 2 || holds.len() != n {
         return None;
     }
-    let grounds: Vec<[(f64, f64, bool); 4]> = nodes
+    let grounds: Vec<[Sample; 4]> = nodes
         .windows(2)
         .map(|w| samples(land, w[0].at, w[1].at))
         .collect();
@@ -1512,48 +1609,80 @@ fn beside(node: &Node, side: f64) -> P {
     }
 }
 
-/// Where a passing loop goes on a line at least [`LOOP_FROM`] long: the
-/// first of [`LOOP_EDGES`] edges on the ground, straight (each node turned
-/// [`LOOP_TURN`] at most), crossing no street, clear of the stations, with
-/// free land the loop's side of them; the nearest the line's middle first.
-/// Its first node and its side.
-pub fn loop_site(land: &Land, nodes: &[Node]) -> Option<(usize, f64)> {
-    let n = nodes.len();
-    let length: f64 = nodes
-        .windows(2)
-        .map(|w| w[0].at.flat_distance(w[1].at))
-        .sum();
-    if n < LOOP_EDGES + 3 || length < LOOP_FROM {
+/// How long a stretch of line each passing loop serves, in metres: a line
+/// twice as long gets two, and room for three trains.
+pub const LOOP_SPACING: f64 = 2_500.0;
+
+/// The side a passing loop beside the line's nodes from `k` may take, if
+/// it fits there: [`LOOP_EDGES`] edges on the ground, straight (each node
+/// turned [`LOOP_TURN`] at most), crossing no street, clear of the
+/// stations, with free land on that side of them.
+fn loop_fits(land: &Land, nodes: &[Node], k: usize) -> Option<f64> {
+    if k == 0 || k + LOOP_EDGES + 1 >= nodes.len() {
         return None;
     }
-    let middle = n / 2;
-    let mut firsts: Vec<usize> = (1..n - LOOP_EDGES - 1).collect();
-    firsts.sort_by_key(|k| (k + LOOP_EDGES / 2).abs_diff(middle));
-    for k in firsts {
-        let span = &nodes[k..=k + LOOP_EDGES];
-        let ground = span[..LOOP_EDGES].iter().all(|n| n.kind == Kind::Ground)
-            && span.iter().all(|n| n.crossing.is_none());
-        let straight = span
-            .windows(2)
-            .all(|w| angle_between(w[0].heading, w[1].heading) <= LOOP_TURN);
-        if !ground || !straight {
-            continue;
-        }
-        for side in [1.0, -1.0] {
-            let free = span.iter().all(|n| {
-                let p = beside(n, side);
-                land.flags_at(p.x, p.y).is_some_and(|f| {
-                    f & (land::BUILT | land::STREET | land::TRACK | land::WATER) == 0
-                })
-            });
-            if free {
-                return Some((k, side));
-            }
-        }
+    let span = &nodes[k..=k + LOOP_EDGES];
+    let ground = span[..LOOP_EDGES].iter().all(|n| n.kind == Kind::Ground)
+        && span.iter().all(|n| n.crossing.is_none());
+    let straight = span
+        .windows(2)
+        .all(|w| angle_between(w[0].heading, w[1].heading) <= LOOP_TURN);
+    if !ground || !straight {
+        return None;
     }
-    None
+    [1.0, -1.0].into_iter().find(|side| {
+        span.iter().all(|n| {
+            let p = beside(n, *side);
+            land.flags_at(p.x, p.y)
+                .is_some_and(|f| f & (land::BUILT | land::STREET | land::TRACK | land::WATER) == 0)
+        })
+    })
 }
 
+/// Where a line's passing loops go: none on a line shorter than
+/// [`LOOP_FROM`], else one for each [`LOOP_SPACING`] of it (one at least),
+/// each as near its even share of the line as one fits ([`loop_fits`]), no
+/// two touching. Each loop's first node and side, along the line.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+pub fn loop_sites(land: &Land, nodes: &[Node]) -> Vec<(usize, f64)> {
+    let mut along = vec![0.0];
+    for w in nodes.windows(2) {
+        along.push(along.last().copied().unwrap_or(0.0) + w[0].at.flat_distance(w[1].at));
+    }
+    let length = along.last().copied().unwrap_or(0.0);
+    if nodes.len() < LOOP_EDGES + 3 || length < LOOP_FROM {
+        return Vec::new();
+    }
+    let count = ((length / LOOP_SPACING).floor() as usize).max(1);
+    let mut out: Vec<(usize, f64)> = Vec::new();
+    for i in 1..=count {
+        let target = length * i as f64 / (count + 1) as f64;
+        let middle = |k: usize| (along[k] + along[k + LOOP_EDGES]) / 2.0;
+        let mut firsts: Vec<usize> = (1..nodes.len().saturating_sub(LOOP_EDGES + 1)).collect();
+        firsts.sort_by(|a, b| {
+            (middle(*a) - target)
+                .abs()
+                .total_cmp(&(middle(*b) - target).abs())
+        });
+        let site = firsts.into_iter().find_map(|k| {
+            // Apart from the loops chosen: a node of single track between.
+            let apart = out
+                .iter()
+                .all(|(o, _)| k > o + LOOP_EDGES + 1 || k + LOOP_EDGES + 1 < *o);
+            if !apart {
+                return None;
+            }
+            loop_fits(land, nodes, k).map(|side| (k, side))
+        });
+        out.extend(site);
+    }
+    out.sort_by_key(|(k, _)| *k);
+    out
+}
 /// The passing loop's track beside the line's nodes from `k`: from node
 /// `k`, where it leaves the line as a switch, `side` of it, back onto it at
 /// node `k` + [`LOOP_EDGES`]; each edge's tangents along the line's heading,
@@ -1718,6 +1847,59 @@ pub fn loop_signals(nodes: &[Node], k: usize, side: f64, year: i32) -> [PlaceSto
     );
     [main, back]
 }
+/// How near a new station's free end a rail depot of its own must join
+/// the track for the new line to share it, in metres.
+pub const DEPOT_SHARE: f64 = 400.0;
+
+/// The track from a station's free `end`, leaving at `out`, to the join
+/// of a depot another of its lines built, arriving at `into` (towards the
+/// depot): one edge whose tangents follow both, so a new line shares the
+/// depot. Both its ends are nodes laid already.
+pub fn depot_link(end: P, out: f64, join: P, into: f64, year: i32) -> Option<TrackBuild> {
+    let len = end.flat_distance(join);
+    let tangent = |h: f64| {
+        let (ux, uy) = unit(h);
+        mm_tangent(ux * len, uy * len, join.z - end.z)
+    };
+    let vertices = vec![
+        Vertex {
+            pos: end.pos(),
+            resolve: Resolve::Node(Network::Track),
+        },
+        Vertex {
+            pos: join.pos(),
+            resolve: Resolve::Node(Network::Track),
+        },
+    ];
+    let links = vec![Link {
+        from: 0,
+        to: 1,
+        tangent0: tangent(out),
+        tangent1: tangent(into),
+        structure: Structure::Ground,
+        kind: None,
+        decorations: BoundedVec::default(),
+        locked: false,
+        owned: true,
+        lanes: BoundedVec::default(),
+        precedence: None,
+        position0: None,
+        position1: None,
+        kept: BoundedVec::default(),
+    }];
+    Some(TrackBuild {
+        track: res(track_template(year)),
+        style: None,
+        catenary: false,
+        polyline: Polyline::new(
+            BoundedVec::new(vertices).ok()?,
+            BoundedVec::new(links).ok()?,
+            BoundedVec::default(),
+        )
+        .ok()?,
+        crossing_type: None,
+    })
+}
 /// A short track from one existing node to another, straight: a depot's
 /// track to the station's end.
 pub fn link(from: P, to: P, year: i32) -> Option<TrackBuild> {
@@ -1795,6 +1977,7 @@ mod tests {
             heading: std::f64::consts::FRAC_PI_2,
             first: -3,
             last: 4,
+            passengers: false,
         };
         let (inner, outer) = (s.inner(), s.outer());
         assert!(
@@ -2006,7 +2189,7 @@ mod tests {
         let nodes = track(&river, &PRICES, a, 0.0, b, 0.0, &cells).expect("heights");
         grades_hold(&nodes);
         for w in nodes.windows(2) {
-            let wet = samples(&river, w[0].at, w[1].at).iter().any(|s| s.2);
+            let wet = samples(&river, w[0].at, w[1].at).iter().any(|s| s.wet);
             if wet {
                 assert_eq!(w[0].kind, Kind::Bridge, "over the river at {:?}", w[0].at);
             }
@@ -2254,7 +2437,7 @@ mod tests {
         let (target, other) = (p(0.0, 0.0), p(2_000.0, 0.0));
         // Built land east of the target, towards the other end.
         let land = flat(target, other, |x, _| x > 100.0 && x < 600.0);
-        let all = sites(&land, target, other, &[200.0]);
+        let all = sites(&land, target, other, &[200.0], false);
         assert!(!all.is_empty());
         for s in &all {
             assert!(
@@ -2320,7 +2503,9 @@ mod tests {
         let land = flat(a, b, |_, _| false);
         let cells = route(&land, &PRICES, a, 0.0, b, 0.0).unwrap();
         let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).unwrap();
-        let (k, side) = loop_site(&land, &nodes).expect("a loop site");
+        let sites = loop_sites(&land, &nodes);
+        assert_eq!(sites.len(), 1, "one loop on 3 km");
+        let (k, side) = sites[0];
         // Near the middle, clear of the stations.
         let m = k + LOOP_EDGES;
         assert!(k > 0 && m < nodes.len() - 1);
@@ -2367,10 +2552,57 @@ mod tests {
         let short = flat(c, d, |_, _| false);
         let cells = route(&short, &PRICES, c, 0.0, d, 0.0).unwrap();
         let nodes = track(&short, &PRICES, c, 0.0, d, 0.0, &cells).unwrap();
-        assert!(loop_site(&short, &nodes).is_none());
+        assert!(loop_sites(&short, &nodes).is_empty());
         let crowded = flat(a, b, |_, y| y.abs() > 0.0 && y.abs() < 60.0);
         let cells: Vec<(f64, f64)> = (0..=75).map(|i| (f64::from(i) * 40.0, 0.0)).collect();
         let nodes = align(&crowded, a, 0.0, b, 0.0, &cells);
-        assert!(loop_site(&crowded, &nodes).is_none());
+        assert!(loop_sites(&crowded, &nodes).is_empty());
+    }
+
+    #[test]
+    fn a_longer_line_gets_a_loop_for_each_stretch_set_apart() {
+        let (a, b) = (p(0.0, 0.0), p(6_000.0, 0.0));
+        let land = flat(a, b, |_, _| false);
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).unwrap();
+        let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).unwrap();
+        let sites = loop_sites(&land, &nodes);
+        assert_eq!(sites.len(), 2, "{sites:?}");
+        // Near a third and two thirds of the line, single track between.
+        let (k0, k1) = (sites[0].0, sites[1].0);
+        assert!(k0 + LOOP_EDGES + 1 < k1);
+        assert!(
+            (nodes[k0].at.x - 2_000.0).abs() < 400.0,
+            "{}",
+            nodes[k0].at.x
+        );
+        assert!(
+            (nodes[k1].at.x - 4_000.0).abs() < 400.0,
+            "{}",
+            nodes[k1].at.x
+        );
+    }
+
+    #[test]
+    fn another_railway_is_bridged_over_never_crossed_on_the_ground() {
+        let (a, b) = (p(0.0, 0.0), p(3_000.0, 0.0));
+        // A railway from edge to edge across the line.
+        let mut land = flat(a, b, |_, _| false);
+        mark(&mut land, land::TRACK, |x, _| (x - 1_500.0).abs() < 30.0);
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route over it");
+        let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).expect("heights");
+        grades_hold(&nodes);
+        for w in nodes.windows(2) {
+            for s in samples(&land, w[0].at, w[1].at) {
+                if s.rail {
+                    let h = w[0].at.z + (w[1].at.z - w[0].at.z) * s.t - s.ground;
+                    assert!(
+                        (w[0].kind == Kind::Bridge && h >= OVER - 1e-9)
+                            || (w[0].kind == Kind::Tunnel && -h >= UNDER - 1e-9),
+                        "{:?} at {h} over the railway",
+                        w[0].kind
+                    );
+                }
+            }
+        }
     }
 }

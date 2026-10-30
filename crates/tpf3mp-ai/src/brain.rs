@@ -94,6 +94,11 @@ pub const CARGO_NEAREST: f64 = 800.0;
 pub const NEED_LEAST: u32 = 10;
 /// The least money a production chain is begun with.
 pub const CHAIN_MONEY: i64 = 1_500_000;
+/// The towns a passenger train joins: each of at least this many buildings,
+/// this far apart, in metres.
+pub const PASSENGER_TOWN: u32 = 150;
+pub const PASSENGER_FROM: f64 = 3_000.0;
+pub const PASSENGER_MOST: f64 = 10_000.0;
 /// What the game's verdict says of a build through something in its way.
 pub const COLLISION: &str = "Collision";
 /// How long a truck waits at a stop at most, and for more cargo, in the
@@ -130,9 +135,9 @@ pub struct Memo {
     pub cargo_lines: Vec<(u32, String)>,
     /// Its rail lines, by the room's line id: kept out of its buses'.
     pub rail_lines: Vec<u32>,
-    /// Its rail lines with a signalled passing loop: room for a second
-    /// train.
-    pub looped: Vec<u32>,
+    /// Its rail lines with signalled passing loops, and how many: room for
+    /// a train more than its loops.
+    pub looped: Vec<(u32, u8)>,
 }
 
 /// What a line serves.
@@ -1028,25 +1033,24 @@ impl Brain {
         }
         // Its new lines first: one short of its count gets a bus. A settled
         // line keeps the vehicles its load gives it (`upkeep`).
-        let depot = company.depots.iter().find(|d| d.connected).cloned();
-        if let Some(depot) = depot {
-            let new = |line: &AiLine| {
-                company
-                    .vehicles
-                    .iter()
-                    .filter(|v| v.line == Some(line.id))
-                    .all(|v| v.worn < upkeep::SETTLED)
-            };
-            let short = company
-                .lines
+        let new = |line: &AiLine| {
+            company
+                .vehicles
                 .iter()
-                .filter(|l| !self.memo.rail_lines.contains(&l.id.0))
-                .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first) && new(l));
-            if let Some(line) = short {
-                self.topping = Some((line.id, depot));
-                self.stage = Stage::Models;
-                return None;
-            }
+                .filter(|v| v.line == Some(line.id))
+                .all(|v| v.worn < upkeep::SETTLED)
+        };
+        let short = company
+            .lines
+            .iter()
+            .filter(|l| !self.memo.rail_lines.contains(&l.id.0))
+            .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first) && new(l));
+        if let Some(line) = short
+            && let Some(depot) = road_depot(company, line)
+        {
+            self.topping = Some((line.id, depot));
+            self.stage = Stage::Models;
+            return None;
         }
         // Care of its lines: worn vehicles replaced, full lines given one
         // more, empty ones one fewer.
@@ -1299,8 +1303,57 @@ impl Brain {
         self.stage = Stage::Streets;
     }
 
+    /// Two large towns a passenger train may join: each of at least
+    /// [`PASSENGER_TOWN`] buildings, [`PASSENGER_FROM`] to [`PASSENGER_MOST`]
+    /// apart, joined by none of its trains yet nor given up on; the most
+    /// people for the fewest kilometres first, among its difficulty's picks.
+    fn passenger_pair(&mut self, towns: &[AiTown]) -> Option<(AiTown, AiTown)> {
+        let key = |t: &AiTown| t.centres.first().map(|c| route_key(*c, train::PASSENGERS));
+        let taken = |k: Option<u32>| {
+            k.is_none_or(|k| {
+                self.memo.served.contains(&k) || self.given_up.iter().any(|(id, _)| *id == k)
+            })
+        };
+        let big: Vec<&AiTown> = towns
+            .iter()
+            .filter(|t| t.buildings >= PASSENGER_TOWN && !t.centres.is_empty())
+            .take(12)
+            .collect();
+        let mut pairs: Vec<(f64, AiTown, AiTown)> = Vec::new();
+        for (i, a) in big.iter().enumerate() {
+            for b in &big[i + 1..] {
+                let d = P::of(a.centres[0]).flat_distance(P::of(b.centres[0]));
+                if !(PASSENGER_FROM..=PASSENGER_MOST).contains(&d) || taken(key(a)) || taken(key(b))
+                {
+                    continue;
+                }
+                let people = f64::from(a.buildings.min(b.buildings));
+                pairs.push((people / (1.0 + d / 1_000.0), (*a).clone(), (*b).clone()));
+            }
+        }
+        pairs.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let among = self.profile.pick_among.min(pairs.len());
+        if among == 0 {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let pick = (self.random() % among as u64) as usize;
+        let (_, a, b) = pairs.swap_remove(pick);
+        Some((a, b))
+    }
+
     fn on_towns(&mut self, towns: Vec<AiTown>, now: Instant) {
         self.given_up.retain(|(_, until)| *until > now);
+        // A passenger train between two large towns, its money and
+        // difficulty allowing, in turn with buses.
+        if self.profile.passenger_trains
+            && self.spendable() >= train::RAIL_MONEY
+            && self.random().is_multiple_of(2)
+            && let Some((a, b)) = self.passenger_pair(&towns)
+            && self.start_passenger_rail(&a, &b)
+        {
+            return;
+        }
         // Its stations a line of its stops at: a stop a project left behind
         // serves no one.
         let served: Vec<P> = self
@@ -1466,7 +1519,10 @@ impl Brain {
             c.depots
                 .iter()
                 .find(|d| {
-                    d.connected && town.is_some_and(|t| P::of(d.at).flat_distance(t) <= DEPOT_REACH)
+                    // A road depot: a rail depot buys no bus.
+                    d.connected
+                        && d.file.as_str() != crate::rail::DEPOT
+                        && town.is_some_and(|t| P::of(d.at).flat_distance(t) <= DEPOT_REACH)
                 })
                 .cloned()
         });
@@ -1889,4 +1945,23 @@ fn output_terminal(terminals: u8) -> u16 {
 /// Whether a town by its id is one the brain serves, as its memo says.
 pub fn serves(memo: &[u8], town: TownId) -> bool {
     postcard::from_bytes::<Memo>(memo).is_ok_and(|m| m.served.contains(&town.0))
+}
+
+/// The road depot of its own a line's road vehicles come from: one joined
+/// to the streets, nearest the line's first stop; never a rail depot.
+fn road_depot(company: &AiCompany, line: &AiLine) -> Option<AiDepot> {
+    let at = line
+        .stops
+        .first()
+        .and_then(|s| company.stations.iter().find(|st| st.id == *s))
+        .map(|s| P::of(s.pos));
+    company
+        .depots
+        .iter()
+        .filter(|d| d.connected && d.file.as_str() != crate::rail::DEPOT)
+        .min_by(|a, b| {
+            let d = |x: &AiDepot| at.map_or(0.0, |p| P::of(x.at).flat_distance(p));
+            d(a).total_cmp(&d(b))
+        })
+        .cloned()
 }

@@ -48,6 +48,8 @@ pub struct Profile {
     pub replace_at: u16,
     /// How many levels of industries a production chain feeds.
     pub chain_depth: usize,
+    /// Whether it joins large towns by passenger train.
+    pub passenger_trains: bool,
 }
 
 impl Profile {
@@ -71,6 +73,7 @@ impl Profile {
                 remove_below: 25,
                 replace_at: 100,
                 chain_depth: 2,
+                passenger_trains: false,
             },
             AiDifficulty::Normal => Self {
                 difficulty,
@@ -90,6 +93,7 @@ impl Profile {
                 remove_below: 30,
                 replace_at: 100,
                 chain_depth: 2,
+                passenger_trains: true,
             },
             AiDifficulty::Hard => Self {
                 difficulty,
@@ -109,6 +113,7 @@ impl Profile {
                 remove_below: 35,
                 replace_at: 90,
                 chain_depth: 3,
+                passenger_trains: true,
             },
         }
     }

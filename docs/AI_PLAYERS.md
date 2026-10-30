@@ -288,7 +288,8 @@ faster AI.
   clear of the street's ends, of other crossings and of its stations,
   never on a street with stops, a company's street or one by a junction
   a company's edge names. Any other street it passes over, 7.5 m clear,
-  or under, 10 m down, whichever costs less; a node of its line within
+  or under, 10 m down, whichever costs less, and so another railway,
+  which it never crosses on the ground; a node of its line within
   20 m of a street takes the crossing's place, so no edge is too short
   for its grade. Before 1970, for a train no faster than 65 km/h, its
   bridges are trestles, cheaper and as fast as its train. Then it puts
@@ -304,23 +305,34 @@ faster AI.
   prices in line with the game's by the verdicts' own costs. Then a rail
   depot beyond the first station, joined to its outer end, the line, and
   its train with as many wagons as the platforms take (six at most): no
-  electric engine, as its track has no catenary. A line of 2 km or more
-  gets a passing loop near its middle, once its depot is joined: a
-  second track 5 m beside about 300 m of straight line on the ground,
+  electric engine, as its track has no catenary. A line's first station
+  ending within 400 m of a rail depot of its own shares that depot, its
+  free end joined to the depot's track (the verdict deciding), rather
+  than building another for about a million. A line of 2 km or more
+  gets a passing loop for every 2.5 km of it, spaced along it, once its
+  depot is joined: each a second track 5 m beside about 300 m of
+  straight line on the ground,
   crossing no street, on whichever side the land is free, leaving and
   rejoining the line at two of its nodes as switches; then two one-way
   signals (the path signal of its year), each put to the verdict: one on
   the line's own track by the loop's far end passing trains on, one on
   the loop's track by its near end passing them back, so each direction
   keeps to its own track and waits at its exit for the single track
-  ahead. A refused loop or signal leaves a line of one train. A line with
-  both signals standing, its one train with a trainload (60) of cargo
-  waiting, gets a second train at its rail depot: its first train's engine where
-  the year still offers it, with as many of its cargo's roomiest wagons
-  as the platforms take. Its planning runs in the driver's agent, a route
+  ahead. A refused loop or signal is skipped. A line whose trains leave a
+  trainload (60) of cargo or passengers waiting gets another train at its
+  rail depot, up to one more than its signalled loops (n loops pass n + 1
+  trains on single track): its first train's engine where the year still
+  offers it, with as many of its cargo's roomiest wagons as the platforms
+  take. Normal and Hard also join two large towns (150 buildings or more
+  each, 3 to 10 km apart, the most people for the fewest kilometres) by
+  passenger train, in turn with buses: a one-track passenger station by
+  each (passenger platforms in its first row, its track in its second,
+  the era's station building; sites out to 600 m from the centre, at the
+  town's edge), laid out, put to trial and built as a cargo line is, its
+  line loading passengers both ways, its coaches the models that carry
+  the game's passengers. Its planning runs in the driver's agent, a route
   search 5 to 25 ms on the big fixture and at most about 0.2 s where there
-  is no way through. Still to come: double track and more than two trains
-  a line, sharing a depot between lines, passengers by train.
+  is no way through. Still to come: double track and electrified lines.
 - **Water.** Harbours where both ends touch the same water (from the
   water grid), with their street links. Ships need no route built.
 - **Air.** Airfields and airports near large towns on flat enough ground,
