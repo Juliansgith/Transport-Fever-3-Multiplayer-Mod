@@ -40,6 +40,12 @@ pub struct Profile {
     pub big_loans: bool,
     /// The farthest it carries cargo by truck, in metres.
     pub cargo_most: f64,
+    /// A road line running at least this full, in percent, with more
+    /// waiting, gets one more vehicle; one this empty, settled, one fewer.
+    pub add_above: u8,
+    pub remove_below: u8,
+    /// How far through its life, in percent, a road vehicle is replaced.
+    pub replace_at: u16,
 }
 
 impl Profile {
@@ -59,6 +65,9 @@ impl Profile {
                 loans_most: 1,
                 big_loans: false,
                 cargo_most: 4_000.0,
+                add_above: 90,
+                remove_below: 25,
+                replace_at: 100,
             },
             AiDifficulty::Normal => Self {
                 difficulty,
@@ -74,6 +83,9 @@ impl Profile {
                 loans_most: 2,
                 big_loans: false,
                 cargo_most: 6_000.0,
+                add_above: 80,
+                remove_below: 30,
+                replace_at: 100,
             },
             AiDifficulty::Hard => Self {
                 difficulty,
@@ -89,6 +101,9 @@ impl Profile {
                 loans_most: 4,
                 big_loans: true,
                 cargo_most: 8_000.0,
+                add_above: 70,
+                remove_below: 35,
+                replace_at: 90,
             },
         }
     }

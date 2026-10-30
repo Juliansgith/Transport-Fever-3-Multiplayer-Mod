@@ -187,6 +187,18 @@ faster AI.
    replaces old ones with the best model of the year; widens streets at
    its busy stops; doubles a busy single track or adds passing loops;
    extends lines that would earn more; and closes lines that lose money.
+   *Built so far (2026-10-30), for its bus and truck lines:* at every look,
+   once its new lines have their first vehicles, it replaces the most worn
+   road vehicle past its life (Easy and Normal at 100 % of its lifespan,
+   Hard at 90 %, as the game's vehicle window reckons it: since bridge
+   version 34 the company answer says how worn each vehicle is) with the
+   best model of the year, the vehicle window's replace, so it keeps its
+   line; adds one vehicle to a line running at least 90, 80 or 70 % full
+   with passengers or cargo waiting, up to its difficulty's most; and
+   sells the most worn vehicle of a settled line (every vehicle a twentieth
+   through its life) that runs under 25, 30 or 35 % full or loses money,
+   never a line's last. A settled line is not topped up to its first count
+   again. Trains wait for passing loops.
 4. **Money.** It borrows when a project's return beats the loan's interest
    by its difficulty's margin, and pays back when it can.
 

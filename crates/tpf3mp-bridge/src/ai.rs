@@ -183,8 +183,10 @@ pub struct AiVehicle {
     pub line: Option<LineId>,
     /// Its first part's model.
     pub model: ResName,
-    /// Its age, in days of the game's calendar.
-    pub age: u32,
+    /// How far through its life it is, in percent of its lifespan (over
+    /// 100 once worn out), as the game's vehicle window reckons it: its
+    /// oldest part's purchase against the game's time.
+    pub worn: u16,
     /// On no line: in a depot, or waiting for one.
     pub idle: bool,
 }

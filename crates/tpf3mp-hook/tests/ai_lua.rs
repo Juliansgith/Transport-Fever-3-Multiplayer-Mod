@@ -41,7 +41,8 @@ const GAME: &str = r#"
                  [952] = { 901, 961 }, [953] = { 901 }, [71] = { 970 }, [72] = { 971 } }
     local CT = { CONSTRUCTION = 1, STATION_GROUP = 2, STATION = 3, BASE_NODE = 4, LINE = 5, NAME = 6,
         TRANSPORT_VEHICLE = 7, TOWN_BUILDING = 8, TOWN = 9, BASE_EDGE = 10, BASE_EDGE_STREET = 11,
-        PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15, INDUSTRY = 16 }
+        PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15, INDUSTRY = 16,
+        GAME_TIME = 17 }
     local COMP = {
         [CT.CONSTRUCTION] = {
             [300] = { fileName = "stations/street/small_stops/small_new_twosided.con",
@@ -70,7 +71,11 @@ const GAME: &str = r#"
                            [403] = { position = { x = 500, y = 565, z = 12 } } },
         [CT.LINE] = { [500] = { stops = { { stationGroup = 310 }, { stationGroup = 310 } } } },
         [CT.NAME] = { [500] = { name = "Line 1" }, [700] = { name = "Didcot" }, [701] = { name = "Ely" } },
-        [CT.TRANSPORT_VEHICLE] = { [600] = { transportVehicleConfig = { vehicles = { { part = { modelId = 9 } } } } } },
+        -- Bought at 1 000 of the game's time, a model of lifespan 25: at 13 500,
+        -- half its life gone.
+        [CT.TRANSPORT_VEHICLE] = { [600] = { transportVehicleConfig = { vehicles = {
+            { part = { modelId = 9 }, purchaseTime = 1000 } } } } },
+        [CT.GAME_TIME] = { [1] = { gameTime = 13500 } },
         [CT.TOWN_BUILDING] = { [800] = { town = 701 }, [801] = { town = 701 }, [802] = { town = 700 } },
         -- Ely's commercial buildings take goods.
         [CT.TOWN] = { [700] = {}, [701] = { cargoNeeds = { {}, { { 2, 1.0 } }, {} } } },
@@ -136,6 +141,7 @@ const GAME: &str = r#"
             getComponent = function(e, ct) return COMP[ct] and COMP[ct][e] end,
             util = {
                 getYear = function() return 1925 end,
+                getWorld = function() return 1 end,
                 finance = { getPlayersBalance = function(e) return e == 77 and 1234567.6 or 0 end },
                 line = { getLineIssues = function() return { {}, {} } end },
                 town = { getTownDistrictCenter = function(t, use)
@@ -333,6 +339,7 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
     assert_eq!(bus.id.0, 6);
     assert_eq!(bus.line.map(|l| l.0), Some(2));
     assert_eq!(bus.model.as_str(), "vehicle/bus/new.mdl");
+    assert_eq!(bus.worn, 50, "half its life gone");
 }
 
 #[test]

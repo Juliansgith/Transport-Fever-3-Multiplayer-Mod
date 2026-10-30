@@ -86,6 +86,9 @@ struct World {
     refuse_track_near: Option<Pos>,
     /// The structures of the track links laid.
     structures: Vec<Structure>,
+    /// Vehicles replaced and sold.
+    replaced: Vec<VehicleId>,
+    sold: Vec<VehicleId>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -149,6 +152,8 @@ impl World {
             crossings: Vec::new(),
             refuse_track_near: None,
             structures: Vec::new(),
+            replaced: Vec::new(),
+            sold: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -697,7 +702,7 @@ impl World {
                     id: VehicleId(id),
                     line: None,
                     model: buy.consist[0].model.clone(),
-                    age: 0,
+                    worn: 0,
                     idle: true,
                 });
                 self.money -= 30_000;
@@ -732,6 +737,32 @@ impl World {
                         l.vehicles = BoundedVec::new(list).unwrap();
                     }
                 }
+            }
+            // The vehicle window's replace: the same vehicle, new.
+            Action::ReplaceVehicle(replace) => {
+                let v = self
+                    .vehicles
+                    .iter_mut()
+                    .find(|v| v.id == replace.vehicle)
+                    .expect("a vehicle of its own");
+                assert!(replace.consist.iter().all(|p| p.kept.is_none()));
+                v.model = replace.consist[0].part.model.clone();
+                v.worn = 0;
+                self.replaced.push(replace.vehicle);
+                self.money -= 25_000;
+            }
+            Action::SellVehicle { vehicles } => {
+                for id in vehicles.iter() {
+                    assert!(self.vehicles.iter().any(|v| v.id == *id), "its own");
+                    self.vehicles.retain(|v| v.id != *id);
+                    for l in &mut self.lines {
+                        let list: Vec<VehicleId> =
+                            l.vehicles.iter().copied().filter(|v| v != id).collect();
+                        l.vehicles = BoundedVec::new(list).unwrap();
+                    }
+                    self.sold.push(*id);
+                }
+                self.money += 10_000;
             }
             other => panic!("the brain sent {other:?}"),
         }
@@ -1723,4 +1754,94 @@ fn a_line_whose_track_would_be_refused_builds_no_station() {
     // it built.
     assert!(world.rail_stations.is_empty(), "{said:?}");
     assert_eq!(world.track_laid, 0.0);
+}
+
+/// A Normal AI's bus line in Didcot, its buses running: the world after it.
+fn a_running_bus_line() -> (World, Brain, Instant) {
+    let mut world = World::new();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    let start = Instant::now();
+    play(&mut brain, &mut world, start, Duration::from_secs(600));
+    assert!(world.lines_with_buses(2) >= 1, "{:?}", brain.take_said());
+    brain.take_said();
+    (world, brain, start + Duration::from_secs(600))
+}
+
+#[test]
+fn a_worn_out_bus_is_replaced_on_its_line() {
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    let worn = world
+        .vehicles
+        .iter_mut()
+        .find(|v| v.line == Some(line))
+        .unwrap();
+    worn.worn = 104;
+    let id = worn.id;
+    for v in world.vehicles.iter_mut().filter(|v| v.id != id) {
+        v.worn = 40;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert_eq!(world.replaced, [id], "{said:?}");
+    let v = world.vehicles.iter().find(|v| v.id == id).unwrap();
+    assert_eq!(v.line, Some(line), "still on its line");
+    assert_eq!(v.worn, 0);
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("replaces a worn-out vehicle on")),
+        "{said:?}"
+    );
+    assert!(world.sold.is_empty());
+}
+
+#[test]
+fn a_full_line_gets_another_bus_and_an_empty_one_loses_one_never_its_last() {
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    let before = world
+        .vehicles
+        .iter()
+        .filter(|v| v.line == Some(line))
+        .count();
+    // Full, with passengers waiting.
+    world.lines[0].load = 95;
+    world.lines[0].waiting = 60;
+    for v in &mut world.vehicles {
+        v.worn = 10;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(300));
+    let said = brain.take_said();
+    let after = world
+        .vehicles
+        .iter()
+        .filter(|v| v.line == Some(line))
+        .count();
+    assert_eq!(after, before + 1, "{said:?}");
+    assert!(said.iter().any(|l| l.contains("running full")), "{said:?}");
+    // Then near empty, settled: one sold a look, down to one.
+    world.lines[0].load = 10;
+    world.lines[0].waiting = 0;
+    for v in &mut world.vehicles {
+        v.worn = 10;
+    }
+    play(
+        &mut brain,
+        &mut world,
+        now + Duration::from_secs(300),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    let left = world
+        .vehicles
+        .iter()
+        .filter(|v| v.line == Some(line))
+        .count();
+    assert_eq!(left, 1, "{said:?}");
+    assert_eq!(world.sold.len(), after - 1);
+    assert!(
+        said.iter().any(|l| l.contains("running near empty")),
+        "{said:?}"
+    );
 }

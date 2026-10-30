@@ -304,7 +304,24 @@ function ai.company(seat, roster, registry)
 		pcall(function()
 			model = api.res.modelRep.getName(tv.transportVehicleConfig.vehicles[1].part.modelId)
 		end)
-		out.vehicles[#out.vehicles + 1] = { id = vid, line = line, model = text(model, 128), age = 0, idle = line == nil }
+		-- How far through its life it is, in percent, as the vehicle window
+		-- reckons it (`vehicle_util.getAge`): its oldest part's purchase
+		-- against the game's time, over that part's lifespan.
+		local worn = 0
+		pcall(function()
+			local now = component(api.engine.util.getWorld(), "GAME_TIME").gameTime
+			local first, span
+			for _, part in ipairs(tv.transportVehicleConfig.vehicles) do
+				local life = api.res.modelRep.get(part.part.modelId).metadata.maintenance.lifespan * 1000
+				if first == nil or part.purchaseTime < first or (part.purchaseTime == first and life < span) then
+					first, span = part.purchaseTime, life
+				end
+			end
+			if first and span and span > 0 then
+				worn = math.min(math.max(math.floor((now - first) / span * 100 + 0.5), 0), 65535)
+			end
+		end)
+		out.vehicles[#out.vehicles + 1] = { id = vid, line = line, model = text(model, 128), worn = worn, idle = line == nil }
 	end
 	for _, l in ipairs(lines) do
 		local lid = reg and regmod.id(reg, "lines", l)
