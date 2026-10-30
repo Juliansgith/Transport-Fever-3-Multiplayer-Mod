@@ -136,6 +136,14 @@ pub(super) struct RailProject {
     pub key: u32,
 }
 
+/// Whether a rail line was given up for something the land decides: no
+/// route, no place for a station or depot, track refused over and over.
+pub fn lasting(why: &str) -> bool {
+    why.starts_with("found no route")
+        || why.starts_with("found no place")
+        || why.contains("refused too often")
+}
+
 /// The key a passenger line between two towns goes by: the pair of their
 /// ids, either way round, with the top bit set as a cargo route's. Not a
 /// district centre's place, which moves as a town grows: the Hard AI chose
@@ -379,7 +387,12 @@ impl Brain {
                 self.chain.push_front(leg);
             } else {
                 self.given_up.push((key, now + GIVE_UP_FOR));
-                if !self.memo.given_up.contains(&key) {
+                // The land decides a route or a station's place, and the
+                // land stays: such a line is given up for good, in the memo
+                // its next driver keeps. Money comes back; a line too dear
+                // is tried again. The Hard AI planned three passenger pairs
+                // with no way through again every 15 minutes (2026-10-30).
+                if lasting(why) && !self.memo.given_up.contains(&key) {
                     self.memo.given_up.push(key);
                 }
             }

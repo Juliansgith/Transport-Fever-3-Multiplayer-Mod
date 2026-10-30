@@ -267,7 +267,12 @@ faster AI.
   The game says "Collision" of every depot, its own street's new halves
   counted, and builds it; the verdict's count leaves those out. Refused
   because its street changed under it (no edge left to split), it reads
-  the streets again, twice at most (investigation, "Depots"). *Built so
+  the streets again, twice at most (investigation, "Depots"). A truck
+  station is priced the same way among the district's nearest streets,
+  the cheapest of up to six built. No construction is built whose verdict
+  touches something that stands (another company's station, a street, a
+  track): the game says "Collision" of it but builds it over that, as an
+  AI rail depot once stood across a player's station. *Built so
   far:* a town's bus line, and a cargo's truck line from an industry that
   made it over the last year to the nearest town that needs more of it
   (the town window's cargo demand: supplied at least 10 a year short of
@@ -370,7 +375,10 @@ faster AI.
   offers it, with as many of its cargo's roomiest wagons as the platforms
   take. Normal and Hard also join two large towns (150 buildings or more
   each, 3 to 10 km apart, the most people for the fewest kilometres, a
-  pair it has not joined or given up on, known by the two towns' ids) by
+  pair it has not joined or given up on, known by the two towns' ids; a
+  pair given up for want of a route or a station's place stays given up,
+  in the memo its next driver keeps, one given up for money is tried
+  again) by
   passenger train, in turn with buses: a one-track passenger station by
   each (passenger platforms in its first row, its track in its second,
   the era's station building; sites out to 600 m from the centre, at the

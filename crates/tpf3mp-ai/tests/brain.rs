@@ -107,6 +107,12 @@ struct World {
     depot_cost: Option<fn(Pos) -> i64>,
     /// The road depots the verdicts would build: where, and at what price.
     depot_quotes: Vec<(Pos, i64)>,
+    /// What a truck station costs by its origin, and the verdicts' quotes
+    /// for them; how many standing things a construction's verdict says it
+    /// touches.
+    station_cost: Option<fn(Pos) -> i64>,
+    station_quotes: Vec<(Pos, i64)>,
+    touches: Option<fn(&tpf3mp_proto::action::ConstructionBuild) -> u16>,
     /// The loans its company owes, and the game's months: how often they
     /// fall due in play (none: never), what each line earns a year then,
     /// how far through their lives its vehicles go each month, and the
@@ -188,6 +194,9 @@ impl World {
             rival_depots: 0,
             depot_cost: None,
             depot_quotes: Vec::new(),
+            station_cost: None,
+            station_quotes: Vec::new(),
+            touches: None,
             owed: Vec::new(),
             month_every: None,
             month_at: None,
@@ -410,6 +419,12 @@ impl World {
                 {
                     self.depot_quotes.push((b.transform.origin, verdict.cost));
                 }
+                if let Action::BuildConstruction(b) = &action
+                    && b.file.as_str().contains("modular_terminal")
+                    && verdict.ok
+                {
+                    self.station_quotes.push((b.transform.origin, verdict.cost));
+                }
                 AiAnswer::Verdict(verdict)
             }
         }
@@ -486,7 +501,14 @@ impl World {
             Action::BuildConstruction(b) if depot => {
                 self.depot_cost.map_or(10_000, |f| f(b.transform.origin))
             }
+            Action::BuildConstruction(b) if b.file.as_str().contains("modular_terminal") => {
+                self.station_cost.map_or(10_000, |f| f(b.transform.origin))
+            }
             _ => 10_000,
+        };
+        let collisions = match action {
+            Action::BuildConstruction(b) => self.touches.map_or(0, |f| f(b)),
+            _ => 0,
         };
         let said = if gone {
             vec![SPLIT_GONE]
@@ -500,7 +522,7 @@ impl World {
             cost,
             messages: BoundedVec::new(said.into_iter().map(|m| Text::new(m).unwrap()).collect())
                 .unwrap(),
-            collisions: 0,
+            collisions,
         }
     }
 
@@ -2525,4 +2547,102 @@ fn an_ai_whose_lines_pay_pays_its_loan_back_early() {
         "{said:?}"
     );
     assert!(world.owed.is_empty(), "nothing owed: {:?}", world.owed);
+}
+
+#[test]
+fn a_truck_station_goes_where_it_is_cheapest_of_several_priced() {
+    // A truck station clears the houses in its way: in Hunstanton's middle
+    // eight cost 580,000 to 2.6 million, every one too dear (2026-10-30).
+    let mut world = World::new();
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.station_cost = Some(|o| {
+        300_000 + i64::from((o.x / 1000).rem_euclid(53) + (o.y / 1000).rem_euclid(47)) * 7_000
+    });
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(true);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    let quotes = &world.station_quotes;
+    assert!(quotes.len() >= 2, "several priced: {quotes:?} {said:?}");
+    let built = world
+        .stations
+        .iter()
+        .find(|s| world.truck_stations.contains(&s.id))
+        .expect("a truck station")
+        .pos;
+    let cheapest = quotes.iter().map(|(_, c)| *c).min().unwrap();
+    let paid = quotes.iter().find(|(at, _)| *at == built).map(|(_, c)| *c);
+    assert_eq!(paid, Some(cheapest), "the cheapest: {quotes:?}");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("builds its truck station for")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_construction_touching_what_stands_is_not_built() {
+    // The game builds a construction over what stands in its way, "Collision"
+    // said of it but not refused: an AI rail depot stood across a player's
+    // station (2026-10-30). Here every depot placement west of Didcot's and
+    // Ely's middles touches something.
+    let mut world = World::new();
+    world.touches = Some(|b| {
+        let x = b.transform.origin.x;
+        u16::from(x < 0 || (4_000_000..5_000_000).contains(&x))
+    });
+    let mut brain = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(300),
+    );
+    let said = brain.take_said();
+    assert!(!world.depots.is_empty(), "{said:?}");
+    for d in &world.depots {
+        let x = d.at.x;
+        assert!(
+            !(x < 0 || (4_000_000..5_000_000).contains(&x)),
+            "a depot over what stands at {x}: {said:?}"
+        );
+    }
+    assert!(
+        said.iter()
+            .any(|l| l.contains("touches 1 things that stand")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_passenger_pair_with_no_way_through_is_not_planned_again() {
+    // Given up for good, in the memo a next driver keeps: the Hard AI
+    // planned three such pairs again every 15 minutes (2026-10-30).
+    let mut world = World::new();
+    world.money = 30_000_000;
+    let memo = tpf3mp_ai::Memo {
+        given_up: vec![tpf3mp_ai::brain::passenger_key(TownId(1), TownId(2))],
+        ..tpf3mp_ai::Memo::default()
+    };
+    let bytes = postcard::to_allocvec(&memo).unwrap();
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, Some(&bytes));
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+        "{said:?}"
+    );
 }
