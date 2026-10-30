@@ -89,6 +89,8 @@ pub const CARGO_NEAREST: f64 = 800.0;
 pub const NEED_LEAST: u32 = 10;
 /// The least money a production chain is begun with.
 pub const CHAIN_MONEY: i64 = 1_500_000;
+/// What the game's verdict says of a build through something in its way.
+pub const COLLISION: &str = "Collision";
 /// How long a truck waits at a stop at most, and for more cargo, in the
 /// game's seconds in millionths: the game's line window's for a road stop.
 pub const CARGO_MAX_WAIT: i64 = 600_000_000;
@@ -329,6 +331,9 @@ pub struct Brain {
     needing: Vec<AiTown>,
     /// The rail line it is building.
     rail: Option<train::RailProject>,
+    /// The game's track prices over the AI's own ([`crate::costs`]), read
+    /// off the verdicts on its track.
+    rail_scale: f64,
     /// The legs of a production chain still to build, in order; the leg
     /// it is building by train now; legs it tries by truck alone, by their
     /// route keys, their train refused.
@@ -381,6 +386,7 @@ impl Brain {
             routes: Vec::new(),
             needing: Vec::new(),
             rail: None,
+            rail_scale: 1.0,
             chain: std::collections::VecDeque::new(),
             leg_now: None,
             no_rail: Vec::new(),
@@ -624,6 +630,12 @@ impl Brain {
                 self.on_towns(towns.into_inner(), now);
                 None
             }
+            (AiQuestion::Streets { .. }, AiAnswer::Streets(streets))
+                if matches!(self.stage, Stage::Rail(_)) =>
+            {
+                self.rail_streets(streets.into_inner(), now);
+                None
+            }
             (AiQuestion::Streets { .. }, AiAnswer::Streets(streets)) => {
                 self.on_streets(streets.into_inner(), now);
                 None
@@ -644,10 +656,15 @@ impl Brain {
                 None
             }
             (AiQuestion::Verdict(payload), AiAnswer::Verdict(verdict)) => {
-                if verdict.ok && verdict.cost <= self.spendable().max(0) {
-                    let action = Action::from_payload(&payload).ok()?;
+                let action = Action::from_payload(&payload).ok()?;
+                // A track the game would lay through what stands in its way
+                // (a street it does not cross, say) reads "Collision" without
+                // being refused (2026-10-30): the AI lays none such.
+                let collides = matches!(action, Action::BuildTrack(_))
+                    && verdict.messages.iter().any(|m| m.as_str() == COLLISION);
+                if verdict.ok && !collides && verdict.cost <= self.spendable().max(0) {
                     if let Stage::Rail(stage) = self.stage.clone() {
-                        return self.rail_good_verdict(stage, &action, now);
+                        return self.rail_good_verdict(stage, &action, verdict.cost, now);
                     }
                     self.on_good_verdict(&action, now)
                 } else {

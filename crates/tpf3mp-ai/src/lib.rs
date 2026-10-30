@@ -9,6 +9,7 @@
 
 pub mod brain;
 pub mod chain;
+pub mod costs;
 pub mod place;
 pub mod profile;
 pub mod rail;

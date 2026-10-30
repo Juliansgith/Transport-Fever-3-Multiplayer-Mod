@@ -258,6 +258,55 @@ Facts read for this, from the console and the game's own scripts:
 - The land: 256 heights in 1 ms, 256 octree queries in 2 ms; the octree
   finds an industry from anywhere over its ground.
 
+## Track costs (2026-10-30)
+
+What the game charges for track, read from its own verdicts (nothing
+built) in one game on the big fixture in 1922, through the mod's
+`apply.proposalOf` and `makeProposalData`: 200 m of simple track,
+straight, on flat open ground, built as each of these.
+
+| built as | cost | a metre |
+|---|---|---|
+| on the ground | 10,615 | 53 |
+| an embankment 2, 5, 8 m high | 18,479; 50,834; 102,975 | 92; 254; 515 |
+| a cutting 2, 5 m deep | 22,457; 54,502 | 112; 273 |
+| climbing 4 m over the 200 m | 19,773 | 99 |
+| a stone bridge 0.5, 2, 3.5, 4.5 m up | 27,319; 39,352; 40,691; 42,436 | 137; 197; 203; 212 |
+| a stone bridge 6, 10, 15, 25 m up | 46,327; 66,540; 116,970; 325,070 | 232; 333; 585; 1,625 |
+| a trestle bridge 6, 15 m up | 27,689; 63,010 | 138; 315 |
+| a tunnel 5, 7 m down | 161,235; 136,049 | 806; 680 |
+| a tunnel 10, 20 m down | 121,002; 163,819 | 605; 819 |
+| 160 m across a street at 90°, 45°, splitting it | 18,125; 14,415 | |
+| the same at 10° | refused, "Construction Not Possible" | |
+| the same through the street, no split | 13,417, "Collision", not critical | |
+| a one-track cargo station of 3, 6 modules | 277,298; 561,711 | |
+| a rail depot | 1,026,832 | |
+
+The earth fits the game's config (`base/mod.script.tl`: 4.5 a cubic
+metre raised, 5.25 lowered) for a bed about 4 m wide whose sides are as
+steep as they are high; a field costs 200,000 to remove, so the AI keeps
+off them (they read as built land). A bridge beats an embankment above
+about 4.5 m (the game builds one even half a metre up), a tunnel a
+cutting below about 9 m (a shallower tunnel costs more). The trestle is offered
+until 1970 for rail alone, at 60 km/h. The prices are the AI's
+(`crates/tpf3mp-ai/src/costs.rs`); a game's own price setting scales
+them, and the AI reads the scale off its verdicts.
+
+A track laid through a street without splitting it is not refused by
+the verdict: "Collision" comes as a message, not a critical error. The
+AI refuses such a piece itself.
+
+What the cost-aware track met in the real game (two games, Hard and
+Normal AIs, the big fixture):
+
+| run | what happened | changed |
+|---|---|---|
+| 29 | The cement line of run 26 found no route. On the game's land (dumped and planned offline) its plant station stands 96 m up and Torpoint's 7 m, 89 m down over 3.6 km: the height search's 2.5 % allowed 76 m, its levels rounded down. | 2.5 % where it can, 4 % at most, each metre beyond 2.5 % costed high; the price it reckons leaves that cost out. |
+| 30 | A line's estimate passed, its stations were built, then its crossings near Wadebridge's junctions failed it. | The whole line laid out before anything is built; its station pairs tried in turn. |
+| 31 | "Too Much Incline" on the cement line's first piece, which held a level crossing on the hill. | A crossing lies level (1 %) on a street no steeper than 4 %. |
+| 32 | The refused piece read "crossing, ground 1 m at +14.9 %": the crossing's node 1 m from another; then every crossing of the plant's steep road refused, round and round. | A node within 20 m of a street takes the crossing's place; a street no crossing may be laid on is passed over or under. Every piece put to the verdict before anything is built. |
+| 33 | The meat line to Wadebridge: its first station pair had no heights within the grade; the next was laid out with level crossings, three layouts refused at a crossing ("Construction Not Possible") in trial, the fourth passed; stations, track with 4 level crossings, line and train, alike in both games (60 world-check windows matched). | |
+
 ## Production chains (2026-10-30)
 
 Run 27 (two games in one room, a Hard and a Normal AI, the big fixture)
