@@ -22,7 +22,7 @@ use tpf3mp_proto::{
     action::{
         Action, AssignLine, BuyVehicle, ConsistPart, ConstructionRef, CreateLine, Fraction,
         LineData, LineId, LineStop, LoadMode, Pos, ResName, Resolve, StationId, StopRules,
-        Terminal, TrackBuild, VehicleId, Vertex,
+        Terminal, TownId, TrackBuild, VehicleId, Vertex,
     },
 };
 
@@ -131,6 +131,30 @@ pub(super) struct RailProject {
     /// It carries passengers between two towns, not a cargo: `from` stands
     /// for the first town, `cargo` is [`PASSENGERS`].
     pub passengers: bool,
+    /// What its memo knows it by, served or given up on: a cargo's route
+    /// key, or the two towns' pair ([`passenger_key`]).
+    pub key: u32,
+}
+
+/// The key a passenger line between two towns goes by: the pair of their
+/// ids, either way round, with the top bit set as a cargo route's. Not a
+/// district centre's place, which moves as a town grows: the Hard AI chose
+/// the towns of its first passenger line again three minutes after it
+/// opened (2026-10-30, run 40).
+pub fn passenger_key(a: TownId, b: TownId) -> u32 {
+    let (low, high) = if a.0 <= b.0 { (a.0, b.0) } else { (b.0, a.0) };
+    // FNV-1a: the same in every driver's agent.
+    let mut h: u32 = 0x811c_9dc5;
+    for byte in low
+        .to_le_bytes()
+        .into_iter()
+        .chain(high.to_le_bytes())
+        .chain(PASSENGERS.bytes())
+    {
+        h ^= u32::from(byte);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h | 0x8000_0000
 }
 
 impl RailProject {
@@ -254,7 +278,8 @@ impl Brain {
     /// Begins a rail line carrying a cargo from the industry that makes it
     /// to its taker, if it can afford one: true if it did.
     pub(super) fn start_rail(&mut self, leg: Leg) -> bool {
-        self.start_rail_of(leg, false)
+        let key = route_key(leg.from.pos, leg.cargo.as_str());
+        self.start_rail_of(leg, false, key)
     }
 
     /// Begins a passenger rail line between two towns, if it can afford one:
@@ -282,10 +307,10 @@ impl Brain {
             from,
             to,
         };
-        self.start_rail_of(leg, true)
+        self.start_rail_of(leg, true, passenger_key(a.id, b.id))
     }
 
-    fn start_rail_of(&mut self, leg: Leg, passengers: bool) -> bool {
+    fn start_rail_of(&mut self, leg: Leg, passengers: bool, key: u32) -> bool {
         if self.spendable() < RAIL_MONEY {
             return false;
         }
@@ -320,6 +345,7 @@ impl Brain {
             signalled: 0,
             share: None,
             passengers,
+            key,
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
@@ -331,7 +357,7 @@ impl Brain {
 
     fn give_up_rail(&mut self, why: &str, now: Instant) {
         if let Some(project) = self.rail.take() {
-            let key = route_key(project.from.pos, project.cargo.as_str());
+            let key = project.key;
             self.say(format!("{why}; gave up on {}", project.describe()));
             // A chain's leg is tried by truck where trucks reach, before
             // the chain goes no further.
@@ -1160,7 +1186,7 @@ impl Brain {
                     .find(|l| !known(l.id) && l.stops.iter().copied().eq(stops.iter().copied()))
                 {
                     project.line = Some(line.id);
-                    let key = route_key(project.from.pos, project.cargo.as_str());
+                    let key = project.key;
                     let entry = (line.id.0, project.cargo.as_str().to_owned());
                     let described = project.describe();
                     if !self.memo.served.contains(&key) {

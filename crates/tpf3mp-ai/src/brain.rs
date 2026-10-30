@@ -1372,14 +1372,13 @@ impl Brain {
 
     /// Two large towns a passenger train may join: each of at least
     /// [`PASSENGER_TOWN`] buildings, [`PASSENGER_FROM`] to [`PASSENGER_MOST`]
-    /// apart, joined by none of its trains yet nor given up on; the most
-    /// people for the fewest kilometres first, among its difficulty's picks.
+    /// apart, the pair joined by none of its trains yet nor given up on
+    /// ([`train::passenger_key`]); the most people for the fewest kilometres
+    /// first, among its difficulty's picks.
     fn passenger_pair(&mut self, towns: &[AiTown]) -> Option<(AiTown, AiTown)> {
-        let key = |t: &AiTown| t.centres.first().map(|c| route_key(*c, train::PASSENGERS));
-        let taken = |k: Option<u32>| {
-            k.is_none_or(|k| {
-                self.memo.served.contains(&k) || self.given_up.iter().any(|(id, _)| *id == k)
-            })
+        let taken = |a: &AiTown, b: &AiTown| {
+            let k = train::passenger_key(a.id, b.id);
+            self.memo.served.contains(&k) || self.given_up.iter().any(|(id, _)| *id == k)
         };
         let big: Vec<&AiTown> = towns
             .iter()
@@ -1390,8 +1389,7 @@ impl Brain {
         for (i, a) in big.iter().enumerate() {
             for b in &big[i + 1..] {
                 let d = P::of(a.centres[0]).flat_distance(P::of(b.centres[0]));
-                if !(PASSENGER_FROM..=PASSENGER_MOST).contains(&d) || taken(key(a)) || taken(key(b))
-                {
+                if !(PASSENGER_FROM..=PASSENGER_MOST).contains(&d) || taken(a, b) {
                     continue;
                 }
                 let people = f64::from(a.buildings.min(b.buildings));
