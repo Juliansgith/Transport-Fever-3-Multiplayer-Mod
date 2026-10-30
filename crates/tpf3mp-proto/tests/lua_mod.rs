@@ -15990,7 +15990,9 @@ fn founded_company_loan_offers_are_checked_consumed_and_company_scoped() {
     assert_eq!(journals, 2, "the refused reuse made no duplicate charge");
     let refreshed: (i64, i64, Option<i64>, i64) = lua
         .load(
-            "local roster = STATE.value.companies local untilTime = roster.loanOffers[1].availableLoans[1].cooldownUntil \
+            "local roster = STATE.value.companies \
+             local untilTime = math.max(roster.loanOffers[1].availableLoans[1].cooldownUntil, \
+                 roster.loanOffers[2].availableLoans[1].cooldownUntil) \
              GAME_T = untilTime + 1 UPDATE({}, STATE, 0.2) \
              return roster.loanOffers[1].availableLoans[1].amount, \
                  roster.loanOffers[2].availableLoans[1].amount, \
@@ -16001,7 +16003,7 @@ fn founded_company_loan_offers_are_checked_consumed_and_company_scoped() {
     assert_eq!(
         refreshed,
         (1300, 1300, None, 2),
-        "both slots refresh independently after cooldown"
+        "both slots refresh after their own cooldowns (each company draws from its own seed)"
     );
 }
 
