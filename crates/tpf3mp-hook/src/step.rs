@@ -480,6 +480,8 @@ pub trait StepHandler: Send {
     fn ai_answer(&mut self, id: u32, answer: Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>);
     /// See [`StepDriver::on_menu`].
     fn on_menu(&mut self);
+    /// See [`StepDriver::keep_alive`].
+    fn keep_alive(&mut self) {}
     /// See [`StepDriver::lobby`].
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView>;
     /// See [`StepDriver::why`].
@@ -523,6 +525,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn on_menu(&mut self) {
         StepDriver::on_menu(self);
+    }
+    fn keep_alive(&mut self) {
+        StepDriver::keep_alive(self);
     }
     fn say(&mut self, text: ChatText) {
         StepDriver::say(self, text);
@@ -906,6 +911,19 @@ impl<G: RoomGate> StepDriver<G> {
     /// In the room's game: the driver follows a room's game, or holds it.
     pub fn in_room(&self) -> bool {
         matches!(self.phase, Phase::Running | Phase::Holding(_))
+    }
+
+    /// The game's step has been quiet a while, its world up: the game's own
+    /// pause menu stops its step, and with it every heartbeat the step
+    /// gives. The link's heartbeat is kept, nothing else done: the room's
+    /// turns, a save and the rest wait for the step, which picks them up as
+    /// it resumes. Without it the agent took a minute in the pause menu for
+    /// a hook gone and ended the session; with a room's save just asked,
+    /// the game showed it saving, Quit greyed, until Resume (2026-10-30).
+    pub fn keep_alive(&mut self) {
+        if self.in_room() {
+            self.gate.heartbeat();
+        }
     }
 
     /// The room's step the next update runs, once a world is loaded.
@@ -1796,6 +1814,8 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct Script {
         pub(crate) reset_ended: bool,
+        /// The link's heartbeats given.
+        pub(crate) heartbeats: std::sync::atomic::AtomicU32,
         pub(crate) departure_done: bool,
         pub(crate) departure_polls: usize,
         pub(crate) begin: VecDeque<Option<Begin>>,
@@ -1839,6 +1859,10 @@ pub(crate) mod tests {
     }
 
     impl RoomGate for Script {
+        fn heartbeat(&self) {
+            self.heartbeats
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         fn poll_departure(&mut self) -> Result<bool, SessionError> {
             self.departure_polls += 1;
             Ok(self.departure_done)
@@ -2243,6 +2267,37 @@ pub(crate) mod tests {
         assert!(d.take_log().iter().any(|l| l.contains("applied the room")));
     }
 
+    /// The game's pause menu stops its step: the UI's frames keep the
+    /// link's heartbeat from the driver, in a room only, and do nothing
+    /// else (crate::install::gui_frame). A minute in the menu otherwise
+    /// ended the session (2026-10-30).
+    #[test]
+    fn a_quiet_step_keeps_the_links_heartbeat_in_a_room_and_nothing_else() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Wait,
+        ]);
+        let (mut d, mut calls) = driver(script);
+        d.keep_alive();
+        assert_eq!(d.gate.heartbeats.load(Relaxed), 0, "no room yet");
+        call(&mut d, &mut calls);
+        assert_eq!(d.phase(), &Phase::Running);
+        let (gates, ran, polls) = (d.gate.gates.len(), d.gate.ran, d.gate.departure_polls);
+        d.keep_alive();
+        d.keep_alive();
+        assert_eq!(d.gate.heartbeats.load(Relaxed), 2);
+        assert_eq!(
+            (d.gate.gates.len(), d.gate.ran, d.gate.departure_polls),
+            (gates, ran, polls),
+            "nothing else asked of the room"
+        );
+    }
     fn begin_every(interval: u32) -> Begin {
         Begin {
             checkpoint_interval: interval,

@@ -579,6 +579,21 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   player can start the game again at once. The heartbeat limits remain for
   games the launcher did not start and for a hook whose game still runs
   but hangs.
+- **The game's pause menu.** The game's own pause menu (Escape, or the
+  window's close button) stops its simulation's step, and with it every
+  heartbeat the step gives: a minute in the menu ended the session with
+  "the hook stopped responding" (2026-10-30). So the game's UI frames
+  (`CGameUI::GameStep`'s call of the step, `crate::pacing`) and the mod's
+  GUI frames (`tpf3mp_native.poll`) keep the link's heartbeat once the
+  step has been quiet 2 s in a world (`crate::install::gui_frame`,
+  `StepDriver::keep_alive`), and do nothing else: the room's turns and a
+  save wait for the step, which picks them up as the game resumes. A room
+  save asked just before the menu opened is written but not finished
+  until then: the menu shows "Saving..." with Save, Load and Quit greyed,
+  Resume finishes it at once (`tools/game/quit.ps1` resumes and asks
+  again). The run of 2026-10-30 whose joiner seemed to hang saving after
+  the host quit was this: the joiner's menu opened during the room's save,
+  and its session ended a minute later.
 
 ### The hook's session
 
