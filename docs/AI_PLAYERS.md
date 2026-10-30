@@ -304,8 +304,11 @@ for Part 3's lines, vehicles and stations where they need them.
   first, routes are sent in short pieces, and a refused piece is planned
   again from what the game said.
 - **The driver's frame time.** Reads are sliced, verdicts limited to
-  short pieces and a few a second, the thinking runs in the agent. The
-  driver is chosen among members keeping up with the room.
+  short pieces, one a frame and four a second at most, sharing one read
+  of the street network a while; the thinking runs in the agent. The
+  driver is chosen among members keeping up with the room. A verdict
+  still holds a frame for the game's own `makeProposalData`, mostly 4 to
+  18 ms on the big fixture, once 60 ms.
 - **Game patches.** The AI checks on start that the game offers every
   function it uses, and rests, saying why, when one is missing (fail
   closed); limits come from the game's templates, not from copies.

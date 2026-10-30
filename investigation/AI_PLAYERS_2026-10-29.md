@@ -129,6 +129,25 @@ frame; in the game script's state it would hold a simulation step
 instead, which the room's pace leaves room for, once the mod's dry run is
 shown to leave nothing behind that a later applied action could read.
 
+**What a verdict spends** (2026-10-30, runs 15 to 17, the slowest
+verdict's parts in the cost log). Most of it was not the game's verdict:
+the proposal read the whole street network (4,985 nodes, 26 to 71 ms)
+nearly every time, because the octree missed one of the edge's ends and
+the dry lookup fell back to the whole read. The game's own verdict took
+4 to 18 ms in run 15. Asking only the octree (run 16) refused every stop the AI
+tried, as its nodes were among those it misses. Now the verdicts share
+one whole read for 5 seconds (`nodeCache`), and a verdict waits for a
+frame of its own, 250 ms after the last:
+
+| verdict, over the whole run | verdicts | mean | slowest |
+|---|---|---|---|
+| run 15, before | 61 | 32.5 ms | 81 ms |
+| run 17, a shared read and one a frame | 91 | 16.5 ms | 61 ms |
+
+What is left is the game's verdict itself, which `makeProposalData`
+cannot split (run 17's slowest, 61 ms, was 60 ms of it), and a whole read
+when the shared one is 5 seconds old (32 ms of a 46 ms verdict).
+
 ## Trucks (2026-10-30)
 
 Truck lines for cargo are built, alike in every game, but no cargo has
