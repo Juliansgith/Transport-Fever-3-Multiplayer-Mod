@@ -1039,7 +1039,19 @@ local function nodesOfNetwork(network, index)
 			local near = nodesNear(network, p, tol)
 			if near ~= nil then return near end
 		end
-		if all == nil then all = readNodes(network, index) end
+		if all == nil then
+			-- An AI player's verdicts share one whole read a while
+			-- (tpf3mp/ai.lua, `nodeCache`): the octree misses a node often
+			-- enough that a verdict read the whole network nearly every time,
+			-- holding the driving game's frame for 26 to 71 ms (2026-10-30,
+			-- two games). A node gone since only makes a verdict refuse.
+			local cache = dry and acting and acting.nodeCache
+			all = cache and cache[network] or nil
+			if all == nil then
+				all = readNodes(network, index)
+				if cache then cache[network] = all end
+			end
+		end
 		return all
 	end
 end

@@ -8193,6 +8193,39 @@ fn a_road_preview_finds_its_nodes_near_them() {
     assert_eq!(made[2], made[0]);
 }
 
+/// An AI player's verdicts share one whole read of a network
+/// (`nodeCache`): where the octree misses a node, the first reads the
+/// network whole and the next take it from the cache (2026-10-30: a whole
+/// read held the driving game's frame for 26 to 71 ms, nearly every
+/// verdict). Without the cache, every one reads it.
+#[test]
+fn ai_verdicts_share_one_whole_read() {
+    for cached in [true, false] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.globals().set("OCTREE", "empty").unwrap();
+        lua.load(FAKE_OCTREE).exec().unwrap();
+        let (made, first, second): (bool, u32, u32) = lua
+            .load(format!(
+                "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')
+                 local cache = {cached} and {{}} or nil
+                 local one = apply.proposalOf({ROAD}, {{ nodeCache = cache }})
+                 local first = WHOLE
+                 local two = apply.proposalOf({ROAD}, {{ nodeCache = cache }})
+                 return one ~= nil and two ~= nil, first, WHOLE - first"
+            ))
+            .eval()
+            .unwrap();
+        assert!(made, "both proposals made");
+        assert!(first > 0, "the first reads the network whole");
+        assert_eq!(
+            second == 0,
+            cached,
+            "cached {cached}: {second} whole reads the second time"
+        );
+    }
+}
+
 /// An applied road reads its nodes from the whole network, as it always
 /// did, whatever the octree holds: one the octree missed could make one
 /// game choose another node than another game.
