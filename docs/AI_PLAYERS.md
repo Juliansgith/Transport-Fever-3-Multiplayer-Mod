@@ -180,7 +180,19 @@ faster AI.
      of its chains for an hour. It takes chains in turn with single lines,
      with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their
-     sizes, distance and how they are reached already);
+     sizes, distance and how they are reached already). *Built so far
+     (2026-10-31):* since bridge version 36 the towns answer says, for
+     each town, how many stops other companies' passenger lines have
+     within 600 m of one of its districts' centres, and the towns their
+     lines join it to. It weighs a town by its buildings for each such
+     stop and takes the best first, and never joins by train two towns
+     another company's line joins already: in the long run of 2026-10-31
+     the fixture's player's buses and trains took the riders of the AI's
+     lines in the same towns, and the AI's train between two towns the
+     player's line joined carried no one. A town within 1.2 km of one of
+     its own passenger stations comes before any other, its bus line's
+     first stop by that station: riders off its trains walk to the bus,
+     as the fixture's player runs buses to a station;
    - with a transport mode chosen by distance, volume, terrain and water:
      streets for short and small, track for long and heavy, water where
      both ends touch the same water, air for long distance between large
@@ -213,6 +225,18 @@ faster AI.
    under 25, 30 or 35 % full (a cargo line under half that) or loses money;
    a line down to its last vehicle that lost money over its year, rail
    lines included, is closed: its last vehicle sold and the line deleted.
+   A line whose oldest vehicle is a twenty-fifth through its life (about
+   seven of the game's months for a bus or a train's wagons, five for a
+   truck) and that has earned nothing at all carries no one: its vehicles
+   are sold and it is closed without waiting for it to settle (since
+   bridge version 36 the company answer says what each line earned,
+   `calculateBalance` of the journal's income; investigation, "What its
+   lines earn").
+   A new line runs one vehicle; more come as it runs full: three of the
+   AI's buses in one town took what one took, and lost money where the
+   one earned. A town line's bus is the model worth most for the eight
+   riders such a line carries at a time, seats beyond them counting for
+   nothing; one added to a line running full, for its seats.
    A settled line is not topped up to its first count again. A rail line
    with a signalled passing loop gets a second train (\"Track and trains\").
    What it judges by, the company answer says since bridge version 35, as
@@ -228,15 +252,26 @@ faster AI.
    back each of the game's months as an annuity (`tpf3mp/companies.lua`,
    \"loans\"); the company answer lists each loan it owes, what is left and
    its monthly payment, and the game's month. It keeps four months of its
-   loans' payments in hand beyond its difficulty's reserve before it spends.
-   It borrows to start out (a founded company has no money: the largest
-   offer at Hard, the smallest otherwise), and after only when what its
+   loans' payments in hand beyond its difficulty's reserve before it spends,
+   and four months of what its lines lose where they lose money together.
+   It borrows to start out (a founded company has no money): at Hard the
+   largest of the offers that cost little a month for what they lend
+   (within one and a half times the cheapest a million), otherwise the one
+   that takes least a month; never a loan paid back within the year, whose
+   payment no new line carries (5 million over 12 months took 425,750 a
+   month in the long run of 2026-10-31). After, only when what its
    lines earn a month beyond what its loans take covers the new loan's
    payment 3, 2 or 1.25 times over (Easy, Normal, Hard); never to pay its
    loans. While its settled lines earn less than its loans take it starts
    nothing new, its upkeep selling what loses. A kind of line (buses,
    trucks, trains) whose settled lines lose money together is passed over
    while the other pays, and no railway is begun while its railways lose.
+   It opens no new line while one, two or three of its lines (Easy,
+   Normal, Hard) are too young for their money to say anything (no
+   vehicle a twentieth through its life), a production chain's later legs
+   excepted: the long run's Hard AI opened nine lines in its first sixteen
+   minutes, before any had earned, all of them losing, and both AIs ran
+   below nothing.
    Flush, its lines covering its loans, it pays back the dearest loan whose
    remainder its cash covers beyond its cushion by 3 million. In the long
    run of 2026-10-30 it had borrowed whenever it ran short: 98 million at

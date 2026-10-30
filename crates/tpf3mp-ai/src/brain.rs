@@ -112,6 +112,13 @@ pub const CARGO_NEAREST: f64 = 800.0;
 pub const NEED_LEAST: u32 = 10;
 /// The least money a production chain is begun with.
 pub const CHAIN_MONEY: i64 = 1_500_000;
+/// The riders a new town line's bus is chosen for: about what the AI's
+/// three-stop town lines carried at a time (6 of 36 seats, 5 of 12; the
+/// long run of 2026-10-31).
+pub const TOWN_RIDERS: u32 = 8;
+/// How near a town's centre a passenger station of its own must stand for
+/// a bus line in that town to run to it, in metres.
+pub const FEEDER_REACH: f64 = 1_200.0;
 /// The towns a passenger train joins: each of at least this many buildings,
 /// this far apart, in metres.
 pub const PASSENGER_TOWN: u32 = 150;
@@ -413,6 +420,9 @@ pub struct Brain {
     /// Whether its next project carries cargo (it takes turns), and
     /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
+    /// How many young lines it last said it waits on: said once, not at
+    /// every look.
+    young_said: usize,
     carries_cargo: bool,
     /// Towns given up on, until when.
     given_up: Vec<(u32, Instant)>,
@@ -461,6 +471,7 @@ impl Brain {
             leg_now: None,
             no_rail: Vec::new(),
             next_cargo: false,
+            young_said: 0,
             carries_cargo: CARRIES_CARGO,
             given_up: Vec::new(),
             said: Vec::new(),
@@ -713,6 +724,17 @@ impl Brain {
             .filter(|v| v.line == Some(line.id))
             .peekable();
         on.peek().is_some() && on.all(|v| v.worn >= upkeep::SETTLED)
+    }
+
+    /// A line too young for its money to say anything yet: it runs, and none
+    /// of its vehicles is through [`upkeep::SETTLED`] of its life.
+    fn young(&self, company: &AiCompany, line: &AiLine) -> bool {
+        let mut on = company
+            .vehicles
+            .iter()
+            .filter(|v| v.line == Some(line.id))
+            .peekable();
+        on.peek().is_some() && on.all(|v| v.worn < upkeep::SETTLED)
     }
 
     /// What kind of line it is to the brain: its rail lines and cargo lines
@@ -1239,6 +1261,24 @@ impl Brain {
             self.next_leg(now);
             return None;
         }
+        // Nothing new while as many of its lines as its difficulty waits on
+        // are too young for their money to say what pays.
+        let young = company
+            .lines
+            .iter()
+            .filter(|l| self.young(company, l))
+            .count();
+        if young >= self.profile.young_most {
+            if young != self.young_said {
+                self.young_said = young;
+                self.say(format!(
+                    "waits to see what its {young} new line(s) earn before another"
+                ));
+            }
+            self.rest(now);
+            return None;
+        }
+        self.young_said = 0;
         // Then a new line: a town's buses and a cargo's trucks in turn, a
         // kind whose settled lines lose money passed over while the other
         // pays, as a player builds more of what earns.
@@ -1518,6 +1558,12 @@ impl Brain {
                 if !(PASSENGER_FROM..=PASSENGER_MOST).contains(&d) || taken(a, b) {
                     continue;
                 }
+                // Another company's line joins them already: its riders
+                // are taken (the AI's train beside the fixture player's
+                // between the same towns carried no one, 2026-10-31).
+                if a.linked.contains(&b.id) || b.linked.contains(&a.id) {
+                    continue;
+                }
                 let people = f64::from(a.buildings.min(b.buildings));
                 pairs.push((people / (1.0 + d / 1_000.0), (*a).clone(), (*b).clone()));
             }
@@ -1563,21 +1609,70 @@ impl Brain {
                     .collect()
             })
             .unwrap_or_default();
-        let candidates: Vec<AiTown> = towns
+        // Its passenger train stations: a town by one wants buses to it, as
+        // a player runs buses to a station (the fixture's player's station
+        // halts); a station at a town's edge reaches few people on foot.
+        let stations: Vec<P> = self
+            .company
+            .as_ref()
+            .map(|c| {
+                c.lines
+                    .iter()
+                    .filter(|l| {
+                        self.memo.rail_lines.contains(&l.id.0)
+                            && self
+                                .memo
+                                .cargo_lines
+                                .iter()
+                                .any(|(id, cargo)| *id == l.id.0 && cargo == train::PASSENGERS)
+                    })
+                    .flat_map(|l| l.stops.iter())
+                    .filter_map(|s| c.stations.iter().find(|st| st.id == *s))
+                    .map(|s| P::of(s.pos))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let station_by = |t: &AiTown| {
+            stations
+                .iter()
+                .copied()
+                .filter(|s| s.flat_distance(P::of(t.pos)) <= FEEDER_REACH)
+                .min_by(|a, b| {
+                    a.flat_distance(P::of(t.pos))
+                        .total_cmp(&b.flat_distance(P::of(t.pos)))
+                })
+        };
+        let mut candidates: Vec<AiTown> = towns
             .into_iter()
             .filter(|t| !self.memo.served.contains(&t.id.0))
             .filter(|t| !self.given_up.iter().any(|(id, _)| *id == t.id.0))
             // A town another of its lines already stops in is served.
             .filter(|t| !served.iter().any(|s| s.flat_distance(P::of(t.pos)) < 600.0))
             .filter(|t| t.centres.len() >= 2)
-            .take(self.profile.towns_weighed)
             .collect();
+        // A town by its own station first; then the most people for each
+        // stop other companies already run there: a town they serve leaves
+        // a new line few riders (the fixture's player's lines took the AI's
+        // in the same towns, 2026-10-31).
+        let share = |t: &AiTown| f64::from(t.buildings) / (1.0 + f64::from(t.rivals));
+        candidates.sort_by(|a, b| {
+            station_by(b)
+                .is_some()
+                .cmp(&station_by(a).is_some())
+                .then(share(b).total_cmp(&share(a)))
+        });
+        candidates.truncate(self.profile.towns_weighed);
         if candidates.is_empty() {
             self.say("found no town to serve".into());
             self.rest(now);
             return;
         }
-        let among = self.profile.pick_among.min(candidates.len()).max(1);
+        // A town by its own station is taken first, whatever its luck.
+        let among = if station_by(&candidates[0]).is_some() {
+            1
+        } else {
+            self.profile.pick_among.min(candidates.len()).max(1)
+        };
         #[allow(clippy::cast_possible_truncation)]
         let pick = (self.random() % among as u64) as usize;
         let town = candidates[pick].clone();
@@ -1587,12 +1682,21 @@ impl Brain {
             self.rest(now);
             return;
         }
-        let centres: Vec<Pos> = town
-            .centres
-            .iter()
-            .copied()
+        // By its station, the station's street first: riders off its trains
+        // walk to the bus there.
+        let station = station_by(&town);
+        let centres: Vec<Pos> = station
+            .map(P::pos)
+            .into_iter()
+            .chain(town.centres.iter().copied())
             .take(self.profile.stops_most)
             .collect();
+        if station.is_some() {
+            self.say(format!(
+                "plans buses to its station in {}",
+                town.name.as_str()
+            ));
+        }
         let serves = Serves::Town(town);
         self.say(format!("plans {}", serves.describe()));
         self.start(serves, centres);
@@ -1659,6 +1763,11 @@ impl Brain {
             return;
         }
         while site < project.sites.len() {
+            // A centre with no street to stop at has no stop.
+            if project.sites[site].is_empty() {
+                site += 1;
+                continue;
+            }
             // A stop of its own by this centre that no line stops at, not
             // too near the line's others: taken up, not built again.
             let centre = project.site_at.get(site).map(|c| P::of(*c));
@@ -2135,7 +2244,21 @@ impl Brain {
         if let Stage::Upkeep(stage) = self.stage.clone() {
             return self.upkeep_models(stage, models, now);
         }
-        match self.pick_model(models) {
+        // A new town line's bus is chosen for the riders it is likely to
+        // have; one for a line running full, for its seats.
+        let topped = self.topping.as_ref().and_then(|(id, _)| {
+            self.company
+                .as_ref()
+                .and_then(|c| c.lines.iter().find(|l| l.id == *id))
+        });
+        let cargo = topped
+            .is_some_and(|l| self.memo.cargo_lines.iter().any(|(id, _)| *id == l.id.0))
+            || self
+                .project
+                .as_ref()
+                .is_some_and(|p| p.serves.cargo().is_some());
+        let seats = (!cargo && !topped.is_some_and(|l| self.full(l))).then_some(TOWN_RIDERS);
+        match self.pick_model(models, seats) {
             Some(model) => {
                 self.model = Some(model);
                 self.buy(now)
@@ -2150,12 +2273,18 @@ impl Brain {
 
     /// The road vehicle it buys of `models`: seats and speed for the money,
     /// its running cost counted, at Normal and Hard; the cheapest at Easy.
-    fn pick_model(&self, models: Vec<AiModel>) -> Option<AiModel> {
+    /// Seats beyond `seats`, the riders it is likely to carry, count for
+    /// nothing: a bus is worth the seats it fills. The AI's largest bus,
+    /// three times the price of the fixture player's, ran its town lines a
+    /// sixth full and lost money where the player's smaller ones earned
+    /// (2026-10-31).
+    pub(super) fn pick_model(&self, models: Vec<AiModel>, seats: Option<u32>) -> Option<AiModel> {
         let usable: Vec<AiModel> = models.into_iter().filter(|m| m.capacity > 0).collect();
         if self.profile.best_models {
             usable.into_iter().max_by(|a, b| {
                 let worth = |m: &AiModel| {
-                    f64::from(m.capacity) * f64::from(m.speed.max(1))
+                    let filled = seats.map_or(m.capacity, |s| m.capacity.min(s));
+                    f64::from(filled) * f64::from(m.speed.max(1))
                         / (m.price.max(1) as f64 + 5.0 * m.running.max(0) as f64)
                 };
                 worth(a).total_cmp(&worth(b))

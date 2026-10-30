@@ -28,6 +28,15 @@ pub const SETTLED: u16 = 5;
 /// full: a trainload, several truckloads. A cargo line runs full one way
 /// and empty back, so its load, over both, says little of how busy it is.
 pub const CARGO_BACKLOG: u32 = 60;
+/// How far through its life a line's oldest vehicle must be, in percent,
+/// for a line that has earned nothing at all to be given up: about seven of
+/// the game's months for a bus or a train's wagons of 15 years, five for a
+/// truck of 10, time for a chain's later leg to bring what its first
+/// carries on. The long run's passenger train, its stations at the towns'
+/// edges reaching four and five people, earned nothing in eleven months and
+/// cost a million; its meat train, from a farm no one supplied, the same
+/// (2026-10-31).
+pub const DEAD_AFTER: u16 = 4;
 
 /// Where its care of a line stands.
 #[derive(Debug, Clone)]
@@ -104,6 +113,8 @@ enum Task {
         vehicle: VehicleId,
         line: LineId,
         name: String,
+        /// It earned nothing at all, rather than less than it cost.
+        dead: bool,
     },
     Train {
         line: AiLine,
@@ -134,7 +145,7 @@ impl Brain {
 
     /// A line running full: a bus line its buses this full with more
     /// waiting; a cargo line with [`CARGO_BACKLOG`] waiting.
-    fn full(&self, line: &AiLine) -> bool {
+    pub(super) fn full(&self, line: &AiLine) -> bool {
         if self.cargo_of(line).is_some() {
             line.waiting >= CARGO_BACKLOG
         } else {
@@ -235,6 +246,31 @@ impl Brain {
                 engine: first.model.clone(),
             });
         }
+        // Carrying no one: run for a while and earned nothing at all. Its
+        // vehicles sold, then the line closed, without waiting for it to
+        // settle: nothing it might earn later is worth what it costs.
+        for line in company.lines.iter() {
+            let vehicles = on(line);
+            let Some(oldest) = vehicles.iter().max_by_key(|v| v.worn) else {
+                continue;
+            };
+            if oldest.worn < DEAD_AFTER || line.income.is_none_or(|i| i > 0) {
+                continue;
+            }
+            if vehicles.len() >= 2 {
+                return Some(Task::Sell {
+                    vehicle: oldest.id,
+                    line: line.name.as_str().to_owned(),
+                    why: "carrying no one",
+                });
+            }
+            return Some(Task::Close {
+                vehicle: oldest.id,
+                line: line.id,
+                name: line.name.as_str().to_owned(),
+                dead: true,
+            });
+        }
         // Settled, near empty or losing money: its most worn sold; a
         // line down to its last that lost money over its year closed, as a
         // player gives up a line that does not pay: its rail lines too, a
@@ -266,6 +302,7 @@ impl Brain {
                     vehicle: v.id,
                     line: line.id,
                     name: line.name.as_str().to_owned(),
+                    dead: false,
                 });
             }
         }
@@ -329,13 +366,20 @@ impl Brain {
                 vehicle,
                 line,
                 name,
+                dead,
             } => {
                 let lost = company
                     .lines
                     .iter()
                     .find(|l| l.id == line)
                     .map_or(0, |l| -l.profit);
-                self.say(format!("closes {name}, which lost {lost} over its year"));
+                if dead {
+                    self.say(format!(
+                        "closes {name}, which earned nothing and cost {lost}"
+                    ));
+                } else {
+                    self.say(format!("closes {name}, which lost {lost} over its year"));
+                }
                 let action = Action::SellVehicle {
                     vehicles: BoundedVec::new(vec![vehicle]).ok()?,
                 };
@@ -432,7 +476,14 @@ impl Brain {
             } => return self.buy_second_train(line, &depot, &engine, &wagon, models, now),
             _ => return None,
         };
-        let Some(model) = self.pick_model(models) else {
+        // For the riders its line has: a full line's seats, else a new
+        // town line's few.
+        let seats = self.company.as_ref().and_then(|c| {
+            let line = c.vehicles.iter().find(|v| v.id == vehicle)?.line?;
+            let line = c.lines.iter().find(|l| l.id == line)?;
+            (self.cargo_of(line).is_none() && !self.full(line)).then_some(super::TOWN_RIDERS)
+        });
+        let Some(model) = self.pick_model(models, seats) else {
             self.say("found no vehicle to replace it with".into());
             self.rest(now);
             return None;
