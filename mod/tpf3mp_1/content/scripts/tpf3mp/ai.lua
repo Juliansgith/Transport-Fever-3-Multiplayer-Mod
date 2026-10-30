@@ -458,7 +458,9 @@ end
 -- window reads the same, gui/main/cargo_react_util.tl). 94 on the big
 -- fixture in 1 ms (2026-10-29).
 ai.MAX_INDUSTRIES = 160
-function ai.industries()
+function ai.industries(registry)
+	local reg = type(registry) == "function" and registry() or registry
+	local regmod = module("registry")
 	local stock = api.engine.util.stock
 	local out = {}
 	for _, e in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.INDUSTRY) or {}) do
@@ -482,8 +484,18 @@ function ai.industries()
 					}
 				end
 			end
+			-- Its own station, where a line loads and unloads its cargo.
+			local station, terminals = nil, 0
+			local first = c.stations and c.stations[1]
+			if first and reg then
+				local okg, group = pcall(api.engine.system.stationGroupSystem.getStationGroup, first)
+				station = okg and regmod.id(reg, "groups", group) or nil
+				local s = component(first, "STATION")
+				terminals = math.min(#((s and s.terminals) or {}), 255)
+			end
 			local ok, name = pcall(api.engine.util.getEntityName, e)
-			out[#out + 1] = { name = text(ok and name or "", 48), pos = pos(origin(c)), inputs = inputs, outputs = outputs }
+			out[#out + 1] = { name = text(ok and name or "", 48), pos = pos(origin(c)), station = station,
+				terminals = terminals, inputs = inputs, outputs = outputs }
 		end)
 	end
 	return { Industries = out }
@@ -543,7 +555,7 @@ function ai.answer(ask, roster, registry)
 	if q == "Towns" then return ai.towns(registry) end
 	if type(q) == "table" and q.Streets then return ai.streets(q.Streets.at, q.Streets.radius) end
 	if type(q) == "table" and q.Models then return ai.models(q.Models.mode, q.Models.cargo) end
-	if q == "Industries" then return ai.industries() end
+	if q == "Industries" then return ai.industries(registry) end
 	if type(q) == "table" and q.Route then return ai.route(q.Route.from, q.Route.to) end
 	if type(q) == "table" and q.Verdict then return ai.verdict(ask.seat, q.Verdict, roster) end
 	error("a question of no kind", 0)

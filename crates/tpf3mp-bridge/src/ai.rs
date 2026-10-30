@@ -174,6 +174,12 @@ pub struct AiIndustry {
     pub name: Text<48>,
     /// Its construction's origin.
     pub pos: Pos,
+    /// Its own station, by the room's id for its group, and the station's
+    /// terminals: a line loads its cargo there and unloads what it takes
+    /// there (build 40425: players' cargo lines stop at an industry's own
+    /// station; a street stop only unloads).
+    pub station: Option<StationId>,
+    pub terminals: u8,
     /// The cargo it takes in, by file (`::/cargos/grain/grain.cargo`).
     pub inputs: BoundedVec<ResName, MAX_AI_CARGOS>,
     /// What it makes.

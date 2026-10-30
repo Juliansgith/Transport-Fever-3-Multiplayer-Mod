@@ -56,8 +56,6 @@ struct World {
     industries: Vec<AiIndustry>,
     roads_join: bool,
     line_modes: Vec<(LineId, u16)>,
-    /// The truck stations built: a street stop only unloads cargo.
-    truck_stations: Vec<StationId>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -110,7 +108,6 @@ impl World {
             industries: Vec::new(),
             roads_join: true,
             line_modes: Vec::new(),
-            truck_stations: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -281,19 +278,6 @@ impl World {
                 }
                 self.money -= 10_000;
             }
-            Action::BuildConstruction(build)
-                if build.file.as_str().contains("modular_terminal") =>
-            {
-                let id = self.id();
-                self.truck_stations.push(StationId(id));
-                self.stations.push(AiStation {
-                    id: StationId(id),
-                    pos: build.transform.origin,
-                    terminals: 1,
-                    waiting: 0,
-                });
-                self.money -= 60_000;
-            }
             Action::BuildConstruction(_) if self.drop_depots > 0 => self.drop_depots -= 1,
             Action::BuildConstruction(build) => {
                 let [cos, sin, ..] = build.transform.basis;
@@ -332,11 +316,22 @@ impl World {
                     .map(|s| s.rules.load.iter().copied().collect())
                     .collect();
                 if create.line.modes[0] == 4 {
+                    // At the industries' own stations, of their terminals.
+                    let stations: Vec<StationId> =
+                        self.industries.iter().filter_map(|i| i.station).collect();
                     assert!(
-                        self.truck_stations.contains(&create.line.stops[0].group),
-                        "a truck line loads at a truck station"
+                        create
+                            .line
+                            .stops
+                            .iter()
+                            .all(|s| stations.contains(&s.group)),
+                        "a truck line stops at industries' own stations"
                     );
-                    assert!(create.line.stops[0].alternatives.is_empty());
+                    assert_eq!(
+                        create.line.stops[0].alternatives.len(),
+                        1,
+                        "its other terminal"
+                    );
                     assert_eq!(rules[0].get(7), Some(&true), "{rules:?}");
                     assert!(rules[1].iter().all(|l| !l), "{rules:?}");
                 } else {
@@ -418,9 +413,14 @@ const GRAIN: &str = "::/cargos/grain/grain.cargo";
 /// An industry at (x, y) metres, taking `inputs` and making `outputs`
 /// (cargo, made over the last year).
 fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]) -> AiIndustry {
+    // Its own station's id, from its place.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let station = StationId(10_000 + (x.abs() + y.abs()) as u32);
     AiIndustry {
         name: Text::new(name).unwrap(),
         pos: pos(x, y),
+        station: Some(station),
+        terminals: 2,
         inputs: BoundedVec::new(inputs.iter().map(|c| Text::new(*c).unwrap()).collect()).unwrap(),
         outputs: BoundedVec::new(
             outputs
@@ -846,6 +846,11 @@ fn it_carries_cargo_by_truck_between_industries_joined_by_road() {
     );
     let line = world.lines.iter().find(|l| l.id == trucks[0]).unwrap();
     assert_eq!(line.stops.len(), 2, "the farm and the livestock farm");
+    assert_eq!(
+        line.stops.iter().copied().collect::<Vec<_>>(),
+        [StationId(10_500), StationId(10_800)],
+        "their own stations"
+    );
     assert_eq!(line.name.as_str(), "Witney Farm grain");
     let on_it: Vec<&AiVehicle> = world
         .vehicles

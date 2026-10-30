@@ -46,7 +46,8 @@ const GAME: &str = r#"
         [CT.CONSTRUCTION] = {
             [300] = { fileName = "stations/street/small_stops/small_new_twosided.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 100.5,200.25,10,1 }, stations = { 301 }, depots = {} },
-            [1001] = { fileName = "::/industries/farm/farm.con", transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6484,-6720,20,1 } },
+            [1001] = { fileName = "::/industries/farm/farm.con", transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6484,-6720,20,1 },
+                stations = { 1003 } },
             [1011] = { fileName = "::/industries/livestock_farm/livestock_farm.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 4964,-648,30,1 } },
             [400] = { fileName = "::/depots/road/road_depot/road_depot.con",
@@ -61,7 +62,8 @@ const GAME: &str = r#"
         [CT.VEHICLE_DEPOT] = { [401] = {}, [431] = {} },
         [CT.INDUSTRY] = { [1000] = { construction = 1001, stockList = 1002 },
                           [1010] = { construction = 1011, stockList = 1012 } },
-        [CT.STATION] = { [301] = { terminals = { {}, {} } }, [321] = { terminals = { {}, {} } } },
+        [CT.STATION] = { [301] = { terminals = { {}, {} } }, [321] = { terminals = { {}, {} } },
+            [1003] = { terminals = { {}, {} } } },
         -- A street stop: an object on its edge, in no construction.
         [CT.EDGE_OBJECT] = { [321] = { param = 0.5, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6267.5,-5560,8,1 } } },
         [CT.BASE_NODE] = { [402] = { position = { x = 500, y = 580, z = 12 } },
@@ -158,6 +160,7 @@ const GAME: &str = r#"
                 },
                 streetSystem = { getNodeSegments = function(n) return SEGMENTS[n] or {} end },
                 -- The game's index of what construction holds a part.
+                stationGroupSystem = { getStationGroup = function(s) return s == 1003 and 1004 or -1 end },
                 streetConnectorSystem = {
                     getConstructionEntityForDepot = function(d) return ({ [401] = 400, [431] = 430 })[d] or -1 end,
                     getConstructionEntityForStation = function(s) return s == 301 and 300 or -1 end,
@@ -194,7 +197,7 @@ const GAME: &str = r#"
             { type = "Medium", amount = 1000000.0, duration = 3.1536e10, percentage = 0.045 } } } },
         loans = { { company = 1, id = 1 }, { company = 2, id = 2 } } }
     REGISTRY = {
-        groups = { bound = { { 4, 310 }, { 5, 320 } } },
+        groups = { bound = { { 4, 310 }, { 5, 320 }, { 9, 1004 } } },
         lines = { bound = { { 2, 500 } } },
         vehicles = { bound = { { 6, 600 } } },
         towns = { bound = { { 1, 700 }, { 2, 701 } } },
@@ -449,6 +452,12 @@ fn industries_routes_and_trucks_by_cargo_read_as_the_ai_reads_them() {
         "::/cargos/grain/grain.cargo"
     );
     assert_eq!(farm.outputs[0].index, 1, "the game's number for grain");
+    assert_eq!(
+        (farm.station.map(|s| s.0), farm.terminals),
+        (Some(9), 2),
+        "its own station, by the room's id for its group"
+    );
+    assert_eq!(industries[1].station, None, "no station of its own");
     assert_eq!(
         (farm.outputs[0].per_year, farm.outputs[0].most),
         (104, 107),
