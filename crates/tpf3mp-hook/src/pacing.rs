@@ -185,6 +185,9 @@ type StepFn = unsafe extern "C-unwind" fn(usize, i64, usize);
 ///
 /// Called by the game in place of `CGame::Step`, with its arguments.
 pub unsafe extern "C-unwind" fn game_step(cgame: usize, dt: i64, function: usize) {
+    // The UI's frame, which may run while the game's own pause menu stops
+    // its simulation's step: the link kept alive (`crate::install::gui_frame`).
+    let _ = std::panic::catch_unwind(crate::install::gui_frame);
     let step = STEP.load(std::sync::atomic::Ordering::Acquire);
     let dt = std::panic::catch_unwind(|| crate::motion::clock_dt(dt)).unwrap_or(dt);
     // SAFETY: STEP holds CGame::Step's address, checked at install against

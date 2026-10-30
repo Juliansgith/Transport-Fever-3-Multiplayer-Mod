@@ -1401,6 +1401,9 @@ unsafe extern "C-unwind" fn native_replayed(l: State) -> c_int {
 
 /// `poll()`.
 unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
+    // The GUI's frame: the link kept alive while the game's own pause menu
+    // stops its step (`crate::install::gui_frame`).
+    let _ = std::panic::catch_unwind(crate::install::gui_frame);
     let Some(api) = API.get() else {
         return 0;
     };
