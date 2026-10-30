@@ -3514,6 +3514,10 @@ local function waypointFor(w)
 	return wp
 end
 
+-- How many transport modes a line lists, one entry each, from 0
+-- (`TransportMode`: TRAIN 7, ELECTRIC_TRAIN 8, ... up to 15).
+local LINE_MODES = 16
+
 -- How many cargo types the game has: a stop's per-cargo lists hold one entry
 -- for each, by number (`cargoTypeRep.getAll`, ids from 0).
 local function cargoCount()
@@ -3578,8 +3582,18 @@ local function lineComponent(data, ctx)
 		stops[i] = stop
 	end
 	line.stops = stops
+	-- The game copies the list it is handed in order, its keys aside (build
+	-- 40425, read in the console: { [7] = true } became mode 0, and a train
+	-- line refused its trains): mode m is the list's entry m + 1, and every
+	-- mode is listed.
 	local modes = {}
-	for _, m in ipairs(data.modes) do modes[m] = true end
+	for k = 1, LINE_MODES do modes[k] = false end
+	for _, m in ipairs(data.modes) do
+		if type(m) ~= "number" or m < 0 or m >= LINE_MODES or m % 1 ~= 0 then
+			error("a line's transport mode " .. tostring(m), 0)
+		end
+		modes[m + 1] = true
+	end
 	line.vehicleInfo.transportModes = modes
 	line.customFilters = data.custom_filters == true
 	line.reservationPriority = data.reservation_priority

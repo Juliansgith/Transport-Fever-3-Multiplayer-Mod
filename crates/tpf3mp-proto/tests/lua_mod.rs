@@ -9290,16 +9290,20 @@ fn a_line_travels_by_its_stations_ids_and_is_made_again_the_same() {
     let made: String = lua
         .load(
             "local c = SENT[1].createLine local s = c.line.stops[2] \
+             local on = {} for k, v in ipairs(c.line.vehicleInfo.transportModes) do \
+                 if v == true then on[#on + 1] = k - 1 end end \
              return table.concat({ c.name, c.color.x, c.player, c.line.stops[1].stationGroup, \
                  s.stationGroup, s.loadMode, s.alternativeTerminals[1].terminal, \
                  s.stopConfig.maxLoad[2], tostring(s.stopConfig.destroyForConfigChange), \
-                 tostring(c.line.vehicleInfo.transportModes[3]), \
-                 tostring(c.line.vehicleInfo.transportModes[5]), \
+                 table.concat(on, ','), #c.line.vehicleInfo.transportModes, \
                  HOOK.applied[1].entity }, '|')",
         )
         .eval()
         .unwrap();
-    assert_eq!(made, "Line 1|0.8|25|90|91|2|2|0.25|true|true|nil|600");
+    // Its modes as the game reads a line's: a list it copies in order, mode
+    // m its entry m + 1, every mode listed (build 40425: { [7] = true } made
+    // a train line of mode 0, which refused its train).
+    assert_eq!(made, "Line 1|0.8|25|90|91|2|2|0.25|true|0,3|16|600");
     // The line system lists it only from the next update; the registry
     // names it at once, and the next action finds it by that name.
     let named: String = lua

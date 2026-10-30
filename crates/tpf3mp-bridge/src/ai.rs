@@ -29,6 +29,22 @@ pub const MAX_AI_INDUSTRIES: usize = 160;
 pub const MAX_AI_CARGOS: usize = 8;
 /// Most cargo needs an [`AiTown`] lists: the least supplied.
 pub const MAX_AI_NEEDS: usize = 4;
+/// Most cells an [`AiLand`] holds: a grid of 24 by 24.
+pub const MAX_AI_LAND: usize = 576;
+/// Most track ends an [`AiStation`] lists.
+pub const MAX_AI_ENDS: usize = 8;
+
+/// What stands on a cell of an [`AiLand`], a bit each.
+pub mod land {
+    /// Water.
+    pub const WATER: u8 = 1;
+    /// A construction: a town building, an industry, a station, a depot.
+    pub const BUILT: u8 = 2;
+    /// A street.
+    pub const STREET: u8 = 4;
+    /// A track.
+    pub const TRACK: u8 = 8;
+}
 
 /// One question about the world, for an AI seat the asking game drives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +75,10 @@ pub enum AiQuestion {
     /// Whether a truck can drive from the street network by `from` to the
     /// street network by `to`, by the game's pathfinder ([`AiRoute`]).
     Route { from: Pos, to: Pos },
+    /// The land on a grid of `cells` by `cells` cells of `step` metres, the
+    /// first cell's centre at `at`, in rows of rising y, each of rising x
+    /// ([`AiLand`]): where a track can go.
+    Land { at: Pos, cells: u8, step: u16 },
     /// Whether this action (an intent's payload) would be built as the
     /// seat's company would build it, and what it would cost: the game's
     /// own verdict, nothing built ([`AiVerdict`]).
@@ -75,6 +95,7 @@ pub enum AiAnswer {
     Verdict(AiVerdict),
     Industries(BoundedVec<AiIndustry, MAX_AI_INDUSTRIES>),
     Route(AiRoute),
+    Land(AiLand),
 }
 
 /// An AI seat's company as its game sees it.
@@ -111,6 +132,16 @@ pub struct AiStation {
     pub terminals: u16,
     /// Passengers and cargo waiting there now.
     pub waiting: u32,
+    /// A rail station's track ends: where its construction's tracks meet
+    /// the world, and whether nothing meets them yet.
+    pub ends: BoundedVec<AiEnd, MAX_AI_ENDS>,
+}
+
+/// A station track's end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiEnd {
+    pub pos: Pos,
+    pub open: bool,
 }
 
 /// A depot of the company's: a construction, named as a purchase names it.
@@ -201,6 +232,9 @@ pub struct AiIndustry {
     pub inputs: BoundedVec<ResName, MAX_AI_CARGOS>,
     /// What it makes.
     pub outputs: BoundedVec<AiOutput, MAX_AI_CARGOS>,
+    /// It stands on water, as fishing grounds do: no road or rail reaches
+    /// it.
+    pub water: bool,
 }
 
 /// One cargo an industry makes.
@@ -262,6 +296,25 @@ pub struct AiModel {
     pub speed: u32,
     /// How many years it lasts.
     pub lifespan: u32,
+    /// A land vehicle's engine: its power in kW and tractive effort in kN,
+    /// 0 for a vehicle with none (a wagon); its weight empty in tonnes; its
+    /// length in decimetres (`landVehicle`, `extent`).
+    pub power: u32,
+    pub tractive: u32,
+    pub weight: u32,
+    pub length: u32,
+    /// Its engine is electric (the game's engine type 2): it runs only
+    /// under catenary.
+    pub electric: bool,
+}
+
+/// The land on a grid, cell by cell in the order of
+/// [`AiQuestion::Land`]: each cell's height at its centre, in
+/// centimetres, and what stands on it ([`land`] bits).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiLand {
+    pub heights: BoundedVec<i32, MAX_AI_LAND>,
+    pub flags: BoundedVec<u8, MAX_AI_LAND>,
 }
 
 /// The game's verdict on a build.

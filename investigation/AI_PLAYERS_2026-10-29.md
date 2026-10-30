@@ -221,6 +221,43 @@ is closed reaches the game as keys: one opened a bridge tool in the
 second game of run 22; it was closed, nothing built, and the games did
 not diverge.
 
+## Trains (2026-10-30)
+
+An AI ran a train in run 26 (one game, one Hard AI, the big fixture): a
+China JF1 steam engine and six bulk wagons on a rail line it built from
+Chesterfield Cement Plant to Torpoint, about 3.3 km, loading the plant's
+cement full (60) at its own station and taking it to the town. Planning
+to the train running took about a minute: both stations at their first
+placement, the track in six pieces with none refused, the depot and its
+track, the line, the train.
+
+| run | what happened | changed |
+|---|---|---|
+| 23 | Its first rail plans were fish from fishing grounds: no dry station site by them. | Industries answer whether they stand on water; the AI carries nothing from one by road or rail. |
+| 24 | The line was built end to end, but the game refused the train the line. The line's modes read back as mode 0. | The mod hands the game every line's modes as a full list (below). |
+| 25 | The line had mode 7, train, and the game still refused the train: the AI had bought the strongest engine, the C 6/8, which is electric (engine type 2), on track without catenary. | Models say whether an engine is electric; the AI buys none for its lines. |
+| 26 | The train took the line and carried cement. | |
+
+Facts read for this, from the console and the game's own scripts:
+
+- A modular rail station travels as its modules' names alone (the
+  fixture's stations carry no module metadata): a one-track cargo
+  station is cargo platforms in slots 6400000 + 10 j, its track in
+  8402000 + 10 j and a building (`createTemplateFn`); its track ends lie
+  at (10, 40 s - 20) and (10, 40 e + 20) on its own axes, a rail depot's
+  join at (-2.2, -70). Its cargo catchment is its building's, 150 m.
+- A track laid onto a station's end resolves to the node there, as the
+  track tool's does.
+- The game copies a line's transport modes as a list, in order, its keys
+  aside: `{ [7] = true }` became mode 0. This was the mod's own bug, for
+  players' captured lines too: `apply.lua` now hands a list of all 16.
+  Bus and truck lines read back with their own modes all the same (how
+  the game came by them was not looked into); the rail line did not.
+- Train engines are `landVehicle` engines with a type: 1 steam, 2
+  electric, 3 combustion, 0 none; all trains list modes 7 and 8.
+- The land: 256 heights in 1 ms, 256 octree queries in 2 ms; the octree
+  finds an industry from anywhere over its ground.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

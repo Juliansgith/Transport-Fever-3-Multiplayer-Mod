@@ -561,3 +561,146 @@ fn verdicts_are_answered_alone_in_their_frame_and_spaced_apart() {
         .unwrap();
     assert_eq!(answered, "1 | 1,2 | 1,2 | 1,2,3 | 1,2,3,4");
 }
+
+/// The land on a grid: each cell's height in centimetres, water where the
+/// game says, and what the octree finds within the cell's half diagonal:
+/// a construction, a street (an edge with a street of its own) or a track.
+#[test]
+fn the_land_reads_cell_by_cell_as_a_route_needs_it() {
+    let lua = lua();
+    lua.load(
+        r#"
+        api.engine.terrain = {
+            getHeightAt = function(p) return 10 + p.x / 10 end,
+            isOnWater = function(p) return p.x < 0 end,
+        }
+        api.engine.util.octree.findEntitiesInCircle = function(p, r, ct)
+            assert(math.abs(r - 40 * 0.71) < 1e-6, "the half diagonal")
+            if ct == api.type.ComponentType.CONSTRUCTION then return p.y > 30 and { 1001 } or {} end
+            if ct == api.type.ComponentType.BASE_EDGE then
+                if p.x == 0 and p.y == 0 then return { 900 } end
+                if p.x == 40 and p.y == 0 then return { 410 } end
+            end
+            return {}
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Land(land) = answer(
+        &lua,
+        "{ Land = { at = { x = -40, y = 0, z = 0 }, cells = 3, step = 40 } }",
+    ) else {
+        panic!("not land")
+    };
+    let heights: Vec<i32> = land.heights.iter().copied().collect();
+    assert_eq!(
+        heights,
+        [600, 1_000, 1_400, 600, 1_000, 1_400, 600, 1_000, 1_400]
+    );
+    // Row 0: water, a street, a track; rows 1 and 2 built on (water still
+    // in the first column).
+    let flags: Vec<u8> = land.flags.iter().copied().collect();
+    assert_eq!(flags, [1, 4, 8, 3, 2, 2, 3, 2, 2]);
+    // Too large a grid is refused, not read.
+    let value: Result<Value, _> = lua
+        .load("return AI.answer({ id = 1, seat = SEAT, question = { Land = { at = { x = 0, y = 0, z = 0 }, cells = 40, step = 40 } } }, ROSTER, REGISTRY)")
+        .eval();
+    assert!(value.is_err());
+}
+
+/// A train engine's power, tractive effort, weight and length, as the
+/// game's vehicle store reads them (`landVehicle`, `extent`); a rail
+/// station's track ends, open where no track of the world's meets them.
+#[test]
+fn engines_and_rail_station_ends_read_as_the_ai_reads_them() {
+    let engines = lua();
+    engines.load(
+        r#"
+        api.type.enum.TransportMode.TRAIN = 7
+        local models = {}
+        api.res.modelRep.forEachModelWithMetadata = function(_, fn) fn("vehicle/train/engine.mdl") end
+        api.res.modelRep.find = function() return 20 end
+        api.res.modelRep.get = function() return { metadata = {
+            transportVehicle = { transportModes = { 7 }, compartments = { { loadConfigs = { { cargoEntry = { capacity = 0 } } } } } },
+            availability = { yearFrom = 1900, yearTo = 0 }, cost = { price = 1500000 },
+            maintenance = { runningCosts = 60000, lifespan = 30 },
+            landVehicle = { topSpeed = 25, weightEmpty = 81000, engines = { { power = 620, tractiveEffort = 130, type = 2 } } },
+            extent = { bbMin = { x = -9.2 }, bbMax = { x = 9.0 } },
+        } } end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Models(models) = answer(&engines, "{ Models = { mode = 'TRAIN' } }") else {
+        panic!("not models")
+    };
+    let engine = &models[0];
+    assert_eq!(
+        (engine.power, engine.tractive, engine.weight, engine.length),
+        (620, 130, 81, 182)
+    );
+    assert_eq!(engine.speed, 90);
+    assert!(engine.electric, "engine type 2");
+
+    // A rail station of the company's: its construction's own track edges
+    // 341 and 344 from its frozen node 342 out to 343 (open) and 345, where
+    // the world's track 999 meets it.
+    let lua = lua();
+    lua.load(
+        r#"
+        local CT = api.type.ComponentType
+        local get = api.engine.getComponent
+        local extra = {
+            [CT.CONSTRUCTION] = { [340] = { fileName = "::/stations/rail/modular_station/modular_station.con",
+                transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 2000,3000,5,1 }, stations = { 331 }, depots = {},
+                frozenNodes = { 342 }, frozenEdges = { 341, 344 } } },
+            [CT.STATION_GROUP] = { [330] = { stations = { 331 } } },
+            [CT.STATION] = { [331] = { terminals = { {} } } },
+            [CT.BASE_EDGE] = { [341] = { node0 = 342, node1 = 343 }, [344] = { node0 = 342, node1 = 345 } },
+            [CT.BASE_NODE] = { [342] = { position = { x = 2000, y = 3000, z = 5 } },
+                [343] = { position = { x = 2010, y = 2940, z = 5 } }, [345] = { position = { x = 2010, y = 3060, z = 5 } } },
+            [CT.PLAYER_OWNED] = { [330] = { player = 77 } },
+        }
+        api.engine.getComponent = function(e, ct)
+            if extra[ct] and extra[ct][e] then return extra[ct][e] end
+            return get(e, ct)
+        end
+        local list = api.engine.getEntitiesWithComponent
+        api.engine.getEntitiesWithComponent = function(ct)
+            local out = list(ct)
+            if ct == CT.STATION_GROUP then out[#out + 1] = 330 end
+            return out
+        end
+        local con = api.engine.system.streetConnectorSystem.getConstructionEntityForStation
+        api.engine.system.streetConnectorSystem.getConstructionEntityForStation = function(s)
+            if s == 331 then return 340 end
+            return con(s)
+        end
+        api.engine.system.streetSystem.getNodeTrackSegments = function(n)
+            return ({ [343] = { 341 }, [345] = { 344, 999 } })[n] or {}
+        end
+        REGISTRY.groups.bound[#REGISTRY.groups.bound + 1] = { 12, 330 }
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Company(company) = answer(&lua, "'Company'") else {
+        panic!("not a company")
+    };
+    let rail = company
+        .stations
+        .iter()
+        .find(|s| s.id.0 == 12)
+        .expect("the rail station");
+    let ends: Vec<(i32, bool)> = rail.ends.iter().map(|e| (e.pos.y, e.open)).collect();
+    assert_eq!(ends, [(2_940_000, true), (3_060_000, false)]);
+    // A street stop has none.
+    assert!(
+        company
+            .stations
+            .iter()
+            .filter(|s| s.id.0 != 12)
+            .all(|s| s.ends.is_empty())
+    );
+}

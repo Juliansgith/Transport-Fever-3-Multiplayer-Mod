@@ -219,7 +219,27 @@ faster AI.
   (`findDubinsPath`) within BUILDING.md's tolerances, and sent as
   `BuildTrack` actions a few hundred metres each. Signals: blocks on
   double track, passing loops on single track. Depots, then trains chosen
-  by what they carry for what they cost in that year.
+  by what they carry for what they cost in that year. *Built so far
+  (2026-10-30):* a cargo carried to a town that needs it by train where
+  the two lie at least 1.8 km apart and the AI has 6 million to spend:
+  trains come first then. It reads the land around both ends (the
+  driver's game answers a grid at a time: heights, water, built land,
+  streets and tracks), puts a one-track cargo station of three modules by
+  each, its building towards the industry or the district within its
+  catchment's 150 m, on free ground the land shows, its track's end
+  towards the other station; routes the line over a 40 m grid in 16
+  headings, turning 22.5° at most a step and never on two steps running,
+  off built land and other tracks, crossing streets and bridging water
+  at a cost; smooths it into edges of about 100 m whose headings run on
+  through every node, at heights the ground gives within 2.5 %, bridged
+  where it stands more than 5 m above the ground or over water; and lays
+  it in pieces of six edges, each put to the verdict, routing round any
+  the game refuses. Then a rail depot beyond the first station, joined to
+  its outer end, the line, and the strongest steam or combustion engine
+  it can afford with as many wagons as the platforms take (six at most):
+  no electric engine, as its track has no catenary. Still to come:
+  level crossings laid as the game's track tool lays them, passing loops
+  and signals, more trains a line, passengers by train.
 - **Water.** Harbours where both ends touch the same water (from the
   water grid), with their street links. Ships need no route built.
 - **Air.** Airfields and airports near large towns on flat enough ground,

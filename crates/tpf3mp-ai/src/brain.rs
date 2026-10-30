@@ -36,6 +36,9 @@ use crate::{
     profile::Profile,
 };
 
+#[path = "train.rs"]
+mod train;
+
 /// How long the brain waits for an answer before it asks again.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(15);
 /// How long it gives the room to order and apply an action before it reads
@@ -115,6 +118,8 @@ pub struct Memo {
     pub served: Vec<u32>,
     pub given_up: Vec<u32>,
     pub cargo_lines: Vec<(u32, String)>,
+    /// Its rail lines, by the room's line id: kept out of its buses'.
+    pub rail_lines: Vec<u32>,
 }
 
 /// What a line serves.
@@ -244,6 +249,8 @@ struct Project {
 /// Where the brain is.
 #[derive(Debug, Clone)]
 enum Stage {
+    /// Building a rail line ([`train::RailStage`]).
+    Rail(train::RailStage),
     /// Reading its company.
     Look,
     /// Its company's founding sent: reading until it plays for it.
@@ -323,6 +330,8 @@ pub struct Brain {
     routes: Vec<CargoRoute>,
     /// The towns read for a cargo to carry, with what they need.
     needing: Vec<AiTown>,
+    /// The rail line it is building.
+    rail: Option<train::RailProject>,
     /// Whether its next project carries cargo (it takes turns), and
     /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
@@ -368,6 +377,7 @@ impl Brain {
             topping: None,
             routes: Vec::new(),
             needing: Vec::new(),
+            rail: None,
             next_cargo: false,
             carries_cargo: CARRIES_CARGO,
             given_up: Vec::new(),
@@ -493,6 +503,7 @@ impl Brain {
         }
         self.wake = None;
         match self.stage.clone() {
+            Stage::Rail(stage) => self.rail_poll(stage, now),
             Stage::Rest => {
                 self.stage = Stage::Look;
                 self.wake = Some(now + self.profile.think_after(speed));
@@ -618,9 +629,16 @@ impl Brain {
                 self.on_route(&route, now);
                 None
             }
+            (AiQuestion::Land { .. }, AiAnswer::Land(land)) => {
+                self.rail_land(&land);
+                None
+            }
             (AiQuestion::Verdict(payload), AiAnswer::Verdict(verdict)) => {
                 if verdict.ok && verdict.cost <= self.spendable().max(0) {
                     let action = Action::from_payload(&payload).ok()?;
+                    if let Stage::Rail(stage) = self.stage.clone() {
+                        return self.rail_good_verdict(stage, &action, now);
+                    }
                     self.on_good_verdict(&action, now)
                 } else {
                     let why = verdict
@@ -628,6 +646,10 @@ impl Brain {
                         .first()
                         .map_or("too dear", |m| m.as_str())
                         .to_owned();
+                    if let Stage::Rail(stage) = self.stage.clone() {
+                        self.rail_bad_verdict(stage, &why, now);
+                        return None;
+                    }
                     self.on_bad_verdict(&why, now);
                     None
                 }
@@ -654,6 +676,7 @@ impl Brain {
     fn on_company(&mut self, now: Instant) -> Option<Out> {
         let company = self.company.clone()?;
         match self.stage.clone() {
+            Stage::Rail(stage) => self.rail_company(stage, &company, now),
             Stage::Look => {
                 if company.company.is_none() {
                     // Its first act: found its own company.
@@ -970,6 +993,7 @@ impl Brain {
             let short = company
                 .lines
                 .iter()
+                .filter(|l| !self.memo.rail_lines.contains(&l.id.0))
                 .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first));
             if let Some(line) = short {
                 self.topping = Some((line.id, depot));
@@ -1001,8 +1025,8 @@ impl Brain {
         let towns = std::mem::take(&mut self.needing);
         let mut picks: Vec<(f64, CargoRoute)> = Vec::new();
         for from in &industries {
-            // It loads at the industry's own station.
-            if from.station.is_none() {
+            // It loads at the industry's own station, on land.
+            if from.station.is_none() || from.water {
                 continue;
             }
             for output in from.outputs.iter().filter(|o| o.per_year >= CARGO_LEAST) {
@@ -1039,6 +1063,30 @@ impl Brain {
             }
         }
         picks.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // Trains first: with money enough for a rail line, among the
+        // cargos far enough for one.
+        let rail_distance = |r: &CargoRoute| P::of(r.from.pos).flat_distance(P::of(r.at));
+        if self.spendable() >= train::RAIL_MONEY {
+            let far: Vec<CargoRoute> = picks
+                .iter()
+                .filter(|(_, r)| rail_distance(r) >= train::RAIL_FROM)
+                .map(|(_, r)| r.clone())
+                .take(self.profile.pick_among.max(1))
+                .collect();
+            if !far.is_empty() {
+                #[allow(clippy::cast_possible_truncation)]
+                let pick = (self.random() % far.len() as u64) as usize;
+                let CargoRoute {
+                    cargo,
+                    from,
+                    to,
+                    at,
+                } = far[pick].clone();
+                if self.start_rail(cargo, from, to, at) {
+                    return;
+                }
+            }
+        }
         picks.truncate(self.profile.towns_weighed.max(1));
         if picks.is_empty() {
             self.say("found no cargo to carry".into());
@@ -1587,6 +1635,9 @@ impl Brain {
     }
 
     fn on_models(&mut self, models: Vec<AiModel>, now: Instant) -> Option<Out> {
+        if let Stage::Rail(stage) = self.stage.clone() {
+            return self.rail_models(stage, models, now);
+        }
         let usable: Vec<AiModel> = models.into_iter().filter(|m| m.capacity > 0).collect();
         let pick = if self.profile.best_models {
             // Seats and speed for the money, its running cost counted.

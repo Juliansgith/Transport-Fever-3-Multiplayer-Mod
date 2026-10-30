@@ -6,10 +6,10 @@
 
 use std::time::{Duration, Instant};
 
-use tpf3mp_ai::{Brain, Out};
+use tpf3mp_ai::{Brain, Out, place::P};
 use tpf3mp_bridge::ai::{
-    AiAnswer, AiCompany, AiDepot, AiIndustry, AiLine, AiModel, AiNeed, AiOutput, AiQuestion,
-    AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict,
+    AiAnswer, AiCompany, AiDepot, AiEnd, AiIndustry, AiLand, AiLine, AiModel, AiNeed, AiOutput,
+    AiQuestion, AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict,
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
@@ -26,6 +26,17 @@ fn pos(x: f64, y: f64) -> Pos {
         x: (x * 1000.0) as i32,
         y: (y * 1000.0) as i32,
         z: 10_000,
+    }
+}
+
+/// The world point at (`lx`, `ly`) metres on a construction's own axes.
+#[allow(clippy::cast_possible_truncation)]
+fn place(t: &tpf3mp_proto::action::Transform, lx: f64, ly: f64) -> Pos {
+    let (cos, sin) = (f64::from(t.basis[0]) / 1e6, f64::from(t.basis[1]) / 1e6);
+    Pos {
+        x: t.origin.x + ((lx * cos - ly * sin) * 1000.0) as i32,
+        y: t.origin.y + ((lx * sin + ly * cos) * 1000.0) as i32,
+        z: t.origin.z,
     }
 }
 
@@ -58,6 +69,11 @@ struct World {
     line_modes: Vec<(LineId, u16)>,
     /// The truck stations built.
     truck_stations: Vec<StationId>,
+    /// The rail stations built, the track nodes laid (stations' ends and
+    /// depots' joins among them), and the track's length laid, in metres.
+    rail_stations: Vec<StationId>,
+    track_nodes: Vec<Pos>,
+    track_laid: f64,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -112,6 +128,9 @@ impl World {
             roads_join: true,
             line_modes: Vec::new(),
             truck_stations: Vec::new(),
+            rail_stations: Vec::new(),
+            track_nodes: Vec::new(),
+            track_laid: 0.0,
             actions: Vec::new(),
             next_id: 1,
         }
@@ -161,6 +180,11 @@ impl World {
                             capacity: 12,
                             speed: 30,
                             lifespan: 20,
+                            power: 0,
+                            tractive: 0,
+                            weight: 0,
+                            length: 0,
+                            electric: false,
                         }]
                     } else {
                         Vec::new()
@@ -170,6 +194,59 @@ impl World {
             }
             AiQuestion::Industries => {
                 AiAnswer::Industries(BoundedVec::new(self.industries.clone()).unwrap())
+            }
+            // Flat, open land at 10 m.
+            AiQuestion::Land { cells, .. } => {
+                let n = usize::from(*cells) * usize::from(*cells);
+                AiAnswer::Land(AiLand {
+                    heights: BoundedVec::new(vec![1_000; n]).unwrap(),
+                    flags: BoundedVec::new(vec![0; n]).unwrap(),
+                })
+            }
+            AiQuestion::Models { mode, cargo } if mode.as_str() == "TRAIN" => {
+                let wagon = AiModel {
+                    model: Text::new("vehicle/train/planks_wagon.mdl").unwrap(),
+                    price: 100_000,
+                    running: 5_000,
+                    capacity: 20,
+                    speed: 60,
+                    lifespan: 30,
+                    power: 0,
+                    tractive: 0,
+                    weight: 12,
+                    length: 120,
+                    electric: false,
+                };
+                let engine = AiModel {
+                    model: Text::new("vehicle/train/engine.mdl").unwrap(),
+                    price: 1_500_000,
+                    running: 60_000,
+                    capacity: 0,
+                    speed: 80,
+                    lifespan: 30,
+                    power: 600,
+                    tractive: 120,
+                    weight: 80,
+                    length: 180,
+                    electric: false,
+                };
+                // Stronger, but electric: no use on track without
+                // catenary.
+                let electric = AiModel {
+                    model: Text::new("vehicle/train/electric.mdl").unwrap(),
+                    power: 1_600,
+                    electric: true,
+                    ..engine.clone()
+                };
+                let planks = cargo.as_ref().is_some_and(|c| c.as_str() == PLANKS);
+                AiAnswer::Models(
+                    BoundedVec::new(match cargo {
+                        Some(_) if planks => vec![wagon],
+                        Some(_) => Vec::new(),
+                        None => vec![electric, engine, wagon],
+                    })
+                    .unwrap(),
+                )
             }
             AiQuestion::Route { .. } => AiAnswer::Route(AiRoute {
                 connected: self.roads_join,
@@ -184,6 +261,11 @@ impl World {
                         capacity: 18,
                         speed: 40,
                         lifespan: 20,
+                        power: 0,
+                        tractive: 0,
+                        weight: 0,
+                        length: 0,
+                        electric: false,
                     },
                     AiModel {
                         model: Text::new("vehicle/bus/good.mdl").unwrap(),
@@ -192,6 +274,11 @@ impl World {
                         capacity: 32,
                         speed: 55,
                         lifespan: 25,
+                        power: 0,
+                        tractive: 0,
+                        weight: 0,
+                        length: 0,
+                        electric: false,
                     },
                 ])
                 .unwrap(),
@@ -213,6 +300,11 @@ impl World {
                 let town = self.town_of(stop.at);
                 on.is_some_and(|s| s.objects == 0) && town != self.refuse_stops_in
             }
+            Action::BuildConstruction(build) if build.file.as_str().contains("/rail/") => true,
+            // As the game: a vertex on an existing node must find one.
+            Action::BuildTrack(track) => track.polyline.vertices.iter().all(|v| {
+                !matches!(v.resolve, Resolve::Node(_)) || self.track_node(v.pos).is_some()
+            }),
             Action::BuildConstruction(build) => {
                 // Its side of the street: the entrance's offset from origin.
                 let [cos, sin, ..] = build.transform.basis;
@@ -245,6 +337,12 @@ impl World {
         }
     }
 
+    fn track_node(&self, at: Pos) -> Option<usize> {
+        self.track_nodes
+            .iter()
+            .position(|n| f64::from(n.x - at.x).hypot(f64::from(n.y - at.y)) <= 1_500.0)
+    }
+
     fn town_of(&self, at: Pos) -> Option<u32> {
         self.towns
             .iter()
@@ -272,6 +370,7 @@ impl World {
                     pos: stop.at,
                     terminals: 2,
                     waiting: 0,
+                    ends: BoundedVec::default(),
                 });
                 if let Some(s) = self
                     .streets
@@ -292,8 +391,109 @@ impl World {
                     pos: build.transform.origin,
                     terminals: 1,
                     waiting: 0,
+                    ends: BoundedVec::default(),
                 });
                 self.money -= 60_000;
+            }
+            Action::BuildConstruction(build)
+                if build.file.as_str()
+                    == "::/stations/rail/modular_station/modular_station.con" =>
+            {
+                // Its track modules' slots give its first and last module;
+                // its ends lie at (10, 40 first - 20) and (10, 40 last + 20)
+                // on its own axes.
+                let slots: Vec<i64> = build
+                    .params
+                    .iter()
+                    .filter_map(|p| {
+                        let key = p.key.as_str();
+                        let slot: i64 = key
+                            .strip_prefix("modules[")?
+                            .split(']')
+                            .next()?
+                            .parse()
+                            .ok()?;
+                        (key.ends_with(".name") && (8_401_500..8_402_500).contains(&slot))
+                            .then_some((slot - 8_402_000) / 10)
+                    })
+                    .collect();
+                let (first, last) = (*slots.iter().min().unwrap(), *slots.iter().max().unwrap());
+                let local = |lx: f64, ly: f64| place(&build.transform, lx, ly);
+                #[allow(clippy::cast_precision_loss)]
+                let ends = [
+                    local(10.0, 40.0 * first as f64 - 20.0),
+                    local(10.0, 40.0 * last as f64 + 20.0),
+                ];
+                let id = self.id();
+                self.rail_stations.push(StationId(id));
+                self.track_nodes.extend(ends);
+                self.stations.push(AiStation {
+                    id: StationId(id),
+                    pos: build.transform.origin,
+                    terminals: 1,
+                    waiting: 0,
+                    ends: BoundedVec::new(
+                        ends.iter()
+                            .map(|e| AiEnd {
+                                pos: *e,
+                                open: true,
+                            })
+                            .collect(),
+                    )
+                    .unwrap(),
+                });
+                self.money -= 230_000;
+            }
+            Action::BuildConstruction(build)
+                if build.file.as_str() == "::/depots/rail/rail_depot.con" =>
+            {
+                let join = place(&build.transform, -2.2, -70.0);
+                self.track_nodes.push(join);
+                self.depots.push(AiDepot {
+                    file: build.file,
+                    at: build.transform.origin,
+                    entrance: Some(join),
+                    connected: false,
+                });
+                self.money -= 150_000;
+            }
+            Action::BuildTrack(track) => {
+                let v = &track.polyline.vertices;
+                for vertex in v.iter() {
+                    match vertex.resolve {
+                        Resolve::Node(_) => {
+                            assert!(self.track_node(vertex.pos).is_some(), "a node there")
+                        }
+                        _ => self.track_nodes.push(vertex.pos),
+                    }
+                    let near = |p: Pos| {
+                        f64::from(p.x - vertex.pos.x).hypot(f64::from(p.y - vertex.pos.y))
+                            <= 1_500.0
+                    };
+                    for s in &mut self.stations {
+                        let mut ends = s.ends.clone().into_inner();
+                        for e in &mut ends {
+                            if near(e.pos) {
+                                e.open = false;
+                            }
+                        }
+                        s.ends = BoundedVec::new(ends).unwrap();
+                    }
+                    for d in &mut self.depots {
+                        if d.entrance.is_some_and(near) && d.file.as_str().contains("/rail/") {
+                            d.connected = true;
+                        }
+                    }
+                }
+                for link in track.polyline.links.iter() {
+                    let (a, b) = (v[usize::from(link.from)].pos, v[usize::from(link.to)].pos);
+                    let len = f64::from(b.x - a.x).hypot(f64::from(b.y - a.y)) / 1000.0;
+                    assert!(len <= 200.0, "an edge of {len} m");
+                    self.track_laid += len;
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                let cost = (self.track_laid * 0.0) as i64 + 50_000;
+                self.money -= cost;
             }
             Action::BuildConstruction(_) if self.drop_depots > 0 => self.drop_depots -= 1,
             Action::BuildConstruction(build) => {
@@ -361,6 +561,21 @@ impl World {
                             stop.rules.destroy_for_config_change && stop.rules.destroy_for_refresh
                         );
                     }
+                } else if create.line.modes[0] == 7 {
+                    // A train loads the planks at the first rail station and
+                    // passengers where it may; it unloads at the second.
+                    assert!(
+                        create
+                            .line
+                            .stops
+                            .iter()
+                            .all(|s| self.rail_stations.contains(&s.group))
+                    );
+                    assert_eq!(rules[0].get(13), Some(&true), "{rules:?}");
+                    assert!(
+                        rules[1].iter().enumerate().all(|(i, l)| *l == (i == 0)),
+                        "{rules:?}"
+                    );
                 } else {
                     assert!(rules.iter().all(|r| r == &[true]), "{rules:?}");
                 }
@@ -378,6 +593,18 @@ impl World {
                 });
             }
             Action::BuyVehicle(buy) => {
+                if buy.depot.file.as_str().contains("/rail/") {
+                    // A steam engine first, then its wagons.
+                    assert_eq!(buy.consist[0].model.as_str(), "vehicle/train/engine.mdl");
+                    assert!(buy.consist.len() >= 2);
+                    assert!(
+                        buy.consist
+                            .iter()
+                            .skip(1)
+                            .all(|p| p.model.as_str().contains("wagon"))
+                    );
+                    assert_eq!(buy.groups.len(), buy.consist.len());
+                }
                 let id = self.id();
                 self.vehicles.push(AiVehicle {
                     id: VehicleId(id),
@@ -398,12 +625,14 @@ impl World {
                     .map(|(_, m)| *m);
                 for v in assign.vehicles.iter() {
                     let vehicle = self.vehicles.iter().find(|x| x.id == *v).unwrap();
-                    let truck = vehicle.model.as_str().contains("truck");
-                    assert_eq!(
-                        mode,
-                        Some(if truck { 4 } else { 3 }),
-                        "{vehicle:?} on {line:?}"
-                    );
+                    let want = if vehicle.model.as_str().contains("truck") {
+                        4
+                    } else if vehicle.model.as_str().contains("train") {
+                        7
+                    } else {
+                        3
+                    };
+                    assert_eq!(mode, Some(want), "{vehicle:?} on {line:?}");
                 }
                 for v in assign.vehicles.iter() {
                     if let Some(vehicle) = self.vehicles.iter_mut().find(|x| x.id == *v) {
@@ -466,6 +695,7 @@ fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]
                 .collect(),
         )
         .unwrap(),
+        water: false,
     }
 }
 
@@ -764,6 +994,7 @@ fn stops_a_project_left_behind_do_not_make_their_town_served_and_are_taken_up() 
         pos: pos(20.0, 30.0),
         terminals: 2,
         waiting: 0,
+        ends: BoundedVec::default(),
     });
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
@@ -1021,4 +1252,76 @@ fn it_plans_no_truck_lines_when_told_not_to() {
         "no truck line: {:?}",
         world.line_modes
     );
+}
+
+#[test]
+fn a_cargo_too_far_for_trucks_goes_by_train() {
+    let mut world = World::new();
+    // A sawmill in open country 3.7 km from the district of Ely that
+    // takes planks, and money enough for a rail line.
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let rail: Vec<&AiLine> = world
+        .lines
+        .iter()
+        .filter(|l| world.line_modes.contains(&(l.id, 7)))
+        .collect();
+    assert_eq!(rail.len(), 1, "one rail line: {said:?}");
+    let line = rail[0];
+    assert_eq!(line.name.as_str(), "Witney Sawmill planks train");
+    assert!(line.stops.iter().all(|s| world.rail_stations.contains(s)));
+    // Its stations by the sawmill and by the district that takes planks.
+    let at = |id: StationId| P::of(world.stations.iter().find(|s| s.id == id).unwrap().pos);
+    assert!(at(line.stops[0]).flat_distance(P::of(pos(1_800.0, 900.0))) <= 260.0);
+    assert!(at(line.stops[1]).flat_distance(P::of(pos(5_320.0, -280.0))) <= 350.0);
+    // Track all the way, both stations' line ends joined, a depot joined.
+    assert!(
+        world.track_laid >= 3_000.0,
+        "{} m of track",
+        world.track_laid
+    );
+    assert!(
+        world
+            .stations
+            .iter()
+            .filter(|s| world.rail_stations.contains(&s.id))
+            .all(|s| s.ends.iter().any(|e| !e.open))
+    );
+    assert!(
+        world
+            .depots
+            .iter()
+            .any(|d| d.file.as_str().contains("/rail/") && d.connected)
+    );
+    // A train on it, an engine and its wagons.
+    assert!(
+        world
+            .vehicles
+            .iter()
+            .any(|v| v.line == Some(line.id) && v.model.as_str().contains("engine")),
+        "{:?}",
+        world.vehicles
+    );
+    assert!(
+        said.iter()
+            .any(|l| l == "runs a train on a rail line carrying planks from Witney Sawmill to Ely"),
+        "{said:?}"
+    );
+    // Not trucks as well.
+    assert!(!world.line_modes.iter().any(|(_, m)| *m == 4));
 }

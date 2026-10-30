@@ -10,6 +10,7 @@
 pub mod brain;
 pub mod place;
 pub mod profile;
+pub mod rail;
 
 pub use brain::{Brain, Memo, Out};
 pub use profile::Profile;
