@@ -101,7 +101,13 @@ that member's agent which seats it drives.
 
 A Rust crate, `tpf3mp-ai` (D1), in the driver's agent process, so its
 thinking never takes a game frame. It is a library with no game in it,
-tested on its own and with the regression model (below).
+tested on its own and with the regression model (below). The seats'
+minds think on a thread of their own in the agent (`tpf3mp-agent`,
+`ai.rs`): the agent's loop hands them the game's answers and the room's
+refusals and takes what they want every 2 ms, never waiting on them, so
+a long plan does not hold up the game's messages and the room's turns
+the loop relays. Each seat's actions still go to the room one after
+another, in the order its mind made them.
 
 - **The world model**: towns and their districts, industries and their
   stocks, the cargo chain, stations and catchments, lines and their loads,
@@ -345,9 +351,11 @@ faster AI.
   the era's station building; sites out to 600 m from the centre, at the
   town's edge), laid out, put to trial and built as a cargo line is, its
   line loading passengers both ways, its coaches the models that carry
-  the game's passengers. Its planning runs in the driver's agent, a route
-  search 5 to 25 ms on the big fixture and at most about 0.2 s where there
-  is no way through. Still to come: double track and electrified lines.
+  the game's passengers. Its planning runs on the minds' thread in the
+  driver's agent ("The brain"), a route search 5 to 25 ms on the big
+  fixture and at most about 0.2 s where there is no way through, several
+  back to back while a line's station sites are priced; the agent's loop
+  relays on meanwhile. Still to come: double track and electrified lines.
 - **Water.** Harbours where both ends touch the same water (from the
   water grid), with their street links. Ships need no route built.
 - **Air.** Airfields and airports near large towns on flat enough ground,

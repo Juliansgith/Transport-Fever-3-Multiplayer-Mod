@@ -827,7 +827,7 @@ impl<L: HookLink> Bridge<L> {
             self.report_progress(client, now).await?;
             self.report_loading(client, now).await?;
             self.lobby_news();
-            self.drive_ai(client, now).await?;
+            self.drive_ai(client).await?;
             // Turns wait while the world they continue is being fetched.
             if !matches!(self.world, World::Fetching { .. })
                 && let (Some(follower), Some(playout)) = (&mut self.follower, &mut self.playout)
@@ -867,13 +867,13 @@ impl<L: HookLink> Bridge<L> {
     /// The AI players this game drives (docs/AI_PLAYERS.md): their
     /// questions to the hook, their actions and memos to the room. Their
     /// minds look only while this game plays the room's world.
-    async fn drive_ai(&mut self, client: &Client, now: Instant) -> Result<(), BridgeFault> {
+    async fn drive_ai(&mut self, client: &Client) -> Result<(), BridgeFault> {
         if !self.ai.driving() {
             return Ok(());
         }
         let ready = self.begun && self.hook_ready && self.world == World::Ready;
         let speed = self.speed.map_or(100, |speed| speed.0);
-        for out in self.ai.tick(now, speed, ready) {
+        for out in self.ai.tick(speed, ready) {
             match out {
                 crate::ai::AiOut::Ask { id, ask } => {
                     self.outbox.push_back(ToHook::AiAsk { id, ask })
