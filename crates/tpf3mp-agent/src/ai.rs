@@ -612,6 +612,8 @@ mod tests {
             slowest < Duration::from_millis(50),
             "a tick waited: {slowest:?}"
         );
-        assert!(ticks >= 100, "the loop ran on meanwhile: {ticks} ticks");
+        // Ticks 2 ms apart, as the agent's loop polls; a busy runner's sleep
+        // is longer (41 in the 600 ms on macOS), never none.
+        assert!(ticks >= 10, "the loop ran on meanwhile: {ticks} ticks");
     }
 }
