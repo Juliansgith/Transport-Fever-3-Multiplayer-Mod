@@ -53,7 +53,10 @@ company and ownership arrangement.
   commits and reports.
 - **Quit cleanly.** Use `quit.ps1`. A killed game uploads an "abnormal
   termination" report at its next start. If quitting times out, the script
-  reports failure and leaves the process alive for diagnosis.
+  reports failure and leaves the process alive for diagnosis. A game whose
+  room save is under way when its pause menu opens shows "Saving..." with
+  Quit greyed until it runs on: the script resumes it and asks again
+  (docs/HOOKS.md, "The game's pause menu").
 - **Lua in the console can crash the game.** A Lua error inside an engine
   callback is fatal. One example is `api.engine.forEachEntityWithComponent`'s
   function. Wrap queries in `pcall`, read only, and never send commands

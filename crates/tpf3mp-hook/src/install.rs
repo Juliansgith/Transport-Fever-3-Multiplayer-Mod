@@ -135,6 +135,34 @@ fn now_ms() -> u64 {
         .max(1)
 }
 
+/// How long the game's step may be quiet, its world up, before the UI's
+/// and the GUI's frames keep the link's heartbeat ([`gui_frame`]).
+pub(crate) const QUIET_STEP_MS: u64 = 2_000;
+
+/// Whether a step that last ran at `last` (milliseconds since [`EPOCH`];
+/// 0 never) is quiet at `now`: none ran yet is not quiet, a world not up.
+fn step_quiet(last: u64, now: u64) -> bool {
+    last != 0 && now.saturating_sub(last) >= QUIET_STEP_MS
+}
+
+/// One of the game's UI or GUI frames in a world (`CGameUI::GameStep`'s
+/// call of the game's step, the mod's `guiUpdate` asking for work), which
+/// may run while the game's own pause menu stops its simulation's step:
+/// where the step has been quiet [`QUIET_STEP_MS`], the driver keeps the
+/// link's heartbeat ([`StepHandler::keep_alive`]), and nothing else. Never
+/// waits for the driver: a step holding it is no quiet step.
+pub(crate) fn gui_frame() {
+    if BROKEN.load(Ordering::Acquire) || !step_quiet(LAST_STEP.load(Ordering::Acquire), now_ms()) {
+        return;
+    }
+    let Ok(mut guard) = DRIVER.try_lock() else {
+        return;
+    };
+    if let Some(driver) = guard.as_mut() {
+        driver.keep_alive();
+    }
+}
+
 /// The room's step the last batch ended at, if one ran
 /// ([`crate::edgewatch`]).
 pub(crate) fn last_step_run() -> Option<u64> {
@@ -1846,5 +1874,18 @@ mod tests {
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
         assert_eq!(state.run("return tpf3mp_native.version"), Ok("17".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod quiet {
+    use super::*;
+
+    #[test]
+    fn only_a_step_quiet_a_while_is_kept_alive_from_the_frames() {
+        assert!(!step_quiet(0, 10_000), "no step yet: no world up");
+        assert!(!step_quiet(9_000, 10_000), "a second ago");
+        assert!(step_quiet(8_000, 10_000), "two seconds: quiet");
+        assert!(step_quiet(1, u64::MAX));
     }
 }
