@@ -1922,9 +1922,17 @@ state, which the game saves with the world:
   duration and rate in one of that company's active slots; forged terms and
   reused or cooling-down offers are refused before any journal entry is
   booked. On a valid Take, that slot enters its own 4-to-8-month cooldown,
-  as the native loan script does, and `loan_util` draws its replacement
-  when the cooldown expires. The room's update seed makes those draws the
-  same in every game. The native loan table is never changed for a founded
+  as the native loan script does, from the start of the month, and
+  `loan_util` draws its replacement when the cooldown expires. Each of
+  those draws starts math.random from a seed of its own (the company, the
+  slot, and the room's count of loans or the cooldown's end), the same in
+  every game whatever drew from math.random before it in the update. The
+  update's seed alone did not keep them the same: in a two-game room
+  (2026-10-30) a company's offers differed between the games after a
+  cooldown, so an AI's second loan applied in one game only and the
+  balances diverged (both games also apply actions between simulation
+  updates, in slightly different numbers, which may be why). The native
+  loan table is never changed for a founded
   company's Take. The room books the money to that company as the game books
   a loan (a `LOAN` journal entry, `makeJournalBookAssetCmd`, which raises the
   account's balance and loan alike, seen on build 40408), and pays it back
