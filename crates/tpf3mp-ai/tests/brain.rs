@@ -2056,6 +2056,40 @@ fn a_normal_ai_joins_two_large_towns_by_passenger_train() {
 }
 
 #[test]
+fn two_towns_joined_by_train_are_not_joined_again_as_they_grow() {
+    // As in run 40: the towns' district centres move as they grow, and
+    // the pair, known by a centre's place, was planned and built again.
+    let mut world = World::new();
+    world.money = 60_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    let start = Instant::now();
+    let now = play(&mut brain, &mut world, start, Duration::from_secs(2_400));
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
+    for town in &mut world.towns {
+        let moved: Vec<Pos> = town
+            .centres
+            .iter()
+            .map(|c| Pos {
+                x: c.x + 37_000,
+                y: c.y - 21_000,
+                z: c.z,
+            })
+            .collect();
+        town.centres = BoundedVec::new(moved).unwrap();
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(2_400));
+    let said = brain.take_said();
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers from")),
+        "{said:?}"
+    );
+    assert_eq!(world.passenger_stations, 2, "one line: {said:?}");
+}
+
+#[test]
 fn a_longer_line_gets_two_loops_and_runs_up_to_three_trains() {
     let mut world = World::new();
     world.small_towns();

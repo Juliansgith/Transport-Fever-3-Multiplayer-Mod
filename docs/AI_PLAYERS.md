@@ -324,7 +324,8 @@ faster AI.
   trains on single track): its first train's engine where the year still
   offers it, with as many of its cargo's roomiest wagons as the platforms
   take. Normal and Hard also join two large towns (150 buildings or more
-  each, 3 to 10 km apart, the most people for the fewest kilometres) by
+  each, 3 to 10 km apart, the most people for the fewest kilometres, a
+  pair it has not joined or given up on, known by the two towns' ids) by
   passenger train, in turn with buses: a one-track passenger station by
   each (passenger platforms in its first row, its track in its second,
   the era's station building; sites out to 600 m from the centre, at the
