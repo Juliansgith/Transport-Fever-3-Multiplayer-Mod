@@ -27,6 +27,8 @@ pub const MAX_AI_MESSAGES: usize = 8;
 pub const MAX_AI_INDUSTRIES: usize = 160;
 /// Most cargos an industry takes or makes, as an [`AiIndustry`] lists them.
 pub const MAX_AI_CARGOS: usize = 8;
+/// Most cargo needs an [`AiTown`] lists: the least supplied.
+pub const MAX_AI_NEEDS: usize = 4;
 
 /// One question about the world, for an AI seat the asking game drives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +168,21 @@ pub struct AiTown {
     pub buildings: u32,
     /// Its districts' centres: residential, commercial, industrial.
     pub centres: BoundedVec<Pos, 3>,
+    /// The cargo its buildings take, the least supplied first: where cargo
+    /// trucks carry is wanted (an industry takes its inputs only while what
+    /// it makes is carried on, as towns take what they need; 2026-10-30).
+    pub needs: BoundedVec<AiNeed, MAX_AI_NEEDS>,
+}
+
+/// A cargo a town takes: how much it was supplied and may take, as the
+/// town window's cargo demand reads them (`getCargoSupplyAndLimit`), and the
+/// centre of the district that takes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiNeed {
+    pub cargo: ResName,
+    pub supply: u32,
+    pub limit: u32,
+    pub at: Pos,
 }
 
 /// An industry: where it stands, the cargo it takes, and what it makes.

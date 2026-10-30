@@ -22,11 +22,13 @@ start, and builds and runs bus lines in towns at all three difficulties: in a
 two-game rig room on the big fixture (2026-10-29), a Hard, a Normal and an
 Easy AI opened seven bus lines in seven minutes, each founded, borrowed
 for, stopped, given a depot joined to the street and bought buses for,
-with no action refused and no divergence between the games. Still open
-in the first milestone: a verdict costs the driver's game a frame of
-about 25 ms, over its 1.5 ms budget (investigation, "The first AI
-games"). Trucks, track, water and air are still to come; see "The work,
-in milestones".
+with no action refused and no divergence between the games. Its trucks
+carry an industry's cargo to a town that needs it: fuel and meat, in the
+same rig room (2026-10-30), alike in both games. Still open in the first
+milestone: a verdict holds the driver's game a frame of 15 to 20 ms on
+average, the game's own verdict most of it, over its 1.5 ms budget
+(investigation, "What a verdict spends"). Track, water and air are still
+to come; see "The work, in milestones".
 
 ## What players see
 
@@ -192,15 +194,20 @@ faster AI.
   `BuildConstruction`). A separate road onto a construction's entrance
   the game refuses ("Construction Not Possible", 2026-10-29). *Built so
   far:* a town's bus line, and a cargo's truck line from an industry that
-  made it over the last year to the nearest that takes it, within the
-  difficulty's reach and joined by road already (`findPathNodeToNode` for
-  trucks). It loads at the output terminal of the station of the
-  industry that makes the cargo and unloads at a street stop within 140 m
-  of the one that takes it, as players' cargo lines do (build 40425:
-  every industry has a station of its own, of an input and an output
-  terminal; a street stop only unloads cargo, `small_stops.script.lua`).
-  *Off for now:* no cargo has reached those trucks in the real game yet
-  (investigation, "Trucks"), so an AI plans bus lines only.
+  made it over the last year to the nearest town that needs more of it
+  (the town window's cargo demand: supplied at least 10 a year short of
+  what it may take), within the difficulty's reach and joined by road
+  already (`findPathNodeToNode` for trucks). It loads at the industry's
+  own station, as players' truck lines do (build 40425: every industry
+  has one, its terminals alike, each for cargo and passengers), and
+  unloads at a one-platform truck station of its own within 140 m of the
+  centre of the district whose buildings take the cargo. Its stops are set
+  as the game's line window sets a road stop's: passengers loaded too, a
+  road stop's waits, and every cargo type in its lists (the mod fills
+  out the types an action leaves off). Towns, not industries: an industry
+  takes its inputs only while what it makes is carried on, and trucks to
+  refineries, a cement plant and a livestock farm no one carried for, or
+  little, loaded nothing (investigation, "Trucks").
   The two kinds of line take turns.
 - **Track and trains.** The station: a through or terminus station near
   the town's centre or the industry, turned to the route, its platforms

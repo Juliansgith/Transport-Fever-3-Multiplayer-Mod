@@ -72,7 +72,8 @@ const GAME: &str = r#"
         [CT.NAME] = { [500] = { name = "Line 1" }, [700] = { name = "Didcot" }, [701] = { name = "Ely" } },
         [CT.TRANSPORT_VEHICLE] = { [600] = { transportVehicleConfig = { vehicles = { { part = { modelId = 9 } } } } } },
         [CT.TOWN_BUILDING] = { [800] = { town = 701 }, [801] = { town = 701 }, [802] = { town = 700 } },
-        [CT.TOWN] = { [700] = {}, [701] = {} },
+        -- Ely's commercial buildings take goods.
+        [CT.TOWN] = { [700] = {}, [701] = { cargoNeeds = { {}, { { 2, 1.0 } }, {} } } },
         [CT.BASE_EDGE] = {
             [410] = { node0 = 403, node1 = 402 },
             [900] = { position0 = { x = 0, y = 0, z = 1 }, position1 = { x = 30, y = 40, z = 1 }, node0 = 950, node1 = 951,
@@ -159,6 +160,9 @@ const GAME: &str = r#"
             },
             system = {
                 lineSystem = { getLinesForPlayer = function(e) return e == 77 and { 500 } or {} end },
+                -- Ely was supplied 3.5 goods of the 40.2 it may take.
+                townBuildingSystem = { getCargoSupplyAndLimit = function(t)
+                    return t == 701 and { [2] = { 3.5, 40.2 }, [1] = { 0, 0 } } or {} end },
                 transportVehicleSystem = {
                     getLineVehicles = function(l) return l == 500 and { 600 } or {} end,
                     getDepotVehicles = function() return {} end,
@@ -342,6 +346,14 @@ fn towns_streets_and_models_read_as_the_ai_reads_them() {
     assert_eq!(towns[0].buildings, 2);
     assert_eq!(towns[0].centres.len(), 3);
     assert_eq!(towns[0].pos.x, 7_010_000);
+    // What Ely needs, at its commercial centre; not grain, which it may not
+    // take; Didcot needs nothing.
+    assert_eq!(towns[0].needs.len(), 1, "{:?}", towns[0].needs);
+    let goods = &towns[0].needs[0];
+    assert_eq!(goods.cargo.as_str(), "::/cargos/goods/goods.cargo");
+    assert_eq!((goods.supply, goods.limit), (3, 40));
+    assert_eq!(goods.at.x, 7_011_000, "the commercial district's centre");
+    assert!(towns[1].needs.is_empty());
 
     let AiAnswer::Streets(streets) = answer(
         &lua,

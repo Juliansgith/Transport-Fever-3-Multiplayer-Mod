@@ -150,11 +150,16 @@ when the shared one is 5 seconds old (32 ms of a 46 ms verdict).
 
 ## Trucks (2026-10-30)
 
-Truck lines for cargo are built, alike in every game, but no cargo has
-reached their trucks yet, so an AI plans none (`tpf3mp-ai`,
-`CARRIES_CARGO`). Runs 8 to 14 on the big fixture, every AI choosing
-crude oil from Penrith Oil Well (318 a year, its output stock full at
-600) to Wallingford Oil Refinery, 1 km by road:
+AI trucks carry cargo since run 22: fuel from Hunstanton Oil Refinery to
+Hunstanton, and meat from Heanor and Loscoe Livestock Farm to Penzance,
+loaded full (10 a truck) at the industry's own station and unloaded at
+the AI's truck station in town, alike in both games. Three things had to
+change together, found over runs 8 to 22 on the big fixture: where the
+cargo goes, where it is loaded, and how the stops are set.
+
+Runs 8 to 14, every AI choosing crude oil from Penrith Oil Well (318 a
+year, its output stock full at 600) to Wallingford Oil Refinery, 1 km by
+road:
 
 | run | the line | what the game did |
 |---|---|---|
@@ -165,18 +170,56 @@ crude oil from Penrith Oil Well (318 a year, its output stock full at
 | 13 | the well's own station, a street stop by the refinery (as players' livestock line does) | nothing shipped |
 | 14 | the same, at the well station's second terminal alone (as players' farm and quarry lines) | nothing shipped in six game months |
 
-What is known: every industry has a station of its own, of two terminals
-for an input and an output, listed in the order its script's table gives
-them (`industryutil.lua`), each taking passengers and universal cargo;
-players' cargo lines load there (the fixture's farm, quarry, livestock
-farm and fishing grounds ship through them), and their truck terminals
-load cargo another line brought. Street stops catch the industries
-directly (`getStationCatchables`); construction stations show no
-catchables, the fixture's working ones included. Still open: why the
-well ships nothing to a line that stops at its station. To try next: a
-cargo other than crude oil (a farm's grain, as players' lines carry), a
-liquid truck rather than a universal one, and the game's own line window
-on the AI's line in the driver's game.
+Runs 15 to 22, each with three AIs in a two-game room:
+
+| run | the line | what the game did |
+|---|---|---|
+| 18 | grain, the AI's truck station 79 m from Penzance Crop Farm, a street stop by Heanor and Loscoe Livestock Farm | trucks passed the station empty |
+| 19 | the AI's truck station at both ends; crude oil, stone, grain to refineries, cement plants and the livestock farm | 21 trucks on seven lines, all empty |
+| 20 | to towns that need the cargo (fuel, meat, cement), the AI's truck station at both ends | empty |
+| 21 | the same, loading at the industry's own station | empty after a round trip |
+| 22 | the same, its stops set as the game's line window sets them | fuel and meat loaded full and unloaded in town |
+
+What each step found:
+
+- **Where it goes.** An industry takes its inputs only while what it makes
+  is carried on, as in Transport Fever 2. The three refineries the AIs
+  chose took nothing and made nothing; the cement plant and the livestock
+  farm took little and shipped little (96 of 172 and 36 of 432 a year),
+  already supplied by the fixture's lines. Towns take what their
+  buildings need, as the town window lists it (`townBuildingSystem.
+  getCargoSupplyAndLimit`): on the fixture, of 916 fish towns may take a
+  year, 102 were supplied; of 828 meat, 38; of 660 fuel, 76; of 588
+  planks, none. So the AI carries to towns, and reads what each needs
+  with the towns (bridge version 32).
+- **Where it is loaded.** Players' truck lines load at the industry's own
+  station (the fixture's livestock farm, farm and fishing grounds), whose
+  terminals are all alike, each taking cargo and passengers for trucks
+  and buses (`industryutil.lua`, `addTerminals`). The AI's own truck
+  station by the industry caught the industry (`getStationCatchables`
+  with cargo: its stock list) but loaded nothing in runs 18 to 20.
+- **How the stops are set.** Run 21's line matched the players' at the
+  livestock farm, the same station and terminal and a stop in town that
+  catches meat demand, and still loaded nothing. What differed: the
+  players' stops list every cargo type (37) in their load and maximum
+  lists, load passengers too, wait as a road stop does (600 s at most,
+  30 s for more) and drop cargo a change of rules leaves aboard; the
+  AI's listed up to its cargo's number, waited 0 s and kept such cargo.
+  Run 22 set all of these as the game's line window does
+  (`line_util.tl`, `makeNewStop`, `autoLoadConfig`) and its trucks loaded
+  at their first visit. Which of them the game needed was not isolated.
+
+Delivery shows in the towns' own figures: over run 22's second half,
+Hunstanton's fuel supply rose from 91 to 121 (of 205 it may take) and
+Penzance's meat from 37 to 45 (of 72); the games did not diverge. Still
+open: run 22's cement line, from Chesterfield Cement Plant to Torpoint
+(12 a year wanted), loaded nothing in 15 minutes.
+
+The universal steam lorry the AIs buy takes every cargo but passengers
+(`getAllCargoForCargoTypeSet`). A probe typed into a game whose console
+is closed reaches the game as keys: one opened a bridge tool in the
+second game of run 22; it was closed, nothing built, and the games did
+not diverge.
 
 ## Prior art
 

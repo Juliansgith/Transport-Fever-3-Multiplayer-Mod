@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use tpf3mp_ai::{Brain, Out};
 use tpf3mp_bridge::ai::{
-    AiAnswer, AiCompany, AiDepot, AiIndustry, AiLine, AiModel, AiOutput, AiQuestion, AiRoute,
-    AiStation, AiStreet, AiTown, AiVehicle, AiVerdict,
+    AiAnswer, AiCompany, AiDepot, AiIndustry, AiLine, AiModel, AiNeed, AiOutput, AiQuestion,
+    AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict,
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
@@ -56,6 +56,8 @@ struct World {
     industries: Vec<AiIndustry>,
     roads_join: bool,
     line_modes: Vec<(LineId, u16)>,
+    /// The truck stations built.
+    truck_stations: Vec<StationId>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -87,6 +89,7 @@ impl World {
                     pos(cx - 330.0, cy + 290.0),
                 ])
                 .unwrap(),
+                needs: BoundedVec::default(),
             });
         }
         Self {
@@ -108,6 +111,7 @@ impl World {
             industries: Vec::new(),
             roads_join: true,
             line_modes: Vec::new(),
+            truck_stations: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -146,12 +150,12 @@ impl World {
                 AiAnswer::Streets(BoundedVec::new(near).unwrap())
             }
             AiQuestion::Models { mode, cargo } if mode.as_str() == "TRUCK" => {
-                // A grain truck, for grain only.
-                let carries = cargo.as_ref().is_some_and(|c| c.as_str() == GRAIN);
+                // A planks truck, for planks only.
+                let carries = cargo.as_ref().is_some_and(|c| c.as_str() == PLANKS);
                 AiAnswer::Models(
                     BoundedVec::new(if carries {
                         vec![AiModel {
-                            model: Text::new("vehicle/truck/grain.mdl").unwrap(),
+                            model: Text::new("vehicle/truck/planks.mdl").unwrap(),
                             price: 25_000,
                             running: 6_000,
                             capacity: 12,
@@ -278,6 +282,19 @@ impl World {
                 }
                 self.money -= 10_000;
             }
+            Action::BuildConstruction(build)
+                if build.file.as_str().contains("modular_terminal") =>
+            {
+                let id = self.id();
+                self.truck_stations.push(StationId(id));
+                self.stations.push(AiStation {
+                    id: StationId(id),
+                    pos: build.transform.origin,
+                    terminals: 1,
+                    waiting: 0,
+                });
+                self.money -= 60_000;
+            }
             Action::BuildConstruction(_) if self.drop_depots > 0 => self.drop_depots -= 1,
             Action::BuildConstruction(build) => {
                 let [cos, sin, ..] = build.transform.basis;
@@ -306,9 +323,9 @@ impl World {
             Action::CreateLine(create) => {
                 let id = self.id();
                 self.line_modes.push((LineId(id), create.line.modes[0]));
-                // As the game: a truck line loads its cargo (grain, type 7)
-                // at its first stop, or its trucks are useless; a bus line
-                // its passengers (type 0) everywhere.
+                // As the game: a truck line loads its cargo (planks, type
+                // 13) at its first stop, or its trucks are useless; a bus
+                // line its passengers (type 0) everywhere.
                 let rules: Vec<Vec<bool>> = create
                     .line
                     .stops
@@ -316,18 +333,34 @@ impl World {
                     .map(|s| s.rules.load.iter().copied().collect())
                     .collect();
                 if create.line.modes[0] == 4 {
-                    // It loads at the industry's own station, of its
-                    // terminals, and unloads at a street stop: an industry's
-                    // station only loads.
-                    let stations: Vec<StationId> =
-                        self.industries.iter().filter_map(|i| i.station).collect();
-                    assert!(stations.contains(&create.line.stops[0].group));
-                    assert!(!stations.contains(&create.line.stops[1].group));
-                    // Its output terminal alone: the second of two.
+                    // It loads at the industry's own station, at its output
+                    // terminal (the second of two) alone, and unloads at a
+                    // truck station of its own, of one terminal.
+                    assert!(!self.truck_stations.contains(&create.line.stops[0].group));
                     assert_eq!(create.line.stops[0].terminal.terminal, 1);
                     assert!(create.line.stops[0].alternatives.is_empty());
-                    assert_eq!(rules[0].get(7), Some(&true), "{rules:?}");
-                    assert!(rules[1].iter().all(|l| !l), "{rules:?}");
+                    assert!(self.truck_stations.contains(&create.line.stops[1].group));
+                    assert_eq!(create.line.stops[1].terminal.terminal, 0);
+                    assert!(create.line.stops[1].alternatives.is_empty());
+                    // Passengers everywhere, as the game's line window
+                    // loads them; the planks at the sawmill only. Its stops
+                    // wait as a road stop's in the line window.
+                    assert_eq!(rules[0].get(13), Some(&true), "{rules:?}");
+                    assert_eq!(rules[0].first(), Some(&true), "{rules:?}");
+                    assert!(
+                        rules[1].iter().enumerate().all(|(i, l)| *l == (i == 0)),
+                        "{rules:?}"
+                    );
+                    assert!(!create.line.custom_filters);
+                    for stop in create.line.stops.iter() {
+                        assert_eq!(
+                            (stop.max_wait, stop.max_extra_wait),
+                            (600_000_000, 30_000_000)
+                        );
+                        assert!(
+                            stop.rules.destroy_for_config_change && stop.rules.destroy_for_refresh
+                        );
+                    }
                 } else {
                     assert!(rules.iter().all(|r| r == &[true]), "{rules:?}");
                 }
@@ -403,6 +436,7 @@ impl World {
 }
 
 const GRAIN: &str = "::/cargos/grain/grain.cargo";
+const PLANKS: &str = "::/cargos/planks/planks.cargo";
 
 /// An industry at (x, y) metres, taking `inputs` and making `outputs`
 /// (cargo, made over the last year).
@@ -421,7 +455,11 @@ fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]
                 .iter()
                 .map(|(c, n)| AiOutput {
                     cargo: Text::new(*c).unwrap(),
-                    index: if *c == GRAIN { 7 } else { 9 },
+                    index: match *c {
+                        GRAIN => 7,
+                        PLANKS => 13,
+                        _ => 9,
+                    },
                     per_year: *n,
                     most: *n,
                 })
@@ -431,12 +469,12 @@ fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]
     }
 }
 
-/// A grain farm in Didcot's south-west, a livestock farm that takes grain
-/// in its north-east, under a kilometre apart, and a quarry no one takes
-/// stone from.
-fn farms() -> Vec<AiIndustry> {
+/// A sawmill in Didcot's south-west, a grain farm in its north-west and a
+/// livestock farm that takes grain in its north-east, and a quarry by Ely.
+fn mills() -> Vec<AiIndustry> {
     vec![
-        industry("Witney Farm", -300.0, -200.0, &[], &[(GRAIN, 120)]),
+        industry("Witney Sawmill", -300.0, -200.0, &[], &[(PLANKS, 120)]),
+        industry("Witney Farm", -400.0, 300.0, &[], &[(GRAIN, 120)]),
         industry("Clun Livestock Farm", 450.0, 350.0, &[GRAIN], &[]),
         industry(
             "Ely Quarry",
@@ -446,6 +484,18 @@ fn farms() -> Vec<AiIndustry> {
             &[("::/cargos/stone/stone.cargo", 90)],
         ),
     ]
+}
+
+/// Ely's commercial buildings take `limit` planks a year, `supply` of them
+/// supplied, at `at`.
+fn ely_needs_planks(world: &mut World, supply: u32, limit: u32, at: Pos) {
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(PLANKS).unwrap(),
+        supply,
+        limit,
+        at,
+    }])
+    .unwrap();
 }
 
 fn loan(kind: &str, amount: i64) -> LoanTerms {
@@ -816,18 +866,19 @@ fn a_depot_never_splits_a_companys_street_or_one_at_a_companys_junction() {
 }
 
 #[test]
-fn it_carries_cargo_by_truck_between_industries_joined_by_road() {
+fn it_carries_cargo_by_truck_to_a_town_that_needs_it() {
     let mut world = World::new();
-    world.industries = farms();
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    // Trucks by default.
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
-    brain.carry_cargo(true);
     play(
         &mut brain,
         &mut world,
         Instant::now(),
         Duration::from_secs(600),
     );
-    // Buses in a town first, then the grain by truck, in turn.
+    // Buses in a town first, then the planks by truck, in turn.
     let trucks: Vec<LineId> = world
         .line_modes
         .iter()
@@ -840,19 +891,26 @@ fn it_carries_cargo_by_truck_between_industries_joined_by_road() {
         "and bus lines"
     );
     let line = world.lines.iter().find(|l| l.id == trucks[0]).unwrap();
-    assert_eq!(line.stops.len(), 2, "the farm and the livestock farm");
-    assert_eq!(line.stops[0], StationId(10_500), "the farm's own station");
+    assert_eq!(line.stops.len(), 2, "the sawmill and the town");
+    assert_eq!(
+        Some(line.stops[0]),
+        world.industries[0].station,
+        "the sawmill's own station"
+    );
     let unload = world
         .stations
         .iter()
         .find(|s| s.id == line.stops[1])
-        .expect("a stop of its own");
+        .expect("a truck station of its own");
     let (dx, dy) = (
-        f64::from(unload.pos.x) / 1000.0 - 450.0,
-        f64::from(unload.pos.y) / 1000.0 - 350.0,
+        f64::from(unload.pos.x) / 1000.0 - 5_320.0,
+        f64::from(unload.pos.y) / 1000.0 + 280.0,
     );
-    assert!(dx.hypot(dy) <= 140.0, "by the livestock farm");
-    assert_eq!(line.name.as_str(), "Witney Farm grain");
+    assert!(
+        dx.hypot(dy) <= 180.0,
+        "by the district that takes planks: {dx} {dy}"
+    );
+    assert_eq!(line.name.as_str(), "Witney Sawmill planks");
     let on_it: Vec<&AiVehicle> = world
         .vehicles
         .iter()
@@ -862,23 +920,51 @@ fn it_carries_cargo_by_truck_between_industries_joined_by_road() {
     assert!(
         on_it
             .iter()
-            .all(|v| v.model.as_str() == "vehicle/truck/grain.mdl")
+            .all(|v| v.model.as_str() == "vehicle/truck/planks.mdl")
     );
     let said = brain.take_said();
     assert!(
         said.iter()
-            .any(|l| l
-                == "opened a truck line carrying grain from Witney Farm to Clun Livestock Farm"),
+            .any(|l| l == "opened a truck line carrying planks from Witney Sawmill to Ely"),
         "{said:?}"
     );
-    // The stone has no taker: never planned.
-    assert!(!said.iter().any(|l| l.contains("stone")), "{said:?}");
+    // No town takes grain or stone: never planned, the livestock farm that
+    // takes grain notwithstanding.
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.contains("grain") || l.contains("stone")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn it_carries_nothing_a_town_is_supplied_with_enough_of() {
+    let mut world = World::new();
+    world.industries = mills();
+    ely_needs_planks(&mut world, 55, 60, pos(5_320.0, -280.0));
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(true);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(300),
+    );
+    assert!(world.line_modes.iter().all(|(_, m)| *m == 3), "buses only");
+    assert!(
+        brain
+            .take_said()
+            .iter()
+            .any(|l| l == "found no cargo to carry")
+    );
 }
 
 #[test]
 fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
     let mut world = World::new();
-    world.industries = farms();
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
     world.roads_join = false;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     brain.carry_cargo(true);
@@ -896,12 +982,10 @@ fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
         "{said:?}"
     );
 
-    // A taker 4.4 km off: within Hard's reach, beyond Easy's 4 km.
+    // A town 4.4 km off: within Hard's reach, beyond Easy's 4 km.
     let mut world = World::new();
-    world.industries = vec![
-        industry("Witney Farm", -300.0, -200.0, &[], &[(GRAIN, 120)]),
-        industry("Ely Livestock Farm", 4_050.0, 350.0, &[GRAIN], &[]),
-    ];
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(4_050.0, 350.0));
     let mut easy = Brain::new(seat(), "Novak Transit", AiDifficulty::Easy, None);
     easy.carry_cargo(true);
     play(
@@ -919,10 +1003,12 @@ fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
 }
 
 #[test]
-fn it_plans_no_truck_lines_unless_told_to() {
+fn it_plans_no_truck_lines_when_told_not_to() {
     let mut world = World::new();
-    world.industries = farms();
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(false);
     play(
         &mut brain,
         &mut world,
@@ -932,7 +1018,7 @@ fn it_plans_no_truck_lines_unless_told_to() {
     assert!(!world.lines.is_empty(), "bus lines");
     assert!(
         world.line_modes.iter().all(|(_, m)| *m == 3),
-        "no truck line by default: {:?}",
+        "no truck line: {:?}",
         world.line_modes
     );
 }

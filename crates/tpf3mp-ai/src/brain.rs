@@ -70,22 +70,30 @@ pub const BUS_MODE: u16 = 3;
 /// 40425).
 pub const TRUCK: &str = "TRUCK";
 pub const TRUCK_MODE: u16 = 4;
-/// How far around an industry it looks for a street to stop trucks on, and
-/// how near the industry the stop must stand, in metres: a street stop's
-/// catchment reaches 160 m (`small_stops/*.con`).
+/// How far around a cargo's industry and the district that takes it it
+/// looks for streets, and how near the district's centre its truck station
+/// must stand, in metres: the station's catchment reaches 175 m from its
+/// entrance (`entrance_exit.module`).
 pub const CARGO_SEARCH: u32 = 200;
 pub const CARGO_REACH: f64 = 140.0;
 /// The least an industry must have made of a cargo over the last year for
 /// trucks to carry it, and the least distance worth a truck line, in metres.
 pub const CARGO_LEAST: u32 = 30;
 pub const CARGO_NEAREST: f64 = 800.0;
+/// The least a town must want of a cargo over what it is supplied for
+/// trucks to carry it there (the town window's cargo demand).
+pub const NEED_LEAST: u32 = 10;
+/// How long a truck waits at a stop at most, and for more cargo, in the
+/// game's seconds in millionths: the game's line window's for a road stop.
+pub const CARGO_MAX_WAIT: i64 = 600_000_000;
+pub const CARGO_EXTRA_WAIT: i64 = 30_000_000;
 /// Cargo routes it puts to the game's pathfinder, at most, per choice.
 pub const ROUTE_TRIES: usize = 5;
-/// Whether an AI plans truck lines for cargo. Off: in the real game its
-/// truck lines were built alike in every game, but no cargo reached their
-/// trucks (2026-10-30, runs 8 to 14; investigation/AI_PLAYERS_2026-10-29.md,
-/// "Trucks"), and an AI must not spend its money on trucks that idle.
-pub const CARRIES_CARGO: bool = false;
+/// Whether an AI plans truck lines for cargo: on since its trucks carried
+/// fuel and meat from industries to towns that need them in the real game,
+/// alike in both games of a room (2026-10-30, run 22;
+/// investigation/AI_PLAYERS_2026-10-29.md, "Trucks").
+pub const CARRIES_CARGO: bool = true;
 /// Below this much money a mind borrows, while its difficulty lets it: a
 /// bus line costs about this much in the 1920s.
 pub const BORROW_BELOW: i64 = 400_000;
@@ -114,13 +122,24 @@ pub struct Memo {
 enum Serves {
     /// A town's districts, by bus.
     Town(AiTown),
-    /// A cargo from the industry that makes it to one that takes it, by
-    /// truck.
+    /// A cargo from the industry that makes it to a town that needs it, by
+    /// truck (unloading by the centre of the district that takes it, its
+    /// project's second centre).
     Cargo {
         cargo: ResName,
         from: AiIndustry,
-        to: AiIndustry,
+        to: AiTown,
     },
+}
+
+/// A cargo route it may carry: what [`Serves::Cargo`] holds, and where in
+/// the town it unloads.
+#[derive(Debug, Clone)]
+struct CargoRoute {
+    cargo: ResName,
+    from: AiIndustry,
+    to: AiTown,
+    at: Pos,
 }
 
 /// The key a cargo route goes by: its maker's place and the cargo (one
@@ -164,7 +183,9 @@ impl Serves {
     fn describe(&self) -> String {
         match self {
             Self::Town(town) => format!("a bus line in {}", town.name.as_str()),
-            Self::Cargo { cargo, from, to } => format!(
+            Self::Cargo {
+                cargo, from, to, ..
+            } => format!(
                 "a truck line carrying {} from {} to {}",
                 cargo_name(cargo.as_str()),
                 from.name.as_str(),
@@ -214,6 +235,9 @@ struct Project {
     depot: Option<AiDepot>,
     /// Depot placements still to try: street index and side.
     depot_tries: Vec<(usize, f64)>,
+    /// A cargo's truck station placements still to try, in the district
+    /// that takes it: index into its site's streets, and side.
+    station_tries: Vec<(usize, f64)>,
     line: Option<LineId>,
 }
 
@@ -228,6 +252,8 @@ enum Stage {
     Borrowing { before: u8, tries: u32 },
     /// Choosing a town.
     Survey,
+    /// Reading what towns need, for a cargo to carry.
+    SurveyNeeds,
     /// Choosing a cargo to carry.
     SurveyIndustries,
     /// Asking whether its next pick of cargo route is joined by road.
@@ -240,6 +266,18 @@ enum Stage {
     StopBuilt {
         site: usize,
         choice: usize,
+        tries: u32,
+    },
+    /// Asking the verdict on the next truck station placement, by the
+    /// streets of a cargo's site of that number (1: the district that
+    /// takes it).
+    StationVerdict { site: usize },
+    /// A truck station sent, by the street of that index: reading until
+    /// its station stands.
+    StationBuilt {
+        site: usize,
+        at: Pos,
+        street: usize,
         tries: u32,
     },
     /// Asking the verdict on the next depot placement.
@@ -282,7 +320,9 @@ pub struct Brain {
     /// The line it adds a vehicle to outside a project.
     topping: Option<(LineId, AiDepot)>,
     /// Cargo routes still to put to the pathfinder, its pick first.
-    routes: Vec<(ResName, AiIndustry, AiIndustry)>,
+    routes: Vec<CargoRoute>,
+    /// The towns read for a cargo to carry, with what they need.
+    needing: Vec<AiTown>,
     /// Whether its next project carries cargo (it takes turns), and
     /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
@@ -327,6 +367,7 @@ impl Brain {
             model: None,
             topping: None,
             routes: Vec::new(),
+            needing: Vec::new(),
             next_cargo: false,
             carries_cargo: CARRIES_CARGO,
             given_up: Vec::new(),
@@ -348,8 +389,8 @@ impl Brain {
         self.wake = Some(until);
     }
 
-    /// Whether it plans truck lines for cargo as well as town buses (off
-    /// by default: [`CARRIES_CARGO`]).
+    /// Whether it plans truck lines for cargo as well as town buses (on by
+    /// default: [`CARRIES_CARGO`]).
     pub fn carry_cargo(&mut self, on: bool) {
         self.carries_cargo = on;
     }
@@ -462,17 +503,19 @@ impl Brain {
             | Stage::Borrowing { .. }
             | Stage::StopBuilt { .. }
             | Stage::DepotBuilt { .. }
+            | Stage::StationBuilt { .. }
             | Stage::Opening
             | Stage::LineMade { .. }
             | Stage::Bought { .. }
             | Stage::Assigned { .. } => self.ask(AiQuestion::Company, now),
             Stage::Survey => self.ask(AiQuestion::Towns, now),
+            Stage::SurveyNeeds => self.ask(AiQuestion::Towns, now),
             Stage::SurveyIndustries => self.ask(AiQuestion::Industries, now),
             Stage::Route => {
-                let (_, from, to) = self.routes.first()?;
+                let route = self.routes.first()?;
                 let question = AiQuestion::Route {
-                    from: from.pos,
-                    to: to.pos,
+                    from: route.from.pos,
+                    to: route.at,
                 };
                 self.ask(question, now)
             }
@@ -487,6 +530,14 @@ impl Brain {
                 let street = self.project.as_ref()?.sites.get(site)?.get(choice)?.clone();
                 self.verdict(&Action::PlaceStop(place::stop(&street, year)), now)
             }
+            Stage::StationVerdict { site } => match self.next_station(site) {
+                Some(build) => self.verdict(&Action::BuildConstruction(build), now),
+                None => {
+                    self.say("found no place for a truck station".into());
+                    self.give_up_project(now);
+                    None
+                }
+            },
             Stage::DepotVerdict => match self.next_depot() {
                 Some(build) => self.verdict(&Action::BuildConstruction(build), now),
                 None => {
@@ -540,6 +591,13 @@ impl Brain {
             (AiQuestion::Company, AiAnswer::Company(company)) => {
                 self.company = Some(company);
                 self.on_company(now)
+            }
+            (AiQuestion::Towns, AiAnswer::Towns(towns))
+                if matches!(self.stage, Stage::SurveyNeeds) =>
+            {
+                self.needing = towns.into_inner();
+                self.stage = Stage::SurveyIndustries;
+                None
             }
             (AiQuestion::Towns, AiAnswer::Towns(towns)) => {
                 self.on_towns(towns.into_inner(), now);
@@ -707,6 +765,42 @@ impl Brain {
                     }
                     _ => self.retry(
                         Stage::DepotBuilt {
+                            at,
+                            street,
+                            tries: tries + 1,
+                        },
+                        tries,
+                        now,
+                    ),
+                }
+                None
+            }
+            Stage::StationBuilt {
+                site,
+                at,
+                street,
+                tries,
+            } => {
+                let found = company
+                    .stations
+                    .iter()
+                    .find(|s| P::of(s.pos).flat_distance(P::of(at)) <= 5.0)
+                    .map(|s| s.id);
+                match found {
+                    Some(id) => {
+                        self.project.as_mut()?.stops.push((P::of(at), Some(id)));
+                        self.next_stop(site + 1, now);
+                    }
+                    None if tries >= CONFIRM_TRIES => {
+                        // Not built: the next street, not this one's other side.
+                        if let Some(project) = self.project.as_mut() {
+                            project.station_tries.retain(|(i, _)| *i != street);
+                        }
+                        self.stage = Stage::StationVerdict { site };
+                    }
+                    None => self.retry(
+                        Stage::StationBuilt {
+                            site,
                             at,
                             street,
                             tries: tries + 1,
@@ -887,7 +981,7 @@ impl Brain {
         let cargo = self.next_cargo && self.carries_cargo;
         self.next_cargo = !self.next_cargo;
         self.stage = if cargo {
-            Stage::SurveyIndustries
+            Stage::SurveyNeeds
         } else {
             Stage::Survey
         };
@@ -895,34 +989,52 @@ impl Brain {
     }
 
     /// The industries: a cargo to carry, from an industry that made it over
-    /// the last year to the nearest that takes it, within its difficulty's
-    /// reach, not carried yet; the best few put to the pathfinder in turn.
+    /// the last year to the nearest town that needs more of it, within its
+    /// difficulty's reach, not carried yet; the best few put to the
+    /// pathfinder in turn. Towns, not industries: an industry takes its
+    /// inputs only while what it makes is carried on, and the AI's trucks to
+    /// refineries, a cement plant and a livestock farm whose output no one
+    /// carried, or carried little, loaded nothing (2026-10-30, runs 8 to
+    /// 19); towns take what they need.
     fn on_industries(&mut self, industries: Vec<AiIndustry>, now: Instant) {
         self.given_up.retain(|(_, until)| *until > now);
-        let mut picks: Vec<(f64, (ResName, AiIndustry, AiIndustry))> = Vec::new();
+        let towns = std::mem::take(&mut self.needing);
+        let mut picks: Vec<(f64, CargoRoute)> = Vec::new();
         for from in &industries {
+            // It loads at the industry's own station.
+            if from.station.is_none() {
+                continue;
+            }
             for output in from.outputs.iter().filter(|o| o.per_year >= CARGO_LEAST) {
                 let key = route_key(from.pos, output.cargo.as_str());
                 if self.memo.served.contains(&key) || self.given_up.iter().any(|(id, _)| *id == key)
                 {
                     continue;
                 }
-                // Both by their own stations, where the line loads and
-                // unloads.
-                if from.station.is_none() {
-                    continue;
-                }
-                let nearest = industries
+                let nearest = towns
                     .iter()
-                    .filter(|to| to.station.is_some())
-                    .filter(|to| to.inputs.iter().any(|c| c == &output.cargo))
-                    .map(|to| (P::of(from.pos).flat_distance(P::of(to.pos)), to))
-                    .filter(|(d, _)| *d >= CARGO_NEAREST && *d <= self.profile.cargo_most)
+                    .filter_map(|town| {
+                        let need = town.needs.iter().find(|n| n.cargo == output.cargo)?;
+                        let short = need.limit.saturating_sub(need.supply);
+                        (short >= NEED_LEAST).then_some((town, need.at, short))
+                    })
+                    .map(|(town, at, short)| {
+                        (P::of(from.pos).flat_distance(P::of(at)), town, at, short)
+                    })
+                    .filter(|(d, ..)| *d >= CARGO_NEAREST && *d <= self.profile.cargo_most)
                     .min_by(|a, b| a.0.total_cmp(&b.0));
-                if let Some((d, to)) = nearest {
-                    // More cargo, fewer kilometres.
-                    let score = f64::from(output.per_year) / (1.0 + d / 1000.0);
-                    picks.push((score, (output.cargo.clone(), from.clone(), to.clone())));
+                if let Some((d, to, at, short)) = nearest {
+                    // More cargo wanted and made, fewer kilometres.
+                    let score = f64::from(output.per_year.min(short)) / (1.0 + d / 1000.0);
+                    picks.push((
+                        score,
+                        CargoRoute {
+                            cargo: output.cargo.clone(),
+                            from: from.clone(),
+                            to: to.clone(),
+                            at,
+                        },
+                    ));
                 }
             }
         }
@@ -956,7 +1068,12 @@ impl Brain {
             self.stage = Stage::Survey;
             return;
         }
-        let (cargo, from, to) = self.routes.remove(0);
+        let CargoRoute {
+            cargo,
+            from,
+            to,
+            at,
+        } = self.routes.remove(0);
         if !route.connected {
             self.given_up
                 .push((route_key(from.pos, cargo.as_str()), now + GIVE_UP_FOR));
@@ -969,20 +1086,19 @@ impl Brain {
             return;
         }
         self.routes.clear();
-        // Its stops are the two industries' own stations; it reads the
-        // streets by the one that makes the cargo for its depot.
-        // It loads at the station of the industry that makes the cargo, and
-        // unloads at a street stop by the one that takes it, as players'
-        // cargo lines do (build 40425): an industry's own station only
-        // loads. It reads the streets by both: for its depot, and for that
-        // stop.
-        let centres = vec![from.pos, to.pos];
-        let stops = vec![(P::of(from.pos), from.station)];
+        // It loads at the output terminal of the industry's own station, as
+        // players' cargo lines at the fixture's farm, quarry and livestock
+        // farm do (build 40425), and unloads at a truck station of its own in
+        // the district that takes the cargo. A truck station of its own by the
+        // industry loaded nothing (2026-10-30, runs 10, 11, 18 to 20). It
+        // reads the streets by both: for its depot, and for that station.
+        let centres = vec![from.pos, at];
+        let first = (P::of(from.pos), from.station);
         let serves = Serves::Cargo { cargo, from, to };
         self.say(format!("plans {}", serves.describe()));
         self.start(serves, centres);
         if let Some(project) = self.project.as_mut() {
-            project.stops = stops;
+            project.stops = vec![first];
         }
     }
 
@@ -996,6 +1112,7 @@ impl Brain {
             stops: Vec::new(),
             depot: None,
             depot_tries: Vec::new(),
+            station_tries: Vec::new(),
             line: None,
         });
         self.stage = Stage::Streets;
@@ -1011,7 +1128,12 @@ impl Brain {
             .map(|c| {
                 c.stations
                     .iter()
-                    .filter(|s| c.lines.iter().any(|l| l.stops.contains(&s.id)))
+                    .filter(|s| {
+                        c.lines
+                            .iter()
+                            .filter(|l| !self.memo.cargo_lines.iter().any(|(id, _)| *id == l.id.0))
+                            .any(|l| l.stops.contains(&s.id))
+                    })
                     .map(|s| P::of(s.pos))
                     .collect()
             })
@@ -1084,14 +1206,13 @@ impl Brain {
             }
         }
         project.centres.remove(0);
-        if !project.centres.is_empty() {
-            self.stage = Stage::Streets;
-        } else if project.serves.cargo().is_some() {
-            // Its first stop is the industry's own station: on to the stop
-            // by the industry that takes the cargo.
-            self.next_stop(1, now);
+        if project.centres.is_empty() {
+            // On to its first stop not had yet: a cargo's first is its
+            // industry's own station.
+            let next = project.stops.len();
+            self.next_stop(next, now);
         } else {
-            self.next_stop(0, now);
+            self.stage = Stage::Streets;
         }
     }
 
@@ -1103,6 +1224,14 @@ impl Brain {
             return;
         };
         let reuse = project.serves.search().1.unwrap_or(STOP_REUSE);
+        // A cargo's stop in the town is a truck station of its own: cargo
+        // stations unload cargo, as players' do.
+        if site < project.sites.len() && project.serves.cargo().is_some() {
+            let streets = project.sites.get(site).map_or(0, Vec::len);
+            project.station_tries = (0..streets).flat_map(|i| [(i, 1.0), (i, -1.0)]).collect();
+            self.stage = Stage::StationVerdict { site };
+            return;
+        }
         while site < project.sites.len() {
             // A stop of its own by this centre that no line stops at, not
             // too near the line's others: taken up, not built again.
@@ -1197,6 +1326,29 @@ impl Brain {
         self.stage = Stage::DepotVerdict;
     }
 
+    fn next_station(&mut self, site: usize) -> Option<tpf3mp_proto::action::ConstructionBuild> {
+        let year = self.year();
+        #[allow(clippy::cast_possible_wrap)]
+        let seed = (self.random() >> 33) as i64;
+        let project = self.project.as_mut()?;
+        let name = match &project.serves {
+            Serves::Cargo { to, .. } => format!("{} Freight", to.name.as_str()),
+            Serves::Town(town) => format!("{} Freight", town.name.as_str()),
+        };
+        while let Some((index, side)) = project.station_tries.first().copied() {
+            if let Some((_, build)) = project
+                .sites
+                .get(site)
+                .and_then(|streets| streets.get(index))
+                .and_then(|street| place::truck_station(street, side, year, seed, &name))
+            {
+                return Some(build);
+            }
+            project.station_tries.remove(0);
+        }
+        None
+    }
+
     fn next_depot(&mut self) -> Option<tpf3mp_proto::action::ConstructionBuild> {
         let year = self.year();
         #[allow(clippy::cast_possible_wrap)]
@@ -1249,6 +1401,26 @@ impl Brain {
                 }
                 out
             }
+            (Stage::StationVerdict { site }, Action::BuildConstruction(build)) => {
+                let at = build.transform.origin;
+                let out = self.act(action, now);
+                if out.is_some() {
+                    let street = self
+                        .project
+                        .as_mut()
+                        .filter(|p| !p.station_tries.is_empty())
+                        .map_or(usize::MAX, |p| p.station_tries.remove(0).0);
+                    self.stage = Stage::StationBuilt {
+                        site,
+                        at,
+                        street,
+                        tries: 0,
+                    };
+                } else {
+                    self.wake = Some(now + SETTLE);
+                }
+                out
+            }
             (Stage::DepotVerdict, Action::BuildConstruction(build)) => {
                 let at = build.transform.origin;
                 let out = self.act(action, now);
@@ -1281,6 +1453,14 @@ impl Brain {
                 };
                 self.skip_exhausted_site(site, now);
             }
+            Stage::StationVerdict { .. } => {
+                self.say(format!("a truck station placement was refused: {why}"));
+                if let Some(project) = self.project.as_mut()
+                    && !project.station_tries.is_empty()
+                {
+                    project.station_tries.remove(0);
+                }
+            }
             Stage::DepotVerdict => {
                 self.say(format!("a depot placement was refused: {why}"));
                 if let Some(project) = self.project.as_mut()
@@ -1309,9 +1489,10 @@ impl Brain {
     fn make_line(&mut self, now: Instant) -> Option<Out> {
         let project = self.project.as_ref()?;
         // What each stop loads, cargo type by cargo type, as a player's
-        // line keeps it (one entry for each type, build 40425): a town's
-        // passengers (type 0) at every stop; a cargo's type at its maker's
-        // stop only.
+        // line keeps it (one entry for each type, build 40425; the mod fills
+        // out the types after the last listed): passengers (type 0) at every
+        // stop, as the game's line window loads them at every station that
+        // takes them; a cargo's type at its maker's stop only.
         let full = tpf3mp_proto::action::Fraction(1_000_000);
         let rules_at = |stop: usize| -> Option<(Vec<bool>, Vec<tpf3mp_proto::action::Fraction>)> {
             match &project.serves {
@@ -1319,29 +1500,17 @@ impl Brain {
                 Serves::Cargo { cargo, from, .. } => {
                     let index = usize::from(from.outputs.iter().find(|o| &o.cargo == cargo)?.index);
                     let mut load = vec![false; index + 1];
+                    load[0] = true;
                     load[index] = stop == 0;
                     Some((load, vec![full; index + 1]))
                 }
             }
         };
-        // A cargo's stops are its industries' own stations, of their
-        // terminals; a town's are two-sided street stops: a group of two
-        // stations, one each side, of one terminal each (build 40425).
-        let alternatives_at = |stop: usize| -> Vec<Terminal> {
-            match &project.serves {
-                Serves::Town(_) => vec![Terminal {
-                    station: 1,
-                    terminal: 0,
-                }],
-                // A cargo's second stop is a two-sided street stop; its first
-                // the industry's output terminal alone ([`output_terminal`]).
-                Serves::Cargo { .. } if stop > 0 => vec![Terminal {
-                    station: 1,
-                    terminal: 0,
-                }],
-                Serves::Cargo { .. } => Vec::new(),
-            }
-        };
+        // A town's stops are two-sided street stops: a group of two
+        // stations, one each side, of one terminal each (build 40425); a
+        // cargo's are its industry's own station, at its output terminal
+        // alone ([`output_terminal`]), and its truck station in the town, of
+        // one terminal.
         let terminal_at = |stop: usize| -> Terminal {
             match &project.serves {
                 Serves::Cargo { from, .. } if stop == 0 => Terminal {
@@ -1354,23 +1523,35 @@ impl Brain {
                 },
             }
         };
+        let alternatives = match &project.serves {
+            Serves::Town(_) => vec![Terminal {
+                station: 1,
+                terminal: 0,
+            }],
+            Serves::Cargo { .. } => Vec::new(),
+        };
+        // A cargo line's stops wait as the game's line window has a road
+        // stop's (line_util.tl, makeNewStop; a player's truck line at the
+        // fixture's livestock farm keeps these), and give up cargo a change
+        // of their rules leaves aboard.
+        let cargo = project.serves.cargo().is_some();
         let mut stops: Vec<LineStop> = Vec::new();
         for (i, group) in project.stops.iter().filter_map(|(_, s)| *s).enumerate() {
             let (load, max_load) = rules_at(i)?;
             stops.push(LineStop {
                 group,
                 terminal: terminal_at(i),
-                alternatives: BoundedVec::new(alternatives_at(i)).unwrap_or_default(),
+                alternatives: BoundedVec::new(alternatives.clone()).unwrap_or_default(),
                 load_mode: LoadMode::LoadIfAvailable,
                 min_wait: 0,
-                max_wait: 0,
-                max_extra_wait: 0,
+                max_wait: if cargo { CARGO_MAX_WAIT } else { 0 },
+                max_extra_wait: if cargo { CARGO_EXTRA_WAIT } else { 0 },
                 rules: StopRules {
                     load: BoundedVec::new(load).ok()?,
                     max_load: BoundedVec::new(max_load).ok()?,
                     force_unload: false,
-                    destroy_for_config_change: false,
-                    destroy_for_refresh: false,
+                    destroy_for_config_change: cargo,
+                    destroy_for_refresh: cargo,
                 },
                 waypoints: BoundedVec::default(),
             });
@@ -1388,6 +1569,9 @@ impl Brain {
             line: LineData {
                 stops: BoundedVec::new(stops).ok()?,
                 modes: BoundedVec::new(vec![mode]).ok()?,
+                // Not filtered by hand, as players' truck line at the
+                // fixture's livestock farm: the game's line window may set a
+                // stop's cargo afresh when a player edits the line.
                 custom_filters: false,
                 reservation_priority: 0,
             },
@@ -1502,11 +1686,11 @@ impl Brain {
     }
 }
 
-/// The terminal of an industry's own station its output is loaded at: of
-/// two (an input and an output, `industryutil.lua`), the second, as
-/// players' lines at the fixture's farm and quarry stop; else the first.
-/// The station lists its terminals in the order its script's table gives
-/// them, which the game does not name.
+/// The terminal of an industry's own station its output is loaded at. Its
+/// terminals are alike, each taking cargo and passengers by truck and bus
+/// (`industryutil.lua`, `addTerminals`): of two, the second, as players'
+/// lines at the fixture's farm and quarry stop; else the first, as theirs
+/// at its livestock farm.
 fn output_terminal(terminals: u8) -> u16 {
     if terminals == 2 { 1 } else { 0 }
 }

@@ -3514,6 +3514,30 @@ local function waypointFor(w)
 	return wp
 end
 
+-- How many cargo types the game has: a stop's per-cargo lists hold one entry
+-- for each, by number (`cargoTypeRep.getAll`, ids from 0).
+local function cargoCount()
+	local ok, all = pcall(function() return api.res.cargoTypeRep.getAll(true) end)
+	local n = 0
+	if ok and all then
+		for id in pairs(all) do
+			if type(id) == "number" and id + 1 > n then n = id + 1 end
+		end
+	end
+	return n
+end
+
+-- `list` with every cargo type after its last entry set to `value`, as the
+-- game's line window makes a stop's lists (line_util.tl, makeIdvector): one
+-- an action leaves short, as an AI player's that lists up to its cargo's
+-- number, is filled out (not loaded, at 100 %); one of every type, as a
+-- player's, is kept as it is.
+local function everyCargo(list, n, value)
+	local out = seq(list)
+	for i = #out + 1, n do out[i] = value end
+	return out
+end
+
 -- A LineData as the game's Line component. Each stop is at a station the
 -- acting company may use (tpf3mp/companies.lua, mayUse): no company's, its
 -- own, or another company's that keeps its stations open (DECISIONS.md, D22,
@@ -3523,6 +3547,7 @@ end
 local function lineComponent(data, ctx)
 	local line = api.type.Line.new()
 	local stops = {}
+	local cargos = cargoCount()
 	for i, s in ipairs(data.stops) do
 		local stop = api.type.Line.Stop.new()
 		local group = entityOf(ctx, "groups", s.group)
@@ -3541,8 +3566,8 @@ local function lineComponent(data, ctx)
 		stop.maxWaitingTime = s.max_wait
 		stop.maxAdditionalWaitingTime = s.max_extra_wait
 		local config = api.type.Line.StopConfig.new()
-		config.load = seq(s.rules.load)
-		config.maxLoad = seq(s.rules.max_load)
+		config.load = everyCargo(s.rules.load, cargos, false)
+		config.maxLoad = everyCargo(s.rules.max_load, cargos, 1)
 		config.forceUnload = s.rules.force_unload == true
 		config.destroyForConfigChange = s.rules.destroy_for_config_change == true
 		config.destroyForRefresh = s.rules.destroy_for_refresh == true

@@ -31,6 +31,7 @@ ai.MAX_STREETS = 320
 ai.MAX_MODELS = 48
 ai.MAX_OWNED = 160
 ai.MAX_MESSAGES = 8
+ai.MAX_NEEDS = 4
 
 local function module(name)
 	if ug_require then return ug_require("tpf3mp_1::/scripts/tpf3mp/" .. name .. ".lua") end
@@ -296,15 +297,18 @@ function ai.towns(registry)
 	for _, t in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.TOWN) or {}) do
 		local id = reg and regmod.id(reg, "towns", t)
 		local name = component(t, "NAME")
-		local centres = {}
+		local centres, centreOf = {}, {}
 		for landUse = 0, 2 do
 			local ok, c = pcall(api.engine.util.town.getTownDistrictCenter, t, landUse)
-			if ok and c then centres[#centres + 1] = pos(c) end
+			if ok and c then
+				centres[#centres + 1] = pos(c)
+				centreOf[landUse] = centres[#centres]
+			end
 		end
 		if id and #centres > 0 then
 			towns[#towns + 1] = {
 				id = id, name = text(name and name.name, 48), pos = centres[1],
-				buildings = buildings[t] or 0, centres = centres,
+				buildings = buildings[t] or 0, centres = centres, needs = ai.needs(t, centreOf, centres[1]),
 			}
 		end
 	end
@@ -313,6 +317,40 @@ function ai.towns(registry)
 		return a.id < b.id
 	end)
 	return { Towns = each(towns, ai.MAX_TOWNS) }
+end
+
+-- What `town` needs: each cargo its buildings take, how much it was
+-- supplied and may take (the town window's cargo demand), at the centre of
+-- the first district whose buildings take it (`TOWN.cargoNeeds`, one list a
+-- district, residential first), the least supplied first.
+function ai.needs(town, centreOf, centre)
+	local ok, supply = pcall(api.engine.system.townBuildingSystem.getCargoSupplyAndLimit, town)
+	if not ok or supply == nil then return {} end
+	local useOf = {}
+	local t = component(town, "TOWN")
+	pcall(function()
+		for landUse, cargos in ipairs(t.cargoNeeds) do
+			for _, entry in ipairs(cargos) do
+				if useOf[entry[1]] == nil then useOf[entry[1]] = landUse - 1 end
+			end
+		end
+	end)
+	local needs = {}
+	for id, got in pairs(supply) do
+		local name = api.res.cargoTypeRep.getName(id)
+		if name and (got[2] or 0) >= 1 then
+			needs[#needs + 1] = {
+				cargo = text(name, 128), supply = math.floor(got[1] or 0), limit = math.floor(got[2]),
+				at = centreOf[useOf[id]] or centre,
+			}
+		end
+	end
+	table.sort(needs, function(a, b)
+		local ua, ub = a.limit - a.supply, b.limit - b.supply
+		if ua ~= ub then return ua > ub end
+		return a.cargo < b.cargo
+	end)
+	return each(needs, ai.MAX_NEEDS)
 end
 
 -- Whether a company owns `edge`.

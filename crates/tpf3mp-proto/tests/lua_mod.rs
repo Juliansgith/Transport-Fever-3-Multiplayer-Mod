@@ -12003,6 +12003,34 @@ fn a_stops_loading_flags_reach_the_game_in_order_however_it_copied_them() {
     );
 }
 
+/// A stop's per-cargo lists an action leaves short, as an AI player's that
+/// lists up to its cargo's number, reach the game with one entry for every
+/// cargo type, as the game's line window makes them (line_util.tl,
+/// makeIdvector): the types after the last listed not loaded, at 100 %.
+#[test]
+fn a_stops_short_cargo_lists_are_filled_out_to_every_cargo_type() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        "api.type.Line = { new = function() return { vehicleInfo = {} } end,              Stop = { new = function() return {} end },              StopConfig = { new = function() return {} end } }          api.type.StationTerminal = { new = function(s, t) return { station = s, terminal = t } end }          api.res.cargoTypeRep = { getAll = function() local all = {}              for id = 0, 36 do all[id] = 'cargo' .. id end return all end }          api.cmd.makeLineCreateCmd = function(name, color, player, line)              return { createLine = { line = line } } end          HOOK.room = true UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let lists: String = lua
+        .load(
+            "local stop = { group = 0, terminal = { station = 0, terminal = 0 }, alternatives = {},                  load_mode = 'LoadIfAvailable', min_wait = 0, max_wait = 600, max_extra_wait = 30,                  rules = { load = { true, false, false, true }, max_load = { 1, 1, 1, 0.5 },                            force_unload = false, destroy_for_config_change = true,                            destroy_for_refresh = true } }              HOOK.batch = { { CreateLine = { name = 'Line 1', color = { r = 1, g = 0, b = 0 },                  line = { stops = { stop }, modes = { 4 }, custom_filters = false,                           reservation_priority = 0 } } } }              UPDATE({}, STATE, 0.2)              local c = SENT[1].createLine.line.stops[1].stopConfig              local on = {} for i = 1, #c.load do if c.load[i] then on[#on + 1] = i end end              return #c.load .. '/' .. #c.maxLoad .. ' on@' .. table.concat(on, ',')                  .. ' max[4]=' .. c.maxLoad[4] .. ' max[37]=' .. c.maxLoad[37]",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}
+{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(lists, "37/37 on@1,4 max[4]=0.5 max[37]=1");
+}
+
 /// The line manager gives a new line the palette colour fewest of the
 /// player's lines wear, telling which one a line wears by floor(channel *
 /// 255) (line_vehicle_mgmt/line_util.tl). Its first pick, 255/127/0, came
