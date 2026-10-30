@@ -425,6 +425,46 @@ one:
   the same two towns again is a fault of the passenger pairs' key (a
   district centre's place, which moves as a town grows).
 
+## Money (2026-10-30)
+
+The long run (two games, Hard and Normal AIs, the big fixture, about two
+hours) left both AIs deep in debt. Read from the host's game with
+read-only console probes:
+
+- Balances: Hard −13.6 million, Normal −8.4 million (the fixture's own
+  company 208 million). The game's finance table
+  (`api.engine.util.finance.computeFinanceTable`, four periods) showed Hard
+  borrowing 27.0, 46.4 and 24.4 million, owing up to 86.6, paying 1.6, 4.6,
+  7.3 and 8.4 million in interest and up to 8.7 million in repayments a
+  period, against fare and freight income under 1 million a period.
+- The game's month (`api.util.getDefaultMonthDuration`) is 121,750 of its
+  milliseconds, about two minutes of play at 1x: the room charges a loan's
+  monthly annuity that often (`companies.chargeMonths`; 47 payments on the
+  first loan in the run). Hard's four loans took 1.42 million a month.
+- Every one of the AIs' 25 bus lines carried nobody: `load 0/36`, its buses
+  empty (`simEntityAtVehicleSystem.getVehicleSimEntitiesCount`), 15 to 50
+  passengers waiting at its stops, each line losing exactly its buses'
+  running costs (about 98,000 a year for three). A player's bus line in the
+  same world carried 3 and 7. The difference: the AI's bus stops waited at
+  most 0 s (`maxWaitingTime`), the game's line window sets 600 s and 30 s
+  more for a load, as the AI's truck stops already had.
+- Its three trains lost 0.6 to 1 million a year each, two running empty;
+  its trucks were mixed, a few earning well (176,000 and 164,000 a year)
+  and many running empty or full and still losing.
+- The cause of the debt: it borrowed whenever its money fell below 400,000
+  and it held fewer loans than its difficulty allowed, whatever its lines
+  earned, and the company answer told it nothing of what they earned: the
+  mod sent each line's load, waiting cargo, income and costs as 0, so its
+  upkeep never added, sold or closed anything.
+- So the company answer now carries each line's profit, load and waiting
+  cargo as the line window reads them, each loan owed and the game's month
+  (bridge version 35); the AI keeps its next four months' payments in hand,
+  borrows after its start only what its lines carry, starts nothing new
+  while its settled lines do not cover its loans, passes over a kind of
+  line that loses, closes a line that lost money over its year, rail lines
+  included, and pays back early when flush; and its bus stops wait as the
+  line window's.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

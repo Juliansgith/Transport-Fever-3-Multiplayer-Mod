@@ -8,18 +8,20 @@ use std::time::{Duration, Instant};
 
 use tpf3mp_ai::{Brain, Out, place::P};
 use tpf3mp_bridge::ai::{
-    AiAnswer, AiCompany, AiDepot, AiEnd, AiIndustry, AiLand, AiLine, AiModel, AiNeed, AiOutput,
-    AiQuestion, AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict, land,
+    AiAnswer, AiCompany, AiDepot, AiEnd, AiIndustry, AiLand, AiLine, AiLoan, AiModel, AiNeed,
+    AiOutput, AiQuestion, AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict, land,
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
     action::{
-        Action, CompanyOp, EdgeEnds, EdgeObjectKind, LineId, LoanOp, LoanTerms, PlaceStop, Pos,
-        Resolve, StationId, Structure, TownId, VehicleId,
+        Action, CompanyOp, EdgeEnds, EdgeObjectKind, LineChange, LineId, LoanOp, LoanTerms,
+        PlaceStop, Pos, Resolve, StationId, Structure, TownId, VehicleId,
     },
 };
 
 const STEP: Duration = Duration::from_millis(100);
+/// The game's month, in its milliseconds (build 40425's default).
+const MONTH: u32 = 121_750;
 /// The road depot TF3 builds road vehicles in, and the game's refusal of a
 /// split whose street is gone (tpf3mp/apply.lua).
 const ROAD_DEPOT: &str = tpf3mp_ai::place::ROAD_DEPOT;
@@ -105,6 +107,17 @@ struct World {
     depot_cost: Option<fn(Pos) -> i64>,
     /// The road depots the verdicts would build: where, and at what price.
     depot_quotes: Vec<(Pos, i64)>,
+    /// The loans its company owes, and the game's months: how often they
+    /// fall due in play (none: never), what each line earns a year then,
+    /// how far through their lives its vehicles go each month, and the
+    /// least money the company had.
+    owed: Vec<AiLoan>,
+    month_every: Option<Duration>,
+    month_at: Option<Instant>,
+    line_profit: Option<fn(&AiLine) -> i64>,
+    wear_per_month: u16,
+    lowest: i64,
+    loans_taken: u32,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -175,6 +188,13 @@ impl World {
             rival_depots: 0,
             depot_cost: None,
             depot_quotes: Vec::new(),
+            owed: Vec::new(),
+            month_every: None,
+            month_at: None,
+            line_profit: None,
+            wear_per_month: 0,
+            lowest: 0,
+            loans_taken: 0,
             actions: Vec::new(),
             next_id: 1,
         }
@@ -205,6 +225,8 @@ impl World {
                 vehicles: BoundedVec::new(self.vehicles.clone()).unwrap(),
                 offers: BoundedVec::new(self.offers.clone()).unwrap(),
                 loans: self.loans,
+                owed: BoundedVec::new(self.owed.clone()).unwrap(),
+                month: MONTH,
             }),
             AiQuestion::Towns => AiAnswer::Towns(BoundedVec::new(self.towns.clone()).unwrap()),
             AiQuestion::Streets { at, radius } => {
@@ -517,15 +539,35 @@ impl World {
         self.actions.push((now, action.clone()));
         match action {
             Action::CompanyOp(CompanyOp::Create { .. }) => self.company = Some(1),
-            Action::Loan(op) => {
-                let LoanOp::Take { offer, .. } = *op else {
-                    panic!("only taking")
-                };
-                assert!(self.offers.contains(&offer), "an offer it was given");
-                self.offers.retain(|o| *o != offer);
-                self.money += offer.amount;
-                self.loans += 1;
-            }
+            Action::Loan(op) => match *op {
+                LoanOp::Take { offer, .. } => {
+                    assert!(self.offers.contains(&offer), "an offer it was given");
+                    self.offers.retain(|o| *o != offer);
+                    self.money += offer.amount;
+                    self.loans += 1;
+                    self.loans_taken += 1;
+                    let months = offer.duration / i64::from(MONTH);
+                    self.owed.push(AiLoan {
+                        terms: LoanTerms {
+                            id: Some(i64::from(self.loans_taken)),
+                            ..offer.clone()
+                        },
+                        remaining: offer.amount,
+                        payment: tpf3mp_ai::money::payment(&offer, MONTH).unwrap(),
+                        months_left: u32::try_from(months).unwrap(),
+                    });
+                }
+                LoanOp::Repay { loan } => {
+                    let k = self
+                        .owed
+                        .iter()
+                        .position(|l| l.terms.id == loan.id && l.terms.amount == loan.amount)
+                        .expect("a loan it owes");
+                    let paid = self.owed.remove(k);
+                    self.money -= paid.remaining;
+                    self.loans -= 1;
+                }
+            },
             Action::PlaceStop(stop) if stop.object == EdgeObjectKind::Signal => {
                 assert!(stop.one_way);
                 self.signals.push(stop);
@@ -785,6 +827,16 @@ impl World {
                     );
                 } else {
                     assert!(rules.iter().all(|r| r == &[true]), "{rules:?}");
+                    // A bus waits at its stops as the game's line window has
+                    // it: one that waited none left before anyone boarded,
+                    // and no AI bus line carried anyone (run 41).
+                    for stop in create.line.stops.iter() {
+                        assert_eq!(
+                            (stop.max_wait, stop.max_extra_wait),
+                            (600_000_000, 30_000_000),
+                            "a bus stop's waits"
+                        );
+                    }
                 }
                 self.lines.push(AiLine {
                     id: LineId(id),
@@ -794,8 +846,7 @@ impl World {
                     vehicles: BoundedVec::default(),
                     load: 0,
                     waiting: 0,
-                    income: 0,
-                    costs: 0,
+                    profit: 0,
                     problems: 0,
                 });
             }
@@ -879,8 +930,49 @@ impl World {
                 }
                 self.money += 10_000;
             }
+            Action::EditLine(edit) if edit.change == LineChange::Delete => {
+                assert!(
+                    self.vehicles.iter().all(|v| v.line != Some(edit.line)),
+                    "a line deleted with its vehicles on it"
+                );
+                self.lines.retain(|l| l.id != edit.line);
+            }
             other => panic!("the brain sent {other:?}"),
         }
+    }
+
+    /// The game's months as they fall due in play: each loan's payment
+    /// taken, what each line earns in a month paid in, its year's profit
+    /// as it says, and its vehicles a month older.
+    fn month(&mut self, now: Instant) {
+        let Some(every) = self.month_every else {
+            return;
+        };
+        let at = *self.month_at.get_or_insert(now);
+        if now.saturating_duration_since(at) < every {
+            return;
+        }
+        self.month_at = Some(now);
+        for loan in &mut self.owed {
+            let paid = loan.payment.min(loan.remaining);
+            self.money -= paid;
+            loan.remaining -= paid;
+            loan.months_left = loan.months_left.saturating_sub(1);
+        }
+        let before = self.owed.len();
+        self.owed.retain(|l| l.remaining > 0);
+        self.loans -= u8::try_from(before - self.owed.len()).unwrap();
+        if let Some(profit) = self.line_profit {
+            for line in &mut self.lines {
+                let running = self.vehicles.iter().any(|v| v.line == Some(line.id));
+                line.profit = if running { profit(line) } else { 0 };
+                self.money += line.profit / 12;
+            }
+        }
+        for v in &mut self.vehicles {
+            v.worn += self.wear_per_month;
+        }
+        self.lowest = self.lowest.min(self.money);
     }
 
     fn lines_with_buses(&self, buses: usize) -> usize {
@@ -1003,6 +1095,7 @@ fn play(brain: &mut Brain, world: &mut World, start: Instant, time: Duration) ->
     let mut now = start;
     let end = start + time;
     while now < end {
+        world.month(now);
         while let Some(out) = brain.poll(now, 100) {
             match out {
                 Out::Ask(question) => {
@@ -2360,4 +2453,76 @@ fn a_second_rail_line_from_one_place_shares_the_first_ones_depot() {
         .filter(|d| d.file.as_str().contains("/rail/"))
         .count();
     assert_eq!(depots, 1, "{said:?}");
+}
+
+/// A loan as the room offers one: `months` of the game's long, at
+/// `percent` a year.
+fn offer(kind: &str, amount: i64, months: i64, percent: i64) -> LoanTerms {
+    LoanTerms {
+        duration: months * i64::from(MONTH),
+        percentage: percent * 10_000,
+        ..loan(kind, amount)
+    }
+}
+
+#[test]
+fn an_ai_whose_lines_lose_money_borrows_no_more_and_keeps_out_of_debt() {
+    // As in the long run of 2026-10-30: every line loses money, the loans
+    // fall due each month, and the room offers a large loan again as soon
+    // as one is taken. The old brain borrowed whenever it ran short and
+    // owed 86 million, its balance far below zero.
+    let mut world = World::new();
+    world.offers = vec![
+        offer("Small", 500_000, 6, 5),
+        offer("Large", 27_000_000, 144, 10),
+    ];
+    world.month_every = Some(Duration::from_secs(30));
+    world.line_profit = Some(|_| -3_600_000);
+    world.wear_per_month = 1;
+    let refill = world.offers.clone();
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Hard, None);
+    let mut now = Instant::now();
+    let mut said = Vec::new();
+    // Forty of the game's months, the offers drawn again each minute.
+    for _ in 0..20 {
+        now = play(&mut brain, &mut world, now, Duration::from_secs(60));
+        world.offers.clone_from(&refill);
+        said.extend(brain.take_said());
+    }
+    assert_eq!(world.loans_taken, 1, "only its first loan: {said:?}");
+    assert!(world.lowest >= 0, "never below zero: {}", world.lowest);
+    // Its lines that lost money over their year closed, its railway too.
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("closes ") && l.contains("Bus")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("closes ") && l.contains("train")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn an_ai_whose_lines_pay_pays_its_loan_back_early() {
+    let mut world = World::new();
+    world.offers = vec![offer("Medium", 2_000_000, 48, 5)];
+    world.month_every = Some(Duration::from_secs(30));
+    world.line_profit = Some(|_| 24_000_000);
+    world.wear_per_month = 1;
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.loans_taken, 1, "{said:?}");
+    assert!(
+        said.iter().any(|l| l.starts_with("pays a loan back early")),
+        "{said:?}"
+    );
+    assert!(world.owed.is_empty(), "nothing owed: {:?}", world.owed);
 }

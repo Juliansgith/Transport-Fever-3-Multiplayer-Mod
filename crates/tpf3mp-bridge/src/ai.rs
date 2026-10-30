@@ -33,6 +33,9 @@ pub const MAX_AI_NEEDS: usize = 4;
 pub const MAX_AI_LAND: usize = 576;
 /// Most track ends an [`AiStation`] lists.
 pub const MAX_AI_ENDS: usize = 8;
+/// Most loans an [`AiCompany`] lists: the room allows four at once
+/// (`companies.MAX_LOANS`).
+pub const MAX_AI_LOANS: usize = 8;
 
 /// What stands on a cell of an [`AiLand`], a bit each.
 pub mod land {
@@ -121,6 +124,26 @@ pub struct AiCompany {
     pub offers: BoundedVec<LoanTerms, 8>,
     /// The loans it owes.
     pub loans: u8,
+    /// Each loan it owes, with what is still owed and paid each month
+    /// (tpf3mp/companies.lua, "loans").
+    pub owed: BoundedVec<AiLoan, MAX_AI_LOANS>,
+    /// The game's month, in its milliseconds (`getDefaultMonthDuration`):
+    /// what an offer's term is counted in; 0 unknown.
+    pub month: u32,
+}
+
+/// A loan a company owes: paid back each of the game's months as an
+/// annuity, its interest on what is still owed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiLoan {
+    /// Its terms as the room keeps them, by its id and amount: what paying
+    /// it back names (`LoanOp::Repay`).
+    pub terms: LoanTerms,
+    /// What is still owed, and what each month's payment is.
+    pub remaining: i64,
+    pub payment: i64,
+    /// The months still to pay.
+    pub months_left: u32,
 }
 
 /// A station group of the company's.
@@ -164,14 +187,19 @@ pub struct AiLine {
     pub name: Text<64>,
     pub stops: BoundedVec<StationId, 32>,
     pub vehicles: BoundedVec<VehicleId, 64>,
-    /// How full its vehicles run, in percent of their capacity, on average
-    /// over its stops; 0 unknown.
+    /// How full its vehicles run, in percent of their capacity over its
+    /// sections, as the game's line window reckons it
+    /// (`getLineCapacityUsages`): 1 at least for a line that runs; 0
+    /// unknown.
     pub load: u8,
-    /// Passengers and cargo waiting at its stops for it.
+    /// Passengers and cargo of the kinds its vehicles carry waiting at its
+    /// stops for it.
     pub waiting: u32,
-    /// Its income and costs over the last twelve months, in whole units.
-    pub income: i64,
-    pub costs: i64,
+    /// What it earned over the last twelve of the game's months, less what
+    /// it cost to run and keep (`calculateBalance`, as the game's line
+    /// window reads it): negative where it lost money. A line younger than
+    /// that, since it opened.
+    pub profit: i64,
     /// Problems the game sees on it (no path, no vehicle, ...).
     pub problems: u16,
 }

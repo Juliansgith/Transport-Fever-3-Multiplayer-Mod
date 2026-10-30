@@ -90,8 +90,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// [`LobbyAction::RemoveAi`] (docs/AI_PLAYERS.md). 31 the AI's truck
 /// questions: [`ai::AiQuestion::Industries`], [`ai::AiQuestion::Route`]
 /// and the cargo of [`ai::AiQuestion::Models`]. 34 how worn each of the AI
-/// company's vehicles is ([`ai::AiVehicle::worn`]).
-pub const BRIDGE_VERSION: u32 = 34;
+/// company's vehicles is ([`ai::AiVehicle::worn`]). 35 each AI line's
+/// profit, load and waiting cargo as the game reads them, and each loan the
+/// AI's company owes ([`ai::AiLine::profit`], [`ai::AiCompany::owed`]).
+pub const BRIDGE_VERSION: u32 = 35;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
