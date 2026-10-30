@@ -1845,3 +1845,62 @@ fn a_full_line_gets_another_bus_and_an_empty_one_loses_one_never_its_last() {
         "{said:?}"
     );
 }
+
+#[test]
+fn a_hard_ai_feeds_a_starved_feeder_in_turn_three_levels_deep() {
+    let mut world = World::new();
+    // Ely needs goods; a goods factory in Didcot makes none for want of
+    // planks; the sawmill across the town makes none for want of logs; a
+    // forest by Ely makes logs. Money for trucks, short of a rail line.
+    const GOODS: &str = "::/cargos/goods/goods.cargo";
+    const PLANKS_: &str = "::/cargos/planks/planks.cargo";
+    const LOGS: &str = "::/cargos/logs/logs.cargo";
+    world.industries = vec![
+        industry("Didcot Factory", 300.0, 200.0, &[PLANKS_], &[(GOODS, 0)]),
+        industry("Witney Sawmill", -300.0, -300.0, &[LOGS], &[(PLANKS_, 0)]),
+        industry("Wychwood Forest", 4_800.0, 300.0, &[], &[(LOGS, 150)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(GOODS).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "plans a chain of 3 lines bringing goods to Ely"),
+        "{said:?}"
+    );
+    let station = |name: &str| {
+        world
+            .industries
+            .iter()
+            .find(|i| i.name.as_str() == name)
+            .unwrap()
+            .station
+            .unwrap()
+    };
+    let trucks: Vec<&AiLine> = world
+        .lines
+        .iter()
+        .filter(|l| world.line_modes.contains(&(l.id, 4)))
+        .collect();
+    assert_eq!(trucks.len(), 3, "{said:?}");
+    // The goods into Ely first, then the planks into the factory, then the
+    // logs into the sawmill.
+    assert_eq!(trucks[0].stops[0], station("Didcot Factory"));
+    assert_eq!(trucks[1].stops[0], station("Witney Sawmill"));
+    assert_eq!(trucks[1].stops[1], station("Didcot Factory"));
+    assert_eq!(trucks[2].stops[0], station("Wychwood Forest"));
+    assert_eq!(trucks[2].stops[1], station("Witney Sawmill"));
+}

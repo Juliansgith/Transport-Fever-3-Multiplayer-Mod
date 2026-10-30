@@ -72,14 +72,75 @@ pub struct Limits {
     pub least_short: u32,
     /// The least distance worth a leg into a town, in metres.
     pub nearest: f64,
+    /// How many levels of industries a chain feeds: 2, the town's maker
+    /// and its feeders; 3, their feeders too.
+    pub depth: usize,
 }
 
-/// Chains of two steps: a town's need whose nearest maker in reach makes
-/// too little of it, that maker carried to the town, and each of its
-/// inputs from the nearest industry in reach of it that makes enough of
-/// it. `skip` leaves out a leg (one carried already, given up on), and so
-/// any chain that needs it. The best first: the more the town lacks, the
-/// fewer kilometres of line.
+/// The most legs a chain has.
+pub const MOST_LEGS: usize = 8;
+
+/// The legs that feed `maker` its inputs, each from the nearest industry
+/// in reach of it that makes enough of it, or, `depth` levels allowing,
+/// one that makes too little but can itself be fed; each leg after the one
+/// out of the industry it feeds. False if an input has no such feeder, or
+/// one `skip` leaves out. No industry is in a chain twice.
+fn feed(
+    industries: &[AiIndustry],
+    maker: &AiIndustry,
+    depth: usize,
+    limits: &Limits,
+    skip: &impl Fn(&AiIndustry, &ResName) -> bool,
+    used: &mut Vec<Pos>,
+    legs: &mut Vec<Leg>,
+) -> bool {
+    let made = |i: &AiIndustry, cargo: &ResName| {
+        i.outputs
+            .iter()
+            .find(|o| &o.cargo == cargo)
+            .map_or(0, |o| o.per_year)
+    };
+    maker.inputs.iter().all(|input| {
+        let feeder = industries
+            .iter()
+            .filter(|i| i.station.is_some() && !i.water && !used.contains(&i.pos))
+            .filter(|i| i.outputs.iter().any(|o| &o.cargo == input))
+            // Making enough, or a maker itself to be fed, levels allowing.
+            .filter(|i| made(i, input) >= limits.least_made || depth >= 2 && !i.inputs.is_empty())
+            .map(|i| (P::of(i.pos).flat_distance(P::of(maker.pos)), i))
+            .filter(|(d, _)| *d >= FEED_NEAREST && *d <= limits.reach)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, i)| i);
+        let Some(feeder) = feeder else {
+            return false;
+        };
+        if skip(feeder, input) || legs.len() >= MOST_LEGS {
+            return false;
+        }
+        used.push(feeder.pos);
+        legs.push(Leg {
+            cargo: input.clone(),
+            from: feeder.clone(),
+            to: Taker::Industry(maker.clone()),
+        });
+        made(feeder, input) >= limits.least_made
+            || feed(
+                industries,
+                feeder,
+                depth.saturating_sub(1),
+                limits,
+                skip,
+                used,
+                legs,
+            )
+    })
+}
+
+/// Chains: a town's need whose nearest maker in reach makes too little of
+/// it, that maker carried to the town, and its inputs fed to it ([`feed`]),
+/// as many levels deep as `limits` allow. `skip` leaves out a leg (one
+/// carried already, given up on), and so any chain that needs it. The best
+/// first: the more the town lacks, the fewer kilometres of line.
 pub fn chains(
     industries: &[AiIndustry],
     towns: &[AiTown],
@@ -124,32 +185,16 @@ pub fn chains(
                     at: need.at,
                 },
             }];
-            let fed = maker.inputs.iter().all(|input| {
-                let feeder = industries
-                    .iter()
-                    .filter(usable)
-                    .filter(|i| i.pos != maker.pos)
-                    .filter(|i| {
-                        i.outputs
-                            .iter()
-                            .any(|o| &o.cargo == input && o.per_year >= limits.least_made)
-                    })
-                    .map(|i| (P::of(i.pos).flat_distance(P::of(maker.pos)), i))
-                    .filter(|(d, _)| *d >= FEED_NEAREST && *d <= limits.reach)
-                    .min_by(|a, b| a.0.total_cmp(&b.0))
-                    .map(|(_, i)| i);
-                match feeder {
-                    Some(feeder) if !skip(feeder, input) => {
-                        legs.push(Leg {
-                            cargo: input.clone(),
-                            from: feeder.clone(),
-                            to: Taker::Industry(maker.clone()),
-                        });
-                        true
-                    }
-                    _ => false,
-                }
-            });
+            let mut used = vec![maker.pos];
+            let fed = feed(
+                industries,
+                maker,
+                limits.depth.saturating_sub(1),
+                limits,
+                &skip,
+                &mut used,
+                &mut legs,
+            );
             if fed {
                 let km: f64 = legs.iter().map(Leg::distance).sum::<f64>() / 1000.0;
                 out.push((f64::from(short) / (1.0 + km), legs));
@@ -228,6 +273,7 @@ mod tests {
         least_made: 30,
         least_short: 10,
         nearest: 800.0,
+        depth: 2,
     };
 
     #[test]
@@ -275,5 +321,43 @@ mod tests {
         ];
         let skip = |i: &AiIndustry, c: &ResName| i.name.as_str() == "Farm" && c.as_str() == "grain";
         assert!(chains(&starved, &[town], &LIMITS, skip).is_empty());
+    }
+
+    #[test]
+    fn a_starved_feeder_is_fed_in_turn_where_the_chain_may_go_deeper() {
+        // Ely needs goods; its goods factory makes none for want of planks;
+        // the sawmill that makes planks makes none for want of logs; a
+        // forest makes logs.
+        let industries = vec![
+            industry("Factory", 2_000.0, 0.0, &["planks"], &[("goods", 0)]),
+            industry("Sawmill", 500.0, 1_000.0, &["logs"], &[("planks", 0)]),
+            industry("Forest", -1_500.0, 1_000.0, &[], &[("logs", 150)]),
+        ];
+        let town = town(&[("goods", 0, 80)]);
+        // Two levels: the sawmill cannot feed the factory.
+        assert!(
+            chains(&industries, std::slice::from_ref(&town), &LIMITS, |_, _| {
+                false
+            })
+            .is_empty()
+        );
+        // Three: the factory into Ely, the sawmill into the factory, the
+        // forest into the sawmill, in that order.
+        let deeper = Limits { depth: 3, ..LIMITS };
+        let found = chains(&industries, &[town], &deeper, |_, _| false);
+        assert_eq!(found.len(), 1);
+        let legs: Vec<(&str, &str)> = found[0]
+            .1
+            .iter()
+            .map(|l| (l.from.name.as_str(), l.to.name()))
+            .collect();
+        assert_eq!(
+            legs,
+            [
+                ("Factory", "Ely"),
+                ("Sawmill", "Factory"),
+                ("Forest", "Sawmill")
+            ]
+        );
     }
 }

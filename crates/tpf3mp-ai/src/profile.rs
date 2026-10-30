@@ -46,6 +46,8 @@ pub struct Profile {
     pub remove_below: u8,
     /// How far through its life, in percent, a road vehicle is replaced.
     pub replace_at: u16,
+    /// How many levels of industries a production chain feeds.
+    pub chain_depth: usize,
 }
 
 impl Profile {
@@ -68,6 +70,7 @@ impl Profile {
                 add_above: 90,
                 remove_below: 25,
                 replace_at: 100,
+                chain_depth: 2,
             },
             AiDifficulty::Normal => Self {
                 difficulty,
@@ -86,6 +89,7 @@ impl Profile {
                 add_above: 80,
                 remove_below: 30,
                 replace_at: 100,
+                chain_depth: 2,
             },
             AiDifficulty::Hard => Self {
                 difficulty,
@@ -104,6 +108,7 @@ impl Profile {
                 add_above: 70,
                 remove_below: 35,
                 replace_at: 90,
+                chain_depth: 3,
             },
         }
     }

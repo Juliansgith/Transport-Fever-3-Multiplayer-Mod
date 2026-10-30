@@ -69,6 +69,8 @@ pub const DEPOT_REACH: f64 = 1_500.0;
 pub const DEPOT_STREETS: usize = 8;
 /// Towns it gives up on stay given up on for this long.
 pub const GIVE_UP_FOR: Duration = Duration::from_secs(900);
+/// How long a chain's leg no road joins is left out of its chains.
+pub const DEAD_LEG_FOR: Duration = Duration::from_secs(3_600);
 /// Bus models' transport mode, by the game's name.
 pub const BUS: &str = "BUS";
 /// The game's number for buses (`TransportMode.BUS`), as lines list modes.
@@ -1132,6 +1134,7 @@ impl Brain {
                 least_made: CARGO_LEAST,
                 least_short: NEED_LEAST,
                 nearest: CARGO_NEAREST,
+                depth: self.profile.chain_depth,
             },
             skip,
         );
@@ -1205,8 +1208,12 @@ impl Brain {
         if !route.connected {
             self.given_up
                 .push((route_key(from.pos, cargo.as_str()), now + GIVE_UP_FOR));
-            // A chain's leg no road joins: the chain goes no further.
+            // A chain's leg no road joins: the chain goes no further, nor
+            // is it planned again for a while longer.
             if !self.chain.is_empty() {
+                if let Some(last) = self.given_up.last_mut() {
+                    last.1 = now + DEAD_LEG_FOR;
+                }
                 self.say("found no road for its chain's leg; gave up on the rest".into());
                 self.chain.clear();
                 self.routes.clear();

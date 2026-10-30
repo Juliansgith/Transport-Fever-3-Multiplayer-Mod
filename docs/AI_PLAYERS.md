@@ -157,16 +157,21 @@ faster AI.
      chain (`getEconomyCargoDependencies`; industries' production and
      capacity; towns' cargo needs per district), chains of several steps
      included (raw goods to a plant, its product to a town). *Built so
-     far (2026-10-30):* chains of two steps (`tpf3mp-ai` chain.rs). Where
-     a town needs a cargo whose nearest maker in reach makes too little
-     of it (under 30 a year), it carries the maker's cargo to the town
-     first, since a maker takes its inputs only while what it makes is
-     carried on, then feeds the maker each of its inputs from the nearest
-     industry in reach that makes enough of it, unloading at the maker's
-     own station; each leg by train where it runs 1.8 km or more and its
-     money allows, else by truck. A leg that fails ends its chain. It
-     takes chains in turn with single lines, with at least 1.5 million
-     to spend;
+     far (2026-10-30):* chains of two levels of industries at Easy and
+     Normal, three at Hard (`tpf3mp-ai` chain.rs). Where a town needs a
+     cargo whose nearest maker in reach makes too little of it (under 30
+     a year), it carries the maker's cargo to the town first, since a
+     maker takes its inputs only while what it makes is carried on, then
+     feeds the maker each of its inputs from the nearest industry in
+     reach that makes enough of it, unloading at the maker's own station;
+     where levels allow, a feeder that makes too little is fed in turn
+     the same way (a forest's logs to a sawmill, its planks to a goods
+     factory, its goods to a town), each leg after the one out of the
+     industry it feeds, no industry twice, eight legs at most. Each leg by
+     train where it runs 1.8 km or more and its money allows, else by
+     truck. A leg that fails ends its chain; one no road joins is left out
+     of its chains for an hour. It takes chains in turn with single lines,
+     with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their
      sizes, distance and how they are reached already);
    - with a transport mode chosen by distance, volume, terrain and water:
