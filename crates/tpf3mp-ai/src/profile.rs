@@ -7,7 +7,7 @@ use std::time::Duration;
 use tpf3mp_proto::AiDifficulty;
 
 /// What a difficulty decides with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Profile {
     pub difficulty: AiDifficulty,
     /// The least time between two of its actions, in real time: no faster
@@ -38,6 +38,8 @@ pub struct Profile {
     pub loans_most: u8,
     /// Whether it takes the largest loan offered (true), or the smallest.
     pub big_loans: bool,
+    /// The farthest it carries cargo by truck, in metres.
+    pub cargo_most: f64,
 }
 
 impl Profile {
@@ -56,6 +58,7 @@ impl Profile {
                 best_models: false,
                 loans_most: 1,
                 big_loans: false,
+                cargo_most: 4_000.0,
             },
             AiDifficulty::Normal => Self {
                 difficulty,
@@ -70,6 +73,7 @@ impl Profile {
                 best_models: true,
                 loans_most: 2,
                 big_loans: false,
+                cargo_most: 6_000.0,
             },
             AiDifficulty::Hard => Self {
                 difficulty,
@@ -84,6 +88,7 @@ impl Profile {
                 best_models: true,
                 loans_most: 4,
                 big_loans: true,
+                cargo_most: 8_000.0,
             },
         }
     }

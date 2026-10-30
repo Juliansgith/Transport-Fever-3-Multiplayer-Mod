@@ -23,6 +23,10 @@ pub const MAX_AI_MODELS: usize = 48;
 pub const MAX_AI_OWNED: usize = 160;
 /// Most messages an [`AiVerdict`] carries.
 pub const MAX_AI_MESSAGES: usize = 8;
+/// Most industries a [`AiAnswer::Industries`] lists.
+pub const MAX_AI_INDUSTRIES: usize = 160;
+/// Most cargos an industry takes or makes, as an [`AiIndustry`] lists them.
+pub const MAX_AI_CARGOS: usize = 8;
 
 /// One question about the world, for an AI seat the asking game drives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +46,17 @@ pub enum AiQuestion {
     /// The street edges within `radius` metres of `at`, nearest first.
     Streets { at: Pos, radius: u32 },
     /// The vehicle models the company may buy now for a transport mode,
-    /// by the game's name (`BUS`, `TRUCK`, `TRAIN`, ...).
-    Models { mode: Text<16> },
+    /// by the game's name (`BUS`, `TRUCK`, `TRAIN`, ...); with `cargo`,
+    /// only those that carry it, each with its capacity for it.
+    Models {
+        mode: Text<16>,
+        cargo: Option<ResName>,
+    },
+    /// The world's industries, what each takes and makes ([`AiIndustry`]).
+    Industries,
+    /// Whether a truck can drive from the street network by `from` to the
+    /// street network by `to`, by the game's pathfinder ([`AiRoute`]).
+    Route { from: Pos, to: Pos },
     /// Whether this action (an intent's payload) would be built as the
     /// seat's company would build it, and what it would cost: the game's
     /// own verdict, nothing built ([`AiVerdict`]).
@@ -58,6 +71,8 @@ pub enum AiAnswer {
     Streets(BoundedVec<AiStreet, MAX_AI_STREETS>),
     Models(BoundedVec<AiModel, MAX_AI_MODELS>),
     Verdict(AiVerdict),
+    Industries(BoundedVec<AiIndustry, MAX_AI_INDUSTRIES>),
+    Route(AiRoute),
 }
 
 /// An AI seat's company as its game sees it.
@@ -151,6 +166,44 @@ pub struct AiTown {
     pub buildings: u32,
     /// Its districts' centres: residential, commercial, industrial.
     pub centres: BoundedVec<Pos, 3>,
+}
+
+/// An industry: where it stands, the cargo it takes, and what it makes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiIndustry {
+    pub name: Text<48>,
+    /// Its construction's origin.
+    pub pos: Pos,
+    /// Its own station, by the room's id for its group, and the station's
+    /// terminals: a line loads its cargo there and unloads what it takes
+    /// there (build 40425: players' cargo lines stop at an industry's own
+    /// station; a street stop only unloads).
+    pub station: Option<StationId>,
+    pub terminals: u8,
+    /// The cargo it takes in, by file (`::/cargos/grain/grain.cargo`).
+    pub inputs: BoundedVec<ResName, MAX_AI_CARGOS>,
+    /// What it makes.
+    pub outputs: BoundedVec<AiOutput, MAX_AI_CARGOS>,
+}
+
+/// One cargo an industry makes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiOutput {
+    pub cargo: ResName,
+    /// The game's number for the cargo type: a stop's load rules list one
+    /// entry for each, by this number (build 40425).
+    pub index: u16,
+    /// How much it made over the last year, and could make at most.
+    pub per_year: u32,
+    pub most: u32,
+}
+
+/// Whether two places are joined by street for trucks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiRoute {
+    pub connected: bool,
+    /// The edges of the path the game found; 0 for none.
+    pub edges: u32,
 }
 
 /// A street edge.

@@ -369,9 +369,40 @@ function ai.streets(at, radius)
 	return { Streets = out }
 end
 
-function ai.models(mode)
+-- The classes a cargo type is of (its file's cargoClasses), as a set.
+local function cargoClasses(cargo)
+	local set = {}
+	local ok = pcall(function()
+		local c = api.res.cargoTypeRep.get(api.res.cargoTypeRep.find(cargo))
+		local list = c.cargoClasses
+		for i = 1, #list do set[tostring(list[i])] = true end
+	end)
+	return ok and set or nil
+end
+
+-- Whether a load configuration's cargo set takes `cargo` (of `classes`):
+-- named, or of a class included and not excluded.
+local function takes(set, cargo, classes)
+	if set == nil then return false end
+	local function has(list, value)
+		for i = 1, #(list or {}) do if tostring(list[i]) == value then return true end end
+		return false
+	end
+	if has(set.cargoTypesExcluded, cargo) then return false end
+	if has(set.cargoTypesIncluded, cargo) then return true end
+	local excluded, included = false, false
+	for class in pairs(classes) do
+		if has(set.cargoClassesExcluded, class) then excluded = true end
+		if has(set.cargoClassesIncluded, class) then included = true end
+	end
+	return included and not excluded
+end
+
+function ai.models(mode, cargo)
 	local wanted = api.type.enum and api.type.enum.TransportMode and api.type.enum.TransportMode[mode]
 	if wanted == nil then error("no transport mode " .. tostring(mode), 0) end
+	local classes = cargo and cargoClasses(cargo)
+	if cargo and classes == nil then error("no cargo " .. tostring(cargo), 0) end
 	local year = api.engine.util.getYear and api.engine.util.getYear() or 0
 	local out = {}
 	api.res.modelRep.forEachModelWithMetadata("transportVehicle", function(name)
@@ -388,11 +419,23 @@ function ai.models(mode)
 					or ((available.yearTo or 0) ~= 0 and available.yearTo <= year)) then
 				return nil
 			end
+			-- Its capacity: every compartment's first load, or with a cargo,
+			-- each compartment's best load that takes it.
 			local capacity = 0
 			for _, compartment in ipairs(tv.compartments or {}) do
-				local config = compartment.loadConfigs and compartment.loadConfigs[1]
-				capacity = capacity + ((config and config.cargoEntry and config.cargoEntry.capacity) or 0)
+				local best = 0
+				for k, config in ipairs(compartment.loadConfigs or {}) do
+					local entry = config.cargoEntry
+					local n = (entry and entry.capacity) or 0
+					if cargo then
+						if takes(entry and entry.cargoTypeSet, cargo, classes) and n > best then best = n end
+					elseif k == 1 then
+						best = n
+					end
+				end
+				capacity = capacity + best
 			end
+			if cargo and capacity == 0 then return nil end
 			local land = meta.roadVehicle or meta.railVehicle or meta.waterVehicle or meta.airVehicle
 			local speed = land and land.topSpeed or 0
 			return {
@@ -408,6 +451,75 @@ function ai.models(mode)
 	end)
 	table.sort(out, function(a, b) return a.model < b.model end)
 	return { Models = out }
+end
+
+-- The world's industries: where each stands, the cargo it takes, and what
+-- it made over the last year and could make (the game's own industry
+-- window reads the same, gui/main/cargo_react_util.tl). 94 on the big
+-- fixture in 1 ms (2026-10-29).
+ai.MAX_INDUSTRIES = 160
+function ai.industries(registry)
+	local reg = type(registry) == "function" and registry() or registry
+	local regmod = module("registry")
+	local stock = api.engine.util.stock
+	local out = {}
+	for _, e in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.INDUSTRY) or {}) do
+		if #out >= ai.MAX_INDUSTRIES then break end
+		pcall(function()
+			local industry = component(e, "INDUSTRY")
+			local c = industry and component(industry.construction, "CONSTRUCTION")
+			if not (c and c.transf) then return end
+			local io = stock.getInputsOutputsFromRules(industry.stockList)
+			local inputs, outputs = {}, {}
+			for _, id in ipairs(io[1] or {}) do
+				if #inputs < 8 then inputs[#inputs + 1] = text(api.res.cargoTypeRep.getName(id), 128) end
+			end
+			for _, id in ipairs(io[2] or {}) do
+				if #outputs < 8 then
+					outputs[#outputs + 1] = {
+						cargo = text(api.res.cargoTypeRep.getName(id), 128),
+						index = id,
+						per_year = whole(math.max(stock.getCargoProducedPerYear(industry.stockList, id) or 0, 0)),
+						most = whole(math.max(stock.getCargoMaxProductionPerYear(industry.stockList, id) or 0, 0)),
+					}
+				end
+			end
+			-- Its own station, where a line loads and unloads its cargo.
+			local station, terminals = nil, 0
+			local first = c.stations and c.stations[1]
+			if first and reg then
+				local okg, group = pcall(api.engine.system.stationGroupSystem.getStationGroup, first)
+				station = okg and regmod.id(reg, "groups", group) or nil
+				local s = component(first, "STATION")
+				terminals = math.min(#((s and s.terminals) or {}), 255)
+			end
+			local ok, name = pcall(api.engine.util.getEntityName, e)
+			out[#out + 1] = { name = text(ok and name or "", 48), pos = pos(origin(c)), station = station,
+				terminals = terminals, inputs = inputs, outputs = outputs }
+		end)
+	end
+	return { Industries = out }
+end
+
+-- Whether a truck can drive between the street networks by two places:
+-- the game's pathfinder from the network's nodes within 200 m of one to
+-- those of the other.
+ai.ROUTE_REACH = 200
+function ai.route(from, to)
+	local octree, Vec2f = api.engine.util.octree, api.type.Vec2f
+	local function near(p)
+		local nodes = octree.findTransportNetworkNodesInCircle(Vec2f.new(p.x, p.y), ai.ROUTE_REACH) or {}
+		local some = {}
+		for i = 1, math.min(#nodes, 8) do some[#some + 1] = nodes[i] end
+		return some
+	end
+	local a, b = near(from), near(to)
+	local edges = 0
+	if #a > 0 and #b > 0 then
+		local path = api.engine.util.pathfinding.findPathNodeToNode(a, b, { api.type.enum.TransportMode.TRUCK })
+		edges = #(path or {})
+	end
+	return { Route = { connected = edges > 0, edges = whole(edges) } }
 end
 
 -- The game's verdict on `action`, built as `seat`'s company would.
@@ -442,7 +554,9 @@ function ai.answer(ask, roster, registry)
 	if q == "Company" then return ai.company(ask.seat, roster, registry) end
 	if q == "Towns" then return ai.towns(registry) end
 	if type(q) == "table" and q.Streets then return ai.streets(q.Streets.at, q.Streets.radius) end
-	if type(q) == "table" and q.Models then return ai.models(q.Models.mode) end
+	if type(q) == "table" and q.Models then return ai.models(q.Models.mode, q.Models.cargo) end
+	if q == "Industries" then return ai.industries(registry) end
+	if type(q) == "table" and q.Route then return ai.route(q.Route.from, q.Route.to) end
 	if type(q) == "table" and q.Verdict then return ai.verdict(ask.seat, q.Verdict, roster) end
 	error("a question of no kind", 0)
 end

@@ -87,8 +87,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// 30 carries the AI players' questions and answers ([`ToHook::AiAsk`],
 /// [`ToAgent::AiAnswer`]), their seats in the room ([`RoomInfo::ais`],
 /// [`LobbyRoom::ais`]) and the lobby's [`LobbyAction::AddAi`] and
-/// [`LobbyAction::RemoveAi`] (docs/AI_PLAYERS.md).
-pub const BRIDGE_VERSION: u32 = 30;
+/// [`LobbyAction::RemoveAi`] (docs/AI_PLAYERS.md). 31 the AI's truck
+/// questions: [`ai::AiQuestion::Industries`], [`ai::AiQuestion::Route`]
+/// and the cargo of [`ai::AiQuestion::Models`].
+pub const BRIDGE_VERSION: u32 = 31;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told

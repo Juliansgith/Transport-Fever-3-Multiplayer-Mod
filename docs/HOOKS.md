@@ -1922,9 +1922,17 @@ state, which the game saves with the world:
   duration and rate in one of that company's active slots; forged terms and
   reused or cooling-down offers are refused before any journal entry is
   booked. On a valid Take, that slot enters its own 4-to-8-month cooldown,
-  as the native loan script does, and `loan_util` draws its replacement
-  when the cooldown expires. The room's update seed makes those draws the
-  same in every game. The native loan table is never changed for a founded
+  as the native loan script does, from the start of the month, and
+  `loan_util` draws its replacement when the cooldown expires. Each of
+  those draws starts math.random from a seed of its own (the company, the
+  slot, and the room's count of loans or the cooldown's end), the same in
+  every game whatever drew from math.random before it in the update. The
+  update's seed alone did not keep them the same: in a two-game room
+  (2026-10-30) a company's offers differed between the games after a
+  cooldown, so an AI's second loan applied in one game only and the
+  balances diverged (both games also apply actions between simulation
+  updates, in slightly different numbers, which may be why). The native
+  loan table is never changed for a founded
   company's Take. The room books the money to that company as the game books
   a loan (a `LOAN` journal entry, `makeJournalBookAssetCmd`, which raises the
   account's balance and loan alike, seen on build 40408), and pays it back
@@ -3933,11 +3941,16 @@ replay builds at the game's cost for its proposal).
 ### AI players' questions
 
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 30):
+whose game drives it, and asks that game about the world (bridge 31):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
-seat's company, the towns, the streets near a place (each edge's ends,
-its curve's middle, template, owner, objects and structure), the vehicle
-models of a transport mode, or the game's verdict on an action), the session
+seat's company, the towns, the industries (each one's own station, what
+each takes, and what it
+made over the last year, as the game's industry window reads them), the
+streets near a place (each edge's ends, its curve's middle, template,
+owner, objects and structure), whether trucks can drive between two
+places (the game's pathfinder), the vehicle models of a transport mode
+(of a cargo: those whose loads take one of its classes, with their
+capacity for it), or the game's verdict on an action), the session
 hands it on as `Notice::AiAsk`, and `crate::ai` keeps it until the GUI
 takes it. The mod's GUI state (`tpf3mp/ai.lua`, every frame within 1.5
 ms) calls `tpf3mp_native.aiAsk()` for the next question, a table

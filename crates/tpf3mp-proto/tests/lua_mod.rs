@@ -15784,6 +15784,79 @@ fn only_the_company_that_borrowed_pays_its_loan() {
     assert_eq!(why, "Ann has 4 loans already");
 }
 
+/// A founded company's loan draws (the cooldown of an offer it took, and
+/// the fresh offer drawn once that cools down) are the same in every game,
+/// whatever drew from math.random before them in the update: 2026-10-30,
+/// two games' refreshed offers differed, an AI's loan applied in one game
+/// only and the balances diverged. Here something draws from it a number
+/// of times just before each loan draw, and the terms do not change.
+#[test]
+fn founded_company_loan_draws_do_not_hang_on_what_drew_before() {
+    let play = |draws: u32| -> (i64, i64) {
+        let (lua, _script) = engine();
+        lua.load(format!(
+            r#"
+            DRAWS = {draws}
+            local function churn() for _ = 1, DRAWS do math.random() end end
+            GAME_T = 0
+            HOOK.seed = 12345
+            api.type.ComponentType.GAME_TIME = 99
+            api.type.ComponentType.GAME_SCRIPT = 7
+            api.engine.util.getWorld = function() return 1 end
+            api.engine.system.gameScriptSystem = {{}}
+            api.engine.system.gameScriptSystem.getEntityForGameScript = function(name)
+                if name == '::/game_mechanics/finance/loan.gs' then return 40 end
+                return -1
+            end
+            api.engine.getComponent = function(e, kind)
+                if e == 1 and kind == 99 then churn() return {{ gameTime = GAME_T }} end
+                if e == 40 and kind == 7 then return {{ state = LOANS }} end
+            end
+            api.util = {{ getDefaultMonthDuration = function() return 1000 end }}
+            api.type.JournalEntry = {{ new = function() return {{ category = {{}} }} end,
+                                      Type = {{ LOAN = 'LOAN', INTEREST = 'INTEREST' }} }}
+            api.cmd.makeJournalBookAssetCmd = function(e, entry) churn() return {{ journal = entry, entity = e }} end
+            LOANS = {{ availableLoans = {{
+                {{ type = 'Small', amount = 1200, duration = 12000, percentage = 0.12, birthDay = 0 }},
+            }}, obtainedLoans = {{}}, freeId = 0 }}
+            -- As the game's loan utility: its terms from math.random.
+            GAME_MODULES = {{ ['::/game_mechanics/finance/loan_util.tl'] = {{
+                createSmallLoan = function() return {{ type = 'Small', amount = math.random(5, 10) * 1000,
+                    duration = 12000, percentage = math.random(3, 5) * 0.01, birthDay = GAME_T }} end,
+            }} }}
+            HOOK.room = true
+            HOOK.batch = {{ {{ CompanyOp = {{ Create = {{ name = 'Ann' }} }} }} }}
+            HOOK.origins = {{ string.rep('a', 64) }}
+            UPDATE({{}}, STATE, 0.2)
+            HOOK.batch = {{ {{ Loan = {{ Take = {{ offer = {{ type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }},
+                next = {{ type = 'Small', amount = 1300, duration = 12000, percentage = 0.10 }} }} }} }} }}
+            HOOK.origins = {{ string.rep('a', 64) }}
+            GAME_T = 500
+            UPDATE({{}}, STATE, 0.2)
+            assert(HOOK.applied[#HOOK.applied].ok, HOOK.applied[#HOOK.applied].why)
+            COOLED = STATE.value.companies.loanOffers[1].availableLoans[1].cooldownUntil
+            GAME_T = COOLED + 1
+            HOOK.batch = nil
+            UPDATE({{}}, STATE, 0.2)
+            FRESH = STATE.value.companies.loanOffers[1].availableLoans[1].amount
+            "#
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+        lua.load("return COOLED, FRESH").eval().unwrap()
+    };
+    let (cooled, fresh) = play(0);
+    assert!((4_000..=8_000).contains(&cooled), "{cooled}");
+    assert!((5_000..=10_000).contains(&fresh), "a fresh offer: {fresh}");
+    for draws in [1, 3, 7] {
+        assert_eq!(
+            play(draws),
+            (cooled, fresh),
+            "{draws} draws before each loan draw"
+        );
+    }
+}
+
 /// Founded companies get loan offers from their own persistent copy. The
 /// exact displayed terms are required, a taken slot cools down, and neither
 /// another company nor the save player's native loan table is changed.
@@ -15917,7 +15990,9 @@ fn founded_company_loan_offers_are_checked_consumed_and_company_scoped() {
     assert_eq!(journals, 2, "the refused reuse made no duplicate charge");
     let refreshed: (i64, i64, Option<i64>, i64) = lua
         .load(
-            "local roster = STATE.value.companies local untilTime = roster.loanOffers[1].availableLoans[1].cooldownUntil \
+            "local roster = STATE.value.companies \
+             local untilTime = math.max(roster.loanOffers[1].availableLoans[1].cooldownUntil, \
+                 roster.loanOffers[2].availableLoans[1].cooldownUntil) \
              GAME_T = untilTime + 1 UPDATE({}, STATE, 0.2) \
              return roster.loanOffers[1].availableLoans[1].amount, \
                  roster.loanOffers[2].availableLoans[1].amount, \
@@ -15928,7 +16003,7 @@ fn founded_company_loan_offers_are_checked_consumed_and_company_scoped() {
     assert_eq!(
         refreshed,
         (1300, 1300, None, 2),
-        "both slots refresh independently after cooldown"
+        "both slots refresh after their own cooldowns (each company draws from its own seed)"
     );
 }
 

@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use tpf3mp_ai::{Brain, Out};
 use tpf3mp_bridge::ai::{
-    AiAnswer, AiCompany, AiDepot, AiLine, AiModel, AiQuestion, AiStation, AiStreet, AiTown,
-    AiVehicle, AiVerdict,
+    AiAnswer, AiCompany, AiDepot, AiIndustry, AiLine, AiModel, AiOutput, AiQuestion, AiRoute,
+    AiStation, AiStreet, AiTown, AiVehicle, AiVerdict,
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
@@ -51,6 +51,11 @@ struct World {
     /// Depot builds the room orders but no game applies, as one whose
     /// junction is another company's (2026-10-29).
     drop_depots: u32,
+    /// The world's industries (none unless a test puts some), whether
+    /// trucks can drive between them, and each line's transport mode.
+    industries: Vec<AiIndustry>,
+    roads_join: bool,
+    line_modes: Vec<(LineId, u16)>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -100,6 +105,9 @@ impl World {
             refuse_stops_in: None,
             snaps: true,
             drop_depots: 0,
+            industries: Vec::new(),
+            roads_join: true,
+            line_modes: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -137,6 +145,32 @@ impl World {
                     .collect();
                 AiAnswer::Streets(BoundedVec::new(near).unwrap())
             }
+            AiQuestion::Models { mode, cargo } if mode.as_str() == "TRUCK" => {
+                // A grain truck, for grain only.
+                let carries = cargo.as_ref().is_some_and(|c| c.as_str() == GRAIN);
+                AiAnswer::Models(
+                    BoundedVec::new(if carries {
+                        vec![AiModel {
+                            model: Text::new("vehicle/truck/grain.mdl").unwrap(),
+                            price: 25_000,
+                            running: 6_000,
+                            capacity: 12,
+                            speed: 30,
+                            lifespan: 20,
+                        }]
+                    } else {
+                        Vec::new()
+                    })
+                    .unwrap(),
+                )
+            }
+            AiQuestion::Industries => {
+                AiAnswer::Industries(BoundedVec::new(self.industries.clone()).unwrap())
+            }
+            AiQuestion::Route { .. } => AiAnswer::Route(AiRoute {
+                connected: self.roads_join,
+                edges: if self.roads_join { 40 } else { 0 },
+            }),
             AiQuestion::Models { .. } => AiAnswer::Models(
                 BoundedVec::new(vec![
                     AiModel {
@@ -271,6 +305,32 @@ impl World {
             }
             Action::CreateLine(create) => {
                 let id = self.id();
+                self.line_modes.push((LineId(id), create.line.modes[0]));
+                // As the game: a truck line loads its cargo (grain, type 7)
+                // at its first stop, or its trucks are useless; a bus line
+                // its passengers (type 0) everywhere.
+                let rules: Vec<Vec<bool>> = create
+                    .line
+                    .stops
+                    .iter()
+                    .map(|s| s.rules.load.iter().copied().collect())
+                    .collect();
+                if create.line.modes[0] == 4 {
+                    // It loads at the industry's own station, of its
+                    // terminals, and unloads at a street stop: an industry's
+                    // station only loads.
+                    let stations: Vec<StationId> =
+                        self.industries.iter().filter_map(|i| i.station).collect();
+                    assert!(stations.contains(&create.line.stops[0].group));
+                    assert!(!stations.contains(&create.line.stops[1].group));
+                    // Its output terminal alone: the second of two.
+                    assert_eq!(create.line.stops[0].terminal.terminal, 1);
+                    assert!(create.line.stops[0].alternatives.is_empty());
+                    assert_eq!(rules[0].get(7), Some(&true), "{rules:?}");
+                    assert!(rules[1].iter().all(|l| !l), "{rules:?}");
+                } else {
+                    assert!(rules.iter().all(|r| r == &[true]), "{rules:?}");
+                }
                 self.lines.push(AiLine {
                     id: LineId(id),
                     name: Text::lossy(create.name.as_str()),
@@ -297,6 +357,21 @@ impl World {
             }
             Action::AssignLine(assign) => {
                 let line = assign.line.unwrap();
+                // As the game: a vehicle runs only a line of its mode.
+                let mode = self
+                    .line_modes
+                    .iter()
+                    .find(|(id, _)| *id == line)
+                    .map(|(_, m)| *m);
+                for v in assign.vehicles.iter() {
+                    let vehicle = self.vehicles.iter().find(|x| x.id == *v).unwrap();
+                    let truck = vehicle.model.as_str().contains("truck");
+                    assert_eq!(
+                        mode,
+                        Some(if truck { 4 } else { 3 }),
+                        "{vehicle:?} on {line:?}"
+                    );
+                }
                 for v in assign.vehicles.iter() {
                     if let Some(vehicle) = self.vehicles.iter_mut().find(|x| x.id == *v) {
                         vehicle.line = Some(line);
@@ -325,6 +400,52 @@ impl World {
             })
             .count()
     }
+}
+
+const GRAIN: &str = "::/cargos/grain/grain.cargo";
+
+/// An industry at (x, y) metres, taking `inputs` and making `outputs`
+/// (cargo, made over the last year).
+fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]) -> AiIndustry {
+    // Its own station's id, from its place.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let station = StationId(10_000 + (x.abs() + y.abs()) as u32);
+    AiIndustry {
+        name: Text::new(name).unwrap(),
+        pos: pos(x, y),
+        station: Some(station),
+        terminals: 2,
+        inputs: BoundedVec::new(inputs.iter().map(|c| Text::new(*c).unwrap()).collect()).unwrap(),
+        outputs: BoundedVec::new(
+            outputs
+                .iter()
+                .map(|(c, n)| AiOutput {
+                    cargo: Text::new(*c).unwrap(),
+                    index: if *c == GRAIN { 7 } else { 9 },
+                    per_year: *n,
+                    most: *n,
+                })
+                .collect(),
+        )
+        .unwrap(),
+    }
+}
+
+/// A grain farm in Didcot's south-west, a livestock farm that takes grain
+/// in its north-east, under a kilometre apart, and a quarry no one takes
+/// stone from.
+fn farms() -> Vec<AiIndustry> {
+    vec![
+        industry("Witney Farm", -300.0, -200.0, &[], &[(GRAIN, 120)]),
+        industry("Clun Livestock Farm", 450.0, 350.0, &[GRAIN], &[]),
+        industry(
+            "Ely Quarry",
+            5_000.0,
+            300.0,
+            &[],
+            &[("::/cargos/stone/stone.cargo", 90)],
+        ),
+    ]
 }
 
 fn loan(kind: &str, amount: i64) -> LoanTerms {
@@ -495,7 +616,7 @@ fn a_refused_depot_tries_the_other_side_and_a_refused_town_is_left_for_another()
     let said = brain.take_said();
     assert!(
         said.iter()
-            .any(|l| l.contains("gave up on a line in Didcot")),
+            .any(|l| l.contains("gave up on a bus line in Didcot")),
         "{said:?}"
     );
 }
@@ -619,7 +740,7 @@ fn stops_a_project_left_behind_do_not_make_their_town_served_and_are_taken_up() 
         brain
             .take_said()
             .iter()
-            .any(|l| l == "takes up a stop of its own in Didcot")
+            .any(|l| l == "takes up a stop of its own for a bus line in Didcot")
     );
 }
 
@@ -692,4 +813,126 @@ fn a_depot_never_splits_a_companys_street_or_one_at_a_companys_junction() {
             "{said:?}"
         );
     }
+}
+
+#[test]
+fn it_carries_cargo_by_truck_between_industries_joined_by_road() {
+    let mut world = World::new();
+    world.industries = farms();
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(true);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    // Buses in a town first, then the grain by truck, in turn.
+    let trucks: Vec<LineId> = world
+        .line_modes
+        .iter()
+        .filter(|(_, m)| *m == 4)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(trucks.len(), 1, "one truck line: {:?}", world.line_modes);
+    assert!(
+        world.line_modes.iter().any(|(_, m)| *m == 3),
+        "and bus lines"
+    );
+    let line = world.lines.iter().find(|l| l.id == trucks[0]).unwrap();
+    assert_eq!(line.stops.len(), 2, "the farm and the livestock farm");
+    assert_eq!(line.stops[0], StationId(10_500), "the farm's own station");
+    let unload = world
+        .stations
+        .iter()
+        .find(|s| s.id == line.stops[1])
+        .expect("a stop of its own");
+    let (dx, dy) = (
+        f64::from(unload.pos.x) / 1000.0 - 450.0,
+        f64::from(unload.pos.y) / 1000.0 - 350.0,
+    );
+    assert!(dx.hypot(dy) <= 140.0, "by the livestock farm");
+    assert_eq!(line.name.as_str(), "Witney Farm grain");
+    let on_it: Vec<&AiVehicle> = world
+        .vehicles
+        .iter()
+        .filter(|v| v.line == Some(trucks[0]))
+        .collect();
+    assert_eq!(on_it.len(), 3, "Hard's count");
+    assert!(
+        on_it
+            .iter()
+            .all(|v| v.model.as_str() == "vehicle/truck/grain.mdl")
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l
+                == "opened a truck line carrying grain from Witney Farm to Clun Livestock Farm"),
+        "{said:?}"
+    );
+    // The stone has no taker: never planned.
+    assert!(!said.iter().any(|l| l.contains("stone")), "{said:?}");
+}
+
+#[test]
+fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
+    let mut world = World::new();
+    world.industries = farms();
+    world.roads_join = false;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(true);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(300),
+    );
+    assert!(world.line_modes.iter().all(|(_, m)| *m == 3), "buses only");
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "found no cargo it can carry by road"),
+        "{said:?}"
+    );
+
+    // A taker 4.4 km off: within Hard's reach, beyond Easy's 4 km.
+    let mut world = World::new();
+    world.industries = vec![
+        industry("Witney Farm", -300.0, -200.0, &[], &[(GRAIN, 120)]),
+        industry("Ely Livestock Farm", 4_050.0, 350.0, &[GRAIN], &[]),
+    ];
+    let mut easy = Brain::new(seat(), "Novak Transit", AiDifficulty::Easy, None);
+    easy.carry_cargo(true);
+    play(
+        &mut easy,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    assert!(world.line_modes.iter().all(|(_, m)| *m == 3));
+    assert!(
+        easy.take_said()
+            .iter()
+            .any(|l| l == "found no cargo to carry")
+    );
+}
+
+#[test]
+fn it_plans_no_truck_lines_unless_told_to() {
+    let mut world = World::new();
+    world.industries = farms();
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    assert!(!world.lines.is_empty(), "bus lines");
+    assert!(
+        world.line_modes.iter().all(|(_, m)| *m == 3),
+        "no truck line by default: {:?}",
+        world.line_modes
+    );
 }
