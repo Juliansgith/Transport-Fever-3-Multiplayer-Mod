@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tpf3mp_bridge::ai::{
-    AiAnswer, AiCompany, AiDepot, AiIndustry, AiModel, AiQuestion, AiRoute, AiStreet, AiTown,
+    AiAnswer, AiCompany, AiDepot, AiIndustry, AiLine, AiModel, AiQuestion, AiRoute, AiStreet,
+    AiTown,
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, IntentRejection, Payload, PlayerId, Text,
@@ -39,6 +40,8 @@ use crate::{
 
 #[path = "train.rs"]
 mod train;
+#[path = "upkeep.rs"]
+mod upkeep;
 
 /// How long the brain waits for an answer before it asks again.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(15);
@@ -66,6 +69,8 @@ pub const DEPOT_REACH: f64 = 1_500.0;
 pub const DEPOT_STREETS: usize = 8;
 /// Towns it gives up on stay given up on for this long.
 pub const GIVE_UP_FOR: Duration = Duration::from_secs(900);
+/// How long a chain's leg no road joins is left out of its chains.
+pub const DEAD_LEG_FOR: Duration = Duration::from_secs(3_600);
 /// Bus models' transport mode, by the game's name.
 pub const BUS: &str = "BUS";
 /// The game's number for buses (`TransportMode.BUS`), as lines list modes.
@@ -250,6 +255,8 @@ struct Project {
 enum Stage {
     /// Building a rail line ([`train::RailStage`]).
     Rail(train::RailStage),
+    /// Caring for its lines ([`upkeep::Upkeep`]).
+    Upkeep(upkeep::Upkeep),
     /// Reading its company.
     Look,
     /// Its company's founding sent: reading until it plays for it.
@@ -520,6 +527,7 @@ impl Brain {
         self.wake = None;
         match self.stage.clone() {
             Stage::Rail(stage) => self.rail_poll(stage, now),
+            Stage::Upkeep(stage) => self.upkeep_poll(stage, now),
             Stage::Rest => {
                 self.stage = Stage::Look;
                 self.wake = Some(now + self.profile.think_after(speed));
@@ -704,6 +712,7 @@ impl Brain {
         let company = self.company.clone()?;
         match self.stage.clone() {
             Stage::Rail(stage) => self.rail_company(stage, &company, now),
+            Stage::Upkeep(stage) => self.upkeep_company(stage, &company, now),
             Stage::Look => {
                 if company.company.is_none() {
                     // Its first act: found its own company.
@@ -1014,19 +1023,32 @@ impl Brain {
                 return out;
             }
         }
-        // Its lines first: one short of its count gets a bus.
+        // Its new lines first: one short of its count gets a bus. A settled
+        // line keeps the vehicles its load gives it (`upkeep`).
         let depot = company.depots.iter().find(|d| d.connected).cloned();
         if let Some(depot) = depot {
+            let new = |line: &AiLine| {
+                company
+                    .vehicles
+                    .iter()
+                    .filter(|v| v.line == Some(line.id))
+                    .all(|v| v.worn < upkeep::SETTLED)
+            };
             let short = company
                 .lines
                 .iter()
                 .filter(|l| !self.memo.rail_lines.contains(&l.id.0))
-                .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first));
+                .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first) && new(l));
             if let Some(line) = short {
                 self.topping = Some((line.id, depot));
                 self.stage = Stage::Models;
                 return None;
             }
+        }
+        // Care of its lines: worn vehicles replaced, full lines given one
+        // more, empty ones one fewer.
+        if let Some(out) = self.upkeep(company, now) {
+            return out;
         }
         // Its chain's next leg, before anything new.
         if !self.chain.is_empty() {
@@ -1112,6 +1134,7 @@ impl Brain {
                 least_made: CARGO_LEAST,
                 least_short: NEED_LEAST,
                 nearest: CARGO_NEAREST,
+                depth: self.profile.chain_depth,
             },
             skip,
         );
@@ -1185,8 +1208,12 @@ impl Brain {
         if !route.connected {
             self.given_up
                 .push((route_key(from.pos, cargo.as_str()), now + GIVE_UP_FOR));
-            // A chain's leg no road joins: the chain goes no further.
+            // A chain's leg no road joins: the chain goes no further, nor
+            // is it planned again for a while longer.
             if !self.chain.is_empty() {
+                if let Some(last) = self.given_up.last_mut() {
+                    last.1 = now + DEAD_LEG_FOR;
+                }
                 self.say("found no road for its chain's leg; gave up on the rest".into());
                 self.chain.clear();
                 self.routes.clear();
@@ -1741,20 +1768,10 @@ impl Brain {
         if let Stage::Rail(stage) = self.stage.clone() {
             return self.rail_models(stage, models, now);
         }
-        let usable: Vec<AiModel> = models.into_iter().filter(|m| m.capacity > 0).collect();
-        let pick = if self.profile.best_models {
-            // Seats and speed for the money, its running cost counted.
-            usable.into_iter().max_by(|a, b| {
-                let worth = |m: &AiModel| {
-                    f64::from(m.capacity) * f64::from(m.speed.max(1))
-                        / (m.price.max(1) as f64 + 5.0 * m.running.max(0) as f64)
-                };
-                worth(a).total_cmp(&worth(b))
-            })
-        } else {
-            usable.into_iter().min_by_key(|m| m.price)
-        };
-        match pick {
+        if let Stage::Upkeep(stage) = self.stage.clone() {
+            return self.upkeep_models(stage, models, now);
+        }
+        match self.pick_model(models) {
             Some(model) => {
                 self.model = Some(model);
                 self.buy(now)
@@ -1764,6 +1781,23 @@ impl Brain {
                 self.give_up_project(now);
                 None
             }
+        }
+    }
+
+    /// The road vehicle it buys of `models`: seats and speed for the money,
+    /// its running cost counted, at Normal and Hard; the cheapest at Easy.
+    fn pick_model(&self, models: Vec<AiModel>) -> Option<AiModel> {
+        let usable: Vec<AiModel> = models.into_iter().filter(|m| m.capacity > 0).collect();
+        if self.profile.best_models {
+            usable.into_iter().max_by(|a, b| {
+                let worth = |m: &AiModel| {
+                    f64::from(m.capacity) * f64::from(m.speed.max(1))
+                        / (m.price.max(1) as f64 + 5.0 * m.running.max(0) as f64)
+                };
+                worth(a).total_cmp(&worth(b))
+            })
+        } else {
+            usable.into_iter().min_by_key(|m| m.price)
         }
     }
 

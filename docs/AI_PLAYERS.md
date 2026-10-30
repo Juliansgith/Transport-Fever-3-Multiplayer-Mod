@@ -157,16 +157,21 @@ faster AI.
      chain (`getEconomyCargoDependencies`; industries' production and
      capacity; towns' cargo needs per district), chains of several steps
      included (raw goods to a plant, its product to a town). *Built so
-     far (2026-10-30):* chains of two steps (`tpf3mp-ai` chain.rs). Where
-     a town needs a cargo whose nearest maker in reach makes too little
-     of it (under 30 a year), it carries the maker's cargo to the town
-     first, since a maker takes its inputs only while what it makes is
-     carried on, then feeds the maker each of its inputs from the nearest
-     industry in reach that makes enough of it, unloading at the maker's
-     own station; each leg by train where it runs 1.8 km or more and its
-     money allows, else by truck. A leg that fails ends its chain. It
-     takes chains in turn with single lines, with at least 1.5 million
-     to spend;
+     far (2026-10-30):* chains of two levels of industries at Easy and
+     Normal, three at Hard (`tpf3mp-ai` chain.rs). Where a town needs a
+     cargo whose nearest maker in reach makes too little of it (under 30
+     a year), it carries the maker's cargo to the town first, since a
+     maker takes its inputs only while what it makes is carried on, then
+     feeds the maker each of its inputs from the nearest industry in
+     reach that makes enough of it, unloading at the maker's own station;
+     where levels allow, a feeder that makes too little is fed in turn
+     the same way (a forest's logs to a sawmill, its planks to a goods
+     factory, its goods to a town), each leg after the one out of the
+     industry it feeds, no industry twice, eight legs at most. Each leg by
+     train where it runs 1.8 km or more and its money allows, else by
+     truck. A leg that fails ends its chain; one no road joins is left out
+     of its chains for an hour. It takes chains in turn with single lines,
+     with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their
      sizes, distance and how they are reached already);
    - with a transport mode chosen by distance, volume, terrain and water:
@@ -187,6 +192,18 @@ faster AI.
    replaces old ones with the best model of the year; widens streets at
    its busy stops; doubles a busy single track or adds passing loops;
    extends lines that would earn more; and closes lines that lose money.
+   *Built so far (2026-10-30), for its bus and truck lines:* at every look,
+   once its new lines have their first vehicles, it replaces the most worn
+   road vehicle past its life (Easy and Normal at 100 % of its lifespan,
+   Hard at 90 %, as the game's vehicle window reckons it: since bridge
+   version 34 the company answer says how worn each vehicle is) with the
+   best model of the year, the vehicle window's replace, so it keeps its
+   line; adds one vehicle to a line running at least 90, 80 or 70 % full
+   with passengers or cargo waiting, up to its difficulty's most; and
+   sells the most worn vehicle of a settled line (every vehicle a twentieth
+   through its life) that runs under 25, 30 or 35 % full or loses money,
+   never a line's last. A settled line is not topped up to its first count
+   again. Trains wait for passing loops.
 4. **Money.** It borrows when a project's return beats the loan's interest
    by its difficulty's margin, and pays back when it can.
 

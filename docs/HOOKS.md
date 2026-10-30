@@ -3941,11 +3941,13 @@ replay builds at the game's cost for its proposal).
 ### AI players' questions
 
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 33):
+whose game drives it, and asks that game about the world (bridge 34):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
 seat's company (its rail stations with their track ends since bridge
 version 33: where the world's track meets each, and whether any does
-yet), the towns (since bridge version 32 with the cargo each
+yet; since bridge version 34 how far through its life each vehicle is,
+as the vehicle window reckons it: its oldest part's purchase against
+the game's time, over that part's lifespan), the towns (since bridge version 32 with the cargo each
 needs, the least supplied first: how much it was supplied and may take,
 as its window's cargo demand reads them, and the centre of the district
 that takes it), the industries (each one's own station, what
