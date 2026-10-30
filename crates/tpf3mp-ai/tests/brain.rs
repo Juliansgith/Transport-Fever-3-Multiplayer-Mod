@@ -316,17 +316,13 @@ impl World {
                     .map(|s| s.rules.load.iter().copied().collect())
                     .collect();
                 if create.line.modes[0] == 4 {
-                    // At the industries' own stations, of their terminals.
+                    // It loads at the industry's own station, of its
+                    // terminals, and unloads at a street stop: an industry's
+                    // station only loads.
                     let stations: Vec<StationId> =
                         self.industries.iter().filter_map(|i| i.station).collect();
-                    assert!(
-                        create
-                            .line
-                            .stops
-                            .iter()
-                            .all(|s| stations.contains(&s.group)),
-                        "a truck line stops at industries' own stations"
-                    );
+                    assert!(stations.contains(&create.line.stops[0].group));
+                    assert!(!stations.contains(&create.line.stops[1].group));
                     assert_eq!(
                         create.line.stops[0].alternatives.len(),
                         1,
@@ -846,11 +842,17 @@ fn it_carries_cargo_by_truck_between_industries_joined_by_road() {
     );
     let line = world.lines.iter().find(|l| l.id == trucks[0]).unwrap();
     assert_eq!(line.stops.len(), 2, "the farm and the livestock farm");
-    assert_eq!(
-        line.stops.iter().copied().collect::<Vec<_>>(),
-        [StationId(10_500), StationId(10_800)],
-        "their own stations"
+    assert_eq!(line.stops[0], StationId(10_500), "the farm's own station");
+    let unload = world
+        .stations
+        .iter()
+        .find(|s| s.id == line.stops[1])
+        .expect("a stop of its own");
+    let (dx, dy) = (
+        f64::from(unload.pos.x) / 1000.0 - 450.0,
+        f64::from(unload.pos.y) / 1000.0 - 350.0,
     );
+    assert!(dx.hypot(dy) <= 140.0, "by the livestock farm");
     assert_eq!(line.name.as_str(), "Witney Farm grain");
     let on_it: Vec<&AiVehicle> = world
         .vehicles

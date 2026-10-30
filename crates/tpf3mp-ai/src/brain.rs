@@ -957,8 +957,13 @@ impl Brain {
         self.routes.clear();
         // Its stops are the two industries' own stations; it reads the
         // streets by the one that makes the cargo for its depot.
-        let centres = vec![from.pos];
-        let stops = vec![(P::of(from.pos), from.station), (P::of(to.pos), to.station)];
+        // It loads at the station of the industry that makes the cargo, and
+        // unloads at a street stop by the one that takes it, as players'
+        // cargo lines do (build 40425): an industry's own station only
+        // loads. It reads the streets by both: for its depot, and for that
+        // stop.
+        let centres = vec![from.pos, to.pos];
+        let stops = vec![(P::of(from.pos), from.station)];
         let serves = Serves::Cargo { cargo, from, to };
         self.say(format!("plans {}", serves.describe()));
         self.start(serves, centres);
@@ -1068,8 +1073,9 @@ impl Brain {
         if !project.centres.is_empty() {
             self.stage = Stage::Streets;
         } else if project.serves.cargo().is_some() {
-            // Its stops are the industries' own: on to its depot.
-            self.plan_depot();
+            // Its first stop is the industry's own station: on to the stop
+            // by the industry that takes the cargo.
+            self.next_stop(1, now);
         } else {
             self.next_stop(0, now);
         }
@@ -1313,19 +1319,18 @@ impl Brain {
                     station: 1,
                     terminal: 0,
                 }],
-                Serves::Cargo { from, to, .. } => {
-                    let terminals = if stop == 0 {
-                        from.terminals
-                    } else {
-                        to.terminals
-                    };
-                    (1..u16::from(terminals))
-                        .map(|terminal| Terminal {
-                            station: 0,
-                            terminal,
-                        })
-                        .collect()
-                }
+                // A cargo's first stop: the industry's station, of its
+                // terminals; its second a two-sided street stop.
+                Serves::Cargo { .. } if stop > 0 => vec![Terminal {
+                    station: 1,
+                    terminal: 0,
+                }],
+                Serves::Cargo { from, .. } => (1..u16::from(from.terminals))
+                    .map(|terminal| Terminal {
+                        station: 0,
+                        terminal,
+                    })
+                    .collect(),
             }
         };
         let mut stops: Vec<LineStop> = Vec::new();
