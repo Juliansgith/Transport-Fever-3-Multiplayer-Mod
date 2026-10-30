@@ -120,8 +120,9 @@ lasts, and at least one a frame:
 - **Reads the world** the AI asks about: its company (money, the year,
   its loan offers from the game script's roster, its stations, its
   depots and whether each reaches the street, its lines and vehicles),
-  the towns and their districts' centres, the industries (what each
-  takes and made over the last year), the streets near a place (each
+  the towns and their districts' centres, the industries (each one's own
+  station, what it takes and made over the last year), the streets near
+  a place (each
   edge's ends and curve middle, template, owner, objects), whether trucks
   can drive between two places, the vehicle models of a transport mode
   (of a cargo: those that carry it).
@@ -193,8 +194,11 @@ faster AI.
   far:* a town's bus line, and a cargo's truck line from an industry that
   made it over the last year to the nearest that takes it, within the
   difficulty's reach and joined by road already (`findPathNodeToNode` for
-  trucks), each stop on a street within 140 m of its industry (a stop's
-  catchment reaches 160 m); the two take turns.
+  trucks), its stops the two industries' own stations, as players' cargo
+  lines stop (build 40425: every industry has a station of its own, of
+  two terminals; a street stop only unloads cargo,
+  `small_stops.script.lua`); the line loads the cargo at the first only.
+  The two kinds of line take turns.
 - **Track and trains.** The station: a through or terminus station near
   the town's centre or the industry, turned to the route, its platforms
   as long as its trains, tested with its verdict. The route: a search over
