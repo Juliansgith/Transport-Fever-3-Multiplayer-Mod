@@ -148,6 +148,7 @@ fn launcher_config(
         content: toy_content(),
         mods: None,
         picker: None,
+        find_mods: None,
         native: None,
         installed: None,
         link: format!("tpf3mp-launcher-{}-{name}", std::process::id()),
@@ -1077,6 +1078,318 @@ async fn a_guest_with_its_own_mods_learns_the_rooms_and_the_room_starts() {
     );
 
     drop((ann, gus));
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
+/// The playtest of 2026-10-24: the owner's game downloaded a Mod Hub update
+/// after their launcher had found its mods, and the room still declared the
+/// old version, which a guest who subscribed since could never match. The
+/// launchers find the installed mods again: the owner's before declaring the
+/// room's, the guest's as it joins and as the room tells it a mod in
+/// another version.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_rooms_mods_follow_a_mod_hub_update_since_the_launchers_started() {
+    use std::sync::Mutex;
+
+    use tpf3mp_agent::{
+        launcher::{Action, MemberContent, ModHave, SelectedMod, State},
+        picker::{Finder, Installed, Mods},
+    };
+    use tpf3mp_modscan::Class;
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    config.max_sessions_per_address = 100;
+    config.max_handshakes_per_address = 100;
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    const STATION: &str = "shin_sumihama_station_1";
+    let mods = |station: &str| {
+        let of = |id: &str, version: &str| Installed {
+            id: id.into(),
+            name: id.into(),
+            version: version.into(),
+            class: Class::Shared,
+            reason: String::new(),
+            path: root.path().join(id),
+            hub: None,
+        };
+        vec![of("tpf3mp_1", "1"), of(STATION, station)]
+    };
+    // What each game has installed now, as its launcher finds it again.
+    let ann_now = Arc::new(Mutex::new(mods("7+m8368015")));
+    let gus_now = Arc::new(Mutex::new(mods("7+m8368015")));
+    let mut ann = launcher_config(
+        root.path(),
+        "una",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    let mut gus = launcher_config(
+        root.path(),
+        "vic",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    for (config, now) in [(&mut ann, &ann_now), (&mut gus, &gus_now)] {
+        config.picker = Some(Mods::new(
+            toy_content().game,
+            now.lock().unwrap().clone(),
+            [],
+            false,
+        ));
+        let now = Arc::clone(now);
+        config.find_mods = Some(Finder::new(move || now.lock().unwrap().clone()));
+    }
+    let ann = Launcher::start_local(ann);
+    let gus = Launcher::start_local(gus);
+    let (ann_handle, gus_handle) = (ann.handle(), gus.handle());
+    for (handle, name) in [(&ann_handle, "Ann"), (&gus_handle, "Gus")] {
+        handle
+            .act(Action::Connect {
+                server: server_address.clone(),
+                name: name.into(),
+            })
+            .await
+            .unwrap();
+    }
+
+    // Both games download revision 8 while their launchers run.
+    *ann_now.lock().unwrap() = mods("8+m8400000");
+    *gus_now.lock().unwrap() = mods("8+m8400000");
+    ann_handle
+        .act(Action::Create {
+            room: "update".into(),
+            max_players: 2,
+            password: None,
+            rules: None,
+            start_save: None,
+            listing: None,
+            competitive: false,
+        })
+        .await
+        .unwrap();
+    let pick = || Action::ChooseRoomMods {
+        save: String::new(),
+        map: String::new(),
+        year: 0,
+        mods: vec![SelectedMod {
+            id: STATION.into(),
+            name: "Shin-Sumihama Station".into(),
+            source: "mod.io".into(),
+            modio: Some(6472761),
+        }],
+        params: Vec::new(),
+    };
+    ann_handle.act(pick()).await.unwrap();
+    let station = |state: &State| {
+        state
+            .room_mods
+            .iter()
+            .find(|m| m.id == STATION)
+            .map(|m| (m.version.clone(), m.have))
+    };
+    assert_eq!(
+        station(&ann_handle.state()),
+        Some(("8+m8400000".to_owned(), ModHave::Yes)),
+        "the owner's room declares the version installed now"
+    );
+    let invite = ann_handle.state().room.unwrap().invite.unwrap();
+    gus_handle
+        .act(Action::Join {
+            invite,
+            server: None,
+            password: None,
+        })
+        .await
+        .unwrap();
+    let matches = |version: &'static str| {
+        let gus_handle = gus_handle.clone();
+        async move {
+            let found = tokio::time::timeout(WAIT, async {
+                loop {
+                    let state = gus_handle.state();
+                    let same = state.room.as_ref().is_some_and(|room| {
+                        room.members
+                            .iter()
+                            .find(|member| member.you)
+                            .is_some_and(|me| me.content == MemberContent::Same)
+                    });
+                    if same && station(&state) == Some((version.to_owned(), ModHave::Yes)) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await;
+            assert!(
+                found.is_ok(),
+                "the guest never matched the room's {version}: {:?}",
+                station(&gus_handle.state())
+            );
+        }
+    };
+    matches("8+m8400000").await;
+
+    // In the lobby, both games download revision 9; the owner picks the
+    // room's mods again, and the guest, told a version it does not have,
+    // finds its mods again by itself.
+    *ann_now.lock().unwrap() = mods("9+m8500000");
+    *gus_now.lock().unwrap() = mods("9+m8500000");
+    ann_handle.act(pick()).await.unwrap();
+    matches("9+m8500000").await;
+
+    // Revision 10 arrives, and the owner then picks a list naming a mod
+    // they do not have: refused, but the room still learns revision 10,
+    // which their launcher has now found.
+    *ann_now.lock().unwrap() = mods("10+m8600000");
+    *gus_now.lock().unwrap() = mods("10+m8600000");
+    let Action::ChooseRoomMods { mut mods, .. } = pick() else {
+        unreachable!()
+    };
+    mods.push(SelectedMod {
+        id: "not_installed_here".into(),
+        name: String::new(),
+        source: "mod.io".into(),
+        modio: Some(1),
+    });
+    let refused = ann_handle
+        .act(Action::ChooseRoomMods {
+            save: String::new(),
+            map: String::new(),
+            year: 0,
+            mods,
+            params: Vec::new(),
+        })
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    matches("10+m8600000").await;
+
+    drop((ann, gus));
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
+/// A save's start as the game writes one, listing the mods `ids`, as
+/// `tpf3mp_modscan::save` reads it (the same as the agent's own test
+/// saves, `save_check::saves`).
+fn write_save(path: &Path, ids: &[&str]) {
+    fn string(out: &mut Vec<u8>, text: &str) {
+        out.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+    let mut out = b"tf**\x5c\x02\x00\x00".to_vec();
+    string(&mut out, "company");
+    out.extend_from_slice(&[4, 0, 0, 0, 1, 1, 0, 0, 0, 3, 0, 0, 0]);
+    out.extend_from_slice(&u32::try_from(ids.len()).unwrap().to_le_bytes());
+    for id in ids {
+        string(&mut out, id);
+        string(&mut out, "StagingArea");
+        string(&mut out, &format!("StagingArea,{id}"));
+        string(&mut out, id);
+        string(&mut out, "");
+        out.extend_from_slice(&0u32.to_le_bytes());
+    }
+    out.extend_from_slice(&[1, 0x80, 2, 0, 0, 0x68, 1, 0, 0]);
+    std::fs::write(path, zstd::encode_all(&out[..], 3).unwrap()).unwrap();
+}
+
+/// A room made from a start save takes the save's mods in the versions
+/// installed as it is made, not as the launcher started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_made_from_a_start_save_declares_the_versions_installed_now() {
+    use std::sync::Mutex;
+
+    use tpf3mp_agent::{
+        launcher::{Action, ModHave},
+        picker::{Finder, Installed, Mods},
+    };
+    use tpf3mp_modscan::Class;
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    const STATION: &str = "shin_sumihama_station_1";
+    let mods = |station: &str| {
+        let of = |id: &str, version: &str| Installed {
+            id: id.into(),
+            name: id.into(),
+            version: version.into(),
+            class: Class::Shared,
+            reason: String::new(),
+            path: root.path().join(id),
+            hub: None,
+        };
+        vec![of("tpf3mp_1", "1"), of(STATION, station)]
+    };
+    let now = Arc::new(Mutex::new(mods("7+m8368015")));
+    let mut ann = launcher_config(
+        root.path(),
+        "wes",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    let save = root.path().join("Japan_2.sav");
+    write_save(&save, &[STATION, "tpf3mp_1"]);
+    ann.start_save = Some(save);
+    ann.picker = Some(Mods::new(
+        toy_content().game,
+        now.lock().unwrap().clone(),
+        [],
+        false,
+    ));
+    let found = Arc::clone(&now);
+    ann.find_mods = Some(Finder::new(move || found.lock().unwrap().clone()));
+    let ann = Launcher::start_local(ann);
+    let handle = ann.handle();
+    handle
+        .act(Action::Connect {
+            server: server_address,
+            name: "Ann".into(),
+        })
+        .await
+        .unwrap();
+    // The game downloads revision 8 while the launcher runs.
+    *now.lock().unwrap() = mods("8+m8400000");
+    handle
+        .act(Action::Create {
+            room: "from a save".into(),
+            max_players: 2,
+            password: None,
+            rules: None,
+            start_save: None,
+            listing: None,
+            competitive: false,
+        })
+        .await
+        .unwrap();
+    let station = handle
+        .state()
+        .room_mods
+        .into_iter()
+        .find(|m| m.id == STATION)
+        .map(|m| (m.version, m.have));
+    assert_eq!(station, Some(("8+m8400000".to_owned(), ModHave::Yes)));
+
+    drop(ann);
     let _ = stop.send(());
     let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
 }
