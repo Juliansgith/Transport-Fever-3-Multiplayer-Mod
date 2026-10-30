@@ -353,7 +353,11 @@ faster AI.
   each put to the verdict again (one through something in its way,
   "Collision", is refused though the game would build it); it keeps its
   prices in line with the game's by the verdicts' own costs. Then a rail
-  depot beyond the first station, joined to its outer end, the line, and
+  depot beyond the first station, joined to its outer end (30 m out, else
+  90 or 150 m, its track to the station one straight edge; then the same
+  beyond the other station: a line given up there has its stations and
+  track built already), no station or depot built whose verdict touches
+  something that stands, as one stood across a player's station, the line, and
   its train with as many wagons as the platforms take (six at most): no
   electric engine, as its track has no catenary. A line's first station
   ending within 400 m of a rail depot of its own shares that depot, its

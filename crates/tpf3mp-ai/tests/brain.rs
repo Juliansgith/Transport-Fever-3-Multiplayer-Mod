@@ -113,6 +113,8 @@ struct World {
     station_cost: Option<fn(Pos) -> i64>,
     station_quotes: Vec<(Pos, i64)>,
     touches: Option<fn(&tpf3mp_proto::action::ConstructionBuild) -> u16>,
+    /// Rail depot verdicts, the first so many, that touch something.
+    rail_depot_touches: u32,
     /// The loans its company owes, and the game's months: how often they
     /// fall due in play (none: never), what each line earns a year then,
     /// how far through their lives its vehicles go each month, and the
@@ -197,6 +199,7 @@ impl World {
             station_cost: None,
             station_quotes: Vec::new(),
             touches: None,
+            rail_depot_touches: 0,
             owed: Vec::new(),
             month_every: None,
             month_at: None,
@@ -412,7 +415,14 @@ impl World {
                     self.rival_depots -= 1;
                     self.split(a, b);
                 }
-                let verdict = self.verdict(&action);
+                let mut verdict = self.verdict(&action);
+                if let Action::BuildConstruction(b) = &action
+                    && b.file.as_str() == "::/depots/rail/rail_depot.con"
+                    && self.rail_depot_touches > 0
+                {
+                    self.rail_depot_touches -= 1;
+                    verdict.collisions = verdict.collisions.max(1);
+                }
                 if let Action::BuildConstruction(b) = &action
                     && b.file.as_str() == ROAD_DEPOT
                     && verdict.ok
@@ -2643,6 +2653,109 @@ fn a_passenger_pair_with_no_way_through_is_not_planned_again() {
         !said
             .iter()
             .any(|l| l.starts_with("plans a rail line carrying passengers")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
+    // An AI rail depot stood across a player's station (2026-10-30): the
+    // game builds it over what stands, "Collision" said of it. Here every
+    // rail depot placement by the sawmill's end touches something; the line
+    // is not given up with its stations and track built, its depot goes to
+    // the other end.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    world.touches = Some(|b| {
+        let near = P::of(b.transform.origin).flat_distance(P::of(pos(1_800.0, 900.0))) < 700.0;
+        u16::from(b.file.as_str() == "::/depots/rail/rail_depot.con" && near)
+    });
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let refused = said
+        .iter()
+        .filter(|l| {
+            l.starts_with("a rail depot placement was refused: touches 1 things that stand")
+        })
+        .count();
+    assert_eq!(
+        refused, 3,
+        "each of its three distances by the sawmill: {said:?}"
+    );
+    let depots: Vec<&AiDepot> = world
+        .depots
+        .iter()
+        .filter(|d| d.file.as_str().contains("/rail/"))
+        .collect();
+    assert_eq!(depots.len(), 1, "{said:?}");
+    assert!(depots[0].connected, "joined to the line");
+    assert!(
+        P::of(depots[0].at).flat_distance(P::of(pos(1_800.0, 900.0))) >= 700.0,
+        "at the other end: {:?}",
+        depots[0].at
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line carrying planks")),
+        "{said:?}"
+    );
+}
+#[test]
+fn a_rail_depot_touching_what_stands_at_first_goes_further_out_at_that_end() {
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    world.rail_depot_touches = 1;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let refused = said
+        .iter()
+        .filter(|l| l.starts_with("a rail depot placement was refused"))
+        .count();
+    assert_eq!(refused, 1, "{said:?}");
+    let depot = world
+        .depots
+        .iter()
+        .find(|d| d.file.as_str().contains("/rail/"))
+        .expect("a rail depot");
+    assert!(depot.connected, "joined to the line by its longer track");
+    assert!(
+        P::of(depot.at).flat_distance(P::of(pos(1_800.0, 900.0))) < 700.0,
+        "still by the sawmill: {:?}",
+        depot.at
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line carrying planks")),
         "{said:?}"
     );
 }

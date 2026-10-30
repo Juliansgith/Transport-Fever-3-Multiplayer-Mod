@@ -45,6 +45,11 @@ pub const PASSENGER_TRACK_X: f64 = 5.0;
 pub const DEPOT_JOIN: (f64, f64) = (-2.2, -70.0);
 /// How far beyond a station's outer end a depot's track joins, in metres.
 pub const DEPOT_GAP: f64 = 30.0;
+/// How far out a depot is tried at each of a line's ends, nearest first:
+/// a depot refused there (it would stand over what stands, say) is tried
+/// further out before the other end, its track to the station one straight
+/// edge whatever its length.
+pub const DEPOT_GAPS: [f64; 3] = [DEPOT_GAP, 90.0, 150.0];
 /// The grade a line keeps to where it can, the steepest it climbs at all
 /// (a plant on a hill above its town, 89 m over 3.6 km, 2026-10-30), and
 /// its tightest curve, in metres: well inside the simple track's limits
@@ -347,10 +352,22 @@ pub fn depot(
     seed: i64,
     name: &str,
 ) -> Option<(P, ConstructionBuild)> {
+    depot_at(end, out_heading, DEPOT_GAP, year, seed, name)
+}
+
+/// [`depot`], its track joining gap metres beyond the station's end.
+pub fn depot_at(
+    end: P,
+    out_heading: f64,
+    gap: f64,
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<(P, ConstructionBuild)> {
     let (ox, oy) = unit(out_heading);
     let join = P {
-        x: end.x + ox * DEPOT_GAP,
-        y: end.y + oy * DEPOT_GAP,
+        x: end.x + ox * gap,
+        y: end.y + oy * gap,
         z: end.z,
     };
     // The depot's +y axis points away from the station; its join is at

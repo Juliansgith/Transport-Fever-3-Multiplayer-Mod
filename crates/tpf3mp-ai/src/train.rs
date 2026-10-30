@@ -134,6 +134,9 @@ pub(super) struct RailProject {
     /// What its memo knows it by, served or given up on: a cargo's route
     /// key, or the two towns' pair ([`passenger_key`]).
     pub key: u32,
+    /// How far out its depot is tried at the end it tries now, as an index
+    /// into [`rail::DEPOT_GAPS`].
+    pub depot_far: usize,
 }
 
 /// Whether a rail line was given up for something the land decides: no
@@ -363,6 +366,7 @@ impl Brain {
             share: None,
             passengers,
             key,
+            depot_far: 0,
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
@@ -525,7 +529,8 @@ impl Brain {
                 });
                 let (_, (depot_end, out)) = built.station.ends_toward(other);
                 let name = format!("{} Rail Depot", project.from.name.as_str());
-                match rail::depot(depot_end, out, year, seed, &name) {
+                let gap = rail::DEPOT_GAPS[project.depot_far.min(rail::DEPOT_GAPS.len() - 1)];
+                match rail::depot_at(depot_end, out, gap, year, seed, &name) {
                     Some((_, build)) => self.verdict(&Action::BuildConstruction(build), now),
                     None => {
                         self.give_up_rail("could not lay out a rail depot", now);
@@ -782,9 +787,11 @@ impl Brain {
                 });
                 let (_, (depot_end, out)) = built.station.ends_toward(other);
                 let (ox, oy) = (out.cos(), out.sin());
+                // Where it was tried: as far out as the verdict asked.
+                let gap = rail::DEPOT_GAPS[project.depot_far.min(rail::DEPOT_GAPS.len() - 1)];
                 let join = P {
-                    x: depot_end.x + ox * rail::DEPOT_GAP,
-                    y: depot_end.y + oy * rail::DEPOT_GAP,
+                    x: depot_end.x + ox * gap,
+                    y: depot_end.y + oy * gap,
                     z: depot_end.z,
                 };
                 project.depot = Some((build.transform.origin, join));
@@ -948,9 +955,21 @@ impl Brain {
                     }
                 }
             }
+            // Further out at this end, then at the other: a line given up
+            // here has its stations and track built already.
             RailStage::DepotVerdict { end } => {
                 self.say(format!("a rail depot placement was refused: {why}"));
-                if end == 0 {
+                let further = self.rail.as_mut().is_some_and(|p| {
+                    p.depot_far += 1;
+                    if p.depot_far < rail::DEPOT_GAPS.len() {
+                        return true;
+                    }
+                    p.depot_far = 0;
+                    false
+                });
+                if further {
+                    self.stage = Stage::Rail(RailStage::DepotVerdict { end });
+                } else if end == 0 {
                     self.stage = Stage::Rail(RailStage::DepotVerdict { end: 1 });
                 } else {
                     self.give_up_rail("found no place for a rail depot", now);
