@@ -74,6 +74,9 @@ struct World {
     rail_stations: Vec<StationId>,
     track_nodes: Vec<Pos>,
     track_laid: f64,
+    /// Rail stations refused within 600 m of here; no wagon for any cargo.
+    refuse_rail_near: Option<Pos>,
+    no_wagons: bool,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -131,6 +134,8 @@ impl World {
             rail_stations: Vec::new(),
             track_nodes: Vec::new(),
             track_laid: 0.0,
+            refuse_rail_near: None,
+            no_wagons: false,
             actions: Vec::new(),
             next_id: 1,
         }
@@ -169,12 +174,15 @@ impl World {
                 AiAnswer::Streets(BoundedVec::new(near).unwrap())
             }
             AiQuestion::Models { mode, cargo } if mode.as_str() == "TRUCK" => {
-                // A planks truck, for planks only.
-                let carries = cargo.as_ref().is_some_and(|c| c.as_str() == PLANKS);
+                // A truck for each cargo, named by it.
+                let name = cargo.as_ref().map(|c| {
+                    let file = c.as_str().rsplit('/').next().unwrap_or("");
+                    format!("vehicle/truck/{}.mdl", file.split('.').next().unwrap_or(""))
+                });
                 AiAnswer::Models(
-                    BoundedVec::new(if carries {
+                    BoundedVec::new(if let Some(name) = name {
                         vec![AiModel {
-                            model: Text::new("vehicle/truck/planks.mdl").unwrap(),
+                            model: Text::new(&name).unwrap(),
                             price: 25_000,
                             running: 6_000,
                             capacity: 12,
@@ -204,8 +212,13 @@ impl World {
                 })
             }
             AiQuestion::Models { mode, cargo } if mode.as_str() == "TRAIN" => {
+                // A wagon for each cargo, named by it.
+                let carried = cargo.as_ref().map_or("planks".to_owned(), |c| {
+                    let file = c.as_str().rsplit('/').next().unwrap_or("");
+                    file.split('.').next().unwrap_or("").to_owned()
+                });
                 let wagon = AiModel {
-                    model: Text::new("vehicle/train/planks_wagon.mdl").unwrap(),
+                    model: Text::new(format!("vehicle/train/{carried}_wagon.mdl")).unwrap(),
                     price: 100_000,
                     running: 5_000,
                     capacity: 20,
@@ -238,11 +251,10 @@ impl World {
                     electric: true,
                     ..engine.clone()
                 };
-                let planks = cargo.as_ref().is_some_and(|c| c.as_str() == PLANKS);
                 AiAnswer::Models(
                     BoundedVec::new(match cargo {
-                        Some(_) if planks => vec![wagon],
-                        Some(_) => Vec::new(),
+                        Some(_) if self.no_wagons => Vec::new(),
+                        Some(_) => vec![wagon],
                         None => vec![electric, engine, wagon],
                     })
                     .unwrap(),
@@ -300,7 +312,12 @@ impl World {
                 let town = self.town_of(stop.at);
                 on.is_some_and(|s| s.objects == 0) && town != self.refuse_stops_in
             }
-            Action::BuildConstruction(build) if build.file.as_str().contains("/rail/") => true,
+            Action::BuildConstruction(build) if build.file.as_str().contains("/rail/") => {
+                self.refuse_rail_near.is_none_or(|p| {
+                    let o = build.transform.origin;
+                    f64::from(o.x - p.x).hypot(f64::from(o.y - p.y)) > 600_000.0
+                })
+            }
             // As the game: a vertex on an existing node must find one.
             Action::BuildTrack(track) => track.polyline.vertices.iter().all(|v| {
                 !matches!(v.resolve, Resolve::Node(_)) || self.track_node(v.pos).is_some()
@@ -535,17 +552,23 @@ impl World {
                 if create.line.modes[0] == 4 {
                     // It loads at the industry's own station, at its output
                     // terminal (the second of two) alone, and unloads at a
-                    // truck station of its own, of one terminal.
-                    assert!(!self.truck_stations.contains(&create.line.stops[0].group));
+                    // truck station of its own, of one terminal, or at the
+                    // own station of the industry it feeds.
+                    let industry_station =
+                        |id: StationId| self.industries.iter().any(|i| i.station == Some(id));
+                    assert!(industry_station(create.line.stops[0].group));
                     assert_eq!(create.line.stops[0].terminal.terminal, 1);
                     assert!(create.line.stops[0].alternatives.is_empty());
-                    assert!(self.truck_stations.contains(&create.line.stops[1].group));
+                    assert!(
+                        self.truck_stations.contains(&create.line.stops[1].group)
+                            || industry_station(create.line.stops[1].group)
+                    );
                     assert_eq!(create.line.stops[1].terminal.terminal, 0);
                     assert!(create.line.stops[1].alternatives.is_empty());
                     // Passengers everywhere, as the game's line window
-                    // loads them; the planks at the sawmill only. Its stops
+                    // loads them; the cargo at its maker only. Its stops
                     // wait as a road stop's in the line window.
-                    assert_eq!(rules[0].get(13), Some(&true), "{rules:?}");
+                    assert!(rules[0].iter().skip(1).any(|l| *l), "{rules:?}");
                     assert_eq!(rules[0].first(), Some(&true), "{rules:?}");
                     assert!(
                         rules[1].iter().enumerate().all(|(i, l)| *l == (i == 0)),
@@ -562,7 +585,7 @@ impl World {
                         );
                     }
                 } else if create.line.modes[0] == 7 {
-                    // A train loads the planks at the first rail station and
+                    // A train loads its cargo at the first rail station and
                     // passengers where it may; it unloads at the second.
                     assert!(
                         create
@@ -571,7 +594,7 @@ impl World {
                             .iter()
                             .all(|s| self.rail_stations.contains(&s.group))
                     );
-                    assert_eq!(rules[0].get(13), Some(&true), "{rules:?}");
+                    assert!(rules[0].iter().skip(1).any(|l| *l), "{rules:?}");
                     assert!(
                         rules[1].iter().enumerate().all(|(i, l)| *l == (i == 0)),
                         "{rules:?}"
@@ -1324,4 +1347,154 @@ fn a_cargo_too_far_for_trucks_goes_by_train() {
     );
     // Not trucks as well.
     assert!(!world.line_modes.iter().any(|(_, m)| *m == 4));
+}
+
+#[test]
+fn a_starved_maker_is_carried_to_the_town_then_fed_its_inputs() {
+    let mut world = World::new();
+    // A mill in Didcot that makes no food for want of grain, a farm in
+    // Didcot that makes grain, Ely's need of food; money for trucks, short
+    // of a rail line.
+    const FOOD: &str = "::/cargos/food/food.cargo";
+    world.industries = vec![
+        industry("Didcot Mill", 300.0, 200.0, &[GRAIN], &[(FOOD, 0)]),
+        industry("Witney Farm", -400.0, -300.0, &[], &[(GRAIN, 120)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(FOOD).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_500),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "plans a chain of 2 lines bringing food to Ely"),
+        "{said:?}"
+    );
+    let trucks: Vec<&AiLine> = world
+        .lines
+        .iter()
+        .filter(|l| world.line_modes.contains(&(l.id, 4)))
+        .collect();
+    assert_eq!(trucks.len(), 2, "{said:?}");
+    let station = |name: &str| {
+        world
+            .industries
+            .iter()
+            .find(|i| i.name.as_str() == name)
+            .unwrap()
+            .station
+            .unwrap()
+    };
+    // The mill's food into Ely first, then the farm's grain into the mill.
+    assert_eq!(trucks[0].stops[0], station("Didcot Mill"));
+    assert!(world.truck_stations.contains(&trucks[0].stops[1]));
+    assert_eq!(trucks[1].stops[0], station("Witney Farm"));
+    assert_eq!(trucks[1].stops[1], station("Didcot Mill"));
+    assert!(
+        world
+            .vehicles
+            .iter()
+            .any(|v| v.line == Some(trucks[1].id) && v.model.as_str() == "vehicle/truck/grain.mdl"),
+        "{:?}",
+        world.vehicles
+    );
+}
+
+#[test]
+fn a_chains_leg_refused_by_train_goes_by_truck() {
+    let mut world = World::new();
+    // A mill in Didcot starved of grain, Ely's need of food, and a farm in
+    // Ely 4.5 km from the mill, where no rail station may stand; money for
+    // trains.
+    const FOOD: &str = "::/cargos/food/food.cargo";
+    world.industries = vec![
+        industry("Didcot Mill", 300.0, 200.0, &[GRAIN], &[(FOOD, 0)]),
+        industry("Ely Farm", 4_800.0, 300.0, &[], &[(GRAIN, 120)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(FOOD).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.refuse_rail_near = Some(pos(4_800.0, 300.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter().any(|l| l == "tries its chain's leg by truck"),
+        "{said:?}"
+    );
+    let station = |name: &str| {
+        world
+            .industries
+            .iter()
+            .find(|i| i.name.as_str() == name)
+            .unwrap()
+            .station
+            .unwrap()
+    };
+    // The mill's food by train into Ely, then the farm's grain by truck
+    // into the mill.
+    let by = |mode: u16| -> Vec<&AiLine> {
+        world
+            .lines
+            .iter()
+            .filter(|l| world.line_modes.contains(&(l.id, mode)))
+            .collect()
+    };
+    assert_eq!(by(7).len(), 1, "{said:?}");
+    let trucks = by(4);
+    assert_eq!(trucks.len(), 1, "{said:?}");
+    assert_eq!(trucks[0].stops[0], station("Ely Farm"));
+    assert_eq!(trucks[0].stops[1], station("Didcot Mill"));
+}
+
+#[test]
+fn no_rail_line_is_built_for_a_cargo_no_wagon_carries() {
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    world.no_wagons = true;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("found no wagon for its cargo")),
+        "{said:?}"
+    );
+    // Its train chosen before anything is built: nothing was.
+    assert!(world.rail_stations.is_empty());
+    assert_eq!(world.track_laid, 0.0);
 }

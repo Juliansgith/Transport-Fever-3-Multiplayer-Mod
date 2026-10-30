@@ -258,6 +258,28 @@ Facts read for this, from the console and the game's own scripts:
 - The land: 256 heights in 1 ms, 256 octree queries in 2 ms; the octree
   finds an industry from anywhere over its ground.
 
+## Production chains (2026-10-30)
+
+Run 27 (two games in one room, a Hard and a Normal AI, the big fixture)
+built chains of two lines, alike in both games, with no divergence:
+
+- Fuel to Sevenoaks: Wallingford Oil Refinery, which made nothing, by
+  truck to the town first, then crude oil from Penrith Oil Well by truck
+  to the refinery. The well's crude now loaded (three trucks full, 30
+  shipped), where in runs 8 to 19, with nothing carrying the refinery's
+  fuel on, it never had; delivered, the refinery made fuel and chemicals
+  of it (its stocks 4 and 8 a few minutes on) for the fuel trucks.
+- Meat to Wadebridge: the leg into the town by train (Pocklington
+  Livestock Farm), its grain feeder by train refused for want of a
+  station site by the farm, whose fields fill the ground around it. Such
+  a leg now goes by truck where trucks reach.
+- A chain whose leg into the town had no road (meat to Southend-on-Sea)
+  went no further.
+
+A rail line now chooses its train before it builds anything: in the
+brain's stand-in world, a line built for a cargo no wagon carried was
+left without a train.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

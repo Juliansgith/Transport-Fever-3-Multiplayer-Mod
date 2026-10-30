@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use tpf3mp_bridge::ai::{AiCompany, AiIndustry, AiLand, AiModel, AiQuestion, AiTown};
+use tpf3mp_bridge::ai::{AiCompany, AiIndustry, AiLand, AiModel, AiQuestion};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
@@ -21,6 +21,7 @@ use tpf3mp_proto::{
 
 use super::{Brain, CONFIRM_TRIES, GIVE_UP_FOR, Out, SETTLE, Stage, cargo_name, route_key, tint};
 use crate::{
+    chain::{Leg, Taker},
     place::P,
     rail::{self, Land, Node, Station},
 };
@@ -30,6 +31,8 @@ use crate::{
 /// about 4 million in the 1920s, the track about 500 a metre.
 pub const RAIL_FROM: f64 = 1_800.0;
 pub const RAIL_MONEY: i64 = 6_000_000;
+/// What a line's stations, depot and track cost about, before its train.
+const RAIL_BUILD: i64 = 2_500_000;
 /// The rings around an industry, and a town's district centre, its
 /// stations are tried on, in metres from the place: the station's cargo
 /// catchment reaches 150 m from its building (`main_building_1_cargo`).
@@ -66,8 +69,7 @@ pub(super) struct Built {
 pub(super) struct RailProject {
     pub cargo: ResName,
     pub from: AiIndustry,
-    pub to: AiTown,
-    pub at: Pos,
+    pub to: Taker,
     pub land: Land,
     /// Station placements still to try: by the industry, then the town.
     pub tries: [Vec<Station>; 2],
@@ -80,6 +82,8 @@ pub(super) struct RailProject {
     pub depot: Option<(Pos, P)>,
     pub line: Option<LineId>,
     pub wagons: Vec<AiModel>,
+    /// The train it chose before it built anything: engine and wagon.
+    pub train: Option<(AiModel, AiModel)>,
 }
 
 impl RailProject {
@@ -88,7 +92,7 @@ impl RailProject {
             "a rail line carrying {} from {} to {}",
             cargo_name(self.cargo.as_str()),
             self.from.name.as_str(),
-            self.to.name.as_str()
+            self.to.name()
         )
     }
 }
@@ -134,9 +138,12 @@ pub(super) enum RailStage {
     LineMade {
         tries: u32,
     },
-    /// Asking for the wagons that carry its cargo, then the engines.
+    /// Asking for the wagons that carry its cargo, then the engines, before
+    /// it builds anything.
     Wagons,
     Engines,
+    /// Buying the train it chose once its line is open.
+    Buying,
     Bought {
         before: Vec<VehicleId>,
         tries: u32,
@@ -148,24 +155,18 @@ pub(super) enum RailStage {
 }
 
 impl Brain {
-    /// Begins a rail line carrying `cargo` from `from` to the district of
-    /// `to` at `at`, if it can afford one: true if it did.
-    pub(super) fn start_rail(
-        &mut self,
-        cargo: ResName,
-        from: AiIndustry,
-        to: AiTown,
-        at: Pos,
-    ) -> bool {
+    /// Begins a rail line carrying a cargo from the industry that makes it
+    /// to its taker, if it can afford one: true if it did.
+    pub(super) fn start_rail(&mut self, leg: Leg) -> bool {
         if self.spendable() < RAIL_MONEY {
             return false;
         }
-        let land = Land::around(P::of(from.pos), P::of(at));
+        let Leg { cargo, from, to } = leg;
+        let land = Land::around(P::of(from.pos), P::of(to.pos()));
         let project = RailProject {
             cargo,
             from,
             to,
-            at,
             land,
             tries: [Vec::new(), Vec::new()],
             built: [None, None],
@@ -176,10 +177,13 @@ impl Brain {
             depot: None,
             line: None,
             wagons: Vec::new(),
+            train: None,
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
-        self.stage = Stage::Rail(RailStage::Land);
+        // Its train first: no line is built for a cargo no wagon carries,
+        // or with no engine it can afford.
+        self.stage = Stage::Rail(RailStage::Wagons);
         true
     }
 
@@ -187,9 +191,20 @@ impl Brain {
         if let Some(project) = self.rail.take() {
             let key = route_key(project.from.pos, project.cargo.as_str());
             self.say(format!("{why}; gave up on {}", project.describe()));
-            self.given_up.push((key, now + GIVE_UP_FOR));
-            if !self.memo.given_up.contains(&key) {
-                self.memo.given_up.push(key);
+            // A chain's leg is tried by truck where trucks reach, before
+            // the chain goes no further.
+            let leg = self.leg_now.take().filter(|leg| {
+                leg.distance() <= self.profile.cargo_most && !self.no_rail.contains(&key)
+            });
+            if let Some(leg) = leg {
+                self.say("tries its chain's leg by truck".into());
+                self.no_rail.push(key);
+                self.chain.push_front(leg);
+            } else {
+                self.given_up.push((key, now + GIVE_UP_FOR));
+                if !self.memo.given_up.contains(&key) {
+                    self.memo.given_up.push(key);
+                }
             }
         }
         self.rest(now);
@@ -211,10 +226,15 @@ impl Brain {
                     ),
                     None => {
                         let project = self.rail.as_mut()?;
-                        let (from, at) = (P::of(project.from.pos), P::of(project.at));
+                        let (from, at) = (P::of(project.from.pos), P::of(project.to.pos()));
+                        // By a town's district, or by the industry it feeds.
+                        let rings: &[f64] = match project.to {
+                            Taker::Town { .. } => &TOWN_RINGS,
+                            Taker::Industry(_) => &MAKER_RINGS,
+                        };
                         project.tries = [
                             rail::sites(&project.land, from, at, &MAKER_RINGS),
-                            rail::sites(&project.land, at, from, &TOWN_RINGS),
+                            rail::sites(&project.land, at, from, rings),
                         ];
                         self.stage = Stage::Rail(RailStage::StationVerdict { end: 0 });
                         self.rail_poll(RailStage::StationVerdict { end: 0 }, now)
@@ -229,7 +249,7 @@ impl Brain {
                 let name = if end == 0 {
                     format!("{} Rail", project.from.name.as_str())
                 } else {
-                    format!("{} Goods", project.to.name.as_str())
+                    format!("{} Goods", project.to.name())
                 };
                 let Some(station) = project.tries[end].first() else {
                     self.give_up_rail("found no place for a rail station", now);
@@ -255,7 +275,7 @@ impl Brain {
                 let project = self.rail.as_ref()?;
                 let built = project.built[end]?;
                 let other = P::of(if end == 0 {
-                    project.at
+                    project.to.pos()
                 } else {
                     project.from.pos
                 });
@@ -274,7 +294,7 @@ impl Brain {
                 let project = self.rail.as_ref()?;
                 let built = project.built[end]?;
                 let other = P::of(if end == 0 {
-                    project.at
+                    project.to.pos()
                 } else {
                     project.from.pos
                 });
@@ -289,6 +309,7 @@ impl Brain {
                 }
             }
             RailStage::Opening => self.open_rail(now),
+            RailStage::Buying => self.buy_train(now),
             RailStage::Wagons => {
                 let cargo = self.rail.as_ref()?.cargo.clone();
                 self.ask(
@@ -370,7 +391,7 @@ impl Brain {
                 let project = self.rail.as_mut()?;
                 let built = project.built[end]?;
                 let other = P::of(if end == 0 {
-                    project.at
+                    project.to.pos()
                 } else {
                     project.from.pos
                 });
@@ -481,7 +502,7 @@ impl Brain {
                 match found {
                     Some(s) => {
                         let other = P::of(if end == 0 {
-                            project.at
+                            project.to.pos()
                         } else {
                             project.from.pos
                         });
@@ -640,7 +661,7 @@ impl Brain {
                         self.memo.rail_lines.push(line.id.0);
                     }
                     self.say(format!("opened {described}"));
-                    self.stage = Stage::Rail(RailStage::Wagons);
+                    self.stage = Stage::Rail(RailStage::Buying);
                 } else if tries >= CONFIRM_TRIES {
                     self.give_up_rail("its line did not open", now);
                 } else {
@@ -705,6 +726,7 @@ impl Brain {
                         .unwrap_or_default();
                     self.say(format!("runs a train on {described}"));
                     self.rail = None;
+                    self.leg_now = None;
                     self.rest(now);
                 } else if tries >= CONFIRM_TRIES {
                     self.give_up_rail("its train did not take the line", now);
@@ -722,6 +744,58 @@ impl Brain {
             }
             _ => None,
         }
+    }
+
+    /// Buys the train it chose: its engine and as many of its wagons as the
+    /// stations' platforms take, at most [`WAGONS_MOST`].
+    fn buy_train(&mut self, now: Instant) -> Option<Out> {
+        let project = self.rail.as_ref()?;
+        let (engine, wagon) = project.train.clone()?;
+        let built = project.built[0]?;
+        let platform =
+            f64::from(built.station.last - built.station.first + 1) * rail::MODULE * 10.0;
+        let room = (platform - f64::from(engine.length)).max(0.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let fit = (room / f64::from(wagon.length.max(1))).floor() as usize;
+        let wagons = fit.clamp(1, WAGONS_MOST);
+        let (origin, _) = project.depot?;
+        let color = tint(&self.seat);
+        let part = |m: &AiModel| ConsistPart {
+            model: m.model.clone(),
+            reversed: false,
+            loads: BoundedVec::default(),
+            color,
+        };
+        let mut consist = vec![part(&engine)];
+        consist.extend(std::iter::repeat_n(part(&wagon), wagons));
+        let n = consist.len();
+        let action = Action::BuyVehicle(BuyVehicle {
+            depot: ConstructionRef {
+                file: Text::lossy(rail::DEPOT),
+                at: origin,
+            },
+            consist: BoundedVec::new(consist).ok()?,
+            groups: BoundedVec::new(vec![1; n]).ok()?,
+            multiple_units: BoundedVec::new(vec![Text::lossy(""); n]).ok()?,
+            depot_index: 0,
+        });
+        let before = self
+            .company
+            .as_ref()
+            .map(|c| c.vehicles.iter().map(|v| v.id).collect())
+            .unwrap_or_default();
+        self.say(format!(
+            "buys a train: {} and {wagons} {}",
+            engine.model.as_str(),
+            wagon.model.as_str()
+        ));
+        self.stage = Stage::Rail(RailStage::Bought { before, tries: 0 });
+        let out = self.act(&action, now);
+        if out.is_none() {
+            self.stage = Stage::Rail(RailStage::Buying);
+            self.wake = Some(now + SETTLE);
+        }
+        out
     }
 
     /// Opens the line: the first station loads the cargo, the second takes
@@ -825,7 +899,9 @@ impl Brain {
                         per(a).total_cmp(&per(b))
                     })?
                     .clone();
-                let money = self.spendable();
+                // What the line will cost before its train: its money must
+                // leave the train.
+                let money = self.spendable() - RAIL_BUILD;
                 // Not electric: its track has no catenary (a C 6/8 bought
                 // for one, the game refused it the line; 2026-10-30).
                 let Some(engine) = models
@@ -837,51 +913,9 @@ impl Brain {
                     self.give_up_rail("found no engine it can afford", now);
                     return None;
                 };
-                let built = self.rail.as_ref()?.built[0]?;
-                let platform =
-                    f64::from(built.station.last - built.station.first + 1) * rail::MODULE * 10.0;
-                let room = (platform - f64::from(engine.length)).max(0.0);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let fit = (room / f64::from(wagon.length.max(1))).floor() as usize;
-                let wagons = fit.clamp(1, WAGONS_MOST);
-                let (origin, _) = self.rail.as_ref()?.depot?;
-                let color = tint(&self.seat);
-                let part = |m: &AiModel| ConsistPart {
-                    model: m.model.clone(),
-                    reversed: false,
-                    loads: BoundedVec::default(),
-                    color,
-                };
-                let mut consist = vec![part(&engine)];
-                consist.extend(std::iter::repeat_n(part(&wagon), wagons));
-                let n = consist.len();
-                let action = Action::BuyVehicle(BuyVehicle {
-                    depot: ConstructionRef {
-                        file: Text::lossy(rail::DEPOT),
-                        at: origin,
-                    },
-                    consist: BoundedVec::new(consist).ok()?,
-                    groups: BoundedVec::new(vec![1; n]).ok()?,
-                    multiple_units: BoundedVec::new(vec![Text::lossy(""); n]).ok()?,
-                    depot_index: 0,
-                });
-                let before = self
-                    .company
-                    .as_ref()
-                    .map(|c| c.vehicles.iter().map(|v| v.id).collect())
-                    .unwrap_or_default();
-                self.say(format!(
-                    "buys a train: {} and {wagons} {}",
-                    engine.model.as_str(),
-                    wagon.model.as_str()
-                ));
-                self.stage = Stage::Rail(RailStage::Bought { before, tries: 0 });
-                let out = self.act(&action, now);
-                if out.is_none() {
-                    self.stage = Stage::Rail(RailStage::Engines);
-                    self.wake = Some(now + SETTLE);
-                }
-                out
+                self.rail.as_mut()?.train = Some((engine, wagon));
+                self.stage = Stage::Rail(RailStage::Land);
+                None
             }
             _ => None,
         }
