@@ -209,6 +209,9 @@ struct Project {
     depot: Option<AiDepot>,
     /// Depot placements still to try: street index and side.
     depot_tries: Vec<(usize, f64)>,
+    /// A cargo's truck station placements still to try, by the industry
+    /// that makes it: index into its first site's streets, and side.
+    station_tries: Vec<(usize, f64)>,
     line: Option<LineId>,
 }
 
@@ -237,6 +240,12 @@ enum Stage {
         choice: usize,
         tries: u32,
     },
+    /// Asking the verdict on the next truck station placement, by the
+    /// industry that makes the cargo: a street stop only unloads cargo.
+    StationVerdict,
+    /// A truck station sent, by the street of that index: reading until
+    /// its station stands.
+    StationBuilt { at: Pos, street: usize, tries: u32 },
     /// Asking the verdict on the next depot placement.
     DepotVerdict,
     /// A depot sent, by the street of that index: reading until it stands,
@@ -448,6 +457,7 @@ impl Brain {
             | Stage::Borrowing { .. }
             | Stage::StopBuilt { .. }
             | Stage::DepotBuilt { .. }
+            | Stage::StationBuilt { .. }
             | Stage::Opening
             | Stage::LineMade { .. }
             | Stage::Bought { .. }
@@ -473,6 +483,14 @@ impl Brain {
                 let street = self.project.as_ref()?.sites.get(site)?.get(choice)?.clone();
                 self.verdict(&Action::PlaceStop(place::stop(&street, year)), now)
             }
+            Stage::StationVerdict => match self.next_station() {
+                Some(build) => self.verdict(&Action::BuildConstruction(build), now),
+                None => {
+                    self.say("found no place for a truck station".into());
+                    self.give_up_project(now);
+                    None
+                }
+            },
             Stage::DepotVerdict => match self.next_depot() {
                 Some(build) => self.verdict(&Action::BuildConstruction(build), now),
                 None => {
@@ -693,6 +711,37 @@ impl Brain {
                     }
                     _ => self.retry(
                         Stage::DepotBuilt {
+                            at,
+                            street,
+                            tries: tries + 1,
+                        },
+                        tries,
+                        now,
+                    ),
+                }
+                None
+            }
+            Stage::StationBuilt { at, street, tries } => {
+                let found = company
+                    .stations
+                    .iter()
+                    .find(|s| P::of(s.pos).flat_distance(P::of(at)) <= 5.0)
+                    .map(|s| s.id);
+                match found {
+                    Some(id) => {
+                        self.project.as_mut()?.stops.push((P::of(at), Some(id)));
+                        self.next_stop(1, now);
+                    }
+                    None if tries >= CONFIRM_TRIES => {
+                        // Not built: try the next street, not this one's other
+                        // side.
+                        if let Some(project) = self.project.as_mut() {
+                            project.station_tries.retain(|(i, _)| *i != street);
+                        }
+                        self.stage = Stage::StationVerdict;
+                    }
+                    None => self.retry(
+                        Stage::StationBuilt {
                             at,
                             street,
                             tries: tries + 1,
@@ -965,6 +1014,7 @@ impl Brain {
             stops: Vec::new(),
             depot: None,
             depot_tries: Vec::new(),
+            station_tries: Vec::new(),
             line: None,
         });
         self.stage = Stage::Streets;
@@ -1068,6 +1118,14 @@ impl Brain {
             return;
         };
         let reuse = project.serves.search().1.unwrap_or(STOP_REUSE);
+        // A cargo is loaded at a truck station by the industry that makes
+        // it: a street stop only unloads (small_stops.script.lua).
+        if site == 0 && project.serves.cargo().is_some() {
+            let streets = project.sites.first().map_or(0, Vec::len);
+            project.station_tries = (0..streets).flat_map(|i| [(i, 1.0), (i, -1.0)]).collect();
+            self.stage = Stage::StationVerdict;
+            return;
+        }
         while site < project.sites.len() {
             // A stop of its own by this centre that no line stops at, not
             // too near the line's others: taken up, not built again.
@@ -1162,6 +1220,29 @@ impl Brain {
         self.stage = Stage::DepotVerdict;
     }
 
+    fn next_station(&mut self) -> Option<tpf3mp_proto::action::ConstructionBuild> {
+        let year = self.year();
+        #[allow(clippy::cast_possible_wrap)]
+        let seed = (self.random() >> 33) as i64;
+        let project = self.project.as_mut()?;
+        let name = match &project.serves {
+            Serves::Cargo { from, .. } => format!("{} Freight", from.name.as_str()),
+            Serves::Town(town) => format!("{} Freight", town.name.as_str()),
+        };
+        while let Some((index, side)) = project.station_tries.first().copied() {
+            if let Some((_, build)) = project
+                .sites
+                .first()
+                .and_then(|streets| streets.get(index))
+                .and_then(|street| place::truck_station(street, side, year, seed, &name))
+            {
+                return Some(build);
+            }
+            project.station_tries.remove(0);
+        }
+        None
+    }
+
     fn next_depot(&mut self) -> Option<tpf3mp_proto::action::ConstructionBuild> {
         let year = self.year();
         #[allow(clippy::cast_possible_wrap)]
@@ -1214,6 +1295,25 @@ impl Brain {
                 }
                 out
             }
+            (Stage::StationVerdict, Action::BuildConstruction(build)) => {
+                let at = build.transform.origin;
+                let out = self.act(action, now);
+                if out.is_some() {
+                    let street = self
+                        .project
+                        .as_mut()
+                        .filter(|p| !p.station_tries.is_empty())
+                        .map_or(usize::MAX, |p| p.station_tries.remove(0).0);
+                    self.stage = Stage::StationBuilt {
+                        at,
+                        street,
+                        tries: 0,
+                    };
+                } else {
+                    self.wake = Some(now + SETTLE);
+                }
+                out
+            }
             (Stage::DepotVerdict, Action::BuildConstruction(build)) => {
                 let at = build.transform.origin;
                 let out = self.act(action, now);
@@ -1245,6 +1345,14 @@ impl Brain {
                     choice: choice + 1,
                 };
                 self.skip_exhausted_site(site, now);
+            }
+            Stage::StationVerdict => {
+                self.say(format!("a truck station placement was refused: {why}"));
+                if let Some(project) = self.project.as_mut()
+                    && !project.station_tries.is_empty()
+                {
+                    project.station_tries.remove(0);
+                }
             }
             Stage::DepotVerdict => {
                 self.say(format!("a depot placement was refused: {why}"));
@@ -1289,6 +1397,7 @@ impl Brain {
                 }
             }
         };
+        let truck_station_at = |stop: usize| stop == 0 && project.serves.cargo().is_some();
         let mut stops: Vec<LineStop> = Vec::new();
         for (i, group) in project.stops.iter().filter_map(|(_, s)| *s).enumerate() {
             let (load, max_load) = rules_at(i)?;
@@ -1300,12 +1409,17 @@ impl Brain {
                 },
                 // A two-sided stop is a group of two stations, one each
                 // side, of one terminal each (build 40425): the other side
-                // is the line's other choice.
-                alternatives: BoundedVec::new(vec![Terminal {
-                    station: 1,
-                    terminal: 0,
-                }])
-                .unwrap_or_default(),
+                // is the line's other choice. A truck station has one
+                // terminal.
+                alternatives: if truck_station_at(i) {
+                    BoundedVec::default()
+                } else {
+                    BoundedVec::new(vec![Terminal {
+                        station: 1,
+                        terminal: 0,
+                    }])
+                    .unwrap_or_default()
+                },
                 load_mode: LoadMode::LoadIfAvailable,
                 min_wait: 0,
                 max_wait: 0,

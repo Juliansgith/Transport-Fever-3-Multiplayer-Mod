@@ -28,6 +28,14 @@ pub const DEPOT_ENTRANCE: f64 = 35.0;
 /// entrance is the construction's own frozen node.
 pub const DEPOT_GAP: f64 = 2.0;
 
+/// The street station that loads trucks: a street stop only unloads cargo
+/// (`small_stops.script.lua`, `cargoLoad = false`).
+pub const TRUCK_STATION: &str = "::/stations/street/modular_street_station/modular_terminal.con";
+/// Where a truck station's entrance node stands from its origin, along its
+/// -y axis, in metres (the fixture's cargo terminal, read from the console:
+/// its frozen entrance edge from (0, -15) to (0, -33)).
+pub const TRUCK_STATION_ENTRANCE: f64 = 33.0;
+
 /// A street edge's length the AI stops buses on at least, in metres.
 pub const STOP_EDGE_MIN: u32 = 24;
 
@@ -149,7 +157,6 @@ pub fn stop(street: &AiStreet, year: i32) -> PlaceStop {
 /// game builds the split with the depot (the entrance edge is the depot's
 /// own, which it makes itself), and its refresh of the depot snaps the
 /// entrance onto the junction (tpf3mp/apply.lua, BuildConstruction).
-#[allow(clippy::cast_possible_truncation)]
 pub fn depot(
     street: &AiStreet,
     side: f64,
@@ -157,15 +164,91 @@ pub fn depot(
     seed: i64,
     name: &str,
 ) -> Option<(P, ConstructionBuild)> {
+    let params = vec![
+        Param {
+            key: text("seed"),
+            value: ParamValue::Int(seed),
+        },
+        Param {
+            key: text("year"),
+            value: ParamValue::Int(i64::from(year)),
+        },
+    ];
+    facing(street, side, ROAD_DEPOT, DEPOT_ENTRANCE, params, name)
+}
+
+/// A one-platform truck station for any cargo of the universal class (every
+/// cargo but passengers), beside the middle of `street` and joined to it as
+/// a depot is ([`depot`]). Its modules are those the game's own template
+/// lays for one platform (`modular_terminal.script.lua`, createTemplateFn):
+/// a universal cargo platform each side of the platform's row, and the
+/// entrance.
+pub fn truck_station(
+    street: &AiStreet,
+    side: f64,
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<(P, ConstructionBuild)> {
+    const PLATFORM: &str = "::/stations/street/modular_street_station/cargo_platform.module";
+    const ENTRANCE: &str = "::/stations/street/modular_street_station/entrance_exit.module";
+    let int = |key: &str, v: i64| Param {
+        key: text(key),
+        value: ParamValue::Int(v),
+    };
+    let module = |slot: u32, file: &str| {
+        [
+            Param {
+                key: text(&format!("modules[{slot}].name")),
+                value: ParamValue::Text(text(file)),
+            },
+            Param {
+                key: text(&format!("modules[{slot}].variant")),
+                value: ParamValue::Int(0),
+            },
+        ]
+    };
+    let mut params = vec![
+        int("seed", seed),
+        int("year", i64::from(year)),
+        // One platform; the universal specialization, counted from 1.
+        int("platforms", 1),
+        int("specialization", 1),
+    ];
+    params.extend(module(20_010_001, PLATFORM));
+    params.extend(module(20_210_001, PLATFORM));
+    params.extend(module(20_015_503, ENTRANCE));
+    facing(
+        street,
+        side,
+        TRUCK_STATION,
+        TRUCK_STATION_ENTRANCE,
+        params,
+        name,
+    )
+}
+
+/// A construction beside the middle of `street`, on side `side`, facing it:
+/// its entrance node `entrance` metres along its own -y axis, and that
+/// [`DEPOT_GAP`] short of the street's middle, which its connection splits.
+#[allow(clippy::cast_possible_truncation)]
+fn facing(
+    street: &AiStreet,
+    side: f64,
+    file: &str,
+    entrance_at: f64,
+    params: Vec<Param>,
+    name: &str,
+) -> Option<(P, ConstructionBuild)> {
     let (ux, uy) = along(street);
     // The left normal of a to b, then the side asked for.
     let (nx, ny) = (-uy * side, ux * side);
     let foot = middle(street);
     let entrance = foot.plus(nx * DEPOT_GAP, ny * DEPOT_GAP);
-    // The depot's -y axis points from its entrance to the street: towards
-    // -n. With its basis [cos, sin; -sin, cos], -y is (sin, -cos).
+    // The construction's -y axis points from its entrance to the street:
+    // towards -n. With its basis [cos, sin; -sin, cos], -y is (sin, -cos).
     let (sin, cos) = (-nx, ny);
-    let origin = entrance.plus(nx * DEPOT_ENTRANCE, ny * DEPOT_ENTRANCE);
+    let origin = entrance.plus(nx * entrance_at, ny * entrance_at);
     let micro = |v: f64| (v * 1_000_000.0).round() as i32;
     let (from, to) = (foot.pos(), entrance.pos());
     let tangent = Tangent {
@@ -210,7 +293,7 @@ pub fn depot(
     )
     .ok()?;
     let build = ConstructionBuild {
-        file: res(ROAD_DEPOT),
+        file: res(file),
         transform: Transform {
             basis: [
                 micro(cos),
@@ -225,17 +308,7 @@ pub fn depot(
             ],
             origin: origin.pos(),
         },
-        params: BoundedVec::new(vec![
-            Param {
-                key: text("seed"),
-                value: ParamValue::Int(seed),
-            },
-            Param {
-                key: text("year"),
-                value: ParamValue::Int(i64::from(year)),
-            },
-        ])
-        .unwrap_or_default(),
+        params: BoundedVec::new(params).ok()?,
         name: text(name),
         replaces: None,
         connection: Some(Box::new(connection)),
@@ -361,6 +434,46 @@ mod tests {
                 z: 5_000
             }
         );
+    }
+
+    #[test]
+    fn a_truck_station_is_the_games_one_platform_template_joined_as_a_depot() {
+        let s = street(0, 0, 100_000, 0);
+        let (entrance, build) = truck_station(&s, 1.0, 1925, 9, "Witney Farm Freight").unwrap();
+        assert_eq!(build.file.as_str(), TRUCK_STATION);
+        assert_eq!(
+            (entrance.x, entrance.y),
+            (50.0, 2.0),
+            "2 m short of the split"
+        );
+        // Its entrance 33 m before its origin.
+        assert_eq!(build.transform.origin.y, 35_000);
+        let param = |key: &str| {
+            build
+                .params
+                .iter()
+                .find(|p| p.key.as_str() == key)
+                .map(|p| p.value.clone())
+        };
+        assert_eq!(param("platforms"), Some(ParamValue::Int(1)));
+        assert_eq!(
+            param("specialization"),
+            Some(ParamValue::Int(1)),
+            "universal"
+        );
+        for slot in [20_010_001, 20_210_001] {
+            assert!(matches!(
+                param(&format!("modules[{slot}].name")),
+                Some(ParamValue::Text(t)) if t.as_str().ends_with("/cargo_platform.module")
+            ));
+        }
+        assert!(matches!(
+            param("modules[20015503].name"),
+            Some(ParamValue::Text(t)) if t.as_str().ends_with("/entrance_exit.module")
+        ));
+        assert!(build.connection.is_some());
+        let action = tpf3mp_proto::action::Action::BuildConstruction(build);
+        assert!(action.to_payload().is_ok(), "a valid action");
     }
 
     #[test]

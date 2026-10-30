@@ -193,8 +193,12 @@ faster AI.
   far:* a town's bus line, and a cargo's truck line from an industry that
   made it over the last year to the nearest that takes it, within the
   difficulty's reach and joined by road already (`findPathNodeToNode` for
-  trucks), each stop on a street within 140 m of its industry (a stop's
-  catchment reaches 160 m); the two take turns.
+  trucks): a one-platform truck station by the industry that makes it
+  (the game's own template for it; a street stop only unloads cargo,
+  `small_stops.script.lua`), joined to a street within 140 m as a depot
+  is, and a street stop within 140 m of the industry that takes it (a
+  stop's catchment reaches 160 m); the line loads the cargo at the
+  station only. The two kinds of line take turns.
 - **Track and trains.** The station: a through or terminus station near
   the town's centre or the industry, turned to the route, its platforms
   as long as its trains, tested with its verdict. The route: a search over

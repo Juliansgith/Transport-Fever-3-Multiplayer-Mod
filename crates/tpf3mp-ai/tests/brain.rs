@@ -56,6 +56,8 @@ struct World {
     industries: Vec<AiIndustry>,
     roads_join: bool,
     line_modes: Vec<(LineId, u16)>,
+    /// The truck stations built: a street stop only unloads cargo.
+    truck_stations: Vec<StationId>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -108,6 +110,7 @@ impl World {
             industries: Vec::new(),
             roads_join: true,
             line_modes: Vec::new(),
+            truck_stations: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -278,6 +281,19 @@ impl World {
                 }
                 self.money -= 10_000;
             }
+            Action::BuildConstruction(build)
+                if build.file.as_str().contains("modular_terminal") =>
+            {
+                let id = self.id();
+                self.truck_stations.push(StationId(id));
+                self.stations.push(AiStation {
+                    id: StationId(id),
+                    pos: build.transform.origin,
+                    terminals: 1,
+                    waiting: 0,
+                });
+                self.money -= 60_000;
+            }
             Action::BuildConstruction(_) if self.drop_depots > 0 => self.drop_depots -= 1,
             Action::BuildConstruction(build) => {
                 let [cos, sin, ..] = build.transform.basis;
@@ -316,6 +332,11 @@ impl World {
                     .map(|s| s.rules.load.iter().copied().collect())
                     .collect();
                 if create.line.modes[0] == 4 {
+                    assert!(
+                        self.truck_stations.contains(&create.line.stops[0].group),
+                        "a truck line loads at a truck station"
+                    );
+                    assert!(create.line.stops[0].alternatives.is_empty());
                     assert_eq!(rules[0].get(7), Some(&true), "{rules:?}");
                     assert!(rules[1].iter().all(|l| !l), "{rules:?}");
                 } else {

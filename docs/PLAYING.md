@@ -395,10 +395,10 @@ game's Multiplayer window before the game, or in the Multiplayer window
 during it, pick **Add an AI player** and **Easy**, **Normal** or **Hard**.
 Each AI founds a company of its own under its name, borrows to start (a
 new company has no money), and takes turns between bus lines in towns
-and truck lines for cargo: stops on a town's streets, or by an industry
-that makes a cargo and the nearest one, joined by road, that takes it; a
-depot beside them, the line, and its vehicles, then the next while its
-money lasts. Players cannot join an AI's company, and what
+and truck lines for cargo: stops on a town's streets, or a truck station
+by an industry that makes a cargo and a stop by the nearest one, joined
+by road, that takes it; a depot beside them, the line, and its vehicles,
+then the next while its money lasts. Players cannot join an AI's company, and what
 it owns is protected like anyone's. **Remove** stops an AI from deciding
 anything more; its company keeps running what it built.
 
