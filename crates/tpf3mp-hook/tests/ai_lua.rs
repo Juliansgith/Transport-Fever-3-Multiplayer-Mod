@@ -38,7 +38,7 @@ fn scripts() -> PathBuf {
 const GAME: &str = r#"
     -- Each node's street edges.
     SEGMENTS = { [402] = { 410 }, [403] = { 410 }, [950] = { 900 }, [951] = { 900, 960 },
-                 [952] = { 901, 961 }, [953] = { 901 } }
+                 [952] = { 901, 961 }, [953] = { 901 }, [71] = { 970 }, [72] = { 971 } }
     local CT = { CONSTRUCTION = 1, STATION_GROUP = 2, STATION = 3, BASE_NODE = 4, LINE = 5, NAME = 6,
         TRANSPORT_VEHICLE = 7, TOWN_BUILDING = 8, TOWN = 9, BASE_EDGE = 10, BASE_EDGE_STREET = 11,
         PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15, INDUSTRY = 16 }
@@ -72,7 +72,8 @@ const GAME: &str = r#"
         [CT.NAME] = { [500] = { name = "Line 1" }, [700] = { name = "Didcot" }, [701] = { name = "Ely" } },
         [CT.TRANSPORT_VEHICLE] = { [600] = { transportVehicleConfig = { vehicles = { { part = { modelId = 9 } } } } } },
         [CT.TOWN_BUILDING] = { [800] = { town = 701 }, [801] = { town = 701 }, [802] = { town = 700 } },
-        [CT.TOWN] = { [700] = {}, [701] = {} },
+        -- Ely's commercial buildings take goods.
+        [CT.TOWN] = { [700] = {}, [701] = { cargoNeeds = { {}, { { 2, 1.0 } }, {} } } },
         [CT.BASE_EDGE] = {
             [410] = { node0 = 403, node1 = 402 },
             [900] = { position0 = { x = 0, y = 0, z = 1 }, position1 = { x = 30, y = 40, z = 1 }, node0 = 950, node1 = 951,
@@ -140,9 +141,14 @@ const GAME: &str = r#"
                 town = { getTownDistrictCenter = function(t, use)
                     return { x = t * 10 + use, y = 1, z = 2 } end },
                 octree = { findEntitiesInCircle = function() return { 901, 900 } end,
-                    findTransportNetworkNodesInCircle = function(p) return { p.x > 5000 and 71 or 72 } end },
+                    -- Each place's network nodes: an industry's own (80,
+                    -- no street of it) first, then a street's.
+                    findTransportNetworkNodesInCircle = function(p)
+                        return { { entity = 80 }, { entity = p.x > 5000 and 71 or 72 } } end },
                 pathfinding = { findPathNodeToNode = function(a, b, modes)
-                    if ROAD_JOINS and a[1] ~= b[1] and modes[1] == 4 then return { 1, 2, 3 } end
+                    -- A path only between street nodes.
+                    for _, n in ipairs(a) do if n.entity == 80 then return {} end end
+                    if ROAD_JOINS and a[1].entity ~= b[1].entity and modes[1] == 4 then return { 1, 2, 3 } end
                     return {} end },
                 getEntityName = function(e) return ({ [1000] = "Hunstanton Crop Farm",
                     [1010] = "Clun Livestock Farm" })[e] end,
@@ -154,11 +160,15 @@ const GAME: &str = r#"
             },
             system = {
                 lineSystem = { getLinesForPlayer = function(e) return e == 77 and { 500 } or {} end },
+                -- Ely was supplied 3.5 goods of the 40.2 it may take.
+                townBuildingSystem = { getCargoSupplyAndLimit = function(t)
+                    return t == 701 and { [2] = { 3.5, 40.2 }, [1] = { 0, 0 } } or {} end },
                 transportVehicleSystem = {
                     getLineVehicles = function(l) return l == 500 and { 600 } or {} end,
                     getDepotVehicles = function() return {} end,
                 },
-                streetSystem = { getNodeSegments = function(n) return SEGMENTS[n] or {} end },
+                streetSystem = { getNodeSegments = function(n) return SEGMENTS[n] or {} end,
+                    getNodeStreetSegments = function(n) return SEGMENTS[n] or {} end },
                 -- The game's index of what construction holds a part.
                 stationGroupSystem = { getStationGroup = function(s) return s == 1003 and 1004 or -1 end },
                 streetConnectorSystem = {
@@ -336,6 +346,14 @@ fn towns_streets_and_models_read_as_the_ai_reads_them() {
     assert_eq!(towns[0].buildings, 2);
     assert_eq!(towns[0].centres.len(), 3);
     assert_eq!(towns[0].pos.x, 7_010_000);
+    // What Ely needs, at its commercial centre; not grain, which it may not
+    // take; Didcot needs nothing.
+    assert_eq!(towns[0].needs.len(), 1, "{:?}", towns[0].needs);
+    let goods = &towns[0].needs[0];
+    assert_eq!(goods.cargo.as_str(), "::/cargos/goods/goods.cargo");
+    assert_eq!((goods.supply, goods.limit), (3, 40));
+    assert_eq!(goods.at.x, 7_011_000, "the commercial district's centre");
+    assert!(towns[1].needs.is_empty());
 
     let AiAnswer::Streets(streets) = answer(
         &lua,
@@ -506,4 +524,40 @@ fn industries_routes_and_trucks_by_cargo_read_as_the_ai_reads_them() {
     };
     assert_eq!(trucks[0].model.as_str(), "vehicle/truck/box.mdl");
     assert_eq!(trucks.len(), 1);
+}
+
+#[test]
+fn verdicts_are_answered_alone_in_their_frame_and_spaced_apart() {
+    let lua = lua();
+    let answered: String = lua
+        .load(
+            r#"
+            CLOCK = 100
+            os.clock = function() return CLOCK end
+            AI.verdict = function() return { Verdict = { ok = true, cost = 1, messages = {}, collisions = 0 } } end
+            local asks = { { id = 1, seat = SEAT, question = "Towns" },
+                           { id = 2, seat = SEAT, question = { Verdict = {} } },
+                           { id = 3, seat = SEAT, question = { Verdict = {} } },
+                           { id = 4, seat = SEAT, question = "Towns" } }
+            local answered = {}
+            local link = {
+                aiAsk = function(self) return table.remove(asks, 1) end,
+                aiAnswer = function(self, id) answered[#answered + 1] = tostring(id) end,
+            }
+            local room = { roster = function() return ROSTER end, registry = REGISTRY }
+            local frames = {}
+            local function frame() AI.serve(link, room, 1000) frames[#frames + 1] = table.concat(answered, ",") end
+            frame()              -- the towns; the verdict waits for a frame of its own
+            frame()              -- the first verdict, alone
+            CLOCK = CLOCK + 0.1
+            frame()              -- too soon for the second
+            CLOCK = CLOCK + 0.2
+            frame()              -- the second verdict, alone
+            frame()              -- then the towns behind it
+            return table.concat(frames, " | ")
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(answered, "1 | 1,2 | 1,2 | 1,2,3 | 1,2,3,4");
 }

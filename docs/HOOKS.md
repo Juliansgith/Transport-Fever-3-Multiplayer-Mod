@@ -3941,9 +3941,12 @@ replay builds at the game's cost for its proposal).
 ### AI players' questions
 
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 31):
+whose game drives it, and asks that game about the world (bridge 32):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
-seat's company, the towns, the industries (each one's own station, what
+seat's company, the towns (since bridge version 32 with the cargo each
+needs, the least supplied first: how much it was supplied and may take,
+as its window's cargo demand reads them, and the centre of the district
+that takes it), the industries (each one's own station, what
 each takes, and what it
 made over the last year, as the game's industry window reads them), the
 streets near a place (each edge's ends, its curve's middle, template,
@@ -3963,10 +3966,20 @@ than the link's message is refused with why. A verdict makes the
 proposal as the seat's company would build it (`apply.proposalOf`, as
 build previews do) and asks `makeProposalData`: nothing is sent or built.
 The questions are dropped while a world loads; the agent asks again.
+A verdict is answered alone in its frame and at least 250 ms after the
+last (`ai.VERDICT_GAP`), the questions behind it waiting in their order,
+so several AIs' verdicts are spread over frames rather than stacked in
+one. Where the octree misses one of an edge's ends, the proposal reads
+the network's nodes whole (`tpf3mp/apply.lua`, 26 to 71 ms on the rig's
+big fixture); the verdicts share that read for 5 seconds
+(`ai.NODE_CACHE_FOR`, passed as `nodeCache`, dry runs only, never an
+applied action), and a node gone since only makes a verdict refuse.
 Once a minute while it answers, the mod logs what the answers cost the
-frames, by kind of question (how many, the mean and the slowest) and the
-slowest frame of them: `ai: answers in 60 s: Verdict 12 (mean ..., slowest
-...), ...`.
+frames, by kind of question (how many, the mean and the slowest, and for
+the slowest verdict its parts: its proposal, apply's parts of that, and
+the game's verdict) and the slowest frame of them: `ai: answers in 60 s:
+Verdict 12 (mean ..., slowest ...; its proposal ... ms [...], the game's
+verdict ... ms), ...`.
 
 ### Build previews
 

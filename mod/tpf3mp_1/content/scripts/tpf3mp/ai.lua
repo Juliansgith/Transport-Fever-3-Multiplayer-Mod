@@ -31,6 +31,7 @@ ai.MAX_STREETS = 320
 ai.MAX_MODELS = 48
 ai.MAX_OWNED = 160
 ai.MAX_MESSAGES = 8
+ai.MAX_NEEDS = 4
 
 local function module(name)
 	if ug_require then return ug_require("tpf3mp_1::/scripts/tpf3mp/" .. name .. ".lua") end
@@ -296,15 +297,18 @@ function ai.towns(registry)
 	for _, t in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.TOWN) or {}) do
 		local id = reg and regmod.id(reg, "towns", t)
 		local name = component(t, "NAME")
-		local centres = {}
+		local centres, centreOf = {}, {}
 		for landUse = 0, 2 do
 			local ok, c = pcall(api.engine.util.town.getTownDistrictCenter, t, landUse)
-			if ok and c then centres[#centres + 1] = pos(c) end
+			if ok and c then
+				centres[#centres + 1] = pos(c)
+				centreOf[landUse] = centres[#centres]
+			end
 		end
 		if id and #centres > 0 then
 			towns[#towns + 1] = {
 				id = id, name = text(name and name.name, 48), pos = centres[1],
-				buildings = buildings[t] or 0, centres = centres,
+				buildings = buildings[t] or 0, centres = centres, needs = ai.needs(t, centreOf, centres[1]),
 			}
 		end
 	end
@@ -313,6 +317,40 @@ function ai.towns(registry)
 		return a.id < b.id
 	end)
 	return { Towns = each(towns, ai.MAX_TOWNS) }
+end
+
+-- What `town` needs: each cargo its buildings take, how much it was
+-- supplied and may take (the town window's cargo demand), at the centre of
+-- the first district whose buildings take it (`TOWN.cargoNeeds`, one list a
+-- district, residential first), the least supplied first.
+function ai.needs(town, centreOf, centre)
+	local ok, supply = pcall(api.engine.system.townBuildingSystem.getCargoSupplyAndLimit, town)
+	if not ok or supply == nil then return {} end
+	local useOf = {}
+	local t = component(town, "TOWN")
+	pcall(function()
+		for landUse, cargos in ipairs(t.cargoNeeds) do
+			for _, entry in ipairs(cargos) do
+				if useOf[entry[1]] == nil then useOf[entry[1]] = landUse - 1 end
+			end
+		end
+	end)
+	local needs = {}
+	for id, got in pairs(supply) do
+		local name = api.res.cargoTypeRep.getName(id)
+		if name and (got[2] or 0) >= 1 then
+			needs[#needs + 1] = {
+				cargo = text(name, 128), supply = math.floor(got[1] or 0), limit = math.floor(got[2]),
+				at = centreOf[useOf[id]] or centre,
+			}
+		end
+	end
+	table.sort(needs, function(a, b)
+		local ua, ub = a.limit - a.supply, b.limit - b.supply
+		if ua ~= ub then return ua > ub end
+		return a.cargo < b.cargo
+	end)
+	return each(needs, ai.MAX_NEEDS)
 end
 
 -- Whether a company owns `edge`.
@@ -502,15 +540,22 @@ function ai.industries(registry)
 end
 
 -- Whether a truck can drive between the street networks by two places:
--- the game's pathfinder from the network's nodes within 200 m of one to
--- those of the other.
+-- the game's pathfinder from the street nodes within 200 m of one to those
+-- of the other. Street nodes only: about half of the network nodes by an
+-- industry are its own (2026-10-30, 30 of 58 by a farm), from which no
+-- truck path starts.
 ai.ROUTE_REACH = 200
 function ai.route(from, to)
 	local octree, Vec2f = api.engine.util.octree, api.type.Vec2f
+	local streets = api.engine.system.streetSystem
 	local function near(p)
 		local nodes = octree.findTransportNetworkNodesInCircle(Vec2f.new(p.x, p.y), ai.ROUTE_REACH) or {}
 		local some = {}
-		for i = 1, math.min(#nodes, 8) do some[#some + 1] = nodes[i] end
+		for i = 1, #nodes do
+			if #some >= 8 then break end
+			local ok, segments = pcall(function() return streets.getNodeStreetSegments(nodes[i].entity) end)
+			if ok and segments and #segments > 0 then some[#some + 1] = nodes[i] end
+		end
 		return some
 	end
 	local a, b = near(from), near(to)
@@ -523,13 +568,32 @@ function ai.route(from, to)
 end
 
 -- The game's verdict on `action`, built as `seat`'s company would.
+-- The last verdict's parts, for the cost log: making its proposal (and
+-- apply's own parts of that) and the game's verdict on it.
+ai.lastVerdict = nil
+
+-- The networks' nodes the verdicts share, read whole at most once a while
+-- (tpf3mp/apply.lua, `nodeCache`), and when.
+ai.NODE_CACHE_FOR = 5
+local nodeCache, nodeCacheAt = {}, nil
+
 function ai.verdict(seat, action, roster)
 	local c = companyOf(roster, seat)
-	local proposal, context = module("apply").proposalOf(action, { company = c and c.entity, roster = roster })
+	local apply = module("apply")
+	local t0 = os.clock()
+	if nodeCacheAt == nil or t0 - nodeCacheAt >= ai.NODE_CACHE_FOR then
+		nodeCache, nodeCacheAt = {}, t0
+	end
+	local proposal, context = apply.proposalOf(action, { company = c and c.entity, roster = roster,
+		nodeCache = nodeCache })
+	local t1 = os.clock()
+	local made = { make = t1 - t0, parts = apply.costText and apply.costText(apply.lastCost) or "" }
+	ai.lastVerdict = made
 	if proposal == nil then
 		return { Verdict = { ok = false, cost = 0, messages = { text(context, 160) }, collisions = 0 } }
 	end
 	local data = api.engine.util.proposal.makeProposalData(proposal, context)
+	made.game = os.clock() - t1
 	local state = data and data.errorState
 	local messages = {}
 	for _, m in ipairs(state and state.messages or {}) do
@@ -575,7 +639,7 @@ local function kindOf(ask)
 	return "?"
 end
 
-local function spent(kind, seconds)
+local function spent(kind, seconds, detail)
 	local k = costs.kinds[kind]
 	if k == nil then
 		k = { n = 0, s = 0, max = 0 }
@@ -583,7 +647,7 @@ local function spent(kind, seconds)
 		costs.order[#costs.order + 1] = kind
 	end
 	k.n, k.s = k.n + 1, k.s + seconds
-	if seconds > k.max then k.max = seconds end
+	if seconds > k.max then k.max, k.detail = seconds, detail end
 end
 
 local function report(link, now)
@@ -592,8 +656,8 @@ local function report(link, now)
 	local parts = {}
 	for _, kind in ipairs(costs.order) do
 		local k = costs.kinds[kind]
-		parts[#parts + 1] = string.format("%s %d (mean %.1f ms, slowest %.1f ms)", kind, k.n,
-			k.s * 1000 / k.n, k.max * 1000)
+		parts[#parts + 1] = string.format("%s %d (mean %.1f ms, slowest %.1f ms%s)", kind, k.n,
+			k.s * 1000 / k.n, k.max * 1000, k.detail and ("; " .. k.detail) or "")
 	end
 	if type(link.log) == "function" then
 		pcall(link.log, link, string.format("ai: answers in %.0f s: %s; %d frame(s) answered, the slowest %.1f ms",
@@ -607,24 +671,43 @@ end
 -- table or a function that reads it. The roster is the game script's whole
 -- one (tpf3mp/companies.lua): the GUI's own copy keeps only the player's
 -- company's loan offers.
+-- The least time between two verdicts, in seconds, and a verdict alone in
+-- its frame: each holds the driving game's frame for the game's own
+-- verdict (about 8 ms, 2026-10-30), so several AIs' verdicts at once are
+-- spread over frames rather than stacked in a row. A verdict waiting holds
+-- the questions behind it, in their order.
+ai.VERDICT_GAP = 0.25
+local heldAsk, lastVerdictAt = nil, nil
+
 function ai.serve(link, room, budget)
 	if not (link and link.aiAsk) then return 0 end
 	local t0 = os.clock()
 	local served = 0
 	while (os.clock() - t0) * 1000 < (budget or ai.BUDGET_MS) do
-		local ask = link:aiAsk()
+		local ask = heldAsk or link:aiAsk()
+		heldAsk = nil
 		if ask == nil then break end
+		local q = ask.question
+		local isVerdict = type(q) == "table" and q.Verdict ~= nil
+		if isVerdict and (served > 0 or (lastVerdictAt and os.clock() - lastVerdictAt < ai.VERDICT_GAP)) then
+			heldAsk = ask
+			break
+		end
 		local roster = room and room.roster
 		if type(roster) == "function" then roster = roster() end
 		local t1 = os.clock()
+		ai.lastVerdict = nil
 		local ok, answer = pcall(ai.answer, ask, roster, room and room.registry)
-		spent(kindOf(ask), os.clock() - t1)
+		local v = ai.lastVerdict
+		spent(kindOf(ask), os.clock() - t1, v and string.format("its proposal %.1f ms%s, the game's verdict %.1f ms",
+			v.make * 1000, v.parts ~= "" and (" [" .. v.parts .. "]") or "", (v.game or 0) * 1000))
 		if ok and type(answer) == "table" then
 			link:aiAnswer(ask.id, true, answer)
 		else
 			link:aiAnswer(ask.id, false, text(answer, 250))
 		end
 		served = served + 1
+		if isVerdict then lastVerdictAt = os.clock() break end
 	end
 	local now = os.clock()
 	if served > 0 then

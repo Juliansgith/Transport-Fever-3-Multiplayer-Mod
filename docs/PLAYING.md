@@ -408,7 +408,9 @@ better buses and borrow more. One player's game drives all the AI players
 another player's game takes over where it stopped. With nobody to drive
 them, AI players wait.
 
-So far AI players run town buses. Trucks, trains, ships and planes come
+So far AI players run town buses, and trucks that carry an industry's
+cargo to a town that needs it (fuel, meat, cement and the like, as the
+town's window lists under cargo demand). Trains, ships and planes come
 next (docs/AI_PLAYERS.md).
 
 ## Updates
