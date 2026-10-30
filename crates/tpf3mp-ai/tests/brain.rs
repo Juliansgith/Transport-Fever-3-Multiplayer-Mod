@@ -323,11 +323,9 @@ impl World {
                         self.industries.iter().filter_map(|i| i.station).collect();
                     assert!(stations.contains(&create.line.stops[0].group));
                     assert!(!stations.contains(&create.line.stops[1].group));
-                    assert_eq!(
-                        create.line.stops[0].alternatives.len(),
-                        1,
-                        "its other terminal"
-                    );
+                    // Its output terminal alone: the second of two.
+                    assert_eq!(create.line.stops[0].terminal.terminal, 1);
+                    assert!(create.line.stops[0].alternatives.is_empty());
                     assert_eq!(rules[0].get(7), Some(&true), "{rules:?}");
                     assert!(rules[1].iter().all(|l| !l), "{rules:?}");
                 } else {

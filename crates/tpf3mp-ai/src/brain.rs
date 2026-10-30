@@ -1319,18 +1319,25 @@ impl Brain {
                     station: 1,
                     terminal: 0,
                 }],
-                // A cargo's first stop: the industry's station, of its
-                // terminals; its second a two-sided street stop.
+                // A cargo's second stop is a two-sided street stop; its first
+                // the industry's output terminal alone ([`output_terminal`]).
                 Serves::Cargo { .. } if stop > 0 => vec![Terminal {
                     station: 1,
                     terminal: 0,
                 }],
-                Serves::Cargo { from, .. } => (1..u16::from(from.terminals))
-                    .map(|terminal| Terminal {
-                        station: 0,
-                        terminal,
-                    })
-                    .collect(),
+                Serves::Cargo { .. } => Vec::new(),
+            }
+        };
+        let terminal_at = |stop: usize| -> Terminal {
+            match &project.serves {
+                Serves::Cargo { from, .. } if stop == 0 => Terminal {
+                    station: 0,
+                    terminal: output_terminal(from.terminals),
+                },
+                _ => Terminal {
+                    station: 0,
+                    terminal: 0,
+                },
             }
         };
         let mut stops: Vec<LineStop> = Vec::new();
@@ -1338,10 +1345,7 @@ impl Brain {
             let (load, max_load) = rules_at(i)?;
             stops.push(LineStop {
                 group,
-                terminal: Terminal {
-                    station: 0,
-                    terminal: 0,
-                },
+                terminal: terminal_at(i),
                 alternatives: BoundedVec::new(alternatives_at(i)).unwrap_or_default(),
                 load_mode: LoadMode::LoadIfAvailable,
                 min_wait: 0,
@@ -1482,6 +1486,15 @@ impl Brain {
         self.rest(now);
         None
     }
+}
+
+/// The terminal of an industry's own station its output is loaded at: of
+/// two (an input and an output, `industryutil.lua`), the second, as
+/// players' lines at the fixture's farm and quarry stop; else the first.
+/// The station lists its terminals in the order its script's table gives
+/// them, which the game does not name.
+fn output_terminal(terminals: u8) -> u16 {
+    if terminals == 2 { 1 } else { 0 }
 }
 
 /// Whether a town by its id is one the brain serves, as its memo says.
