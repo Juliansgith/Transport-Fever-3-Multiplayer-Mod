@@ -4,21 +4,30 @@
 //! the year (the vehicle window's replace: the same vehicle, on its line),
 //! adds one to a line running full with passengers or cargo waiting, and
 //! sells one from a settled line that runs near empty or loses money, never
-//! a line's last. Trains wait for passing loops.
+//! a line's last. A rail line with a signalled passing loop whose train
+//! runs full with cargo waiting gets a second train.
 
 use std::time::Instant;
 
-use tpf3mp_bridge::ai::{AiCompany, AiLine, AiModel, AiQuestion};
+use tpf3mp_bridge::ai::{AiCompany, AiDepot, AiLine, AiModel, AiQuestion};
 use tpf3mp_proto::{
     BoundedVec, Text,
-    action::{Action, ConsistPart, ReplaceVehicle, ReplacedPart, ResName, VehicleId},
+    action::{
+        Action, AssignLine, BuyVehicle, ConsistPart, ConstructionRef, LineId, ReplaceVehicle,
+        ReplacedPart, ResName, VehicleId,
+    },
 };
 
-use super::{BUS, Brain, CONFIRM_TRIES, Out, Stage, TRUCK, tint};
+use super::{BUS, Brain, CONFIRM_TRIES, Out, SETTLE, Stage, TRUCK, tint, train};
+use crate::{place::P, rail};
 
 /// How far through their lives every vehicle of a line must be before its
 /// load and money are judged, in percent: about a year of a bus of 20.
 pub const SETTLED: u16 = 5;
+/// The cargo waiting at a cargo line's stops that makes it a line running
+/// full: a trainload, several truckloads. A cargo line runs full one way
+/// and empty back, so its load, over both, says little of how busy it is.
+pub const CARGO_BACKLOG: u32 = 60;
 
 /// Where its care of a line stands.
 #[derive(Debug, Clone)]
@@ -32,6 +41,31 @@ pub(super) enum Upkeep {
     Replaced { vehicle: VehicleId, tries: u32 },
     /// A vehicle sold: reading until it is gone.
     Sold { vehicle: VehicleId, tries: u32 },
+    /// A second train for a looped rail line: asking its cargo's wagons,
+    /// then the engines, at its rail depot, its first train's engine.
+    TrainWagons {
+        line: LineId,
+        cargo: ResName,
+        depot: AiDepot,
+        engine: ResName,
+    },
+    TrainEngines {
+        line: LineId,
+        depot: AiDepot,
+        engine: ResName,
+        wagon: AiModel,
+    },
+    /// The train bought, and sent onto its line.
+    TrainBought {
+        line: LineId,
+        before: Vec<VehicleId>,
+        tries: u32,
+    },
+    TrainAssigned {
+        line: LineId,
+        vehicle: VehicleId,
+        tries: u32,
+    },
 }
 
 /// What it does for a line at a look.
@@ -48,6 +82,12 @@ enum Task {
         vehicle: VehicleId,
         line: String,
         why: &'static str,
+    },
+    Train {
+        line: AiLine,
+        cargo: ResName,
+        depot: AiDepot,
+        engine: ResName,
     },
 }
 
@@ -68,6 +108,27 @@ impl Brain {
             .iter()
             .find(|(id, _)| *id == line.id.0)
             .map(|(_, cargo)| Text::lossy(cargo))
+    }
+
+    /// A line running full: a bus line its buses this full with more
+    /// waiting; a cargo line with [`CARGO_BACKLOG`] waiting.
+    fn full(&self, line: &AiLine) -> bool {
+        if self.cargo_of(line).is_some() {
+            line.waiting >= CARGO_BACKLOG
+        } else {
+            line.load >= self.profile.add_above && line.waiting > 0
+        }
+    }
+
+    /// A line running near empty: a bus line under its difficulty's load; a
+    /// cargo line, empty half its way, under half that.
+    fn empty(&self, line: &AiLine) -> bool {
+        let under = if self.cargo_of(line).is_some() {
+            self.profile.remove_below / 2
+        } else {
+            self.profile.remove_below
+        };
+        line.load > 0 && line.load < under
     }
 
     /// What its lines need now, the most pressing first: a worn vehicle
@@ -96,14 +157,54 @@ impl Brain {
             });
         }
         // Running full, with more waiting.
-        let full = lines.iter().find(|l| {
-            l.load >= self.profile.add_above
-                && l.waiting > 0
-                && on(l).len() < usize::from(self.profile.buses_most)
-        });
+        let full = lines
+            .iter()
+            .find(|l| self.full(l) && on(l).len() < usize::from(self.profile.buses_most));
         if let Some(line) = full {
             return Some(Task::Add {
                 line: (*line).clone(),
+            });
+        }
+        // A looped rail line whose one train runs full, cargo waiting: a
+        // second, at its rail depot by its first station.
+        for line in company
+            .lines
+            .iter()
+            .filter(|l| self.memo.looped.contains(&l.id.0))
+        {
+            let trains = on(line);
+            let [first] = trains.as_slice() else {
+                continue;
+            };
+            if !self.full(line) {
+                continue;
+            }
+            let Some(cargo) = self.cargo_of(line) else {
+                continue;
+            };
+            let Some(station) = line
+                .stops
+                .first()
+                .and_then(|s| company.stations.iter().find(|st| st.id == *s))
+            else {
+                continue;
+            };
+            let Some(depot) = company
+                .depots
+                .iter()
+                .filter(|d| d.file.as_str() == rail::DEPOT && d.connected)
+                .min_by(|a, b| {
+                    let d = |x: &AiDepot| P::of(x.at).flat_distance(P::of(station.pos));
+                    d(a).total_cmp(&d(b))
+                })
+            else {
+                continue;
+            };
+            return Some(Task::Train {
+                line: line.clone(),
+                cargo,
+                depot: depot.clone(),
+                engine: first.model.clone(),
             });
         }
         // Settled, near empty or losing money: its most worn sold.
@@ -112,7 +213,7 @@ impl Brain {
             if vehicles.len() < 2 || vehicles.iter().any(|v| v.worn < SETTLED) {
                 continue;
             }
-            let why = if line.load > 0 && line.load < self.profile.remove_below {
+            let why = if self.empty(line) {
                 "running near empty"
             } else if line.income < line.costs {
                 "losing money"
@@ -152,6 +253,24 @@ impl Brain {
                 self.stage = Stage::Models;
                 Some(None)
             }
+            Task::Train {
+                line,
+                cargo,
+                depot,
+                engine,
+            } => {
+                self.say(format!(
+                    "buys a second train for {}, running full",
+                    line.name.as_str()
+                ));
+                self.stage = Stage::Upkeep(Upkeep::TrainWagons {
+                    line: line.id,
+                    cargo,
+                    depot,
+                    engine,
+                });
+                Some(None)
+            }
             Task::Sell { vehicle, line, why } => {
                 self.say(format!("sells a vehicle from {line}, {why}"));
                 let action = Action::SellVehicle {
@@ -179,7 +298,24 @@ impl Brain {
                     now,
                 )
             }
-            Upkeep::Replaced { .. } | Upkeep::Sold { .. } => self.ask(AiQuestion::Company, now),
+            Upkeep::TrainWagons { cargo, .. } => self.ask(
+                AiQuestion::Models {
+                    mode: Text::lossy(train::TRAIN),
+                    cargo: Some(cargo),
+                },
+                now,
+            ),
+            Upkeep::TrainEngines { .. } => self.ask(
+                AiQuestion::Models {
+                    mode: Text::lossy(train::TRAIN),
+                    cargo: None,
+                },
+                now,
+            ),
+            Upkeep::Replaced { .. }
+            | Upkeep::Sold { .. }
+            | Upkeep::TrainBought { .. }
+            | Upkeep::TrainAssigned { .. } => self.ask(AiQuestion::Company, now),
         }
     }
 
@@ -191,8 +327,41 @@ impl Brain {
         models: Vec<AiModel>,
         now: Instant,
     ) -> Option<Out> {
-        let Upkeep::Models { vehicle, .. } = stage else {
-            return None;
+        let vehicle = match stage {
+            Upkeep::Models { vehicle, .. } => vehicle,
+            Upkeep::TrainWagons {
+                line,
+                depot,
+                engine,
+                ..
+            } => {
+                // The roomiest wagon a metre for its cargo.
+                let Some(wagon) = models
+                    .into_iter()
+                    .filter(|m| m.capacity > 0 && m.power == 0)
+                    .max_by(|a, b| {
+                        let per = |m: &AiModel| f64::from(m.capacity) / f64::from(m.length.max(1));
+                        per(a).total_cmp(&per(b))
+                    })
+                else {
+                    self.rest(now);
+                    return None;
+                };
+                self.stage = Stage::Upkeep(Upkeep::TrainEngines {
+                    line,
+                    depot,
+                    engine,
+                    wagon,
+                });
+                return None;
+            }
+            Upkeep::TrainEngines {
+                line,
+                depot,
+                engine,
+                wagon,
+            } => return self.buy_second_train(line, &depot, &engine, &wagon, models, now),
+            _ => return None,
         };
         let Some(model) = self.pick_model(models) else {
             self.say("found no vehicle to replace it with".into());
@@ -251,11 +420,78 @@ impl Brain {
                     tries: tries + 1,
                 },
             ),
-            Upkeep::Models { .. } => return None,
+            Upkeep::TrainBought {
+                line,
+                before,
+                tries,
+            } => {
+                let new = company
+                    .vehicles
+                    .iter()
+                    .find(|v| v.line.is_none() && !before.contains(&v.id))
+                    .map(|v| v.id);
+                if let Some(vehicle) = new {
+                    let action = Action::AssignLine(AssignLine {
+                        vehicles: BoundedVec::new(vec![vehicle]).ok()?,
+                        line: Some(line),
+                        first_stop: None,
+                    });
+                    self.stage = Stage::Upkeep(Upkeep::TrainAssigned {
+                        line,
+                        vehicle,
+                        tries: 0,
+                    });
+                    let out = self.act(&action, now);
+                    if out.is_none() {
+                        self.stage = Stage::Upkeep(Upkeep::TrainBought {
+                            line,
+                            before,
+                            tries,
+                        });
+                        self.wake = Some(now + SETTLE);
+                    }
+                    return out;
+                }
+                (
+                    false,
+                    Upkeep::TrainBought {
+                        line,
+                        before,
+                        tries: tries + 1,
+                    },
+                )
+            }
+            Upkeep::TrainAssigned {
+                line,
+                vehicle,
+                tries,
+            } => {
+                let runs = company
+                    .vehicles
+                    .iter()
+                    .any(|v| v.id == vehicle && v.line == Some(line));
+                if runs {
+                    self.say("runs a second train through its passing loop".into());
+                }
+                (
+                    runs,
+                    Upkeep::TrainAssigned {
+                        line,
+                        vehicle,
+                        tries: tries + 1,
+                    },
+                )
+            }
+            Upkeep::Models { .. } | Upkeep::TrainWagons { .. } | Upkeep::TrainEngines { .. } => {
+                return None;
+            }
         };
         let tries = match &next {
-            Upkeep::Replaced { tries, .. } | Upkeep::Sold { tries, .. } => *tries,
-            Upkeep::Models { .. } => 0,
+            Upkeep::Replaced { tries, .. }
+            | Upkeep::Sold { tries, .. }
+            | Upkeep::TrainBought { tries, .. }
+            | Upkeep::TrainAssigned { tries, .. } => *tries,
+            Upkeep::Models { .. } | Upkeep::TrainWagons { .. } | Upkeep::TrainEngines { .. } => 0,
         };
         if done || tries > CONFIRM_TRIES {
             if !done {
@@ -266,5 +502,77 @@ impl Brain {
             self.retry(Stage::Upkeep(next), tries, now);
         }
         None
+    }
+}
+
+impl Brain {
+    /// Its second train for a looped line: its first train's engine where
+    /// the year still offers it, else the strongest it can afford that runs
+    /// without catenary, with as many of `wagon` as the platforms take.
+    fn buy_second_train(
+        &mut self,
+        line: LineId,
+        depot: &AiDepot,
+        engine: &ResName,
+        wagon: &AiModel,
+        models: Vec<AiModel>,
+        now: Instant,
+    ) -> Option<Out> {
+        let money = self.spendable();
+        let engines: Vec<AiModel> = models
+            .into_iter()
+            .filter(|m| m.power > 0 && !m.electric)
+            .filter(|m| m.price + 3 * wagon.price <= money)
+            .collect();
+        let pick = engines
+            .iter()
+            .find(|m| &m.model == engine)
+            .or_else(|| engines.iter().max_by_key(|m| (m.power, -m.price)))
+            .cloned();
+        let Some(engine) = pick else {
+            self.say("waits for money for a second train".into());
+            self.rest(now);
+            return None;
+        };
+        let platform = 3.0 * rail::MODULE * 10.0;
+        let room = (platform - f64::from(engine.length)).max(0.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let wagons =
+            ((room / f64::from(wagon.length.max(1))).floor() as usize).clamp(1, train::WAGONS_MOST);
+        let color = tint(&self.seat);
+        let part = |m: &AiModel| ConsistPart {
+            model: m.model.clone(),
+            reversed: false,
+            loads: BoundedVec::default(),
+            color,
+        };
+        let mut consist = vec![part(&engine)];
+        consist.extend(std::iter::repeat_n(part(wagon), wagons));
+        let n = consist.len();
+        let action = Action::BuyVehicle(BuyVehicle {
+            depot: ConstructionRef {
+                file: depot.file.clone(),
+                at: depot.at,
+            },
+            consist: BoundedVec::new(consist).ok()?,
+            groups: BoundedVec::new(vec![1; n]).ok()?,
+            multiple_units: BoundedVec::new(vec![Text::lossy(""); n]).ok()?,
+            depot_index: 0,
+        });
+        let before = self
+            .company
+            .as_ref()
+            .map(|c| c.vehicles.iter().map(|v| v.id).collect())
+            .unwrap_or_default();
+        self.stage = Stage::Upkeep(Upkeep::TrainBought {
+            line,
+            before,
+            tries: 0,
+        });
+        let out = self.act(&action, now);
+        if out.is_none() {
+            self.rest(now);
+        }
+        out
     }
 }

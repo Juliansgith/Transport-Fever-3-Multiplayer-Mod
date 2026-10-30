@@ -307,6 +307,28 @@ Normal AIs, the big fixture):
 | 32 | The refused piece read "crossing, ground 1 m at +14.9 %": the crossing's node 1 m from another; then every crossing of the plant's steep road refused, round and round. | A node within 20 m of a street takes the crossing's place; a street no crossing may be laid on is passed over or under. Every piece put to the verdict before anything is built. |
 | 33 | The meat line to Wadebridge: its first station pair had no heights within the grade; the next was laid out with level crossings, three layouts refused at a crossing ("Construction Not Possible") in trial, the fourth passed; stations, track with 4 level crossings, line and train, alike in both games (60 world-check windows matched). | |
 
+## Passing loops (2026-10-30)
+
+A rail line of 2 km or more gets a passing loop and two one-way signals
+(runs 35 and 36, the cement line of run 29):
+
+- The loop's track, built as a track whose ends are two nodes of the
+  line (`Resolve::Node`), made two switches; the game took it at once.
+- A signal is refused ("Construction Not Possible") anywhere in the first
+  30 % of either edge that leaves a switch, where the two tracks still
+  run close, and taken from 70 % on; the single track into a switch takes
+  one anywhere (verdicts at nine places on each of the loop's edges, run
+  35). The AI's signals stood 20 % from the switches in run 35 and were
+  refused; at 75 % in run 36 both were placed.
+- Which way a one-way signal passes trains: on the line's own track by
+  the loop's far end, the game's pathfinder found a train's path from the
+  node before the signal on past it (4 edges) and none back past it (0),
+  from the line's own node (the loop's node 5 m off left out). So the
+  engine's side flag `false` passes trains running the way the stop's
+  `direction` points, as on TPF2.
+- A cargo line runs full one way and empty back: the line's load, the
+  mean over its stops, stays near half, so a cargo line counts as full by
+  the cargo waiting at its stops (60), not by its load.
 ## Production chains (2026-10-30)
 
 Run 27 (two games in one room, a Hard and a Normal AI, the big fixture)

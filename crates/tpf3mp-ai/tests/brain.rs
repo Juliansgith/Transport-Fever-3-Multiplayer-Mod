@@ -14,8 +14,8 @@ use tpf3mp_bridge::ai::{
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
     action::{
-        Action, CompanyOp, EdgeEnds, LineId, LoanOp, LoanTerms, Pos, Resolve, StationId, Structure,
-        TownId, VehicleId,
+        Action, CompanyOp, EdgeEnds, EdgeObjectKind, LineId, LoanOp, LoanTerms, PlaceStop, Pos,
+        Resolve, StationId, Structure, TownId, VehicleId,
     },
 };
 
@@ -89,6 +89,8 @@ struct World {
     /// Vehicles replaced and sold.
     replaced: Vec<VehicleId>,
     sold: Vec<VehicleId>,
+    /// Signals placed on its track.
+    signals: Vec<PlaceStop>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -154,6 +156,7 @@ impl World {
             structures: Vec::new(),
             replaced: Vec::new(),
             sold: Vec::new(),
+            signals: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -344,6 +347,11 @@ impl World {
 
     fn verdict(&self, action: &Action) -> AiVerdict {
         let ok = match action {
+            // A signal on a track of the world's: both its ends nodes laid.
+            Action::PlaceStop(stop) if stop.object == EdgeObjectKind::Signal => {
+                self.track_node(stop.edge.ends.a).is_some()
+                    && self.track_node(stop.edge.ends.b).is_some()
+            }
             Action::PlaceStop(stop) => {
                 let on = self
                     .streets
@@ -434,6 +442,10 @@ impl World {
                 self.offers.retain(|o| *o != offer);
                 self.money += offer.amount;
                 self.loans += 1;
+            }
+            Action::PlaceStop(stop) if stop.object == EdgeObjectKind::Signal => {
+                assert!(stop.one_way);
+                self.signals.push(stop);
             }
             Action::PlaceStop(stop) => {
                 let id = self.id();
@@ -1903,4 +1915,61 @@ fn a_hard_ai_feeds_a_starved_feeder_in_turn_three_levels_deep() {
     assert_eq!(trucks[1].stops[1], station("Didcot Factory"));
     assert_eq!(trucks[2].stops[0], station("Wychwood Forest"));
     assert_eq!(trucks[2].stops[1], station("Witney Sawmill"));
+}
+
+#[test]
+fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full() {
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let start = Instant::now();
+    play(&mut brain, &mut world, start, Duration::from_secs(1_200));
+    let said = brain.take_said();
+    assert!(
+        said.iter().any(|l| l.contains("a passing loop")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("signals its passing loop by")),
+        "{said:?}"
+    );
+    // One signal on the line's track, one on the loop's, passing opposite
+    // ways.
+    assert_eq!(world.signals.len(), 2, "{said:?}");
+    assert_ne!(world.signals[0].left, world.signals[1].left);
+    let line = world
+        .lines
+        .iter()
+        .find(|l| world.line_modes.contains(&(l.id, 7)))
+        .unwrap()
+        .id;
+    let trains = |w: &World| w.vehicles.iter().filter(|v| v.line == Some(line)).count();
+    assert_eq!(trains(&world), 1);
+    // Its train full one way and empty back, as a cargo line runs (its load
+    // under half), two trainloads of planks waiting: a second.
+    let l = world.lines.iter_mut().find(|l| l.id == line).unwrap();
+    l.load = 45;
+    l.waiting = 120;
+    play(
+        &mut brain,
+        &mut world,
+        start + Duration::from_secs(1_200),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    assert_eq!(trains(&world), 2, "{said:?}");
+    assert!(
+        said.iter()
+            .any(|l| l == "runs a second train through its passing loop"),
+        "{said:?}"
+    );
 }
