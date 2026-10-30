@@ -198,12 +198,15 @@ faster AI.
    Hard at 90 %, as the game's vehicle window reckons it: since bridge
    version 34 the company answer says how worn each vehicle is) with the
    best model of the year, the vehicle window's replace, so it keeps its
-   line; adds one vehicle to a line running at least 90, 80 or 70 % full
-   with passengers or cargo waiting, up to its difficulty's most; and
-   sells the most worn vehicle of a settled line (every vehicle a twentieth
-   through its life) that runs under 25, 30 or 35 % full or loses money,
+   line; adds one vehicle to a bus line running at least 90, 80 or 70 %
+   full with passengers waiting, or to a cargo line with 60 of its cargo
+   waiting (a cargo line runs full one way and empty back, so its load says
+   little), up to its difficulty's most; and sells the most worn vehicle
+   of a settled line (every vehicle a twentieth through its life) that runs
+   under 25, 30 or 35 % full (a cargo line under half that) or loses money,
    never a line's last. A settled line is not topped up to its first count
-   again. Trains wait for passing loops.
+   again. A rail line with a signalled passing loop gets a second train
+   (\"Track and trains\").
 4. **Money.** It borrows when a project's return beats the loan's interest
    by its difficulty's margin, and pays back when it can.
 
@@ -301,11 +304,23 @@ faster AI.
   prices in line with the game's by the verdicts' own costs. Then a rail
   depot beyond the first station, joined to its outer end, the line, and
   its train with as many wagons as the platforms take (six at most): no
-  electric engine, as its track has no catenary. Its planning runs in
-  the driver's agent, a route search 5 to 25 ms on the big fixture and at
-  most about 0.2 s where there is no way through. Still to come: passing
-  loops and signals, more trains a line, sharing a depot between lines,
-  passengers by train.
+  electric engine, as its track has no catenary. A line of 2 km or more
+  gets a passing loop near its middle, once its depot is joined: a
+  second track 5 m beside about 300 m of straight line on the ground,
+  crossing no street, on whichever side the land is free, leaving and
+  rejoining the line at two of its nodes as switches; then two one-way
+  signals (the path signal of its year), each put to the verdict: one on
+  the line's own track by the loop's far end passing trains on, one on
+  the loop's track by its near end passing them back, so each direction
+  keeps to its own track and waits at its exit for the single track
+  ahead. A refused loop or signal leaves a line of one train. A line with
+  both signals standing, its one train with a trainload (60) of cargo
+  waiting, gets a second train at its rail depot: its first train's engine where
+  the year still offers it, with as many of its cargo's roomiest wagons
+  as the platforms take. Its planning runs in the driver's agent, a route
+  search 5 to 25 ms on the big fixture and at most about 0.2 s where there
+  is no way through. Still to come: double track and more than two trains
+  a line, sharing a depot between lines, passengers by train.
 - **Water.** Harbours where both ends touch the same water (from the
   water grid), with their street links. Ships need no route built.
 - **Air.** Airfields and airports near large towns on flat enough ground,

@@ -130,6 +130,9 @@ pub struct Memo {
     pub cargo_lines: Vec<(u32, String)>,
     /// Its rail lines, by the room's line id: kept out of its buses'.
     pub rail_lines: Vec<u32>,
+    /// Its rail lines with a signalled passing loop: room for a second
+    /// train.
+    pub looped: Vec<u32>,
 }
 
 /// What a line serves.

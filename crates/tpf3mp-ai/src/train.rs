@@ -112,6 +112,10 @@ pub(super) struct RailProject {
     pub wagons: Vec<AiModel>,
     /// The train it chose before it built anything: engine and wagon.
     pub train: Option<(AiModel, AiModel)>,
+    /// Its passing loop: the first node of the line it runs beside, and its
+    /// side; and whether both its signals stand.
+    pub looped: Option<(usize, f64)>,
+    pub signalled: bool,
 }
 
 impl RailProject {
@@ -184,6 +188,19 @@ pub(super) enum RailStage {
     LinkBuilt {
         tries: u32,
     },
+    /// Asking the verdict on its passing loop's track, then reading before
+    /// its signals.
+    LoopVerdict,
+    LoopBuilt,
+    /// Asking the verdict on its passing loop's signal number `n` (0 on the
+    /// line's track, 1 on the loop's), and reading after one is sent.
+    SignalVerdict {
+        n: usize,
+        tries: u32,
+    },
+    SignalBuilt {
+        n: usize,
+    },
     /// Opening the line once its hands are free.
     Opening,
     LineMade {
@@ -239,6 +256,8 @@ impl Brain {
             line: None,
             wagons: Vec::new(),
             train: None,
+            looped: None,
+            signalled: false,
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
@@ -408,6 +427,20 @@ impl Brain {
                     }
                 }
             }
+            RailStage::LoopVerdict => {
+                let year = self.year();
+                let project = self.rail.as_ref()?;
+                let (k, side) = project.looped?;
+                let build = rail::passing_loop(&project.nodes, k, side, year)?;
+                self.verdict(&Action::BuildTrack(build), now)
+            }
+            RailStage::SignalVerdict { n, .. } => {
+                let year = self.year();
+                let project = self.rail.as_ref()?;
+                let (k, side) = project.looped?;
+                let signal = rail::loop_signals(&project.nodes, k, side, year)[n].clone();
+                self.verdict(&Action::PlaceStop(signal), now)
+            }
             RailStage::Opening => self.open_rail(now),
             RailStage::Buying => self.buy_train(now),
             RailStage::Wagons => {
@@ -431,6 +464,8 @@ impl Brain {
             | RailStage::PieceBuilt { .. }
             | RailStage::DepotBuilt { .. }
             | RailStage::LinkBuilt { .. }
+            | RailStage::LoopBuilt
+            | RailStage::SignalBuilt { .. }
             | RailStage::LineMade { .. }
             | RailStage::Bought { .. }
             | RailStage::Assigned { .. } => self.ask(AiQuestion::Company, now),
@@ -516,10 +551,17 @@ impl Brain {
                 .filter(|n| n.kind == rail::Kind::Tunnel)
                 .count(),
         );
+        // A passing loop on a long line, for a second train.
+        project.looped = rail::loop_site(&project.land, &nodes);
         let said = format!(
-            "lays its track in {} pieces for about {:.0}: {crossings} level crossings, {bridges} bridge and {tunnels} tunnel edges",
+            "lays its track in {} pieces for about {:.0}: {crossings} level crossings, {bridges} bridge and {tunnels} tunnel edges{}",
             project.pieces.len(),
-            rail::cost(&nodes)
+            rail::cost(&nodes),
+            if project.looped.is_some() {
+                ", a passing loop"
+            } else {
+                ""
+            }
         );
         project.nodes = nodes;
         if project.pieces.is_empty() {
@@ -625,6 +667,10 @@ impl Brain {
             (RailStage::LinkVerdict { .. }, Action::BuildTrack(_)) => {
                 RailStage::LinkBuilt { tries: 0 }
             }
+            (RailStage::LoopVerdict, Action::BuildTrack(_)) => RailStage::LoopBuilt,
+            (RailStage::SignalVerdict { n, .. }, Action::PlaceStop(_)) => {
+                RailStage::SignalBuilt { n }
+            }
             // A trial: nothing sent; the next piece, then the stations.
             (RailStage::Trial { piece }, Action::BuildTrack(_)) => {
                 let count = self.rail.as_ref()?.pieces.len();
@@ -679,6 +725,25 @@ impl Brain {
                 {
                     project.tries[end].remove(0);
                 }
+            }
+            RailStage::LoopVerdict => {
+                self.say(format!("its passing loop was refused: {why}"));
+                if let Some(project) = self.rail.as_mut() {
+                    project.looped = None;
+                }
+                self.stage = Stage::Rail(RailStage::Opening);
+            }
+            // Its loop's track not yet in every game, or refused.
+            RailStage::SignalVerdict { n, tries } if tries < CONFIRM_TRIES => {
+                self.stage = Stage::Rail(RailStage::SignalVerdict {
+                    n,
+                    tries: tries + 1,
+                });
+                self.wake = Some(now + SETTLE);
+            }
+            RailStage::SignalVerdict { .. } => {
+                self.say(format!("its passing loop's signals were refused: {why}"));
+                self.stage = Stage::Rail(RailStage::Opening);
             }
             RailStage::Trial { piece } => {
                 let laid = self.rail.as_ref().and_then(|p| {
@@ -884,7 +949,9 @@ impl Brain {
                     .find(|d| P::of(d.at).flat_distance(P::of(origin)) <= 2.0)
                     .cloned();
                 match found {
-                    Some(depot) if depot.connected => self.stage = Stage::Rail(RailStage::Opening),
+                    Some(depot) if depot.connected => {
+                        self.stage = Stage::Rail(after_depot(project))
+                    }
                     Some(_) => self.stage = Stage::Rail(RailStage::LinkVerdict { end }),
                     None if tries >= CONFIRM_TRIES => {
                         project.depot = None;
@@ -905,6 +972,38 @@ impl Brain {
                 }
                 None
             }
+            // Its loop laid: its signals next; both standing, the line.
+            RailStage::LoopBuilt => {
+                self.stage = Stage::Rail(RailStage::SignalVerdict { n: 0, tries: 0 });
+                None
+            }
+            RailStage::SignalBuilt { n: 0 } => {
+                self.stage = Stage::Rail(RailStage::SignalVerdict { n: 1, tries: 0 });
+                None
+            }
+            RailStage::SignalBuilt { .. } => {
+                let project = self.rail.as_mut()?;
+                project.signalled = true;
+                // Where: the line's nodes either side of the loop's far end,
+                // for the log.
+                let (k, _) = project.looped?;
+                let m = k + rail::LOOP_EDGES;
+                let at = |i: usize| {
+                    project
+                        .nodes
+                        .get(i)
+                        .map_or(String::new(), |n| format!(" {:.0},{:.0}", n.at.x, n.at.y))
+                };
+                let said = format!(
+                    "signals its passing loop by{}{}{}",
+                    at(m - 1),
+                    at(m),
+                    at(m + 1)
+                );
+                self.say(said);
+                self.stage = Stage::Rail(RailStage::Opening);
+                None
+            }
             RailStage::LinkBuilt { tries } => {
                 let (origin, _) = self.rail.as_ref()?.depot?;
                 let connected = company
@@ -912,7 +1011,8 @@ impl Brain {
                     .iter()
                     .any(|d| P::of(d.at).flat_distance(P::of(origin)) <= 2.0 && d.connected);
                 if connected {
-                    self.stage = Stage::Rail(RailStage::Opening);
+                    let next = after_depot(self.rail.as_ref()?);
+                    self.stage = Stage::Rail(next);
                 } else if tries >= CONFIRM_TRIES {
                     self.give_up_rail("its depot's track did not join", now);
                 } else {
@@ -941,6 +1041,9 @@ impl Brain {
                     }
                     if !self.memo.cargo_lines.contains(&entry) {
                         self.memo.cargo_lines.push(entry);
+                    }
+                    if project.signalled && !self.memo.looped.contains(&line.id.0) {
+                        self.memo.looped.push(line.id.0);
                     }
                     if !self.memo.rail_lines.contains(&line.id.0) {
                         self.memo.rail_lines.push(line.id.0);
@@ -1290,4 +1393,14 @@ fn trial(build: &TrackBuild) -> Option<TrackBuild> {
     let mut out = build.clone();
     out.polyline.vertices = BoundedVec::new(vertices).ok()?;
     Some(out)
+}
+
+/// What follows its depot's joining: its passing loop, if it has one, else
+/// its line.
+fn after_depot(project: &RailProject) -> RailStage {
+    if project.looped.is_some() {
+        RailStage::LoopVerdict
+    } else {
+        RailStage::Opening
+    }
 }

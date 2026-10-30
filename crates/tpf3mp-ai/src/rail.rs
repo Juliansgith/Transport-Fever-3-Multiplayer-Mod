@@ -16,8 +16,9 @@ use tpf3mp_bridge::ai::{AiLand, AiStreet, land};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        ConstructionBuild, EdgeEnds, EdgeRef, Link, Network, Param, ParamValue, Polyline, Pos,
-        ResName, Resolve, Structure, Tangent, TrackBuild, Transform, Vertex,
+        ConstructionBuild, EdgeEnds, EdgeObjectKind, EdgeRef, Link, Network, Param, ParamValue,
+        PlaceStop, Polyline, Pos, ResName, Resolve, Structure, Tangent, TrackBuild, Transform,
+        UnitDir, Vertex,
     },
 };
 
@@ -1473,6 +1474,250 @@ fn mm_tangent(x: f64, y: f64, z: f64) -> Tangent {
     }
 }
 
+/// How far a passing loop's track runs beside the line's, centre to
+/// centre, in metres: the standard track's spacing (`trackDistance`).
+pub const LOOP_OFFSET: f64 = 5.0;
+/// The edges of line a passing loop runs beside: about 300 m, room for a
+/// train of six wagons to wait clear of the other's.
+pub const LOOP_EDGES: usize = 3;
+/// The most a passing loop's stretch of line turns, node to node.
+pub const LOOP_TURN: f64 = 3.0 * std::f64::consts::PI / 180.0;
+/// The shortest line given a passing loop, in metres.
+pub const LOOP_FROM: f64 = 2_000.0;
+/// How far along its edge from a passing loop's switch each of its
+/// signals stands: where the loop's track has drawn clear of the line's.
+/// Nearer, the game refuses one ("Construction Not Possible" within 30 %
+/// of the switch, 2026-10-30, run 35); so a train waits 75 m short of the
+/// switch, inside the loop.
+pub const SIGNAL_AT: f64 = 0.75;
+
+/// The signal a line's year offers (`signal_path_a.con.lua` until 1950,
+/// then `signal_path_c`).
+pub fn signal_model(year: i32) -> &'static str {
+    if year >= 1950 {
+        "infrastructure/signal/signal_path_c.con"
+    } else {
+        "infrastructure/signal/signal_path_a.con"
+    }
+}
+
+/// A node's place `side` of the line (+1 left of its heading, -1 right),
+/// [`LOOP_OFFSET`] off it.
+fn beside(node: &Node, side: f64) -> P {
+    let (ux, uy) = unit(node.heading);
+    P {
+        x: node.at.x - uy * side * LOOP_OFFSET,
+        y: node.at.y + ux * side * LOOP_OFFSET,
+        z: node.at.z,
+    }
+}
+
+/// Where a passing loop goes on a line at least [`LOOP_FROM`] long: the
+/// first of [`LOOP_EDGES`] edges on the ground, straight (each node turned
+/// [`LOOP_TURN`] at most), crossing no street, clear of the stations, with
+/// free land the loop's side of them; the nearest the line's middle first.
+/// Its first node and its side.
+pub fn loop_site(land: &Land, nodes: &[Node]) -> Option<(usize, f64)> {
+    let n = nodes.len();
+    let length: f64 = nodes
+        .windows(2)
+        .map(|w| w[0].at.flat_distance(w[1].at))
+        .sum();
+    if n < LOOP_EDGES + 3 || length < LOOP_FROM {
+        return None;
+    }
+    let middle = n / 2;
+    let mut firsts: Vec<usize> = (1..n - LOOP_EDGES - 1).collect();
+    firsts.sort_by_key(|k| (k + LOOP_EDGES / 2).abs_diff(middle));
+    for k in firsts {
+        let span = &nodes[k..=k + LOOP_EDGES];
+        let ground = span[..LOOP_EDGES].iter().all(|n| n.kind == Kind::Ground)
+            && span.iter().all(|n| n.crossing.is_none());
+        let straight = span
+            .windows(2)
+            .all(|w| angle_between(w[0].heading, w[1].heading) <= LOOP_TURN);
+        if !ground || !straight {
+            continue;
+        }
+        for side in [1.0, -1.0] {
+            let free = span.iter().all(|n| {
+                let p = beside(n, side);
+                land.flags_at(p.x, p.y).is_some_and(|f| {
+                    f & (land::BUILT | land::STREET | land::TRACK | land::WATER) == 0
+                })
+            });
+            if free {
+                return Some((k, side));
+            }
+        }
+    }
+    None
+}
+
+/// The passing loop's track beside the line's nodes from `k`: from node
+/// `k`, where it leaves the line as a switch, `side` of it, back onto it at
+/// node `k` + [`LOOP_EDGES`]; each edge's tangents along the line's heading,
+/// its inner nodes at the line's heights.
+pub fn passing_loop(nodes: &[Node], k: usize, side: f64, year: i32) -> Option<TrackBuild> {
+    let m = k + LOOP_EDGES;
+    let at = |i: usize| {
+        if i == k || i == m {
+            nodes[i].at
+        } else {
+            beside(&nodes[i], side)
+        }
+    };
+    let vertices: Vec<Vertex> = (k..=m)
+        .map(|i| Vertex {
+            pos: at(i).pos(),
+            resolve: if i == k || i == m {
+                Resolve::Node(Network::Track)
+            } else {
+                Resolve::New
+            },
+        })
+        .collect();
+    let links: Vec<Link> = (k..m)
+        .map(|i| {
+            let (a, b) = (at(i), at(i + 1));
+            let len = a.flat_distance(b);
+            let tangent = |heading: f64| {
+                let (ux, uy) = unit(heading);
+                mm_tangent(ux * len, uy * len, b.z - a.z)
+            };
+            Link {
+                from: u16::try_from(i - k).unwrap_or(0),
+                to: u16::try_from(i + 1 - k).unwrap_or(0),
+                tangent0: tangent(nodes[i].heading),
+                tangent1: tangent(nodes[i + 1].heading),
+                structure: Structure::Ground,
+                kind: None,
+                decorations: BoundedVec::default(),
+                locked: false,
+                owned: true,
+                lanes: BoundedVec::default(),
+                precedence: None,
+                position0: None,
+                position1: None,
+                kept: BoundedVec::default(),
+            }
+        })
+        .collect();
+    Some(TrackBuild {
+        track: res(track_template(year)),
+        style: None,
+        catenary: false,
+        polyline: Polyline::new(
+            BoundedVec::new(vertices).ok()?,
+            BoundedVec::new(links).ok()?,
+            BoundedVec::default(),
+        )
+        .ok()?,
+        crossing_type: None,
+    })
+}
+
+/// The engine's side flag that makes a one-way signal pass trains running
+/// the way its `direction` points: the right-hand side, as a signal stands
+/// beside the trains it controls on a right-hand railway (as on TPF2).
+pub const FORWARD_LEFT: bool = false;
+
+/// A point `t` along the cubic Hermite curve from `a` (tangent `ta`) to
+/// `b` (tangent `tb`), and its unit direction there, as the game draws an
+/// edge.
+fn hermite(a: P, ta: (f64, f64, f64), b: P, tb: (f64, f64, f64), t: f64) -> (P, (f64, f64, f64)) {
+    let (t2, t3) = (t * t, t * t * t);
+    let (h00, h10, h01, h11) = (
+        2.0 * t3 - 3.0 * t2 + 1.0,
+        t3 - 2.0 * t2 + t,
+        -2.0 * t3 + 3.0 * t2,
+        t3 - t2,
+    );
+    let at = P {
+        x: h00 * a.x + h10 * ta.0 + h01 * b.x + h11 * tb.0,
+        y: h00 * a.y + h10 * ta.1 + h01 * b.y + h11 * tb.1,
+        z: h00 * a.z + h10 * ta.2 + h01 * b.z + h11 * tb.2,
+    };
+    let (d00, d10, d01, d11) = (
+        6.0 * t2 - 6.0 * t,
+        3.0 * t2 - 4.0 * t + 1.0,
+        -6.0 * t2 + 6.0 * t,
+        3.0 * t2 - 2.0 * t,
+    );
+    let d = (
+        d00 * a.x + d10 * ta.0 + d01 * b.x + d11 * tb.0,
+        d00 * a.y + d10 * ta.1 + d01 * b.y + d11 * tb.1,
+        d00 * a.z + d10 * ta.2 + d01 * b.z + d11 * tb.2,
+    );
+    let n = (d.0 * d.0 + d.1 * d.1 + d.2 * d.2).sqrt().max(1e-9);
+    (at, (d.0 / n, d.1 / n, d.2 / n))
+}
+
+/// A one-way signal on the track edge from `a` (heading `ha`) to `b`
+/// (heading `hb`), `t` along it, passing trains towards `b` (`forward`) or
+/// towards `a`: the signal tool's placement, its place on the edge's curve
+/// as the edge was laid (its tangents along the headings, as long as the
+/// edge).
+#[allow(clippy::cast_possible_truncation)]
+fn one_way_signal(a: P, ha: f64, b: P, hb: f64, t: f64, forward: bool, year: i32) -> PlaceStop {
+    let len = a.flat_distance(b);
+    let tangent = |h: f64| {
+        let (ux, uy) = unit(h);
+        (ux * len, uy * len, b.z - a.z)
+    };
+    let (at, d) = hermite(a, tangent(ha), b, tangent(hb), t);
+    let micro = |v: f64| (v * 1_000_000.0).round() as i32;
+    PlaceStop {
+        edge: EdgeRef {
+            network: Network::Track,
+            ends: EdgeEnds {
+                a: a.pos(),
+                b: b.pos(),
+            },
+        },
+        at: at.pos(),
+        left: if forward { FORWARD_LEFT } else { !FORWARD_LEFT },
+        direction: UnitDir {
+            x: micro(d.0),
+            y: micro(d.1),
+            z: micro(d.2),
+        },
+        model: res(signal_model(year)),
+        two_sided: false,
+        object: EdgeObjectKind::Signal,
+        one_way: true,
+        name: None,
+        params: BoundedVec::default(),
+    }
+}
+
+/// The two one-way signals of a passing loop beside nodes from `k`: on the
+/// line's own track by the loop's far end, passing trains towards the
+/// line's far end; on the loop's track by its near end, passing trains
+/// back. So each direction keeps to its own track through the loop and
+/// waits at its exit, clear of the other, for the single track ahead.
+pub fn loop_signals(nodes: &[Node], k: usize, side: f64, year: i32) -> [PlaceStop; 2] {
+    let m = k + LOOP_EDGES;
+    let main = one_way_signal(
+        nodes[m - 1].at,
+        nodes[m - 1].heading,
+        nodes[m].at,
+        nodes[m].heading,
+        1.0 - SIGNAL_AT,
+        true,
+        year,
+    );
+    let back = one_way_signal(
+        nodes[k].at,
+        nodes[k].heading,
+        beside(&nodes[k + 1], side),
+        nodes[k + 1].heading,
+        SIGNAL_AT,
+        false,
+        year,
+    );
+    [main, back]
+}
 /// A short track from one existing node to another, straight: a depot's
 /// track to the station's end.
 pub fn link(from: P, to: P, year: i32) -> Option<TrackBuild> {
@@ -2067,5 +2312,65 @@ mod tests {
             let d = w[0].at.flat_distance(w[1].at);
             (w[1].at.z - w[0].at.z).abs() <= STEEPEST * d + LEVEL
         }));
+    }
+
+    #[test]
+    fn a_long_line_gets_a_passing_loop_with_a_signal_at_each_exit() {
+        let (a, b) = (p(0.0, 0.0), p(3_000.0, 0.0));
+        let land = flat(a, b, |_, _| false);
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).unwrap();
+        let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).unwrap();
+        let (k, side) = loop_site(&land, &nodes).expect("a loop site");
+        // Near the middle, clear of the stations.
+        let m = k + LOOP_EDGES;
+        assert!(k > 0 && m < nodes.len() - 1);
+        assert!(nodes[k].at.x > 800.0 && nodes[m].at.x < 2_200.0, "{k}");
+        let build = passing_loop(&nodes, k, side, 1923).unwrap();
+        let v = &build.polyline.vertices;
+        assert_eq!(v.len(), LOOP_EDGES + 1);
+        // Off the line's nodes at its ends, as switches; beside it between.
+        assert_eq!(v[0].pos, nodes[k].at.pos());
+        assert_eq!(v[LOOP_EDGES].pos, nodes[m].at.pos());
+        assert!(matches!(v[0].resolve, Resolve::Node(Network::Track)));
+        assert!(matches!(
+            v[LOOP_EDGES].resolve,
+            Resolve::Node(Network::Track)
+        ));
+        for (i, vertex) in v.iter().enumerate().skip(1).take(LOOP_EDGES - 1) {
+            let d = P::of(vertex.pos).flat_distance(nodes[k + i].at);
+            assert!((d - LOOP_OFFSET).abs() < 0.01, "{d}");
+            assert_eq!(vertex.resolve, Resolve::New);
+        }
+        let [main, back] = loop_signals(&nodes, k, side, 1923);
+        for s in [&main, &back] {
+            assert_eq!(s.object, EdgeObjectKind::Signal);
+            assert!(s.one_way);
+            assert_eq!(s.edge.network, Network::Track);
+            assert_eq!(s.model.as_str(), "infrastructure/signal/signal_path_a.con");
+        }
+        // On the line's own track by the loop's far end, passing trains on.
+        assert_eq!(main.edge.ends.a, nodes[m - 1].at.pos());
+        assert_eq!(main.edge.ends.b, nodes[m].at.pos());
+        assert_eq!(main.left, FORWARD_LEFT);
+        // Clear of the switches, where the game takes a signal.
+        let at = P::of(main.at);
+        assert!(at.flat_distance(nodes[m].at) > 60.0, "{at:?}");
+        assert!(at.flat_distance(nodes[m].at) > at.flat_distance(nodes[m - 1].at));
+        assert!(main.direction.x > 900_000, "{:?}", main.direction);
+        // On the loop's by its near end, passing trains back.
+        assert_eq!(back.edge.ends.a, nodes[k].at.pos());
+        assert_eq!(back.edge.ends.b, v[1].pos);
+        assert_eq!(back.left, !FORWARD_LEFT);
+        assert!(P::of(back.at).flat_distance(nodes[k].at) > 60.0);
+        // A short line has none, nor one whose middle is all built about.
+        let (c, d) = (p(0.0, 0.0), p(1_500.0, 0.0));
+        let short = flat(c, d, |_, _| false);
+        let cells = route(&short, &PRICES, c, 0.0, d, 0.0).unwrap();
+        let nodes = track(&short, &PRICES, c, 0.0, d, 0.0, &cells).unwrap();
+        assert!(loop_site(&short, &nodes).is_none());
+        let crowded = flat(a, b, |_, y| y.abs() > 0.0 && y.abs() < 60.0);
+        let cells: Vec<(f64, f64)> = (0..=75).map(|i| (f64::from(i) * 40.0, 0.0)).collect();
+        let nodes = align(&crowded, a, 0.0, b, 0.0, &cells);
+        assert!(loop_site(&crowded, &nodes).is_none());
     }
 }
