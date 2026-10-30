@@ -413,6 +413,17 @@ one:
   touching nothing that stands, the cheapest of those; reads again after a
   split refused for a changed street; and says "too dear" with the price
   where that is why.
+- Run 40 (two games, Hard and Normal AIs, the big fixture): four road
+  depots, each the best of six placements priced and built at the first
+  try, no refusal: both AIs' first bus lines in Hunstanton at the same
+  moment again (210,266 and 234,728), a bus line in Dinnington St John's
+  (213,050), and a fuel line's depot by Wallingford Oil Refinery
+  (209,323). The world checks alike in both games (43 windows).
+- Seen in passing: the Hard AI's second passenger line from Dinnington St
+  John's, to Basingstoke again, tried to share its first line's rail depot
+  ("Too Much Curvature" for the link) and built its own; that it chose
+  the same two towns again is a fault of the passenger pairs' key (a
+  district centre's place, which moves as a town grows).
 
 ## Prior art
 
