@@ -196,8 +196,13 @@ pub fn truck_station(
         key: text(key),
         value: ParamValue::Int(v),
     };
-    let module = |slot: u32, file: &str| {
-        [
+    // Each module with its metadata, as the construction tool copies it
+    // from the module's file into the parameters (the fixture's terminal
+    // has it): the station's cargo catchment is its entrance's
+    // `catchmentCargo`, and without it the station caught nothing (real
+    // game, run 10).
+    let module = |slot: u32, file: &str, metadata: &[(&str, ParamValue)]| {
+        let mut out = vec![
             Param {
                 key: text(&format!("modules[{slot}].name")),
                 value: ParamValue::Text(text(file)),
@@ -206,8 +211,33 @@ pub fn truck_station(
                 key: text(&format!("modules[{slot}].variant")),
                 value: ParamValue::Int(0),
             },
-        ]
+        ];
+        for (key, value) in metadata {
+            out.push(Param {
+                key: text(&format!("modules[{slot}].metadata.{key}")),
+                value: value.clone(),
+            });
+        }
+        out
     };
+    let platform = [
+        ("cargo", ParamValue::Bool(true)),
+        ("emissionConfig.noise", ParamValue::Int(1)),
+        ("emissionConfig.pollution", ParamValue::Int(5)),
+        ("maintenanceCost", ParamValue::Int(5_000)),
+        ("price", ParamValue::Int(30_000)),
+        ("specialization", ParamValue::Text(text("UNIVERSAL"))),
+    ];
+    let entrance = [
+        ("catchmentCargo.radius", ParamValue::Int(175)),
+        ("catchmentPassenger.radius", ParamValue::Int(175)),
+        ("emissionConfig.noise", ParamValue::Int(1)),
+        ("emissionConfig.pollution", ParamValue::Int(10)),
+        ("entrance", ParamValue::Bool(true)),
+        ("exit", ParamValue::Bool(true)),
+        ("maintenanceCost", ParamValue::Int(1_000)),
+        ("price", ParamValue::Int(6_000)),
+    ];
     let mut params = vec![
         int("seed", seed),
         int("year", i64::from(year)),
@@ -215,9 +245,9 @@ pub fn truck_station(
         int("platforms", 1),
         int("specialization", 1),
     ];
-    params.extend(module(20_010_001, PLATFORM));
-    params.extend(module(20_210_001, PLATFORM));
-    params.extend(module(20_015_503, ENTRANCE));
+    params.extend(module(20_010_001, PLATFORM, &platform));
+    params.extend(module(20_210_001, PLATFORM, &platform));
+    params.extend(module(20_015_503, ENTRANCE, &entrance));
     facing(
         street,
         side,
@@ -471,6 +501,15 @@ mod tests {
             param("modules[20015503].name"),
             Some(ParamValue::Text(t)) if t.as_str().ends_with("/entrance_exit.module")
         ));
+        // With the modules' metadata: the cargo catchment the station has.
+        assert_eq!(
+            param("modules[20015503].metadata.catchmentCargo.radius"),
+            Some(ParamValue::Int(175))
+        );
+        assert_eq!(
+            param("modules[20010001].metadata.cargo"),
+            Some(ParamValue::Bool(true))
+        );
         assert!(build.connection.is_some());
         let action = tpf3mp_proto::action::Action::BuildConstruction(build);
         assert!(action.to_payload().is_ok(), "a valid action");
