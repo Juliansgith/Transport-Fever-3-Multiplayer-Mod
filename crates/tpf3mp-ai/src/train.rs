@@ -314,6 +314,15 @@ impl Brain {
         if self.spendable() < RAIL_MONEY {
             return false;
         }
+        // No new railway while its settled ones lose money together: the
+        // long run's three each lost 0.6 to 1 million a year (2026-10-30).
+        if self
+            .company
+            .as_ref()
+            .is_some_and(|c| !self.kind_pays(c, super::Kind::Rail))
+        {
+            return false;
+        }
         let Leg { cargo, from, to } = leg;
         let land = Land::around(P::of(from.pos), P::of(to.pos()));
         let project = RailProject {

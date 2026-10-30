@@ -38,6 +38,10 @@ pub struct Profile {
     pub loans_most: u8,
     /// Whether it takes the largest loan offered (true), or the smallest.
     pub big_loans: bool,
+    /// Once it runs lines, how many times over what its lines earn beyond
+    /// what its loans take must cover a new loan's monthly payment for it
+    /// to borrow (`money::offer_to_take`): the harder, the bolder.
+    pub borrow_cover: f64,
     /// The farthest it carries cargo by truck, in metres.
     pub cargo_most: f64,
     /// A road line running at least this full, in percent, with more
@@ -68,6 +72,7 @@ impl Profile {
                 best_models: false,
                 loans_most: 1,
                 big_loans: false,
+                borrow_cover: 3.0,
                 cargo_most: 4_000.0,
                 add_above: 90,
                 remove_below: 25,
@@ -88,6 +93,7 @@ impl Profile {
                 best_models: true,
                 loans_most: 2,
                 big_loans: false,
+                borrow_cover: 2.0,
                 cargo_most: 6_000.0,
                 add_above: 80,
                 remove_below: 30,
@@ -108,6 +114,7 @@ impl Profile {
                 best_models: true,
                 loans_most: 4,
                 big_loans: true,
+                borrow_cover: 1.25,
                 cargo_most: 8_000.0,
                 add_above: 70,
                 remove_below: 35,

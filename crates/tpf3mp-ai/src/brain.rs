@@ -34,6 +34,7 @@ use tpf3mp_proto::{
 
 use crate::{
     chain::{self, Leg, Taker},
+    money,
     place::{self, P},
     profile::Profile,
 };
@@ -114,10 +115,13 @@ pub const PASSENGER_FROM: f64 = 3_000.0;
 pub const PASSENGER_MOST: f64 = 10_000.0;
 /// What the game's verdict says of a build through something in its way.
 pub const COLLISION: &str = "Collision";
-/// How long a truck waits at a stop at most, and for more cargo, in the
-/// game's seconds in millionths: the game's line window's for a road stop.
-pub const CARGO_MAX_WAIT: i64 = 600_000_000;
-pub const CARGO_EXTRA_WAIT: i64 = 30_000_000;
+/// How long a road vehicle waits at a stop at most, and for more to load,
+/// in the game's seconds in millionths: the game's line window's for a road
+/// stop (`line_util.tl`, `makeNewStop`). A bus that waited none left every
+/// stop before anyone boarded: no AI bus line carried a passenger in the
+/// long run of 2026-10-30, all losing their running costs.
+pub const ROAD_MAX_WAIT: i64 = 600_000_000;
+pub const ROAD_EXTRA_WAIT: i64 = 30_000_000;
 /// Cargo routes it puts to the game's pathfinder, at most, per choice.
 pub const ROUTE_TRIES: usize = 5;
 /// Whether an AI plans truck lines for cargo: on since its trucks carried
@@ -151,6 +155,17 @@ pub struct Memo {
     /// Its rail lines with signalled passing loops, and how many: room for
     /// a train more than its loops.
     pub looped: Vec<(u32, u8)>,
+}
+
+/// How many settled lines of a kind its money judges that kind by.
+pub const KIND_JUDGED: usize = 2;
+
+/// The kinds of line it weighs by what they earn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Bus,
+    Truck,
+    Rail,
 }
 
 /// What a line serves.
@@ -655,10 +670,57 @@ impl Brain {
         self.company.as_ref().map_or(0, |c| c.money)
     }
 
-    /// Money it may spend now: what it has over its reserve.
+    /// Money it may spend now: what it has over its reserve, and over its
+    /// loans' next payments ([`money::Books::cushion`]).
     fn spendable(&self) -> i64 {
         let money = self.money();
-        money - money.max(0) * self.profile.reserve_percent / 100
+        let cushion = self
+            .company
+            .as_ref()
+            .map_or(0, |c| money::Books::of(c).cushion());
+        money - (money.max(0) * self.profile.reserve_percent / 100).max(cushion)
+    }
+
+    /// Its lines settled long enough for their money to say something:
+    /// every vehicle on them through [`upkeep::SETTLED`] of its life.
+    fn settled_lines(&self, company: &AiCompany) -> usize {
+        company
+            .lines
+            .iter()
+            .filter(|l| self.settled(company, l))
+            .count()
+    }
+
+    fn settled(&self, company: &AiCompany, line: &AiLine) -> bool {
+        let mut on = company
+            .vehicles
+            .iter()
+            .filter(|v| v.line == Some(line.id))
+            .peekable();
+        on.peek().is_some() && on.all(|v| v.worn >= upkeep::SETTLED)
+    }
+
+    /// What kind of line it is to the brain: its rail lines and cargo lines
+    /// by its memo, the rest its buses.
+    fn kind_of(&self, line: &AiLine) -> Kind {
+        if self.memo.rail_lines.contains(&line.id.0) {
+            Kind::Rail
+        } else if self.memo.cargo_lines.iter().any(|(id, _)| *id == line.id.0) {
+            Kind::Truck
+        } else {
+            Kind::Bus
+        }
+    }
+
+    /// Whether lines of `kind` pay: unless at least [`KIND_JUDGED`] of them
+    /// have settled and lost money together over their last year.
+    fn kind_pays(&self, company: &AiCompany, kind: Kind) -> bool {
+        let settled: Vec<&AiLine> = company
+            .lines
+            .iter()
+            .filter(|l| self.kind_of(l) == kind && self.settled(company, l))
+            .collect();
+        settled.len() < KIND_JUDGED || settled.iter().map(|l| l.profit).sum::<i64>() >= 0
     }
 
     /// The driving game's answer to its question, or why it has none.
@@ -1073,26 +1135,41 @@ impl Brain {
     /// A look at its company: borrow when short, tune its lines, else start
     /// a new one.
     fn think(&mut self, company: &AiCompany, now: Instant) -> Option<Out> {
-        if company.money < BORROW_BELOW && company.loans < self.profile.loans_most {
-            let offer = if self.profile.big_loans {
-                company.offers.iter().max_by_key(|o| o.amount)
-            } else {
-                company.offers.iter().min_by_key(|o| o.amount)
+        let books = money::Books::of(company);
+        // Borrowing as a player would: to start out, and after only what
+        // its lines carry (`money::offer_to_take`).
+        if company.money < BORROW_BELOW
+            && company.loans < self.profile.loans_most
+            && let Some(offer) = money::offer_to_take(
+                company,
+                &books,
+                self.profile.big_loans,
+                self.profile.borrow_cover,
+            )
+        {
+            let action = Action::Loan(Box::new(LoanOp::Take {
+                next: offer.clone(),
+                offer,
+            }));
+            self.stage = Stage::Borrowing {
+                before: company.loans,
+                tries: 0,
             };
-            if let Some(offer) = offer.cloned() {
-                let action = Action::Loan(Box::new(LoanOp::Take {
-                    next: offer.clone(),
-                    offer,
-                }));
-                self.stage = Stage::Borrowing {
-                    before: company.loans,
-                    tries: 0,
-                };
-                let out = self.act(&action, now);
-                if out.is_none() {
-                    self.stage = Stage::Look;
-                    self.wake = Some(now + SETTLE);
-                }
+            let out = self.act(&action, now);
+            if out.is_none() {
+                self.stage = Stage::Look;
+                self.wake = Some(now + SETTLE);
+            }
+            return out;
+        }
+        // Flush, its lines covering its loans: the dearest paid back.
+        if let Some(loan) = money::loan_to_repay(company, &books) {
+            let action = Action::Loan(Box::new(LoanOp::Repay { loan }));
+            let out = self.act(&action, now);
+            if out.is_some() {
+                self.say(format!("pays a loan back early; it has {}", company.money));
+                self.stage = Stage::Look;
+                self.wake = Some(now + SETTLE);
                 return out;
             }
         }
@@ -1122,14 +1199,36 @@ impl Brain {
         if let Some(out) = self.upkeep(company, now) {
             return out;
         }
+        // Nothing new while its settled lines earn less than its loans
+        // take: it waits, its upkeep selling what loses money.
+        if !books.covered() && self.settled_lines(company) >= 2 {
+            self.say(format!(
+                "holds back: its lines earn {} a month, its loans take {}",
+                books.earning, books.owing
+            ));
+            self.chain.clear();
+            self.rest(now);
+            return None;
+        }
         // Its chain's next leg, before anything new.
         if !self.chain.is_empty() {
             self.next_leg(now);
             return None;
         }
-        // Then a new line: a town's buses and a cargo's trucks in turn.
-        let cargo = self.next_cargo && self.carries_cargo;
+        // Then a new line: a town's buses and a cargo's trucks in turn, a
+        // kind whose settled lines lose money passed over while the other
+        // pays, as a player builds more of what earns.
+        let mut cargo = self.next_cargo && self.carries_cargo;
         self.next_cargo = !self.next_cargo;
+        let (buses, trucks) = (
+            self.kind_pays(company, Kind::Bus),
+            self.kind_pays(company, Kind::Truck),
+        );
+        if cargo && !trucks && buses {
+            cargo = false;
+        } else if !cargo && self.carries_cargo && !buses && trucks {
+            cargo = true;
+        }
         self.stage = if cargo {
             Stage::SurveyNeeds
         } else {
@@ -1932,8 +2031,8 @@ impl Brain {
                 alternatives: BoundedVec::new(alternatives.clone()).unwrap_or_default(),
                 load_mode: LoadMode::LoadIfAvailable,
                 min_wait: 0,
-                max_wait: if cargo { CARGO_MAX_WAIT } else { 0 },
-                max_extra_wait: if cargo { CARGO_EXTRA_WAIT } else { 0 },
+                max_wait: ROAD_MAX_WAIT,
+                max_extra_wait: ROAD_EXTRA_WAIT,
                 rules: StopRules {
                     load: BoundedVec::new(load).ok()?,
                     max_load: BoundedVec::new(max_load).ok()?,

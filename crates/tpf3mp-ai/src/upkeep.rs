@@ -13,8 +13,8 @@ use tpf3mp_bridge::ai::{AiCompany, AiDepot, AiLine, AiModel, AiQuestion};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        Action, AssignLine, BuyVehicle, ConsistPart, ConstructionRef, LineId, ReplaceVehicle,
-        ReplacedPart, ResName, VehicleId,
+        Action, AssignLine, BuyVehicle, ConsistPart, ConstructionRef, EditLine, LineChange, LineId,
+        ReplaceVehicle, ReplacedPart, ResName, VehicleId,
     },
 };
 
@@ -38,9 +38,26 @@ pub(super) enum Upkeep {
         cargo: Option<ResName>,
     },
     /// A replacement sent: reading until the vehicle is new.
-    Replaced { vehicle: VehicleId, tries: u32 },
+    Replaced {
+        vehicle: VehicleId,
+        tries: u32,
+    },
     /// A vehicle sold: reading until it is gone.
-    Sold { vehicle: VehicleId, tries: u32 },
+    Sold {
+        vehicle: VehicleId,
+        tries: u32,
+    },
+    /// A losing line's last vehicle sold: reading until it is gone, then
+    /// the line deleted, and reading until it is gone too.
+    Closing {
+        line: LineId,
+        vehicle: VehicleId,
+        tries: u32,
+    },
+    Deleted {
+        line: LineId,
+        tries: u32,
+    },
     /// A second train for a looped rail line: asking its cargo's wagons,
     /// then the engines, at its rail depot, its first train's engine.
     TrainWagons {
@@ -82,6 +99,11 @@ enum Task {
         vehicle: VehicleId,
         line: String,
         why: &'static str,
+    },
+    Close {
+        vehicle: VehicleId,
+        line: LineId,
+        name: String,
     },
     Train {
         line: AiLine,
@@ -213,25 +235,39 @@ impl Brain {
                 engine: first.model.clone(),
             });
         }
-        // Settled, near empty or losing money: its most worn sold.
-        for line in lines {
+        // Settled, near empty or losing money: its most worn sold; a
+        // line down to its last that lost money over its year closed, as a
+        // player gives up a line that does not pay: its rail lines too, a
+        // train running at a loss the dearest of all (the long run's lost
+        // 0.6 to 1 million a year each).
+        for line in company.lines.iter() {
             let vehicles = on(line);
-            if vehicles.len() < 2 || vehicles.iter().any(|v| v.worn < SETTLED) {
+            if vehicles.is_empty() || vehicles.iter().any(|v| v.worn < SETTLED) {
                 continue;
             }
+            let losing = line.profit < 0;
             let why = if self.empty(line) {
                 "running near empty"
-            } else if line.income < line.costs {
+            } else if losing {
                 "losing money"
             } else {
                 continue;
             };
             let v = vehicles.iter().max_by_key(|v| v.worn)?;
-            return Some(Task::Sell {
-                vehicle: v.id,
-                line: line.name.as_str().to_owned(),
-                why,
-            });
+            if vehicles.len() >= 2 {
+                return Some(Task::Sell {
+                    vehicle: v.id,
+                    line: line.name.as_str().to_owned(),
+                    why,
+                });
+            }
+            if losing {
+                return Some(Task::Close {
+                    vehicle: v.id,
+                    line: line.id,
+                    name: line.name.as_str().to_owned(),
+                });
+            }
         }
         None
     }
@@ -289,6 +325,31 @@ impl Brain {
                 }
                 Some(out)
             }
+            Task::Close {
+                vehicle,
+                line,
+                name,
+            } => {
+                let lost = company
+                    .lines
+                    .iter()
+                    .find(|l| l.id == line)
+                    .map_or(0, |l| -l.profit);
+                self.say(format!("closes {name}, which lost {lost} over its year"));
+                let action = Action::SellVehicle {
+                    vehicles: BoundedVec::new(vec![vehicle]).ok()?,
+                };
+                self.stage = Stage::Upkeep(Upkeep::Closing {
+                    line,
+                    vehicle,
+                    tries: 0,
+                });
+                let out = self.act(&action, now);
+                if out.is_none() {
+                    self.rest(now);
+                }
+                Some(out)
+            }
         }
     }
 
@@ -320,6 +381,8 @@ impl Brain {
             ),
             Upkeep::Replaced { .. }
             | Upkeep::Sold { .. }
+            | Upkeep::Closing { .. }
+            | Upkeep::Deleted { .. }
             | Upkeep::TrainBought { .. }
             | Upkeep::TrainAssigned { .. } => self.ask(AiQuestion::Company, now),
         }
@@ -426,6 +489,47 @@ impl Brain {
                     tries: tries + 1,
                 },
             ),
+            // Its last vehicle gone: the line deleted.
+            Upkeep::Closing {
+                line,
+                vehicle,
+                tries,
+            } if company.vehicles.iter().all(|v| v.id != vehicle) => {
+                let action = Action::EditLine(EditLine {
+                    line,
+                    change: LineChange::Delete,
+                });
+                self.stage = Stage::Upkeep(Upkeep::Deleted { line, tries: 0 });
+                let out = self.act(&action, now);
+                if out.is_none() {
+                    self.stage = Stage::Upkeep(Upkeep::Closing {
+                        line,
+                        vehicle,
+                        tries,
+                    });
+                    self.wake = Some(now + SETTLE);
+                }
+                return out;
+            }
+            Upkeep::Closing {
+                line,
+                vehicle,
+                tries,
+            } => (
+                false,
+                Upkeep::Closing {
+                    line,
+                    vehicle,
+                    tries: tries + 1,
+                },
+            ),
+            Upkeep::Deleted { line, tries } => (
+                company.lines.iter().all(|l| l.id != line),
+                Upkeep::Deleted {
+                    line,
+                    tries: tries + 1,
+                },
+            ),
             Upkeep::TrainBought {
                 line,
                 before,
@@ -495,6 +599,8 @@ impl Brain {
         let tries = match &next {
             Upkeep::Replaced { tries, .. }
             | Upkeep::Sold { tries, .. }
+            | Upkeep::Closing { tries, .. }
+            | Upkeep::Deleted { tries, .. }
             | Upkeep::TrainBought { tries, .. }
             | Upkeep::TrainAssigned { tries, .. } => *tries,
             Upkeep::Models { .. } | Upkeep::TrainWagons { .. } | Upkeep::TrainEngines { .. } => 0,

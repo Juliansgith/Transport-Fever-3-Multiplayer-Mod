@@ -74,7 +74,9 @@ const GAME: &str = r#"
         -- Bought at 1 000 of the game's time, a model of lifespan 25: at 13 500,
         -- half its life gone.
         [CT.TRANSPORT_VEHICLE] = { [600] = { transportVehicleConfig = { vehicles = {
-            { part = { modelId = 9 }, purchaseTime = 1000 } } } } },
+            { part = { modelId = 9 }, purchaseTime = 1000 } } },
+            -- Its capacities by cargo, entry i the cargo i - 1: 20 passengers.
+            config = { capacities = { 20, 0 } } } },
         [CT.GAME_TIME] = { [1] = { gameTime = 13500 } },
         [CT.TOWN_BUILDING] = { [800] = { town = 701 }, [801] = { town = 701 }, [802] = { town = 700 } },
         -- Ely's commercial buildings take goods.
@@ -142,8 +144,17 @@ const GAME: &str = r#"
             util = {
                 getYear = function() return 1925 end,
                 getWorld = function() return 1 end,
-                finance = { getPlayersBalance = function(e) return e == 77 and 1234567.6 or 0 end },
-                line = { getLineIssues = function() return { {}, {} } end },
+                finance = { getPlayersBalance = function(e) return e == 77 and 1234567.6 or 0 end,
+                    -- A line's earnings less its costs between two times.
+                    calculateBalance = function(list, from, to, maintenance)
+                        BALANCE_ASKED = { list[1], from, to, maintenance }
+                        return -98159.4
+                    end },
+                line = { getLineIssues = function() return { {}, {} } end,
+                    -- Its sections' capacity and what of it is used.
+                    getLineCapacityUsages = function()
+                        return { { capacity = 24, used = 6 }, { capacity = 12, used = 3 } }
+                    end },
                 town = { getTownDistrictCenter = function(t, use)
                     return { x = t * 10 + use, y = 1, z = 2 } end },
                 octree = { findEntitiesInCircle = function() return { 901, 900 } end,
@@ -177,12 +188,16 @@ const GAME: &str = r#"
                     getNodeStreetSegments = function(n) return SEGMENTS[n] or {} end },
                 -- The game's index of what construction holds a part.
                 stationGroupSystem = { getStationGroup = function(s) return s == 1003 and 1004 or -1 end },
+                -- Three passengers waiting at each stop, no cargo.
+                simEntityAtTerminalSystem = { getLineStopSimEntities = function(l, stop, cargo)
+                    return cargo == 0 and { 1, 2, 3 } or {} end },
                 streetConnectorSystem = {
                     getConstructionEntityForDepot = function(d) return ({ [401] = 400, [431] = 430 })[d] or -1 end,
                     getConstructionEntityForStation = function(s) return s == 301 and 300 or -1 end,
                 },
             },
         },
+        util = { getDefaultMonthDuration = function() return 121750 end },
         res = { cargoTypeRep = {
             find = function(name) for id, c in pairs(CARGOS) do if c.name == name then return id end end return -1 end,
             get = function(id) return CARGOS[id] and { cargoClasses = CARGOS[id].classes } end,
@@ -211,7 +226,9 @@ const GAME: &str = r#"
             { type = "Small", amount = 500000, duration = 1.5768e10, percentage = 0.05 },
             { type = "Large", cooldownUntil = 99 },
             { type = "Medium", amount = 1000000.0, duration = 3.1536e10, percentage = 0.045 } } } },
-        loans = { { company = 1, id = 1 }, { company = 2, id = 2 } } }
+        loans = { { company = 1, id = 1, type = "Large", amount = 27000000, remaining = 21408725, months = 144,
+                    paid = 47, rate = 0.1 / 12, payment = 322672 },
+                  { company = 2, id = 2 } } }
     REGISTRY = {
         groups = { bound = { { 4, 310 }, { 5, 320 }, { 9, 1004 } } },
         lines = { bound = { { 2, 500 } } },
@@ -324,6 +341,33 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
     assert_eq!(line.stops.iter().map(|s| s.0).collect::<Vec<_>>(), [4, 4]);
     assert_eq!(line.vehicles.iter().map(|v| v.0).collect::<Vec<_>>(), [6]);
     assert_eq!(line.problems, 2);
+    // Its year's earnings less its costs, how full it runs over its
+    // sections, and the passengers waiting at its two stops.
+    assert_eq!(line.profit, -98_159);
+    assert_eq!(line.load, 25, "9 of 36");
+    assert_eq!(line.waiting, 6);
+    let asked: (i64, f64, f64, bool) = lua
+        .load("return BALANCE_ASKED[1], BALANCE_ASKED[2], BALANCE_ASKED[3], BALANCE_ASKED[4]")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        asked,
+        (500, 0.0, 13_500.0, true),
+        "its last twelve months, from the game's start here"
+    );
+    assert_eq!(company.month, 121_750);
+    let owed = &company.owed[0];
+    assert_eq!(
+        (owed.remaining, owed.payment, owed.months_left),
+        (21_408_725, 322_672, 97)
+    );
+    assert_eq!(
+        (owed.terms.id, owed.terms.amount),
+        (Some(1), 27_000_000),
+        "as paying it back names it"
+    );
+    assert_eq!(owed.terms.percentage, 100_000, "10 % a year, in millionths");
+    assert_eq!(company.owed.len(), 1, "its own loans only");
     let offers: Vec<(&str, i64, i64)> = company
         .offers
         .iter()

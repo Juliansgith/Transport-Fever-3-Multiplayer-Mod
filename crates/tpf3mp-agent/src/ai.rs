@@ -442,6 +442,8 @@ mod tests {
             vehicles: BoundedVec::default(),
             offers: BoundedVec::default(),
             loans: 0,
+            owed: BoundedVec::default(),
+            month: 121_750,
         })
     }
 

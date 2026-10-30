@@ -208,8 +208,12 @@ function ai.company(seat, roster, registry)
 	local out = {
 		money = 0,
 		year = whole(api.engine.util.getYear and api.engine.util.getYear() or 0),
-		stations = {}, depots = {}, lines = {}, vehicles = {}, offers = {}, loans = 0,
+		stations = {}, depots = {}, lines = {}, vehicles = {}, offers = {}, loans = 0, owed = {}, month = 0,
 	}
+	pcall(function()
+		local length = api.util.getDefaultMonthDuration()
+		if type(length) == "number" and length > 0 and length < 4294967295 then out.month = whole(length) end
+	end)
 	if c and c.id ~= 0 then out.company = c.id end
 	if entity == nil then return { Company = out } end
 	-- Its loan offers, those not cooling down, and its loans
@@ -226,10 +230,28 @@ function ai.company(seat, roster, registry)
 				end
 			end
 		end
+		-- Each loan with what is still owed and paid a month, by its id and
+		-- amount as paying it back names it (companies.repay).
+		local okM, monthLength = pcall(function() return api.util.getDefaultMonthDuration() end)
+		if not okM or type(monthLength) ~= "number" then monthLength = 0 end
+		out.owed = {}
 		for _, loan in ipairs(roster.loans or {}) do
-			if loan.company == c.id and out.loans < 255 then out.loans = out.loans + 1 end
+			if loan.company == c.id and out.loans < 255 then
+				out.loans = out.loans + 1
+				if #out.owed < 8 and type(loan.amount) == "number" and type(loan.remaining) == "number" then
+					local months, paid = loan.months or 0, loan.paid or 0
+					out.owed[#out.owed + 1] = {
+						terms = { type = loan.type or "Custom", amount = whole(loan.amount),
+							duration = whole(months * monthLength), percentage = (loan.rate or 0) * 12,
+							id = loan.id, timesPaid = paid },
+						remaining = whole(loan.remaining), payment = whole(loan.payment or 0),
+						months_left = math.max(0, whole(months - paid)),
+					}
+				end
+			end
 		end
 	end
+	out.owed = out.owed or {}
 	local finance = api.engine.util.finance
 	out.money = whole(finance and finance.getPlayersBalance and finance.getPlayersBalance(entity) or 0)
 	local companies = module("companies")
@@ -269,6 +291,12 @@ function ai.company(seat, roster, registry)
 	end
 	local lines = api.engine.system.lineSystem.getLinesForPlayer(entity) or {}
 	local vehicles = api.engine.system.transportVehicleSystem
+	-- The game's time and month, for a line's last twelve months.
+	local now, month = 0, 0
+	pcall(function()
+		now = component(api.engine.util.getWorld(), "GAME_TIME").gameTime
+		month = api.util.getDefaultMonthDuration()
+	end)
 	for _, l in ipairs(lines) do
 		if #out.lines >= ai.MAX_OWNED then break end
 		local id = reg and regmod.id(reg, "lines", l)
@@ -287,10 +315,46 @@ function ai.company(seat, roster, registry)
 			end
 			local problems = 0
 			pcall(function() problems = #(api.engine.util.line.getLineIssues(l, false) or {}) end)
+			-- What it earned less what it cost over the last twelve months,
+			-- as the game's line window reads it.
+			local profit = 0
+			pcall(function()
+				profit = api.engine.util.finance.calculateBalance({ l }, math.max(0, now - 12 * month), now, true)
+			end)
+			-- How full it runs: the capacity its sections use, as the line
+			-- window's capacity chart (1 at least for a line with capacity,
+			-- 0 where unknown).
+			local load = 0
+			pcall(function()
+				local usages = api.engine.util.line.getLineCapacityUsages(l, false)
+				local capacity, used = 0, 0
+				for i = 1, #usages do
+					capacity = capacity + usages[i].capacity
+					used = used + usages[i].used
+				end
+				if capacity > 0 then load = math.max(1, math.min(100, whole(used * 100 / capacity))) end
+			end)
+			-- What waits at its stops of the kinds its vehicles carry: a
+			-- vehicle's capacities list each cargo, entry i the cargo i - 1.
+			local waiting = 0
+			pcall(function()
+				local first = (vehicles.getLineVehicles(l) or {})[1]
+				local tv = first and component(first, "TRANSPORT_VEHICLE")
+				local capacities = tv and tv.config.capacities
+				local at = api.engine.system.simEntityAtTerminalSystem
+				for i = 1, (capacities and #capacities or 0) do
+					if capacities[i] > 0 then
+						for s = 0, #(line.stops or {}) - 1 do
+							waiting = waiting + #(at.getLineStopSimEntities(l, s, i - 1) or {})
+						end
+					end
+				end
+			end)
 			local name = component(l, "NAME")
 			out.lines[#out.lines + 1] = {
 				id = id, name = text(name and name.name, 64), stops = stops, vehicles = fleet,
-				load = 0, waiting = 0, income = 0, costs = 0, problems = math.min(problems, 65535),
+				load = load, waiting = math.min(whole(waiting), 4294967295), profit = whole(profit),
+				problems = math.min(problems, 65535),
 			}
 		end
 	end

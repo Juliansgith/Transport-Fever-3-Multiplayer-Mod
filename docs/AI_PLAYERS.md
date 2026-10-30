@@ -210,12 +210,37 @@ faster AI.
    waiting (a cargo line runs full one way and empty back, so its load says
    little), up to its difficulty's most; and sells the most worn vehicle
    of a settled line (every vehicle a twentieth through its life) that runs
-   under 25, 30 or 35 % full (a cargo line under half that) or loses money,
-   never a line's last. A settled line is not topped up to its first count
-   again. A rail line with a signalled passing loop gets a second train
-   (\"Track and trains\").
-4. **Money.** It borrows when a project's return beats the loan's interest
-   by its difficulty's margin, and pays back when it can.
+   under 25, 30 or 35 % full (a cargo line under half that) or loses money;
+   a line down to its last vehicle that lost money over its year, rail
+   lines included, is closed: its last vehicle sold and the line deleted.
+   A settled line is not topped up to its first count again. A rail line
+   with a signalled passing loop gets a second train (\"Track and trains\").
+   What it judges by, the company answer says since bridge version 35, as
+   the game's line window reads it: each line's profit over the last twelve
+   of the game's months (`calculateBalance`), how full it runs over its
+   sections (`getLineCapacityUsages`) and what waits at its stops of the
+   kinds its vehicles carry. Before, the mod sent all three as nothing, and
+   none of these rules but replacing ever ran. A road line's stops wait as
+   the game's line window sets them, at most 600 s and 30 s more for a load:
+   bus stops that waited none were left before anyone boarded, and no AI
+   bus line carried a passenger in the long run of 2026-10-30.
+4. **Money** (`crates/tpf3mp-ai/src/money.rs`). A room's loans are paid
+   back each of the game's months as an annuity (`tpf3mp/companies.lua`,
+   \"loans\"); the company answer lists each loan it owes, what is left and
+   its monthly payment, and the game's month. It keeps four months of its
+   loans' payments in hand beyond its difficulty's reserve before it spends.
+   It borrows to start out (a founded company has no money: the largest
+   offer at Hard, the smallest otherwise), and after only when what its
+   lines earn a month beyond what its loans take covers the new loan's
+   payment 3, 2 or 1.25 times over (Easy, Normal, Hard); never to pay its
+   loans. While its settled lines earn less than its loans take it starts
+   nothing new, its upkeep selling what loses. A kind of line (buses,
+   trucks, trains) whose settled lines lose money together is passed over
+   while the other pays, and no railway is begun while its railways lose.
+   Flush, its lines covering its loans, it pays back the dearest loan whose
+   remainder its cash covers beyond its cushion by 3 million. In the long
+   run of 2026-10-30 it had borrowed whenever it ran short: 98 million at
+   Hard, 86 owed, 8 million in interest a month against under one earned.
 
 ### Building, mode by mode
 
