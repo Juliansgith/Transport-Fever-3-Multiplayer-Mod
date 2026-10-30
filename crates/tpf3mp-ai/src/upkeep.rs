@@ -4,8 +4,8 @@
 //! the year (the vehicle window's replace: the same vehicle, on its line),
 //! adds one to a line running full with passengers or cargo waiting, and
 //! sells one from a settled line that runs near empty or loses money, never
-//! a line's last. A rail line with a signalled passing loop whose train
-//! runs full with cargo waiting gets a second train.
+//! a line's last. A rail line with signalled passing loops whose trains
+//! leave cargo waiting gets another train, up to one more than its loops.
 
 use std::time::Instant;
 
@@ -18,7 +18,7 @@ use tpf3mp_proto::{
     },
 };
 
-use super::{BUS, Brain, CONFIRM_TRIES, Out, SETTLE, Stage, TRUCK, tint, train};
+use super::{BUS, Brain, CONFIRM_TRIES, Out, SETTLE, Stage, TRUCK, road_depot, tint, train};
 use crate::{place::P, rail};
 
 /// How far through their lives every vehicle of a line must be before its
@@ -165,17 +165,23 @@ impl Brain {
                 line: (*line).clone(),
             });
         }
-        // A looped rail line whose one train runs full, cargo waiting: a
-        // second, at its rail depot by its first station.
-        for line in company
-            .lines
-            .iter()
-            .filter(|l| self.memo.looped.contains(&l.id.0))
-        {
+        // A looped rail line whose trains run full, cargo waiting: another,
+        // at its rail depot by its first station, up to one more than its
+        // signalled loops (n loops pass n + 1 trains on single track).
+        for (line, loops) in company.lines.iter().filter_map(|l| {
+            self.memo
+                .looped
+                .iter()
+                .find(|(id, _)| *id == l.id.0)
+                .map(|(_, n)| (l, usize::from(*n)))
+        }) {
             let trains = on(line);
-            let [first] = trains.as_slice() else {
+            let Some(first) = trains.first() else {
                 continue;
             };
+            if trains.len() > loops {
+                continue;
+            }
             if !self.full(line) {
                 continue;
             }
@@ -244,7 +250,7 @@ impl Brain {
                 Some(None)
             }
             Task::Add { line } => {
-                let depot = company.depots.iter().find(|d| d.connected).cloned()?;
+                let depot = road_depot(company, &line)?;
                 self.say(format!(
                     "adds a vehicle to {}, running full",
                     line.name.as_str()
@@ -260,7 +266,7 @@ impl Brain {
                 engine,
             } => {
                 self.say(format!(
-                    "buys a second train for {}, running full",
+                    "buys another train for {}, running full",
                     line.name.as_str()
                 ));
                 self.stage = Stage::Upkeep(Upkeep::TrainWagons {
@@ -471,7 +477,7 @@ impl Brain {
                     .iter()
                     .any(|v| v.id == vehicle && v.line == Some(line));
                 if runs {
-                    self.say("runs a second train through its passing loop".into());
+                    self.say("runs another train through its passing loops".into());
                 }
                 (
                     runs,

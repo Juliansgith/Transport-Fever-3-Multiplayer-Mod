@@ -329,6 +329,33 @@ A rail line of 2 km or more gets a passing loop and two one-way signals
 - A cargo line runs full one way and empty back: the line's load, the
   mean over its stops, stays near half, so a cargo line counts as full by
   the cargo waiting at its stops (60), not by its load.
+## Passenger trains (2026-10-30)
+
+- Passengers are the game's cargo 0, `::/cargos/passengers/passengers.cargo`
+  (class PASSENGERS); the models question for trains with it gives the
+  coaches (and a handcar, which has an engine). A one-track passenger
+  station is passenger platforms in slots 7400000 + 10 j, its track in
+  8401000 + 10 j (5 m across its axes) and `main_building_1_era_<a|b|c>`
+  (`modular_station.script.lua`, `AddPassenger(0)`, `AddTrack(1)`).
+- Run 38: the line from Dinnington St John's to Basingstoke (3.8 km) found
+  no route. On the game's land (dumped and planned offline) several
+  railways and a river lie between the towns, and the route search took
+  another railway as a wall; and a station site whose ground just beyond
+  its exit was built on failed every search at once, ending the pricing
+  after two. Another railway is now passed over (7.5 m) or under (10 m),
+  never crossed on the ground; a site needs clear ground 160 m out of its
+  line end; three pairs of sites are priced.
+- Run 39: the same line, five layouts refused in trial ("Collision" over
+  the railways and river, a level crossing), the sixth passed; stations,
+  track with 15 bridge and 2 tunnel edges, the line and a train of six
+  coaches running, the world checks alike in both games. Its passing loop
+  was refused ("Construction Not Possible"), leaving it one train.
+- Lines of 5 km or more get a loop for each 2.5 km; a second line from the
+  same place shares the first's rail depot (both in the brain's stand-in
+  world; not met in the real game in these runs).
+- Seen in passing: after the host's game quit, the joiner's game hung in
+  the room's save ("saving the world for the room (event 69)", its log
+  silent after) and had to be ended.
 ## Production chains (2026-10-30)
 
 Run 27 (two games in one room, a Hard and a Normal AI, the big fixture)

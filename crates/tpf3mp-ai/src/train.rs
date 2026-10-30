@@ -14,7 +14,9 @@
 
 use std::time::Instant;
 
-use tpf3mp_bridge::ai::{AiCompany, AiIndustry, AiLand, AiModel, AiQuestion, AiStreet};
+use tpf3mp_bridge::ai::{
+    AiCompany, AiDepot, AiIndustry, AiLand, AiModel, AiQuestion, AiStreet, AiTown,
+};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
@@ -51,6 +53,9 @@ const SCALE_RANGE: (f64, f64) = (0.25, 8.0);
 /// catchment reaches 150 m from its building (`main_building_1_cargo`).
 const MAKER_RINGS: [f64; 3] = [150.0, 200.0, 250.0];
 const TOWN_RINGS: [f64; 4] = [120.0, 180.0, 260.0, 340.0];
+/// The rings a passenger station is tried on around its town's centre: out
+/// to the town's edge, where there is room, as a player's first station.
+const PASSENGER_RINGS: [f64; 6] = [180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
 /// How many times a line is routed round pieces the game refused.
 pub const REPLANS: u32 = 8;
 /// Around a refused piece's middle the land is taken as built on, in
@@ -60,6 +65,9 @@ pub const REFUSED_REACH: f64 = 70.0;
 /// modes, and the mode's name.
 pub const TRAIN_MODE: u16 = 7;
 pub const TRAIN: &str = "TRAIN";
+/// Passengers as the game names them among its cargo (cargo 0, class
+/// PASSENGERS): a train's coaches are the models that carry them.
+pub const PASSENGERS: &str = "::/cargos/passengers/passengers.cargo";
 /// The most wagons a train pulls.
 pub const WAGONS_MOST: usize = 6;
 /// A rail stop's waits, in the game's seconds in millionths: as the game's
@@ -112,10 +120,17 @@ pub(super) struct RailProject {
     pub wagons: Vec<AiModel>,
     /// The train it chose before it built anything: engine and wagon.
     pub train: Option<(AiModel, AiModel)>,
-    /// Its passing loop: the first node of the line it runs beside, and its
-    /// side; and whether both its signals stand.
-    pub looped: Option<(usize, f64)>,
-    pub signalled: bool,
+    /// A rail depot of its own another line built, by its first station,
+    /// that this line shares.
+    pub share: Option<AiDepot>,
+    /// Its passing loops: each one's first node of the line it runs beside,
+    /// and its side.
+    pub looped: Vec<(usize, f64)>,
+    /// How many of them have both their signals.
+    pub signalled: u8,
+    /// It carries passengers between two towns, not a cargo: `from` stands
+    /// for the first town, `cargo` is [`PASSENGERS`].
+    pub passengers: bool,
 }
 
 impl RailProject {
@@ -173,6 +188,13 @@ pub(super) enum RailStage {
     PieceBuilt {
         tries: u32,
     },
+    /// Asking the verdict on the track from the first station's free end
+    /// to the join of a rail depot of its own it shares, then reading until
+    /// that end is taken.
+    ShareVerdict,
+    ShareBuilt {
+        tries: u32,
+    },
     /// Asking the verdict on a depot beyond station `end`'s other end.
     DepotVerdict {
         end: usize,
@@ -188,17 +210,23 @@ pub(super) enum RailStage {
     LinkBuilt {
         tries: u32,
     },
-    /// Asking the verdict on its passing loop's track, then reading before
-    /// its signals.
-    LoopVerdict,
-    LoopBuilt,
-    /// Asking the verdict on its passing loop's signal number `n` (0 on the
-    /// line's track, 1 on the loop's), and reading after one is sent.
+    /// Asking the verdict on its passing loop number `lp`'s track, then
+    /// reading before its signals.
+    LoopVerdict {
+        lp: usize,
+    },
+    LoopBuilt {
+        lp: usize,
+    },
+    /// Asking the verdict on that loop's signal number `n` (0 on the line's
+    /// track, 1 on the loop's), and reading after one is sent.
     SignalVerdict {
+        lp: usize,
         n: usize,
         tries: u32,
     },
     SignalBuilt {
+        lp: usize,
         n: usize,
     },
     /// Opening the line once its hands are free.
@@ -226,6 +254,38 @@ impl Brain {
     /// Begins a rail line carrying a cargo from the industry that makes it
     /// to its taker, if it can afford one: true if it did.
     pub(super) fn start_rail(&mut self, leg: Leg) -> bool {
+        self.start_rail_of(leg, false)
+    }
+
+    /// Begins a passenger rail line between two towns, if it can afford one:
+    /// true if it did. Its first end stands for the first town (no station
+    /// of its own, nothing made).
+    pub(super) fn start_passenger_rail(&mut self, a: &AiTown, b: &AiTown) -> bool {
+        let (Some(&at_a), Some(&at_b)) = (a.centres.first(), b.centres.first()) else {
+            return false;
+        };
+        let from = AiIndustry {
+            name: a.name.clone(),
+            pos: at_a,
+            station: None,
+            terminals: 0,
+            inputs: BoundedVec::default(),
+            outputs: BoundedVec::default(),
+            water: false,
+        };
+        let to = Taker::Town {
+            town: b.clone(),
+            at: at_b,
+        };
+        let leg = Leg {
+            cargo: Text::lossy(PASSENGERS),
+            from,
+            to,
+        };
+        self.start_rail_of(leg, true)
+    }
+
+    fn start_rail_of(&mut self, leg: Leg, passengers: bool) -> bool {
         if self.spendable() < RAIL_MONEY {
             return false;
         }
@@ -256,8 +316,10 @@ impl Brain {
             line: None,
             wagons: Vec::new(),
             train: None,
-            looped: None,
-            signalled: false,
+            looped: Vec::new(),
+            signalled: 0,
+            share: None,
+            passengers,
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
@@ -310,13 +372,21 @@ impl Brain {
                         let project = self.rail.as_mut()?;
                         let (from, at) = (P::of(project.from.pos), P::of(project.to.pos()));
                         // By a town's district, or by the industry it feeds.
-                        let rings: &[f64] = match project.to {
-                            Taker::Town { .. } => &TOWN_RINGS,
-                            Taker::Industry(_) => &MAKER_RINGS,
+                        // A passenger line's ends are both towns'.
+                        let passengers = project.passengers;
+                        let rings: &[f64] = match (&project.to, passengers) {
+                            (_, true) => &PASSENGER_RINGS,
+                            (Taker::Town { .. }, false) => &TOWN_RINGS,
+                            (Taker::Industry(_), false) => &MAKER_RINGS,
+                        };
+                        let near: &[f64] = if passengers {
+                            &PASSENGER_RINGS
+                        } else {
+                            &MAKER_RINGS
                         };
                         project.tries = [
-                            rail::sites(&project.land, from, at, &MAKER_RINGS),
-                            rail::sites(&project.land, at, from, rings),
+                            rail::sites(&project.land, from, at, near, passengers),
+                            rail::sites(&project.land, at, from, rings, passengers),
                         ];
                         // What the line costs, from its first placements,
                         // before it builds anything: a line it cannot pay
@@ -360,10 +430,11 @@ impl Brain {
                 #[allow(clippy::cast_possible_wrap)]
                 let seed = (self.random() >> 33) as i64;
                 let project = self.rail.as_ref()?;
-                let name = if end == 0 {
-                    format!("{} Rail", project.from.name.as_str())
-                } else {
-                    format!("{} Goods", project.to.name())
+                let name = match (project.passengers, end) {
+                    (true, 0) => format!("{} Station", project.from.name.as_str()),
+                    (true, _) => format!("{} Station", project.to.name()),
+                    (false, 0) => format!("{} Rail", project.from.name.as_str()),
+                    (false, _) => format!("{} Goods", project.to.name()),
                 };
                 let Some(station) = project.tries[end].first() else {
                     self.give_up_rail("found no place for a rail station", now);
@@ -386,6 +457,12 @@ impl Brain {
                 let project = self.rail.as_ref()?;
                 let piece = project.pieces.get(project.piece)?.build.clone();
                 self.verdict(&Action::BuildTrack(piece), now)
+            }
+            RailStage::ShareVerdict => {
+                let year = self.year();
+                let project = self.rail.as_ref()?;
+                let link = share_link(project, year)?;
+                self.verdict(&Action::BuildTrack(link), now)
             }
             RailStage::DepotVerdict { end } => {
                 let year = self.year();
@@ -427,17 +504,17 @@ impl Brain {
                     }
                 }
             }
-            RailStage::LoopVerdict => {
+            RailStage::LoopVerdict { lp } => {
                 let year = self.year();
                 let project = self.rail.as_ref()?;
-                let (k, side) = project.looped?;
+                let (k, side) = *project.looped.get(lp)?;
                 let build = rail::passing_loop(&project.nodes, k, side, year)?;
                 self.verdict(&Action::BuildTrack(build), now)
             }
-            RailStage::SignalVerdict { n, .. } => {
+            RailStage::SignalVerdict { lp, n, .. } => {
                 let year = self.year();
                 let project = self.rail.as_ref()?;
-                let (k, side) = project.looped?;
+                let (k, side) = *project.looped.get(lp)?;
                 let signal = rail::loop_signals(&project.nodes, k, side, year)[n].clone();
                 self.verdict(&Action::PlaceStop(signal), now)
             }
@@ -464,7 +541,8 @@ impl Brain {
             | RailStage::PieceBuilt { .. }
             | RailStage::DepotBuilt { .. }
             | RailStage::LinkBuilt { .. }
-            | RailStage::LoopBuilt
+            | RailStage::ShareBuilt { .. }
+            | RailStage::LoopBuilt { .. }
             | RailStage::SignalBuilt { .. }
             | RailStage::LineMade { .. }
             | RailStage::Bought { .. }
@@ -551,16 +629,16 @@ impl Brain {
                 .filter(|n| n.kind == rail::Kind::Tunnel)
                 .count(),
         );
-        // A passing loop on a long line, for a second train.
-        project.looped = rail::loop_site(&project.land, &nodes);
+        // Passing loops on a long line, for more trains.
+        project.looped = rail::loop_sites(&project.land, &nodes);
         let said = format!(
             "lays its track in {} pieces for about {:.0}: {crossings} level crossings, {bridges} bridge and {tunnels} tunnel edges{}",
             project.pieces.len(),
             rail::cost(&nodes),
-            if project.looped.is_some() {
-                ", a passing loop"
-            } else {
-                ""
+            match project.looped.len() {
+                0 => String::new(),
+                1 => ", a passing loop".to_owned(),
+                n => format!(", {n} passing loops"),
             }
         );
         project.nodes = nodes;
@@ -664,12 +742,13 @@ impl Brain {
                 project.depot = Some((build.transform.origin, join));
                 RailStage::DepotBuilt { end, tries: 0 }
             }
+            (RailStage::ShareVerdict, Action::BuildTrack(_)) => RailStage::ShareBuilt { tries: 0 },
             (RailStage::LinkVerdict { .. }, Action::BuildTrack(_)) => {
                 RailStage::LinkBuilt { tries: 0 }
             }
-            (RailStage::LoopVerdict, Action::BuildTrack(_)) => RailStage::LoopBuilt,
-            (RailStage::SignalVerdict { n, .. }, Action::PlaceStop(_)) => {
-                RailStage::SignalBuilt { n }
+            (RailStage::LoopVerdict { lp }, Action::BuildTrack(_)) => RailStage::LoopBuilt { lp },
+            (RailStage::SignalVerdict { lp, n, .. }, Action::PlaceStop(_)) => {
+                RailStage::SignalBuilt { lp, n }
             }
             // A trial: nothing sent; the next piece, then the stations.
             (RailStage::Trial { piece }, Action::BuildTrack(_)) => {
@@ -726,24 +805,30 @@ impl Brain {
                     project.tries[end].remove(0);
                 }
             }
-            RailStage::LoopVerdict => {
+            RailStage::LoopVerdict { lp } => {
                 self.say(format!("its passing loop was refused: {why}"));
-                if let Some(project) = self.rail.as_mut() {
-                    project.looped = None;
-                }
-                self.stage = Stage::Rail(RailStage::Opening);
+                let next = self
+                    .rail
+                    .as_ref()
+                    .map_or(RailStage::Opening, |p| next_loop(p, lp));
+                self.stage = Stage::Rail(next);
             }
             // Its loop's track not yet in every game, or refused.
-            RailStage::SignalVerdict { n, tries } if tries < CONFIRM_TRIES => {
+            RailStage::SignalVerdict { lp, n, tries } if tries < CONFIRM_TRIES => {
                 self.stage = Stage::Rail(RailStage::SignalVerdict {
+                    lp,
                     n,
                     tries: tries + 1,
                 });
                 self.wake = Some(now + SETTLE);
             }
-            RailStage::SignalVerdict { .. } => {
+            RailStage::SignalVerdict { lp, .. } => {
                 self.say(format!("its passing loop's signals were refused: {why}"));
-                self.stage = Stage::Rail(RailStage::Opening);
+                let next = self
+                    .rail
+                    .as_ref()
+                    .map_or(RailStage::Opening, |p| next_loop(p, lp));
+                self.stage = Stage::Rail(next);
             }
             RailStage::Trial { piece } => {
                 let laid = self.rail.as_ref().and_then(|p| {
@@ -822,6 +907,13 @@ impl Brain {
                 } else {
                     self.give_up_rail("found no place for a rail depot", now);
                 }
+            }
+            RailStage::ShareVerdict => {
+                self.say(format!("could not share a rail depot: {why}"));
+                if let Some(project) = self.rail.as_mut() {
+                    project.share = None;
+                }
+                self.stage = Stage::Rail(RailStage::DepotVerdict { end: 0 });
             }
             RailStage::LinkVerdict { .. } => {
                 self.give_up_rail(&format!("its depot's track was refused: {why}"), now);
@@ -925,7 +1017,8 @@ impl Brain {
                     project.piece += 1;
                     if project.piece >= project.pieces.len() {
                         self.say("laid its track".into());
-                        self.stage = Stage::Rail(RailStage::DepotVerdict { end: 0 });
+                        let next = self.depot_or_share(company);
+                        self.stage = Stage::Rail(next);
                     } else {
                         self.stage = Stage::Rail(RailStage::PieceVerdict);
                     }
@@ -973,20 +1066,20 @@ impl Brain {
                 None
             }
             // Its loop laid: its signals next; both standing, the line.
-            RailStage::LoopBuilt => {
-                self.stage = Stage::Rail(RailStage::SignalVerdict { n: 0, tries: 0 });
+            RailStage::LoopBuilt { lp } => {
+                self.stage = Stage::Rail(RailStage::SignalVerdict { lp, n: 0, tries: 0 });
                 None
             }
-            RailStage::SignalBuilt { n: 0 } => {
-                self.stage = Stage::Rail(RailStage::SignalVerdict { n: 1, tries: 0 });
+            RailStage::SignalBuilt { lp, n: 0 } => {
+                self.stage = Stage::Rail(RailStage::SignalVerdict { lp, n: 1, tries: 0 });
                 None
             }
-            RailStage::SignalBuilt { .. } => {
+            RailStage::SignalBuilt { lp, .. } => {
                 let project = self.rail.as_mut()?;
-                project.signalled = true;
+                project.signalled += 1;
                 // Where: the line's nodes either side of the loop's far end,
                 // for the log.
-                let (k, _) = project.looped?;
+                let (k, _) = *project.looped.get(lp)?;
                 let m = k + rail::LOOP_EDGES;
                 let at = |i: usize| {
                     project
@@ -1000,8 +1093,39 @@ impl Brain {
                     at(m),
                     at(m + 1)
                 );
+                let next = next_loop(project, lp);
                 self.say(said);
-                self.stage = Stage::Rail(RailStage::Opening);
+                self.stage = Stage::Rail(next);
+                None
+            }
+            // Its link to a depot it shares laid: seen when its first
+            // station's free end is taken.
+            RailStage::ShareBuilt { tries } => {
+                let project = self.rail.as_mut()?;
+                let built = project.built[0]?;
+                let (_, (end, _)) = built.station.ends_toward(P::of(project.to.pos()));
+                let taken = company.stations.iter().any(|s| {
+                    s.id == built.id
+                        && s.ends
+                            .iter()
+                            .any(|e| P::of(e.pos).flat_distance(end) <= 3.0 && !e.open)
+                });
+                let share = project.share.clone()?;
+                if taken {
+                    project.depot = Some((share.at, P::of(share.entrance?)));
+                    let next = after_depot(project);
+                    self.say("shares a rail depot with another of its lines".into());
+                    self.stage = Stage::Rail(next);
+                } else if tries >= CONFIRM_TRIES {
+                    project.share = None;
+                    self.stage = Stage::Rail(RailStage::DepotVerdict { end: 0 });
+                } else {
+                    self.retry(
+                        Stage::Rail(RailStage::ShareBuilt { tries: tries + 1 }),
+                        tries,
+                        now,
+                    );
+                }
                 None
             }
             RailStage::LinkBuilt { tries } => {
@@ -1027,10 +1151,13 @@ impl Brain {
             RailStage::LineMade { tries } => {
                 let project = self.rail.as_mut()?;
                 let stops = [project.built[0]?.id, project.built[1]?.id];
+                // The line it opened: of those through its stations, one it
+                // does not know yet.
+                let known = |id: LineId| self.memo.rail_lines.contains(&id.0);
                 if let Some(line) = company
                     .lines
                     .iter()
-                    .find(|l| l.stops.iter().copied().eq(stops.iter().copied()))
+                    .find(|l| !known(l.id) && l.stops.iter().copied().eq(stops.iter().copied()))
                 {
                     project.line = Some(line.id);
                     let key = route_key(project.from.pos, project.cargo.as_str());
@@ -1042,8 +1169,10 @@ impl Brain {
                     if !self.memo.cargo_lines.contains(&entry) {
                         self.memo.cargo_lines.push(entry);
                     }
-                    if project.signalled && !self.memo.looped.contains(&line.id.0) {
-                        self.memo.looped.push(line.id.0);
+                    if project.signalled > 0
+                        && !self.memo.looped.iter().any(|(l, _)| *l == line.id.0)
+                    {
+                        self.memo.looped.push((line.id.0, project.signalled));
                     }
                     if !self.memo.rail_lines.contains(&line.id.0) {
                         self.memo.rail_lines.push(line.id.0);
@@ -1191,19 +1320,25 @@ impl Brain {
     /// window loads them; a rail stop's waits.
     fn open_rail(&mut self, now: Instant) -> Option<Out> {
         let project = self.rail.as_ref()?;
-        let index = usize::from(
-            project
-                .from
-                .outputs
-                .iter()
-                .find(|o| o.cargo == project.cargo)?
-                .index,
-        );
+        // Passengers, the game's cargo 0, both ways; a cargo at its maker.
+        let passengers = project.passengers;
+        let index = if passengers {
+            0
+        } else {
+            usize::from(
+                project
+                    .from
+                    .outputs
+                    .iter()
+                    .find(|o| o.cargo == project.cargo)?
+                    .index,
+            )
+        };
         let full = Fraction(1_000_000);
         let stop = |group: StationId, loads: bool| -> Option<LineStop> {
             let mut load = vec![false; index + 1];
             load[0] = true;
-            load[index] = loads;
+            load[index] = loads || passengers;
             Some(LineStop {
                 group,
                 terminal: Terminal {
@@ -1229,11 +1364,15 @@ impl Brain {
             stop(project.built[0]?.id, true)?,
             stop(project.built[1]?.id, false)?,
         ];
-        let name = format!(
-            "{} {} train",
-            project.from.name.as_str(),
-            cargo_name(project.cargo.as_str())
-        );
+        let name = if passengers {
+            format!("{} {} train", project.from.name.as_str(), project.to.name())
+        } else {
+            format!(
+                "{} {} train",
+                project.from.name.as_str(),
+                cargo_name(project.cargo.as_str())
+            )
+        };
         let action = Action::CreateLine(CreateLine {
             name: Text::lossy(&name),
             color: tint(&self.seat),
@@ -1322,7 +1461,7 @@ impl Brain {
 
 /// The most placements of each station a line is priced between before it
 /// builds anything.
-const PRICED_SITES: usize = 2;
+const PRICED_SITES: usize = 3;
 
 /// What a line costs before its train: its two stations and depot, and the
 /// cheapest track between their ends with a level crossing for every run
@@ -1332,12 +1471,12 @@ const PRICED_SITES: usize = 2;
 fn estimate(project: &mut RailProject) -> Result<f64, &'static str> {
     let mut why = "found no place for a rail station";
     let mut best: Option<(f64, usize, usize)> = None;
-    // Its searches run in the driver's agent: two lines priced, or two
+    // Its searches run in the driver's agent: two lines priced, or three
     // routes not found, are enough.
     let (mut priced, mut failed) = (0, 0);
     for (i, a) in project.tries[0].iter().take(PRICED_SITES).enumerate() {
         for (j, b) in project.tries[1].iter().take(PRICED_SITES).enumerate() {
-            if priced >= 2 || failed >= 2 {
+            if priced >= 2 || failed >= 3 {
                 break;
             }
             // Each end towards the place the other station serves, as the
@@ -1398,9 +1537,58 @@ fn trial(build: &TrackBuild) -> Option<TrackBuild> {
 /// What follows its depot's joining: its passing loop, if it has one, else
 /// its line.
 fn after_depot(project: &RailProject) -> RailStage {
-    if project.looped.is_some() {
-        RailStage::LoopVerdict
+    if project.looped.is_empty() {
+        RailStage::Opening
+    } else {
+        RailStage::LoopVerdict { lp: 0 }
+    }
+}
+
+/// What follows its passing loop number `lp`: its next loop, else its line.
+fn next_loop(project: &RailProject, lp: usize) -> RailStage {
+    if lp + 1 < project.looped.len() {
+        RailStage::LoopVerdict { lp: lp + 1 }
     } else {
         RailStage::Opening
     }
+}
+
+impl Brain {
+    /// Where its line's trains come from once its track is laid: a rail
+    /// depot of its own whose join is within [`rail::DEPOT_SHARE`] of its
+    /// first station's free end, shared; else one of its own to build.
+    fn depot_or_share(&mut self, company: &AiCompany) -> RailStage {
+        let Some(project) = self.rail.as_mut() else {
+            return RailStage::DepotVerdict { end: 0 };
+        };
+        let Some(built) = project.built[0] else {
+            return RailStage::DepotVerdict { end: 0 };
+        };
+        let (_, (end, _)) = built.station.ends_toward(P::of(project.to.pos()));
+        project.share = company
+            .depots
+            .iter()
+            .filter(|d| d.file.as_str() == rail::DEPOT && d.connected)
+            .filter_map(|d| d.entrance.map(|j| (P::of(j).flat_distance(end), d)))
+            .filter(|(far, _)| (30.0..=rail::DEPOT_SHARE).contains(far))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, d)| d.clone());
+        if project.share.is_some() {
+            RailStage::ShareVerdict
+        } else {
+            RailStage::DepotVerdict { end: 0 }
+        }
+    }
+}
+
+/// The track from a line's first station's free end to the join of the
+/// depot it shares, arriving the way the depot's own track runs into it.
+fn share_link(project: &RailProject, year: i32) -> Option<TrackBuild> {
+    let built = project.built[0]?;
+    let share = project.share.as_ref()?;
+    let (_, (end, out)) = built.station.ends_toward(P::of(project.to.pos()));
+    let join = P::of(share.entrance?);
+    let origin = P::of(share.at);
+    let into = (origin.y - join.y).atan2(origin.x - join.x);
+    rail::depot_link(end, out, P { z: join.z, ..join }, into, year)
 }
