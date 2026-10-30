@@ -1,23 +1,27 @@
 //! Rail lines as plain geometry over what the game told the AI
 //! (docs/AI_PLAYERS.md, "Track and trains"): a one-track cargo station and
 //! where its track ends, a rail depot beyond a station's end, the land on a
-//! grid, a route over it from one station's end to the other's that a train
-//! can run, smoothed into track, and that track cut into builds the game is
-//! asked about one at a time. Every action made here is put to the game's
-//! verdict before it is sent.
+//! grid, the cheapest route over it from one station's end to the other's
+//! that a train can run, as the game prices track, earthworks, bridges and
+//! tunnels ([`crate::costs`]), smoothed into track, its heights chosen for
+//! the least cost within the line's grade, level crossings where it meets a
+//! street, and that track cut into builds the game is asked about one at a
+//! time. Every action made here is put to the game's verdict before it is
+//! sent.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
-use tpf3mp_bridge::ai::{AiLand, land};
+use tpf3mp_bridge::ai::{AiLand, AiStreet, land};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        ConstructionBuild, Link, Param, ParamValue, Polyline, Pos, ResName, Resolve, Structure,
-        Tangent, TrackBuild, Transform, Vertex,
+        ConstructionBuild, EdgeEnds, EdgeRef, Link, Network, Param, ParamValue, Polyline, Pos,
+        ResName, Resolve, Structure, Tangent, TrackBuild, Transform, Vertex,
     },
 };
 
+use crate::costs::{self, Prices};
 use crate::place::P;
 
 /// The game's modular rail station.
@@ -37,11 +41,17 @@ pub const STATION_TRACK_X: f64 = 10.0;
 pub const DEPOT_JOIN: (f64, f64) = (-2.2, -70.0);
 /// How far beyond a station's outer end a depot's track joins, in metres.
 pub const DEPOT_GAP: f64 = 30.0;
-/// The steepest a line climbs, and its tightest curve, in metres: well
-/// inside the simple track's limits (8.5 % and 55 m to build), for early
-/// locomotives and a line's speed.
+/// The grade a line keeps to where it can, the steepest it climbs at all
+/// (a plant on a hill above its town, 89 m over 3.6 km, 2026-10-30), and
+/// its tightest curve, in metres: well inside the simple track's limits
+/// (8.5 % and 55 m to build), for early locomotives and a line's speed.
 pub const MAX_GRADE: f64 = 0.025;
+pub const STEEPEST: f64 = 0.04;
 pub const MIN_RADIUS: f64 = 180.0;
+/// What a metre climbed or fallen beyond [`MAX_GRADE`] costs: dear enough
+/// that a line keeps to its grade unless it cannot, for a steep line slows
+/// its trains, which no build price shows.
+pub const STEEP: f64 = 100_000.0;
 /// The land grid's cell, in metres, and a tile's cells a side: a tile is
 /// one question, about 7 ms of the driving game's frame.
 pub const STEP: f64 = 40.0;
@@ -54,11 +64,28 @@ pub const LEAD: f64 = 2.0 * STEP;
 /// How long a track edge is, about, and how many edges one build lays.
 pub const EDGE: f64 = 100.0;
 pub const PIECE_EDGES: usize = 6;
-/// Above the ground by more than this at an edge's middle, it is a bridge.
-pub const BRIDGE_ABOVE: f64 = 5.0;
-/// The bridge it builds: stone, offered every year, for rail and road
-/// (`bridge/stone.bridge.lua`), as `bridgeTypeRep` names it.
-pub const BRIDGE: &str = "::/infrastructure/bridge/stone.bridge";
+/// The heights a line's nodes are chosen among, apart, in metres.
+pub const LEVEL: f64 = 0.5;
+/// How far a line's heights may go above or below the ground it crosses,
+/// in metres.
+pub const REACH: f64 = 60.0;
+/// What a metre climbed or fallen costs over its earth: trains are slower
+/// up a grade and the line pays for it, so a level line is worth a little.
+pub const CLIMB: f64 = 300.0;
+/// A track over a street clears it by this, under one passes this deep, in
+/// metres.
+pub const OVER: f64 = 7.5;
+pub const UNDER: f64 = 10.0;
+/// The narrowest angle a level crossing takes (the game refuses one under
+/// about 12°, docs/BUILDING.md), how near a street's ends one may be, and
+/// how near another crossing or the line's ends, in metres.
+pub const CROSSING_ANGLE: f64 = 35.0 * std::f64::consts::PI / 180.0;
+pub const CROSSING_CLEAR: f64 = 8.0;
+pub const CROSSING_APART: f64 = 30.0;
+/// The steepest the track runs either side of a level crossing, and the
+/// steepest street one is laid on: a crossing lies level.
+pub const CROSSING_GRADE: f64 = 0.01;
+pub const CROSSING_STREET_GRADE: f64 = 0.04;
 
 fn text<const N: usize>(s: &str) -> Text<N> {
     Text::lossy(s)
@@ -571,11 +598,16 @@ impl Ord for Open {
     }
 }
 
-/// What a step of route costs over the cost of its length, a factor of its
-/// length, or none where it may not go: over built land or another track.
-fn step_cost(land: &Land, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
+/// What a step of route costs in money, or none where it may not go: over
+/// built land or another track. Its track; a bridge over the water it
+/// crosses; the cheapest of earth, bridge or tunnel for the height its
+/// slope asks beyond the line's grade (half that rise, on average, over
+/// the step); a level crossing where it meets a street, which it crosses
+/// and never follows; and [`CLIMB`] for every metre the ground rises or
+/// falls, so it keeps to the level where it can.
+fn step_cost(land: &Land, prices: &Prices, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
     let len = (b.0 - a.0).hypot(b.1 - a.1);
-    let mut extra = 0.0;
+    let (mut wet, mut street) = (0u8, false);
     for k in 1..=4 {
         let t = f64::from(k) / 4.0;
         let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
@@ -583,36 +615,50 @@ fn step_cost(land: &Land, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
         if f & (land::BUILT | land::TRACK) != 0 {
             return None;
         }
-        // A street is crossed, never followed: each quarter on one costs.
-        if f & land::STREET != 0 {
-            extra += 2.5;
-        }
-        // Water is bridged.
-        if f & land::WATER != 0 {
-            extra += 2.0;
-        }
+        street |= f & land::STREET != 0;
+        wet += u8::from(f & land::WATER != 0);
     }
-    let grade = (land.height(b.0, b.1) - land.height(a.0, a.1)).abs() / len;
-    extra += 20.0 * grade + 200.0 * (grade - 2.0 * MAX_GRADE).max(0.0);
-    Some(1.0 + extra)
+    let flat = prices.ground(0.0);
+    let over_water = prices.bridge(8.0).unwrap_or(flat);
+    let dry = f64::from(4 - wet) / 4.0;
+    let mut cost = len * (dry * flat + (1.0 - dry) * over_water);
+    let rise = (land.height(b.0, b.1) - land.height(a.0, a.1)).abs();
+    let h = (rise - MAX_GRADE * len).max(0.0) / 2.0;
+    if h > 0.0 {
+        let fill = prices.ground(h).min(prices.ground(-h));
+        let made = [prices.bridge(h), prices.tunnel(h)]
+            .into_iter()
+            .flatten()
+            .fold(fill, f64::min);
+        cost += len * (made - flat);
+    }
+    if street {
+        cost += prices.crossing();
+    }
+    Some(cost + CLIMB * prices.scale * rise)
 }
 
-/// The most states a route search opens before it gives up.
-pub const SEARCH_MOST: usize = 600_000;
+/// The most states a route search opens before it gives up: about 0.2 s
+/// of the driver's agent (2026-10-30, a 3.6 km line routes in 5 to 25 ms;
+/// one with no way through searches to this).
+pub const SEARCH_MOST: usize = 200_000;
 
-/// A route over `land` from `from`, leaving at `from_heading`, to `to`,
-/// arriving at `to_heading`: the cells' centres it passes, from the first
-/// clear cell [`LEAD`] out of `from` to the one [`LEAD`] short of `to`.
-/// It turns 22.5° at most a step, never on two steps running, and keeps
+/// The cheapest route over `land` from `from`, leaving at `from_heading`,
+/// to `to`, arriving at `to_heading`, at `prices` ([`step_cost`]): the
+/// cells' centres it passes, from the first clear cell [`LEAD`] out of
+/// `from` to the one [`LEAD`] short of `to`. It turns 22.5° at most a
+/// step, never on two steps running, each turn costing a little, and keeps
 /// off built land and other tracks.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub fn route(
     land: &Land,
+    prices: &Prices,
     from: P,
     from_heading: f64,
     to: P,
     to_heading: f64,
 ) -> Option<Vec<(f64, f64)>> {
+    let flat = prices.ground(0.0);
     let (fx, fy) = unit(from_heading);
     let (tx, ty) = unit(to_heading);
     let start = land.cell(from.x + fx * LEAD, from.y + fy * LEAD)?;
@@ -625,9 +671,10 @@ pub fn route(
         d: nearest_move(from_heading),
         turned: true,
     };
+    // No metre costs less than flat track: the estimate never overshoots.
     let h = |i: usize, j: usize| {
         let (x, y) = land.centre(i, j);
-        (x - goal_x).hypot(y - goal_y)
+        flat * (x - goal_x).hypot(y - goal_y)
     };
     let mut open = BinaryHeap::new();
     let mut best: HashMap<State, f64> = HashMap::new();
@@ -672,12 +719,12 @@ pub fn route(
             }
             let (ni, nj) = (ni as usize, nj as usize);
             let there = land.centre(ni, nj);
-            let Some(factor) = step_cost(land, here, there) else {
+            let Some(step) = step_cost(land, prices, here, there) else {
                 continue;
             };
             let len = (there.0 - here.0).hypot(there.1 - here.1);
-            let turn_cost = if turn == 0 { 0.0 } else { 0.25 * len };
-            let ng = g + len * factor + turn_cost;
+            let turn_cost = if turn == 0 { 0.0 } else { 0.25 * len * flat };
+            let ng = g + step + turn_cost;
             let next = State {
                 i: ni,
                 j: nj,
@@ -698,27 +745,82 @@ pub fn route(
     None
 }
 
+/// What a track edge is built as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Ground,
+    Bridge,
+    Tunnel,
+}
+
 /// A track node of a line: where it is, the heading of the track through
-/// it, and whether the edge from it to the next is a bridge.
+/// it, what the edge from it to the next is built as and what that edge
+/// costs, and, at a level crossing, the street edge it splits.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Node {
     pub at: P,
     pub heading: f64,
-    pub bridge: bool,
+    pub kind: Kind,
+    pub cost: f64,
+    pub crossing: Option<EdgeEnds>,
+}
+
+impl Node {
+    /// A node on the ground, nothing yet built from it.
+    pub fn on(at: P, heading: f64) -> Self {
+        Self {
+            at,
+            heading,
+            kind: Kind::Ground,
+            cost: 0.0,
+            crossing: None,
+        }
+    }
 }
 
 /// The line's track from `from` (leaving at `from_heading`) to `to`
-/// (arriving at `to_heading`) through the route's cells: nodes about
-/// [`EDGE`] apart, smoothed so no curve is tighter than [`MIN_RADIUS`]
-/// where the route allows, at heights the ground gives within
-/// [`MAX_GRADE`], bridged where it stands high or over water. Both ends
-/// keep their stations' heights.
+/// (arriving at `to_heading`) through the route's cells, its heights the
+/// cheapest within its grade at `prices` ([`profile`]); none if no heights
+/// meet the grade. Both ends keep their stations' heights.
+pub fn track(
+    land: &Land,
+    prices: &Prices,
+    from: P,
+    from_heading: f64,
+    to: P,
+    to_heading: f64,
+    cells: &[(f64, f64)],
+) -> Option<Vec<Node>> {
+    let nodes = align(land, from, from_heading, to, to_heading, cells);
+    let holds = ends_held(&nodes);
+    profile(land, prices, &nodes, &holds)
+}
+
+/// The holds of a line with no crossing: its two ends at their heights.
+pub fn ends_held(nodes: &[Node]) -> Vec<Hold> {
+    let n = nodes.len();
+    (0..n)
+        .map(|k| {
+            if k == 0 || k + 1 == n {
+                Hold::At(nodes[k].at.z)
+            } else {
+                Hold::Free
+            }
+        })
+        .collect()
+}
+
+/// The line's nodes from `from` (leaving at `from_heading`) to `to`
+/// (arriving at `to_heading`) through the route's cells, on the ground:
+/// about [`EDGE`] apart, smoothed so no curve is tighter than
+/// [`MIN_RADIUS`] where the route allows. Both ends keep their stations'
+/// heights.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
 )]
-pub fn track(
+pub fn align(
     land: &Land,
     from: P,
     from_heading: f64,
@@ -791,51 +893,463 @@ pub fn track(
             }
         })
         .collect();
-    // Heights: the ground's, within the grade of each other, the ends the
-    // stations'.
-    let mut along = vec![0.0];
-    for w in points.windows(2) {
-        along.push(along.last().copied().unwrap_or(0.0) + (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1));
-    }
-    let ground: Vec<f64> = points.iter().map(|p| land.height(p.0, p.1)).collect();
-    let mut z = ground.clone();
-    z[0] = from.z;
-    z[n - 1] = to.z;
-    for _ in 0..4 {
-        for k in 1..n - 1 {
-            let d = along[k] - along[k - 1];
-            z[k] = z[k].clamp(z[k - 1] - MAX_GRADE * d, z[k - 1] + MAX_GRADE * d);
-        }
-        for k in (1..n - 1).rev() {
-            let d = along[k + 1] - along[k];
-            z[k] = z[k].clamp(z[k + 1] - MAX_GRADE * d, z[k + 1] + MAX_GRADE * d);
-        }
-        for k in 1..n - 1 {
-            z[k] = 0.25 * z[k - 1] + 0.5 * z[k] + 0.25 * z[k + 1];
-        }
-    }
+    // On the ground, the ends at their stations' heights.
     (0..n)
         .map(|k| {
-            let bridge = k + 1 < n && {
-                let (mx, my) = (
-                    (points[k].0 + points[k + 1].0) / 2.0,
-                    (points[k].1 + points[k + 1].1) / 2.0,
-                );
-                let wet =
-                    |x: f64, y: f64| land.flags_at(x, y).is_some_and(|f| f & land::WATER != 0);
-                let high = (z[k] + z[k + 1]) / 2.0 - land.height(mx, my) > BRIDGE_ABOVE;
-                high || wet(mx, my)
-                    || wet(points[k].0, points[k].1) && wet(points[k + 1].0, points[k + 1].1)
+            let z = if k == 0 {
+                from.z
+            } else if k == n - 1 {
+                to.z
+            } else {
+                land.height(points[k].0, points[k].1)
             };
-            Node {
-                at: P {
+            Node::on(
+                P {
                     x: points[k].0,
                     y: points[k].1,
-                    z: z[k],
+                    z,
                 },
-                heading: headings[k],
-                bridge,
+                headings[k],
+            )
+        })
+        .collect()
+}
+
+/// How a node's height is held while a line's heights are chosen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Hold {
+    /// Wherever is cheapest.
+    Free,
+    /// At this height: a station's end. Its edges are on the ground or a
+    /// bridge, never a tunnel.
+    At(f64),
+    /// At this height, a node already laid: its edge may be anything.
+    Laid(f64),
+    /// Where a street at this height crosses: at its height, a level
+    /// crossing whose edges are on the ground; [`OVER`] above it on a
+    /// bridge; or [`UNDER`] below it in a tunnel.
+    Street(f64),
+    /// Where a street at this height is met that no level crossing may be
+    /// laid on: over it or under it, as for [`Hold::Street`].
+    Clear(f64),
+}
+
+/// Ground heights and water at an edge's eighths, the points it is priced
+/// at.
+fn samples(land: &Land, a: P, b: P) -> [(f64, f64, bool); 4] {
+    let mut out = [(0.0, 0.0, false); 4];
+    for (k, s) in out.iter_mut().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let t = (2 * k + 1) as f64 / 8.0;
+        let (x, y) = (a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+        let wet = land.flags_at(x, y).is_some_and(|f| f & land::WATER != 0);
+        *s = (t, land.height(x, y), wet);
+    }
+    out
+}
+
+/// What an edge `len` long costs from height `z0` to `z1` over `ground`,
+/// built as `kind`, if it can be: on the ground nowhere over water; a
+/// bridge only [`costs::BRIDGE_LEAST`] above the ground, or over water; a
+/// tunnel only [`costs::TUNNEL_LEAST`] under it, nowhere under water. What it
+/// is weighed at, its climb and any grade beyond [`MAX_GRADE`] counted, and
+/// what the game charges for it.
+fn edge_cost(
+    prices: &Prices,
+    ground: &[(f64, f64, bool); 4],
+    len: f64,
+    z0: f64,
+    z1: f64,
+    kind: Kind,
+) -> Option<(f64, f64)> {
+    let mut sum = 0.0;
+    for &(t, g, wet) in ground {
+        let h = z0 + (z1 - z0) * t - g;
+        let metre = match kind {
+            Kind::Ground if wet => None,
+            Kind::Ground => Some(prices.ground(h)),
+            // Over water the ground is the bed: the bridge's height there
+            // is priced as a middling one.
+            Kind::Bridge if wet => (h >= 2.0)
+                .then(|| prices.bridge(h.clamp(costs::BRIDGE_LEAST, 12.0)))
+                .flatten(),
+            Kind::Bridge => prices.bridge(h),
+            Kind::Tunnel if wet => None,
+            Kind::Tunnel => prices.tunnel(-h),
+        }?;
+        sum += metre * len / 4.0;
+    }
+    let rise = (z1 - z0).abs();
+    let steep = (rise - MAX_GRADE * len).max(0.0);
+    Some((sum + prices.scale * (CLIMB * rise + STEEP * steep), sum))
+}
+
+/// The kinds an edge from a node at `z` may be built as, by its hold.
+fn kinds(hold: Hold, z: f64) -> &'static [Kind] {
+    match hold {
+        Hold::Free | Hold::Laid(_) => &[Kind::Ground, Kind::Bridge, Kind::Tunnel],
+        // Out of a station on the ground, or over water by a bridge.
+        Hold::At(_) => &[Kind::Ground, Kind::Bridge],
+        Hold::Street(s) if (z - s).abs() < LEVEL => &[Kind::Ground],
+        Hold::Street(s) | Hold::Clear(s) if z > s => &[Kind::Bridge],
+        Hold::Street(_) | Hold::Clear(_) => &[Kind::Tunnel],
+    }
+}
+
+/// The line's heights and what each edge is built as, for the least cost
+/// at `prices`, keeping to [`MAX_GRADE`] where it can ([`STEEP`] a metre
+/// beyond it) and never steeper than [`STEEPEST`]: every node's
+/// height chosen among levels [`LEVEL`] apart, as deep or high as
+/// [`REACH`] off the ground, by a search over the whole line, so a valley
+/// is bridged and a hill tunnelled where that is cheaper than the earth
+/// moved for an embankment or a cutting. Held nodes keep their heights
+/// ([`Hold`]); a crossing taken over or under its street is a crossing no
+/// more. None if no heights meet the grade.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> Option<Vec<Node>> {
+    let n = nodes.len();
+    if n < 2 || holds.len() != n {
+        return None;
+    }
+    let grounds: Vec<[(f64, f64, bool); 4]> = nodes
+        .windows(2)
+        .map(|w| samples(land, w[0].at, w[1].at))
+        .collect();
+    let lengths: Vec<f64> = nodes
+        .windows(2)
+        .map(|w| w[0].at.flat_distance(w[1].at))
+        .collect();
+    // The levels: from the lowest ground (or hold) less REACH to the
+    // highest more.
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for (k, node) in nodes.iter().enumerate() {
+        let g = land.height(node.at.x, node.at.y);
+        let held = match holds[k] {
+            Hold::Free => g,
+            Hold::At(z) | Hold::Laid(z) | Hold::Street(z) | Hold::Clear(z) => z,
+        };
+        lo = lo.min(g.min(held));
+        hi = hi.max(g.max(held));
+    }
+    let base = lo - REACH;
+    let count = (((hi + REACH) - base) / LEVEL).ceil() as usize + 1;
+    let level = |i: usize| base + i as f64 * LEVEL;
+    let nearest = |z: f64| ((z - base) / LEVEL).round().max(0.0) as usize;
+    let allowed = |k: usize, i: usize| match holds[k] {
+        Hold::Free => true,
+        Hold::At(z) | Hold::Laid(z) => i == nearest(z),
+        Hold::Street(s) => i == nearest(s) || level(i) >= s + OVER || level(i) <= s - UNDER,
+        Hold::Clear(s) => level(i) >= s + OVER || level(i) <= s - UNDER,
+    };
+    // Held heights exactly, not their nearest level.
+    let height = |k: usize, i: usize| match holds[k] {
+        Hold::At(z) | Hold::Laid(z) => z,
+        Hold::Street(s) if i == nearest(s) => s,
+        _ => level(i),
+    };
+    let at_crossing =
+        |k: usize, z: f64| matches!(holds[k], Hold::Street(s) if (z - s).abs() < LEVEL);
+    let mut cost = vec![vec![f64::INFINITY; count]; n];
+    let mut back = vec![vec![(usize::MAX, Kind::Ground, 0.0); count]; n];
+    // Each back step: the node before, the edge's kind and its price.
+    for (i, c) in cost[0].iter_mut().enumerate() {
+        if allowed(0, i) {
+            *c = 0.0;
+        }
+    }
+    for k in 1..n {
+        let len = lengths[k - 1];
+        let reach = (STEEPEST * len / LEVEL).ceil() as usize;
+        for i in 0..count {
+            if !allowed(k, i) {
+                continue;
             }
+            let z1 = height(k, i);
+            let into = kinds(holds[k], z1);
+            for j in i.saturating_sub(reach)..=(i + reach).min(count - 1) {
+                let before = cost[k - 1][j];
+                if !before.is_finite() {
+                    continue;
+                }
+                let z0 = height(k - 1, j);
+                // Held heights lie off the levels by up to half of one.
+                if (z1 - z0).abs() > STEEPEST * len + LEVEL / 2.0 {
+                    continue;
+                }
+                // A level crossing lies level: the game refuses one on a
+                // grade ("Too Much Incline", 2026-10-30).
+                if (at_crossing(k - 1, z0) || at_crossing(k, z1))
+                    && (z1 - z0).abs() > CROSSING_GRADE * len + LEVEL / 2.0
+                {
+                    continue;
+                }
+                for &kind in kinds(holds[k - 1], z0) {
+                    if !into.contains(&kind) {
+                        continue;
+                    }
+                    let Some((e, price)) = edge_cost(prices, &grounds[k - 1], len, z0, z1, kind)
+                    else {
+                        continue;
+                    };
+                    if before + e < cost[k][i] {
+                        cost[k][i] = before + e;
+                        back[k][i] = (j, kind, price);
+                    }
+                }
+            }
+        }
+    }
+    let (mut i, _) = cost[n - 1]
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.is_finite())
+        .min_by(|a, b| a.1.total_cmp(b.1))?;
+    let mut out = nodes.to_vec();
+    out[n - 1].at.z = height(n - 1, i);
+    out[n - 1].kind = Kind::Ground;
+    out[n - 1].cost = 0.0;
+    for k in (1..n).rev() {
+        let (j, kind, price) = back[k][i];
+        out[k - 1].at.z = height(k - 1, j);
+        out[k - 1].kind = kind;
+        out[k - 1].cost = price;
+        i = j;
+    }
+    // A crossing not taken at its street's height is no crossing; one
+    // taken is priced with its edge.
+    for k in 0..n {
+        if let Hold::Street(s) = holds[k] {
+            if (out[k].at.z - s).abs() >= LEVEL {
+                out[k].crossing = None;
+            } else if out[k].crossing.is_some() {
+                out[k].cost += prices.crossing();
+            }
+        }
+    }
+    Some(out)
+}
+
+/// What a line's track costs, as planned.
+pub fn cost(nodes: &[Node]) -> f64 {
+    nodes.iter().map(|n| n.cost).sum()
+}
+
+/// Track in words, for the AI's log: each edge's kind, length and grade,
+/// and where it crosses a street.
+pub fn describe(nodes: &[Node]) -> String {
+    nodes
+        .windows(2)
+        .map(|w| {
+            let d = w[0].at.flat_distance(w[1].at).max(1e-6);
+            let grade = 100.0 * (w[1].at.z - w[0].at.z) / d;
+            let kind = match w[0].kind {
+                Kind::Ground => "ground",
+                Kind::Bridge => "bridge",
+                Kind::Tunnel => "tunnel",
+            };
+            let crossing = if w[0].crossing.is_some() {
+                "crossing, "
+            } else {
+                ""
+            };
+            format!("{crossing}{kind} {d:.0} m at {grade:+.1}%")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A point on a street edge's curve, `u` from its end `a` (0) to `b` (1):
+/// the quadratic through its ends and its middle, which the game's own
+/// curve keeps within a metre or two of.
+fn street_at(a: P, mid: P, b: P, u: f64) -> P {
+    let c = P {
+        x: 2.0 * mid.x - (a.x + b.x) / 2.0,
+        y: 2.0 * mid.y - (a.y + b.y) / 2.0,
+        z: 2.0 * mid.z - (a.z + b.z) / 2.0,
+    };
+    let (p, q, r) = ((1.0 - u) * (1.0 - u), 2.0 * u * (1.0 - u), u * u);
+    P {
+        x: p * a.x + q * c.x + r * b.x,
+        y: p * a.y + q * c.y + r * b.y,
+        z: p * a.z + q * c.z + r * b.z,
+    }
+}
+
+/// Where two segments in plan cross: how far along each, if they do.
+fn segments_cross(a0: P, a1: P, b0: P, b1: P) -> Option<(f64, f64)> {
+    let (rx, ry) = (a1.x - a0.x, a1.y - a0.y);
+    let (sx, sy) = (b1.x - b0.x, b1.y - b0.y);
+    let d = rx * sy - ry * sx;
+    if d.abs() < 1e-9 {
+        return None;
+    }
+    let (qx, qy) = (b0.x - a0.x, b0.y - a0.y);
+    let t = (qx * sy - qy * sx) / d;
+    let u = (qx * ry - qy * rx) / d;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some((t, u))
+}
+
+/// A line's nodes with its crossings, and how each node's height is held.
+pub type Crossed = (Vec<Node>, Vec<Hold>);
+
+/// The pieces a street's curve is cut into when crossings are sought.
+const STREET_PIECES: u32 = 16;
+
+/// How near a node of the line a street may be met before the meeting
+/// takes that node's place, in metres: a shorter edge would climb steeply
+/// for its length (a 1 m edge at 15 %, refused "Too Much Incline",
+/// 2026-10-30).
+pub const MERGE: f64 = 20.0;
+
+/// The line's nodes with a node where it meets each street, and how each
+/// node's height is held ([`Hold`]): its ends at their heights; a level
+/// crossing at its street's height, splitting the street's edge as the
+/// track tool lays one (the track straight through it), where one may be
+/// laid; else over or under the street. No level crossing at too narrow an
+/// angle ([`CROSSING_ANGLE`]), on a steep street, by its edge's ends,
+/// another crossing or a station, on a street with stops on it, a
+/// company's, or by a junction whose settings a company's edge names (the
+/// room refuses a split of those, D21). A street on a bridge or in a tunnel
+/// is not met. A meeting within [`MERGE`] of a node takes its place.
+pub fn cross(nodes: &[Node], streets: &[AiStreet]) -> Crossed {
+    // Every meeting: its edge, how far along it, where, and the street's
+    // edge where a level crossing may be laid.
+    let mut found: Vec<(usize, f64, P, Option<EdgeEnds>)> = Vec::new();
+    let mut seen: Vec<(EdgeEnds, P)> = Vec::new();
+    for (k, w) in nodes.windows(2).enumerate() {
+        let (a0, a1) = (w[0].at, w[1].at);
+        let heading = (a1.y - a0.y).atan2(a1.x - a0.x);
+        for street in streets {
+            if street.structure {
+                continue;
+            }
+            let (sa, sm, sb) = (P::of(street.a), P::of(street.mid), P::of(street.b));
+            for piece in 0..STREET_PIECES {
+                let (u0, u1) = (
+                    f64::from(piece) / f64::from(STREET_PIECES),
+                    f64::from(piece + 1) / f64::from(STREET_PIECES),
+                );
+                let (b0, b1) = (street_at(sa, sm, sb, u0), street_at(sa, sm, sb, u1));
+                let Some((t, s)) = segments_cross(a0, a1, b0, b1) else {
+                    continue;
+                };
+                let at = street_at(sa, sm, sb, u0 + (u1 - u0) * s);
+                // Where two of its pieces meet, or a street the game named
+                // twice: one meeting.
+                let ends = EdgeEnds {
+                    a: street.a,
+                    b: street.b,
+                };
+                if seen
+                    .iter()
+                    .any(|(e, p)| *e == ends && p.flat_distance(at) < 2.0)
+                {
+                    continue;
+                }
+                seen.push((ends, at));
+                let along = (b1.y - b0.y).atan2(b1.x - b0.x);
+                let angle = angle_between(heading, along)
+                    .min(angle_between(heading, along + std::f64::consts::PI));
+                let near_end =
+                    at.flat_distance(sa) < CROSSING_CLEAR || at.flat_distance(sb) < CROSSING_CLEAR;
+                let steep = (b1.z - b0.z).abs() > CROSSING_STREET_GRADE * b0.flat_distance(b1);
+                let level = angle >= CROSSING_ANGLE
+                    && !steep
+                    && !near_end
+                    && street.objects == 0
+                    && !street.owned
+                    && !street.company_junction;
+                found.push((k, t, at, level.then_some(ends)));
+            }
+        }
+    }
+    found.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)));
+    // Level crossings apart, and away from the stations.
+    let (first, last) = (nodes[0].at, nodes[nodes.len() - 1].at);
+    for i in 0..found.len() {
+        let at = found[i].2;
+        let crowded = found
+            .iter()
+            .enumerate()
+            .any(|(j, g)| j != i && g.2.flat_distance(at) < CROSSING_APART);
+        if crowded
+            || at.flat_distance(first) < CROSSING_APART
+            || at.flat_distance(last) < CROSSING_APART
+        {
+            found[i].3 = None;
+        }
+    }
+    let mut out = nodes.to_vec();
+    let mut holds = ends_held(nodes);
+    // From the last back, so the nodes before each stay where they are.
+    for (k, _, at, ends) in found.into_iter().rev() {
+        let (a, b) = (out[k].at, out[k + 1].at);
+        let node = Node {
+            crossing: ends,
+            ..Node::on(at, (b.y - a.y).atan2(b.x - a.x))
+        };
+        let hold = match ends {
+            Some(_) => Hold::Street(at.z),
+            None => Hold::Clear(at.z),
+        };
+        let last = out.len() - 1;
+        if a.flat_distance(at) < MERGE && k > 0 && holds[k] == Hold::Free {
+            out[k] = node;
+            holds[k] = hold;
+        } else if b.flat_distance(at) < MERGE && k + 1 < last && holds[k + 1] == Hold::Free {
+            out[k + 1] = node;
+            holds[k + 1] = hold;
+        } else {
+            out.insert(k + 1, node);
+            holds.insert(k + 1, hold);
+        }
+    }
+    (out, holds)
+}
+/// Where the route crosses streets, bunched: a point and a radius around
+/// each run of street cells it passes, for the game to name the streets
+/// there.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn street_runs(land: &Land, cells: &[(f64, f64)]) -> Vec<(P, u32)> {
+    let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut last: Option<(f64, f64)> = None;
+    for w in cells.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        for k in 0..=4 {
+            let t = f64::from(k) / 4.0;
+            let p = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            if land
+                .flags_at(p.0, p.1)
+                .is_some_and(|f| f & land::STREET != 0)
+            {
+                let joined = last.is_some_and(|q| (q.0 - p.0).hypot(q.1 - p.1) <= 3.0 * STEP);
+                match runs.last_mut() {
+                    Some(run) if joined => run.push(p),
+                    _ => runs.push(vec![p]),
+                }
+                last = Some(p);
+            }
+        }
+    }
+    runs.into_iter()
+        .map(|run| {
+            let (mut x, mut y) = (0.0, 0.0);
+            #[allow(clippy::cast_precision_loss)]
+            let n = run.len() as f64;
+            for p in &run {
+                x += p.0 / n;
+                y += p.1 / n;
+            }
+            let r = run
+                .iter()
+                .map(|p| (p.0 - x).hypot(p.1 - y))
+                .fold(0.0, f64::max);
+            (P { x, y, z: 0.0 }, (r + 2.0 * STEP).ceil() as u32)
         })
         .collect()
 }
@@ -860,23 +1374,41 @@ pub fn tightest(nodes: &[Node]) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-/// The track builds for `nodes`, [`PIECE_EDGES`] edges each: every piece
-/// starts on the track node the one before it laid (the first on the
-/// station's end), the last ends on the other station's. Each edge's
-/// tangents follow the track's heading, their length the edge's.
-pub fn pieces(nodes: &[Node], year: i32) -> Vec<TrackBuild> {
+/// One build of a line's track: the nodes it lays, from `first` to `last`,
+/// and what it should cost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Piece {
+    pub build: TrackBuild,
+    pub first: usize,
+    pub last: usize,
+    pub cost: f64,
+}
+
+/// The track builds for `nodes`, about [`PIECE_EDGES`] edges each: every
+/// piece starts on the track node the one before it laid (the first on the
+/// station's end), the last ends on the other station's, and none ends on
+/// a level crossing, which splits its street (a crossing's vertex
+/// [`Resolve::Split`]s the street edge). Each edge's tangents follow the
+/// track's heading, their length the edge's; a bridge is `prices`'s bridge.
+pub fn pieces(nodes: &[Node], year: i32, prices: &Prices) -> Vec<Piece> {
     let mut out = Vec::new();
     let last = nodes.len().saturating_sub(1);
     let mut k = 0;
     while k < last {
-        let end = (k + PIECE_EDGES).min(last);
+        let mut end = (k + PIECE_EDGES).min(last);
+        while end < last && nodes[end].crossing.is_some() {
+            end += 1;
+        }
         let vertices: Vec<Vertex> = (k..=end)
             .map(|i| Vertex {
                 pos: nodes[i].at.pos(),
-                resolve: if i == k || i == last {
-                    Resolve::Node(tpf3mp_proto::action::Network::Track)
-                } else {
-                    Resolve::New
+                resolve: match nodes[i].crossing {
+                    _ if i == k || i == last => Resolve::Node(Network::Track),
+                    Some(ends) => Resolve::Split(EdgeRef {
+                        network: Network::Street,
+                        ends,
+                    }),
+                    None => Resolve::New,
                 },
             })
             .collect();
@@ -894,10 +1426,10 @@ pub fn pieces(nodes: &[Node], year: i32) -> Vec<TrackBuild> {
                     to: u16::try_from(i + 1 - k).unwrap_or(0),
                     tangent0: tangent(a.heading),
                     tangent1: tangent(b.heading),
-                    structure: if a.bridge {
-                        Structure::Bridge(res(BRIDGE))
-                    } else {
-                        Structure::Ground
+                    structure: match a.kind {
+                        Kind::Ground => Structure::Ground,
+                        Kind::Bridge => Structure::Bridge(res(prices.bridge_type())),
+                        Kind::Tunnel => Structure::Tunnel(res(costs::TUNNEL)),
                     },
                     kind: None,
                     decorations: BoundedVec::default(),
@@ -914,12 +1446,17 @@ pub fn pieces(nodes: &[Node], year: i32) -> Vec<TrackBuild> {
         if let (Ok(vertices), Ok(links)) = (BoundedVec::new(vertices), BoundedVec::new(links))
             && let Ok(polyline) = Polyline::new(vertices, links, BoundedVec::default())
         {
-            out.push(TrackBuild {
-                track: res(track_template(year)),
-                style: None,
-                catenary: false,
-                polyline,
-                crossing_type: None,
+            out.push(Piece {
+                build: TrackBuild {
+                    track: res(track_template(year)),
+                    style: None,
+                    catenary: false,
+                    polyline,
+                    crossing_type: None,
+                },
+                first: k,
+                last: end,
+                cost: nodes[k..end].iter().map(|n| n.cost).sum(),
             });
         }
         k = end;
@@ -1071,17 +1608,57 @@ mod tests {
         );
     }
 
+    const PRICES: Prices = Prices {
+        scale: 1.0,
+        trestle: false,
+    };
+
+    /// Sets the ground under every cell `f` names to the height it gives.
+    fn shape(land: &mut Land, f: impl Fn(f64, f64) -> Option<f64>) {
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                if let Some(z) = f(x, y) {
+                    land.z[j * land.w + i] = z;
+                }
+            }
+        }
+    }
+
+    /// Marks every cell `f` names with `flag`.
+    fn mark(land: &mut Land, flag: u8, f: impl Fn(f64, f64) -> bool) {
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                if f(x, y) {
+                    land.flags[j * land.w + i] |= flag;
+                }
+            }
+        }
+    }
+
+    fn grades_hold(nodes: &[Node]) {
+        for w in nodes.windows(2) {
+            let d = w[0].at.flat_distance(w[1].at);
+            let grade = (w[1].at.z - w[0].at.z).abs() / d;
+            assert!(
+                grade <= MAX_GRADE + LEVEL / d + 1e-6,
+                "grade {grade} over {d} m"
+            );
+        }
+    }
+
     #[test]
     fn a_route_goes_round_built_land_and_keeps_its_curves_wide() {
         let (a, b) = (p(0.0, 0.0), p(3_000.0, 0.0));
         // A town in the way, 600 m across, astride the straight line.
         let land = flat(a, b, |x, y| (x - 1_500.0).hypot(y) < 300.0);
-        let cells = route(&land, a, 0.0, b, 0.0).expect("a route");
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
         assert!(
             cells.iter().all(|(x, y)| (x - 1_500.0).hypot(*y) >= 300.0),
             "{cells:?}"
         );
-        let nodes = track(&land, a, 0.0, b, 0.0, &cells);
+        let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).expect("heights");
         assert_eq!(nodes.first().unwrap().at, a);
         assert_eq!(nodes.last().unwrap().at, b);
         assert!(tightest(&nodes) >= 150.0, "{}", tightest(&nodes));
@@ -1089,7 +1666,14 @@ mod tests {
             let d = w[0].at.flat_distance(w[1].at);
             assert!((50.0..=160.0).contains(&d), "edge {d}");
         }
-        assert!(nodes.iter().all(|n| !n.bridge));
+        // On flat land it keeps to the ground, priced as plain track.
+        assert!(nodes.iter().all(|n| n.kind == Kind::Ground));
+        assert!(nodes.iter().all(|n| (n.at.z - 10.0).abs() < 1e-6));
+        let length: f64 = nodes
+            .windows(2)
+            .map(|w| w[0].at.flat_distance(w[1].at))
+            .sum();
+        assert!((cost(&nodes) - costs::TRACK * length).abs() < 1.0);
     }
 
     #[test]
@@ -1104,47 +1688,320 @@ mod tests {
         );
         let mut land = flat(a, b, |_, _| false);
         // A valley 30 m deep, 400 m wide, across the line.
-        for j in 0..land.h {
-            for i in 0..land.w {
-                let (x, _) = land.centre(i, j);
-                if (x - 1_000.0).abs() < 200.0 {
-                    land.z[j * land.w + i] = -20.0;
-                }
+        shape(&mut land, |x, _| {
+            ((x - 1_000.0).abs() < 200.0).then_some(-20.0)
+        });
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).expect("heights");
+        grades_hold(&nodes);
+        assert!(
+            nodes.iter().any(|n| n.kind == Kind::Bridge),
+            "a bridge over the valley"
+        );
+        // Cheaper than an embankment across it, and every bridge high.
+        let fill = 400.0 * PRICES.ground(30.0);
+        assert!(cost(&nodes) < fill, "{} >= {fill}", cost(&nodes));
+        for w in nodes.windows(2) {
+            if w[0].kind == Kind::Bridge {
+                let mid = (w[0].at.z + w[1].at.z) / 2.0;
+                let x = (w[0].at.x + w[1].at.x) / 2.0;
+                assert!(mid - land.height(x, 0.0) >= 2.0, "a bridge at {x}");
             }
         }
-        let cells = route(&land, a, 0.0, b, 0.0).expect("a route");
-        let nodes = track(&land, a, 0.0, b, 0.0, &cells);
+    }
+
+    #[test]
+    fn a_ridge_is_tunnelled_where_a_cutting_would_cost_more() {
+        let (a, b) = (p(0.0, 0.0), p(3_000.0, 0.0));
+        let mut land = flat(a, b, |_, _| false);
+        // A ridge 60 m high and 600 m wide, from edge to edge of the land.
+        shape(&mut land, |x, _| {
+            let d = (x - 1_500.0).abs();
+            (d < 300.0).then(|| 10.0 + 60.0 * (1.0 - d / 300.0))
+        });
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).expect("heights");
+        grades_hold(&nodes);
+        assert!(
+            nodes.iter().any(|n| n.kind == Kind::Tunnel),
+            "a tunnel through the ridge"
+        );
         for w in nodes.windows(2) {
-            let grade = (w[1].at.z - w[0].at.z).abs() / w[0].at.flat_distance(w[1].at);
-            assert!(grade <= MAX_GRADE + 1e-6, "grade {grade}");
+            if w[0].kind == Kind::Tunnel {
+                let x = (w[0].at.x + w[1].at.x) / 2.0;
+                let mid = (w[0].at.z + w[1].at.z) / 2.0;
+                assert!(land.height(x, 0.0) - mid >= costs::TUNNEL_LEAST - LEVEL);
+            }
         }
-        assert!(nodes.iter().any(|n| n.bridge), "a bridge over the valley");
+    }
+
+    #[test]
+    fn a_pond_is_gone_round_but_a_river_bridged() {
+        let (a, b) = (p(0.0, 0.0), p(3_000.0, 0.0));
+        // A pond 200 m across on the straight line: round it is cheaper.
+        let mut pond = flat(a, b, |_, _| false);
+        mark(&mut pond, land::WATER, |x, y| {
+            (x - 1_500.0).hypot(y) < 100.0
+        });
+        let cells = route(&pond, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        assert!(
+            cells
+                .iter()
+                .all(|(x, y)| pond.flags_at(*x, *y).unwrap() & land::WATER == 0),
+            "{cells:?}"
+        );
+        // A river from edge to edge, its bed 4 m down: bridged, as short a
+        // bridge as it can be.
+        let mut river = flat(a, b, |_, _| false);
+        mark(&mut river, land::WATER, |x, _| (x - 1_500.0).abs() < 60.0);
+        shape(&mut river, |x, _| {
+            ((x - 1_500.0).abs() < 60.0).then_some(6.0)
+        });
+        let cells = route(&river, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        let nodes = track(&river, &PRICES, a, 0.0, b, 0.0, &cells).expect("heights");
+        grades_hold(&nodes);
+        for w in nodes.windows(2) {
+            let wet = samples(&river, w[0].at, w[1].at).iter().any(|s| s.2);
+            if wet {
+                assert_eq!(w[0].kind, Kind::Bridge, "over the river at {:?}", w[0].at);
+            }
+        }
+        let bridged = nodes.iter().filter(|n| n.kind == Kind::Bridge).count();
+        assert!((1..=3).contains(&bridged), "{bridged} bridge edges");
+    }
+
+    /// A street from (x, -400) to (x, 400) at height `z`, turned `turn`
+    /// radians about its middle.
+    fn street(x: f64, z: f64, turn: f64) -> AiStreet {
+        let (s, c) = turn.sin_cos();
+        let at = |d: f64| {
+            P {
+                x: x - d * s,
+                y: d * c,
+                z,
+            }
+            .pos()
+        };
+        AiStreet {
+            a: at(-400.0),
+            b: at(400.0),
+            mid: at(0.0),
+            template: Text::lossy("street/country_old_small.lua"),
+            length: 800,
+            owned: false,
+            objects: 0,
+            structure: false,
+            company_junction: false,
+        }
+    }
+
+    #[test]
+    fn a_level_crossing_splits_the_street_at_its_height() {
+        let (a, b) = (p(0.0, 0.0), p(2_000.0, 0.0));
+        let mut land = flat(a, b, |_, _| false);
+        mark(&mut land, land::STREET, |x, _| (x - 1_000.0).abs() < 30.0);
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        // The route's street cells, bunched, for the game to name.
+        let runs = street_runs(&land, &cells);
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert!((runs[0].0.x - 1_000.0).abs() < 60.0);
+        let crossing_street = street(1_000.0, 11.0, 0.0);
+        let nodes = align(&land, a, 0.0, b, 0.0, &cells);
+        let (crossed, holds) = cross(&nodes, std::slice::from_ref(&crossing_street));
+        // A node added, or one near the street moved onto it.
+        assert!((nodes.len()..=nodes.len() + 1).contains(&crossed.len()));
+        let k = crossed.iter().position(|n| n.crossing.is_some()).unwrap();
+        assert!((crossed[k].at.x - 1_000.0).abs() < 0.5 && crossed[k].at.y.abs() < 40.0);
+        assert_eq!(holds[k], Hold::Street(11.0));
+        let planned = profile(&land, &PRICES, &crossed, &holds).expect("heights");
+        grades_hold(&planned);
+        // At the street's height, on the ground either side, priced with
+        // its crossing.
+        assert!((planned[k].at.z - 11.0).abs() < 1e-9);
+        assert!(planned[k].crossing.is_some());
+        assert_eq!(planned[k - 1].kind, Kind::Ground);
+        assert_eq!(planned[k].kind, Kind::Ground);
+        assert!(
+            cost(&planned) > cost(&profile(&land, &PRICES, &nodes, &ends_held(&nodes)).unwrap())
+        );
+        // Its vertex splits the street, inside a piece, never at its ends.
+        let built = pieces(&planned, 1923, &PRICES);
+        let split = built
+            .iter()
+            .flat_map(|p| {
+                p.build
+                    .polyline
+                    .vertices
+                    .iter()
+                    .enumerate()
+                    .map(move |(i, v)| (p, i, v))
+            })
+            .find(|(_, _, v)| matches!(v.resolve, Resolve::Split(_)))
+            .expect("a split vertex");
+        let (piece, i, vertex) = split;
+        assert!(i > 0 && i + 1 < piece.build.polyline.vertices.len());
+        assert_eq!(
+            vertex.resolve,
+            Resolve::Split(EdgeRef {
+                network: Network::Street,
+                ends: EdgeEnds {
+                    a: crossing_street.a,
+                    b: crossing_street.b,
+                },
+            })
+        );
+        // The pieces still chain.
+        for w in built.windows(2) {
+            assert_eq!(w[0].last, w[1].first);
+        }
+    }
+
+    #[test]
+    fn where_no_level_crossing_may_be_laid_the_line_goes_over_or_under() {
+        let (a, b) = (p(0.0, 0.0), p(2_000.0, 0.0));
+        let land = flat(a, b, |_, _| false);
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        let nodes = align(&land, a, 0.0, b, 0.0, &cells);
+        let narrow = street(1_000.0, 10.0, 70f64.to_radians());
+        let mut stops = street(1_000.0, 10.0, 0.0);
+        stops.objects = 1;
+        let mut owned = street(1_000.0, 10.0, 0.0);
+        owned.owned = true;
+        let mut junction = street(1_000.0, 10.0, 0.0);
+        junction.company_junction = true;
+        // Ending by the line.
+        let mut short = street(1_000.0, 10.0, 0.0);
+        short.a = P {
+            x: 1_000.0,
+            y: 15.0,
+            z: 10.0,
+        }
+        .pos();
+        short.mid = P {
+            x: 1_000.0,
+            y: 207.5,
+            z: 10.0,
+        }
+        .pos();
+        // Up a steep hill.
+        let mut hill = street(1_000.0, 10.0, 0.0);
+        hill.a.z = -30_000;
+        hill.b.z = 50_000;
+        hill.mid.z = 10_000;
+        for (what, s) in [
+            ("20° off the line", narrow),
+            ("stops on it", stops),
+            ("a company's", owned),
+            ("by a company's junction", junction),
+            ("ending by the line", short),
+            ("steep", hill),
+        ] {
+            let (crossed, holds) = cross(&nodes, &[s]);
+            assert!(crossed.iter().all(|n| n.crossing.is_none()), "{what}");
+            let k = holds
+                .iter()
+                .position(|h| matches!(h, Hold::Clear(_)))
+                .unwrap_or_else(|| panic!("{what}: met"));
+            let Hold::Clear(z) = holds[k] else {
+                unreachable!()
+            };
+            let planned = profile(&land, &PRICES, &crossed, &holds).expect(what);
+            let over = planned[k].at.z >= z + OVER - 1e-9;
+            let under = planned[k].at.z <= z - UNDER + 1e-9;
+            assert!(over || under, "{what}: {} by {z}", planned[k].at.z);
+            let kind = if over { Kind::Bridge } else { Kind::Tunnel };
+            assert_eq!(planned[k - 1].kind, kind, "{what}");
+            assert_eq!(planned[k].kind, kind, "{what}");
+        }
+        // A street on a bridge is not met; one named twice, once.
+        let mut high = street(1_000.0, 10.0, 0.0);
+        high.structure = true;
+        let (crossed, holds) = cross(&nodes, &[high]);
+        assert_eq!(crossed.len(), nodes.len());
+        assert!(holds.iter().all(|h| matches!(h, Hold::Free | Hold::At(_))));
+        let twice = street(1_000.0, 10.0, 0.0);
+        let (_, holds) = cross(&nodes, &[twice.clone(), twice]);
+        assert_eq!(
+            holds
+                .iter()
+                .filter(|h| matches!(h, Hold::Street(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_street_met_by_a_node_takes_its_place() {
+        let (a, b) = (p(0.0, 0.0), p(2_000.0, 0.0));
+        let land = flat(a, b, |_, _| false);
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        let nodes = align(&land, a, 0.0, b, 0.0, &cells);
+        // A street 5 m past an inner node.
+        let k = nodes.len() / 2;
+        let x = nodes[k].at.x + 5.0;
+        let (crossed, holds) = cross(&nodes, &[street(x, 10.0, 0.0)]);
+        assert_eq!(crossed.len(), nodes.len(), "moved, not added");
+        assert!(crossed[k].crossing.is_some());
+        assert!((crossed[k].at.x - x).abs() < 1.0);
+        assert!(matches!(holds[k], Hold::Street(_)));
+        // No edge shorter than the merge distance.
+        for w in crossed.windows(2) {
+            assert!(w[0].at.flat_distance(w[1].at) >= MERGE - 5.0);
+        }
+    }
+    #[test]
+    fn a_street_far_below_the_line_is_bridged_not_crossed() {
+        let (a, b) = (p(0.0, 0.0), p(2_000.0, 0.0));
+        let mut land = flat(a, b, |_, _| false);
+        // A cutting 12 m deep for a street, 60 m wide, across the line.
+        shape(&mut land, |x, _| {
+            ((x - 1_000.0).abs() < 30.0).then_some(-2.0)
+        });
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        let nodes = align(&land, a, 0.0, b, 0.0, &cells);
+        let (crossed, holds) = cross(&nodes, &[street(1_000.0, -2.0, 0.0)]);
+        let planned = profile(&land, &PRICES, &crossed, &holds).expect("heights");
+        grades_hold(&planned);
+        let k = holds
+            .iter()
+            .position(|h| matches!(h, Hold::Street(_)))
+            .unwrap();
+        assert!(planned[k].at.z >= -2.0 + OVER, "{}", planned[k].at.z);
+        assert!(planned[k].crossing.is_none(), "no crossing over it");
+        assert_eq!(planned[k - 1].kind, Kind::Bridge);
+        assert_eq!(planned[k].kind, Kind::Bridge);
     }
 
     #[test]
     fn pieces_chain_from_station_to_station() {
         let (a, b) = (p(0.0, 0.0), p(2_000.0, 0.0));
         let land = flat(a, b, |_, _| false);
-        let cells = route(&land, a, 0.0, b, 0.0).unwrap();
-        let nodes = track(&land, a, 0.0, b, 0.0, &cells);
-        let builds = pieces(&nodes, 1923);
-        assert!(builds.len() >= 3);
-        for (k, build) in builds.iter().enumerate() {
-            let v = &build.polyline.vertices;
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).unwrap();
+        let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).unwrap();
+        let built = pieces(&nodes, 1923, &PRICES);
+        assert!(built.len() >= 3);
+        for (k, piece) in built.iter().enumerate() {
+            let v = &piece.build.polyline.vertices;
             assert!(
                 matches!(v[0].resolve, Resolve::Node(_)),
                 "piece {k} starts on a node"
             );
-            assert!(build.polyline.links.len() <= PIECE_EDGES);
-            if k + 1 < builds.len() {
+            assert!(piece.build.polyline.links.len() <= PIECE_EDGES);
+            assert_eq!(v.len(), piece.last - piece.first + 1);
+            if k + 1 < built.len() {
                 assert_eq!(v[v.len() - 1].resolve, Resolve::New);
-                assert_eq!(v[v.len() - 1].pos, builds[k + 1].polyline.vertices[0].pos);
+                assert_eq!(
+                    v[v.len() - 1].pos,
+                    built[k + 1].build.polyline.vertices[0].pos
+                );
             } else {
                 assert!(matches!(v[v.len() - 1].resolve, Resolve::Node(_)));
                 assert_eq!(v[v.len() - 1].pos, b.pos());
             }
         }
-        assert_eq!(builds[0].track.as_str(), track_template(1923));
+        assert_eq!(built[0].build.track.as_str(), track_template(1923));
+        let priced: f64 = built.iter().map(|p| p.cost).sum();
+        assert!((priced - cost(&nodes)).abs() < 1e-6);
     }
 
     #[test]
@@ -1174,6 +2031,41 @@ mod tests {
         let (a, b) = (p(0.0, 0.0), p(2_000.0, 0.0));
         // A wall from edge to edge across the line.
         let land = flat(a, b, |x, _| (x - 1_000.0).abs() < 60.0);
-        assert!(route(&land, a, 0.0, b, 0.0).is_none());
+        assert!(route(&land, &PRICES, a, 0.0, b, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_level_crossing_lies_level_on_a_slope() {
+        // The land climbs 3 % east; a street across the line at x = 1 000.
+        let (a, b) = (
+            p(0.0, 0.0),
+            P {
+                x: 2_000.0,
+                y: 0.0,
+                z: 70.0,
+            },
+        );
+        let mut land = flat(a, b, |_, _| false);
+        shape(&mut land, |x, _| Some(10.0 + 0.03 * x));
+        let cells = route(&land, &PRICES, a, 0.0, b, 0.0).expect("a route");
+        let nodes = align(&land, a, 0.0, b, 0.0, &cells);
+        let (crossed, holds) = cross(&nodes, &[street(1_000.0, 40.0, 0.0)]);
+        let planned = profile(&land, &PRICES, &crossed, &holds).expect("heights");
+        let k = planned
+            .iter()
+            .position(|n| n.crossing.is_some())
+            .expect("a crossing");
+        for w in [&planned[k - 1..=k], &planned[k..=k + 1]] {
+            let d = w[0].at.flat_distance(w[1].at);
+            let grade = (w[1].at.z - w[0].at.z).abs() / d;
+            assert!(
+                grade <= CROSSING_GRADE + LEVEL / 2.0 / d + 1e-9,
+                "{grade} over {d} m"
+            );
+        }
+        assert!(planned.windows(2).all(|w| {
+            let d = w[0].at.flat_distance(w[1].at);
+            (w[1].at.z - w[0].at.z).abs() <= STEEPEST * d + LEVEL
+        }));
     }
 }

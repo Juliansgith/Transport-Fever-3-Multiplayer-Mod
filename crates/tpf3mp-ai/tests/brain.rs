@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 use tpf3mp_ai::{Brain, Out, place::P};
 use tpf3mp_bridge::ai::{
     AiAnswer, AiCompany, AiDepot, AiEnd, AiIndustry, AiLand, AiLine, AiModel, AiNeed, AiOutput,
-    AiQuestion, AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict,
+    AiQuestion, AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict, land,
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
     action::{
-        Action, CompanyOp, LineId, LoanOp, LoanTerms, Pos, Resolve, StationId, TownId, VehicleId,
+        Action, CompanyOp, EdgeEnds, LineId, LoanOp, LoanTerms, Pos, Resolve, StationId, Structure,
+        TownId, VehicleId,
     },
 };
 
@@ -77,6 +78,14 @@ struct World {
     /// Rail stations refused within 600 m of here; no wagon for any cargo.
     refuse_rail_near: Option<Pos>,
     no_wagons: bool,
+    /// The ground's height at a point, where it is not flat at 10 m.
+    ground: Option<fn(f64, f64) -> f64>,
+    /// Level crossings laid: the street edges a track's vertex split.
+    crossings: Vec<EdgeEnds>,
+    /// Track refused within 300 m of here.
+    refuse_track_near: Option<Pos>,
+    /// The structures of the track links laid.
+    structures: Vec<Structure>,
     actions: Vec<(Instant, Action)>,
     next_id: u32,
 }
@@ -136,6 +145,10 @@ impl World {
             track_laid: 0.0,
             refuse_rail_near: None,
             no_wagons: false,
+            ground: None,
+            crossings: Vec::new(),
+            refuse_track_near: None,
+            structures: Vec::new(),
             actions: Vec::new(),
             next_id: 1,
         }
@@ -164,10 +177,14 @@ impl World {
                 let near: Vec<AiStreet> = self
                     .streets
                     .iter()
+                    // As the game's octree: an edge passing within the
+                    // radius, wherever its middle is.
                     .filter(|s| {
-                        let m = s.mid;
-                        let (dx, dy) = (f64::from(m.x - at.x), f64::from(m.y - at.y));
-                        dx.hypot(dy) <= f64::from(*radius) * 1000.0
+                        let (a, b, p) = (P::of(s.a), P::of(s.b), P::of(*at));
+                        let (dx, dy) = (b.x - a.x, b.y - a.y);
+                        let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy))
+                            .clamp(0.0, 1.0);
+                        (a.x + dx * t - p.x).hypot(a.y + dy * t - p.y) <= f64::from(*radius)
                     })
                     .cloned()
                     .collect();
@@ -203,12 +220,30 @@ impl World {
             AiQuestion::Industries => {
                 AiAnswer::Industries(BoundedVec::new(self.industries.clone()).unwrap())
             }
-            // Flat, open land at 10 m.
-            AiQuestion::Land { cells, .. } => {
-                let n = usize::from(*cells) * usize::from(*cells);
+            // Open land, flat at 10 m unless the test shapes it; a street
+            // of the world's marks the cells it passes near.
+            AiQuestion::Land { at, cells, step } => {
+                let (mut heights, mut flags) = (Vec::new(), Vec::new());
+                for j in 0..*cells {
+                    for i in 0..*cells {
+                        let x = f64::from(at.x) / 1000.0 + f64::from(i) * f64::from(*step);
+                        let y = f64::from(at.y) / 1000.0 + f64::from(j) * f64::from(*step);
+                        let z = self.ground.map_or(10.0, |g| g(x, y));
+                        #[allow(clippy::cast_possible_truncation)]
+                        heights.push((z * 100.0).round() as i32);
+                        let street = self.streets.iter().any(|s| {
+                            let (a, b) = (P::of(s.a), P::of(s.b));
+                            let (dx, dy) = (b.x - a.x, b.y - a.y);
+                            let t = (((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy))
+                                .clamp(0.0, 1.0);
+                            (a.x + dx * t - x).hypot(a.y + dy * t - y) <= f64::from(*step) * 0.71
+                        });
+                        flags.push(if street { land::STREET } else { 0 });
+                    }
+                }
                 AiAnswer::Land(AiLand {
-                    heights: BoundedVec::new(vec![1_000; n]).unwrap(),
-                    flags: BoundedVec::new(vec![0; n]).unwrap(),
+                    heights: BoundedVec::new(heights).unwrap(),
+                    flags: BoundedVec::new(flags).unwrap(),
                 })
             }
             AiQuestion::Models { mode, cargo } if mode.as_str() == "TRAIN" => {
@@ -318,9 +353,24 @@ impl World {
                     f64::from(o.x - p.x).hypot(f64::from(o.y - p.y)) > 600_000.0
                 })
             }
-            // As the game: a vertex on an existing node must find one.
-            Action::BuildTrack(track) => track.polyline.vertices.iter().all(|v| {
-                !matches!(v.resolve, Resolve::Node(_)) || self.track_node(v.pos).is_some()
+            // As the game: a vertex on an existing node must find one, and
+            // one splitting a street an empty street there.
+            Action::BuildTrack(track)
+                if self.refuse_track_near.is_some_and(|p| {
+                    track.polyline.vertices.iter().any(|v| {
+                        f64::from(v.pos.x - p.x).hypot(f64::from(v.pos.y - p.y)) <= 300_000.0
+                    })
+                }) =>
+            {
+                false
+            }
+            Action::BuildTrack(track) => track.polyline.vertices.iter().all(|v| match &v.resolve {
+                Resolve::Node(_) => self.track_node(v.pos).is_some(),
+                Resolve::Split(e) => self
+                    .streets
+                    .iter()
+                    .any(|s| s.a == e.ends.a && s.b == e.ends.b && s.objects == 0),
+                Resolve::New => true,
             }),
             Action::BuildConstruction(build) => {
                 // Its side of the street: the entrance's offset from origin.
@@ -481,7 +531,20 @@ impl World {
                         Resolve::Node(_) => {
                             assert!(self.track_node(vertex.pos).is_some(), "a node there")
                         }
-                        _ => self.track_nodes.push(vertex.pos),
+                        // A level crossing: the street in two at it.
+                        Resolve::Split(e) => {
+                            let k = self
+                                .streets
+                                .iter()
+                                .position(|s| s.a == e.ends.a && s.b == e.ends.b)
+                                .expect("the street it splits");
+                            let old = self.streets.remove(k);
+                            self.streets.push(street(old.a, vertex.pos));
+                            self.streets.push(street(vertex.pos, old.b));
+                            self.crossings.push(e.ends);
+                            self.track_nodes.push(vertex.pos);
+                        }
+                        Resolve::New => self.track_nodes.push(vertex.pos),
                     }
                     let near = |p: Pos| {
                         f64::from(p.x - vertex.pos.x).hypot(f64::from(p.y - vertex.pos.y))
@@ -503,6 +566,7 @@ impl World {
                     }
                 }
                 for link in track.polyline.links.iter() {
+                    self.structures.push(link.structure.clone());
                     let (a, b) = (v[usize::from(link.from)].pos, v[usize::from(link.to)].pos);
                     let len = f64::from(b.x - a.x).hypot(f64::from(b.y - a.y)) / 1000.0;
                     assert!(len <= 200.0, "an edge of {len} m");
@@ -1414,12 +1478,12 @@ fn a_starved_maker_is_carried_to_the_town_then_fed_its_inputs() {
 #[test]
 fn a_chains_leg_refused_by_train_goes_by_truck() {
     let mut world = World::new();
-    // A mill in Didcot starved of grain, Ely's need of food, and a farm in
-    // Ely 4.5 km from the mill, where no rail station may stand; money for
-    // trains.
+    // A mill north of Didcot's streets starved of grain, Ely's need of food,
+    // and a farm in Ely 4.6 km from the mill, where no rail station may
+    // stand; money for trains.
     const FOOD: &str = "::/cargos/food/food.cargo";
     world.industries = vec![
-        industry("Didcot Mill", 300.0, 200.0, &[GRAIN], &[(FOOD, 0)]),
+        industry("Didcot Mill", 300.0, 1_300.0, &[GRAIN], &[(FOOD, 0)]),
         industry("Ely Farm", 4_800.0, 300.0, &[], &[(GRAIN, 120)]),
     ];
     world.towns[1].needs = BoundedVec::new(vec![AiNeed {
@@ -1496,5 +1560,167 @@ fn no_rail_line_is_built_for_a_cargo_no_wagon_carries() {
     );
     // Its train chosen before anything is built: nothing was.
     assert!(world.rail_stations.is_empty());
+    assert_eq!(world.track_laid, 0.0);
+}
+
+#[test]
+fn a_rail_line_crosses_a_country_road_on_the_level() {
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    // A country road from north to south between the sawmill and Ely.
+    let road = street(pos(3_500.0, -2_000.0), pos(3_500.0, 2_000.0));
+    world.streets.push(road.clone());
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    // The road split where the track crosses it, by a vertex of a track
+    // build, and the line runs.
+    assert_eq!(
+        world.crossings,
+        vec![EdgeEnds {
+            a: road.a,
+            b: road.b
+        }],
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|l| l.contains("1 level crossings")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l == "runs a train on a rail line carrying planks from Witney Sawmill to Ely"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_rail_line_it_cannot_pay_for_is_never_begun() {
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    // A gorge 70 m deep and 1.6 km wide between them: the line across it
+    // and a train cost more than the AI has.
+    world.ground = Some(|x, _| {
+        if (x - 3_400.0).abs() < 800.0 {
+            -60.0
+        } else {
+            10.0
+        }
+    });
+    world.money = 8_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("found its rail line too dear")
+                || l.starts_with("found no engine it can afford")),
+        "{said:?}"
+    );
+    // Nothing of it built: no rail station, no track.
+    assert!(world.rail_stations.is_empty(), "{said:?}");
+    assert_eq!(world.track_laid, 0.0);
+}
+
+#[test]
+fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    // A road with stops on it from edge to edge between them: no level
+    // crossing may be laid on it.
+    let mut road = street(pos(3_500.0, -20_000.0), pos(3_500.0, 20_000.0));
+    road.objects = 2;
+    world.streets.push(road);
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(world.crossings.is_empty(), "{said:?}");
+    assert!(
+        world
+            .structures
+            .iter()
+            .any(|s| matches!(s, Structure::Bridge(_) | Structure::Tunnel(_))),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l == "runs a train on a rail line carrying planks from Witney Sawmill to Ely"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_line_whose_track_would_be_refused_builds_no_station() {
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    // The game refuses any track by the sawmill.
+    world.refuse_track_near = Some(pos(1_800.0, 900.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("a piece of its track would be refused")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("found its track would be refused")),
+        "{said:?}"
+    );
+    // Its track put to the verdict before anything was built: nothing of
+    // it built.
+    assert!(world.rail_stations.is_empty(), "{said:?}");
     assert_eq!(world.track_laid, 0.0);
 }

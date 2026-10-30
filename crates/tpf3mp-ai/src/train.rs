@@ -1,38 +1,51 @@
 //! The brain's rail lines (docs/AI_PLAYERS.md, "Track and trains"): a
 //! cargo carried by train from the industry that makes it to a town that
-//! needs it, where the two are too far apart for trucks to pay. It reads
-//! the land around both ends, puts a one-track cargo station by each, lays
-//! the track between them a piece at a time, each put to the game's
-//! verdict and routed round where the game refuses one, puts a rail depot
-//! beyond the first station joined to its track, opens the line and buys a
-//! train onto it. Every step is confirmed by reading the world again.
+//! needs it, where the two are too far apart for trucks to pay. It chooses
+//! its train's wagons, reads the land around both ends and prices the line
+//! as the game would ([`crate::costs`]) before it builds anything, then
+//! chooses the train its money leaves room for. It puts a one-track cargo
+//! station by each end, asks the game for the streets its route crosses,
+//! lays out its track for the least cost (around, over or under, level
+//! crossings where it meets a street on the ground), lays it a piece at a
+//! time, each put to the game's verdict and routed round where the game
+//! refuses one, puts a rail depot beyond the first station joined to its
+//! track, opens the line and buys a train onto it. Every step is confirmed
+//! by reading the world again.
 
 use std::time::Instant;
 
-use tpf3mp_bridge::ai::{AiCompany, AiIndustry, AiLand, AiModel, AiQuestion};
+use tpf3mp_bridge::ai::{AiCompany, AiIndustry, AiLand, AiModel, AiQuestion, AiStreet};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
         Action, AssignLine, BuyVehicle, ConsistPart, ConstructionRef, CreateLine, Fraction,
-        LineData, LineId, LineStop, LoadMode, Pos, ResName, StationId, StopRules, Terminal,
-        TrackBuild, VehicleId,
+        LineData, LineId, LineStop, LoadMode, Pos, ResName, Resolve, StationId, StopRules,
+        Terminal, TrackBuild, VehicleId, Vertex,
     },
 };
 
 use super::{Brain, CONFIRM_TRIES, GIVE_UP_FOR, Out, SETTLE, Stage, cargo_name, route_key, tint};
 use crate::{
     chain::{Leg, Taker},
+    costs::{self, Prices},
     place::P,
-    rail::{self, Land, Node, Station},
+    rail::{self, Land, Node, Piece, Station},
 };
 
 /// The least distance a cargo goes by train, in metres, and the least
-/// money a rail line is begun with: two stations, a depot and a train cost
-/// about 4 million in the 1920s, the track about 500 a metre.
+/// money a rail line is begun with: two stations and a depot cost about
+/// 1.6 million in the 1920s, a train about 1 to 3, flat track 53 a metre.
 pub const RAIL_FROM: f64 = 1_800.0;
 pub const RAIL_MONEY: i64 = 6_000_000;
-/// What a line's stations, depot and track cost about, before its train.
-const RAIL_BUILD: i64 = 2_500_000;
+/// The modules of each station it builds.
+const STATION_MODULES: i32 = 3;
+
+/// The most pairs of station placements a line is laid out between before
+/// it builds anything.
+const SITE_PAIRS: u32 = 6;
+/// How far the game's prices may stand from the AI's before it doubts its
+/// reading of them.
+const SCALE_RANGE: (f64, f64) = (0.25, 8.0);
 /// The rings around an industry, and a town's district centre, its
 /// stations are tried on, in metres from the place: the station's cargo
 /// catchment reaches 150 m from its building (`main_building_1_cargo`).
@@ -74,10 +87,25 @@ pub(super) struct RailProject {
     /// Station placements still to try: by the industry, then the town.
     pub tries: [Vec<Station>; 2],
     pub built: [Option<Built>; 2],
+    /// The prices it plans by.
+    pub prices: Prices,
+    /// What it reckoned the line costs before its train, from its first
+    /// placements, before building anything.
+    pub estimate: f64,
+    /// The route being laid out: its nodes on the ground, the street runs
+    /// it crosses still to ask the game about, and the streets named.
+    pub aligned: Vec<Node>,
+    pub runs: Vec<(P, u32)>,
+    pub streets: Vec<AiStreet>,
     pub nodes: Vec<Node>,
-    pub pieces: Vec<TrackBuild>,
+    pub pieces: Vec<Piece>,
     pub piece: usize,
     pub replans: u32,
+    /// Pairs of station placements it laid the line out between.
+    pub pairs_tried: u32,
+    /// The station placements its track was laid out for, before they
+    /// were built.
+    pub planned: Option<[P; 2]>,
     /// The depot and where its track joins, once sent and seen.
     pub depot: Option<(Pos, P)>,
     pub line: Option<LineId>,
@@ -87,6 +115,21 @@ pub(super) struct RailProject {
 }
 
 impl RailProject {
+    /// Each station's line end and the heading out of it, towards the
+    /// place the other serves: as built, or as planned at its first
+    /// placement.
+    fn end(&self, end: usize) -> Option<(P, f64)> {
+        if let Some(b) = self.built[end] {
+            return Some((b.end, b.heading));
+        }
+        let other = P::of(if end == 0 {
+            self.to.pos()
+        } else {
+            self.from.pos
+        });
+        Some(self.tries[end].first()?.ends_toward(other).0)
+    }
+
     fn describe(&self) -> String {
         format!(
             "a rail line carrying {} from {} to {}",
@@ -102,6 +145,8 @@ impl RailProject {
 pub(super) enum RailStage {
     /// Reading the land around both ends, a tile at a time.
     Land,
+    /// Asking the game for the streets its route crosses, a run at a time.
+    Streets,
     /// Asking the verdict on the next placement of station `end` (0 by the
     /// industry, 1 in the town).
     StationVerdict {
@@ -111,6 +156,12 @@ pub(super) enum RailStage {
     StationBuilt {
         end: usize,
         tries: u32,
+    },
+    /// Asking the verdict on a piece of its track before anything is
+    /// built: the pieces' joins to its stations and to each other as new
+    /// nodes.
+    Trial {
+        piece: usize,
     },
     /// Asking the verdict on the next piece of track.
     PieceVerdict,
@@ -170,10 +221,20 @@ impl Brain {
             land,
             tries: [Vec::new(), Vec::new()],
             built: [None, None],
+            prices: Prices {
+                scale: self.rail_scale,
+                trestle: false,
+            },
+            estimate: 0.0,
+            aligned: Vec::new(),
+            runs: Vec::new(),
+            streets: Vec::new(),
             nodes: Vec::new(),
             pieces: Vec::new(),
             piece: 0,
             replans: 0,
+            pairs_tried: 1,
+            planned: None,
             depot: None,
             line: None,
             wagons: Vec::new(),
@@ -225,6 +286,8 @@ impl Brain {
                         now,
                     ),
                     None => {
+                        #[allow(clippy::cast_precision_loss)]
+                        let money = self.spendable() as f64;
                         let project = self.rail.as_mut()?;
                         let (from, at) = (P::of(project.from.pos), P::of(project.to.pos()));
                         // By a town's district, or by the industry it feeds.
@@ -236,10 +299,42 @@ impl Brain {
                             rail::sites(&project.land, from, at, &MAKER_RINGS),
                             rail::sites(&project.land, at, from, rings),
                         ];
-                        self.stage = Stage::Rail(RailStage::StationVerdict { end: 0 });
-                        self.rail_poll(RailStage::StationVerdict { end: 0 }, now)
+                        // What the line costs, from its first placements,
+                        // before it builds anything: a line it cannot pay
+                        // for, or with no route, is never begun.
+                        match estimate(project) {
+                            Ok(cost) if cost < money => {
+                                project.estimate = cost;
+                                self.say(format!(
+                                    "reckons its rail line costs {cost:.0} before its train"
+                                ));
+                                self.stage = Stage::Rail(RailStage::Engines);
+                                self.rail_poll(RailStage::Engines, now)
+                            }
+                            Ok(cost) => {
+                                self.give_up_rail(
+                                    &format!("found its rail line too dear at {cost:.0}"),
+                                    now,
+                                );
+                                None
+                            }
+                            Err(why) => {
+                                self.give_up_rail(why, now);
+                                None
+                            }
+                        }
                     }
                 }
+            }
+            RailStage::Streets => {
+                let (at, radius) = *self.rail.as_ref()?.runs.first()?;
+                self.ask(
+                    AiQuestion::Streets {
+                        at: at.pos(),
+                        radius,
+                    },
+                    now,
+                )
             }
             RailStage::StationVerdict { end } => {
                 let year = self.year();
@@ -263,9 +358,14 @@ impl Brain {
                     }
                 }
             }
+            RailStage::Trial { piece } => {
+                let project = self.rail.as_ref()?;
+                let build = trial(&project.pieces.get(piece)?.build)?;
+                self.verdict(&Action::BuildTrack(build), now)
+            }
             RailStage::PieceVerdict => {
                 let project = self.rail.as_ref()?;
-                let piece = project.pieces.get(project.piece)?.clone();
+                let piece = project.pieces.get(project.piece)?.build.clone();
                 self.verdict(&Action::BuildTrack(piece), now)
             }
             RailStage::DepotVerdict { end } => {
@@ -347,46 +447,163 @@ impl Brain {
     }
 
     /// Routes its line from `start` (a node laid, or the first station's
-    /// end) to the second station's end, and cuts it into pieces: false if
-    /// no route was found.
+    /// end) to the second station's end for the least cost, then asks the
+    /// game for the streets it crosses ([`RailStage::Streets`]) before it
+    /// lays out its crossings and heights ([`Self::lay_out`]): false if no
+    /// route was found. Before its stations are built, it lays out the line
+    /// between their first placements, and builds them only once it has.
     fn plan_rail(&mut self, start: Node) -> bool {
+        let Some(project) = self.rail.as_mut() else {
+            return false;
+        };
+        let Some((goal, out)) = project.end(1) else {
+            return false;
+        };
+        // Into the second station, against the heading out of its end.
+        let arrive = out + std::f64::consts::PI;
+        let Some(cells) = rail::route(
+            &project.land,
+            &project.prices,
+            start.at,
+            start.heading,
+            goal,
+            arrive,
+        ) else {
+            return false;
+        };
+        project.aligned = rail::align(&project.land, start.at, start.heading, goal, arrive, &cells);
+        project.runs = rail::street_runs(&project.land, &cells);
+        project.streets.clear();
+        if project.runs.is_empty() {
+            return self.lay_out();
+        }
+        self.stage = Stage::Rail(RailStage::Streets);
+        true
+    }
+
+    /// Lays out its route's level crossings and heights for the least cost
+    /// and cuts the track into pieces, then asks the verdict on the first:
+    /// false if there is no way. A street it cannot cross where the route
+    /// meets it is gone round, routing again.
+    fn lay_out(&mut self) -> bool {
         let year = self.year();
         let Some(project) = self.rail.as_mut() else {
             return false;
         };
-        let Some(b) = project.built[1] else {
+        let (nodes, mut holds) = rail::cross(&project.aligned, &project.streets);
+        // From a node laid on the way, not the station's end: its edge may
+        // go on as a bridge or a tunnel.
+        let station = project.end(0).map(|(end, _)| end);
+        if let (Some(first), Some(hold)) = (nodes.first(), holds.first_mut())
+            && station.is_none_or(|end| end.flat_distance(first.at) > 1.0)
+        {
+            *hold = rail::Hold::Laid(first.at.z);
+        }
+        let Some(nodes) = rail::profile(&project.land, &project.prices, &nodes, &holds) else {
+            self.say("found no heights for its track within its grade".into());
             return false;
         };
-        // Into the second station, against the heading out of its end.
-        let arrive = b.heading + std::f64::consts::PI;
-        let Some(cells) = rail::route(&project.land, start.at, start.heading, b.end, arrive) else {
-            return false;
-        };
-        let nodes = rail::track(
-            &project.land,
-            start.at,
-            start.heading,
-            b.end,
-            arrive,
-            &cells,
-        );
-        project.pieces = rail::pieces(&nodes, year);
-        project.nodes = nodes;
+        project.pieces = rail::pieces(&nodes, year, &project.prices);
         project.piece = 0;
-        !project.pieces.is_empty()
+        let crossings = nodes.iter().filter(|n| n.crossing.is_some()).count();
+        let (bridges, tunnels) = (
+            nodes
+                .iter()
+                .filter(|n| n.kind == rail::Kind::Bridge)
+                .count(),
+            nodes
+                .iter()
+                .filter(|n| n.kind == rail::Kind::Tunnel)
+                .count(),
+        );
+        let said = format!(
+            "lays its track in {} pieces for about {:.0}: {crossings} level crossings, {bridges} bridge and {tunnels} tunnel edges",
+            project.pieces.len(),
+            rail::cost(&nodes)
+        );
+        project.nodes = nodes;
+        if project.pieces.is_empty() {
+            return false;
+        }
+        // Laid out before its stations: every piece is put to the game's
+        // verdict first, then the stations are built, for the placements
+        // it was laid out for.
+        let next = if project.built[1].is_some() {
+            RailStage::PieceVerdict
+        } else {
+            project.planned = project
+                .tries
+                .iter()
+                .map(|t| t.first().map(|s| s.origin))
+                .collect::<Option<Vec<P>>>()
+                .and_then(|v| v.try_into().ok());
+            RailStage::Trial { piece: 0 }
+        };
+        self.say(said);
+        self.stage = Stage::Rail(next);
+        true
+    }
+
+    /// The streets the game named around one of its route's street runs.
+    pub(super) fn rail_streets(&mut self, streets: Vec<AiStreet>, now: Instant) {
+        let Some(project) = self.rail.as_mut() else {
+            return;
+        };
+        if !matches!(self.stage, Stage::Rail(RailStage::Streets)) {
+            return;
+        }
+        project.streets.extend(streets);
+        if !project.runs.is_empty() {
+            project.runs.remove(0);
+        }
+        if project.runs.is_empty() {
+            let laid = self.lay_out();
+            self.or_other_sites(laid, "found no way to lay its track", now);
+        }
+    }
+
+    /// Before its stations are built, a line it could not lay out between
+    /// its first placements is laid out between others, the town's end and
+    /// the industry's in turn, up to [`SITE_PAIRS`]; then given up, `why`.
+    fn or_other_sites(&mut self, mut laid: bool, why: &str, now: Instant) {
+        while !laid {
+            let Some(project) = self.rail.as_mut() else {
+                return;
+            };
+            let end = usize::from(project.pairs_tried % 2 == 1);
+            if project.built[0].is_some()
+                || project.pairs_tried >= SITE_PAIRS
+                || project.tries[end].len() < 2
+            {
+                self.give_up_rail(why, now);
+                return;
+            }
+            project.pairs_tried += 1;
+            project.tries[end].remove(0);
+            project.replans = 0;
+            let Some((at, heading)) = project.end(0) else {
+                return;
+            };
+            self.say("lays its line out between other station places".into());
+            laid = self.plan_rail(Node::on(at, heading));
+        }
     }
 
     pub(super) fn rail_good_verdict(
         &mut self,
         stage: RailStage,
         action: &Action,
+        cost: i64,
         now: Instant,
     ) -> Option<Out> {
         let next = match (stage, action) {
             (RailStage::StationVerdict { end }, Action::BuildConstruction(_)) => {
                 RailStage::StationBuilt { end, tries: 0 }
             }
-            (RailStage::PieceVerdict, Action::BuildTrack(_)) => RailStage::PieceBuilt { tries: 0 },
+            (RailStage::PieceVerdict, Action::BuildTrack(_)) => {
+                self.read_prices(cost);
+                RailStage::PieceBuilt { tries: 0 }
+            }
             (RailStage::DepotVerdict { end }, Action::BuildConstruction(build)) => {
                 let project = self.rail.as_mut()?;
                 let built = project.built[end]?;
@@ -408,6 +625,16 @@ impl Brain {
             (RailStage::LinkVerdict { .. }, Action::BuildTrack(_)) => {
                 RailStage::LinkBuilt { tries: 0 }
             }
+            // A trial: nothing sent; the next piece, then the stations.
+            (RailStage::Trial { piece }, Action::BuildTrack(_)) => {
+                let count = self.rail.as_ref()?.pieces.len();
+                self.stage = Stage::Rail(if piece + 1 < count {
+                    RailStage::Trial { piece: piece + 1 }
+                } else {
+                    RailStage::StationVerdict { end: 0 }
+                });
+                return None;
+            }
             _ => {
                 self.say("the game judged another action".into());
                 self.wake = Some(now + SETTLE);
@@ -423,6 +650,26 @@ impl Brain {
         out
     }
 
+    /// The game's price for the piece it planned: its prices drawn halfway
+    /// to the game's, for its next plans and lines.
+    fn read_prices(&mut self, cost: i64) {
+        let Some(project) = self.rail.as_mut() else {
+            return;
+        };
+        let Some(piece) = project.pieces.get(project.piece) else {
+            return;
+        };
+        let planned = piece.cost / project.prices.scale;
+        if planned < 1_000.0 {
+            return;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let seen = cost as f64 / planned;
+        let scale = (0.5 * project.prices.scale + 0.5 * seen).clamp(SCALE_RANGE.0, SCALE_RANGE.1);
+        project.prices.scale = scale;
+        self.rail_scale = scale;
+    }
+
     pub(super) fn rail_bad_verdict(&mut self, stage: RailStage, why: &str, now: Instant) {
         match stage {
             RailStage::StationVerdict { end } => {
@@ -433,8 +680,39 @@ impl Brain {
                     project.tries[end].remove(0);
                 }
             }
+            RailStage::Trial { piece } => {
+                let laid = self.rail.as_ref().and_then(|p| {
+                    let piece = p.pieces.get(piece)?;
+                    Some(rail::describe(p.nodes.get(piece.first..=piece.last)?))
+                });
+                self.say(format!(
+                    "a piece of its track would be refused: {why} ({})",
+                    laid.unwrap_or_default()
+                ));
+                let Some(project) = self.rail.as_mut() else {
+                    return;
+                };
+                // Round it, before anything is built; then other places.
+                project.replans += 1;
+                if let Some(p) = project.pieces.get(piece)
+                    && let Some(mid) = project.nodes.get(usize::midpoint(p.first, p.last))
+                {
+                    project.land.block(mid.at.x, mid.at.y, REFUSED_REACH);
+                }
+                let start = project.end(0);
+                let replanned = project.replans <= REPLANS
+                    && start.is_some_and(|(at, heading)| self.plan_rail(Node::on(at, heading)));
+                self.or_other_sites(replanned, "found its track would be refused", now);
+            }
             RailStage::PieceVerdict => {
-                self.say(format!("a piece of track was refused: {why}"));
+                let laid = self.rail.as_ref().and_then(|p| {
+                    let piece = p.pieces.get(p.piece)?;
+                    Some(rail::describe(p.nodes.get(piece.first..=piece.last)?))
+                });
+                self.say(format!(
+                    "a piece of track was refused: {why} ({})",
+                    laid.unwrap_or_default()
+                ));
                 // A piece whose start the last one should have laid: that
                 // one did not go; lay it again.
                 if why.contains("no Track node at vertex 1")
@@ -457,15 +735,17 @@ impl Brain {
                     return;
                 }
                 // Round the refused piece's middle, from where it began.
-                let first = project.piece * rail::PIECE_EDGES;
+                let Some(piece) = project.pieces.get(project.piece) else {
+                    return;
+                };
+                let (first, last) = (piece.first, piece.last);
                 let start = project.nodes.get(first).copied();
-                let mid = project
-                    .nodes
-                    .get((first + rail::PIECE_EDGES / 2).min(project.nodes.len().saturating_sub(1)))
-                    .copied();
+                let mid = project.nodes.get(usize::midpoint(first, last)).copied();
                 if let (Some(start), Some(mid)) = (start, mid) {
                     project.land.block(mid.at.x, mid.at.y, REFUSED_REACH);
-                    if !self.plan_rail(start) {
+                    // From a node laid, on the ground: what is built of
+                    // the line before it stays.
+                    if !self.plan_rail(Node::on(start.at, start.heading)) {
                         self.give_up_rail("found no route round a refused piece", now);
                     }
                 }
@@ -523,17 +803,22 @@ impl Brain {
                         if end == 0 {
                             self.stage = Stage::Rail(RailStage::StationVerdict { end: 1 });
                         } else {
-                            let a = project.built[0]?;
-                            let start = Node {
-                                at: a.end,
-                                heading: a.heading,
-                                bridge: false,
+                            let (a, b) = (project.built[0]?, project.built[1]?);
+                            // Built where its track was laid out for, their
+                            // ends where the track meets them: laid as
+                            // planned; else laid out again.
+                            let meets = |n: Option<&Node>, end: P| {
+                                n.is_some_and(|n| {
+                                    n.at.flat_distance(end) <= 1.0 && (n.at.z - end.z).abs() <= 0.25
+                                })
                             };
-                            if self.plan_rail(start) {
-                                let n = self.rail.as_ref().map_or(0, |p| p.pieces.len());
-                                self.say(format!("lays its track in {n} pieces"));
+                            let as_planned = project.planned
+                                == Some([a.station.origin, b.station.origin])
+                                && meets(project.nodes.first(), a.end)
+                                && meets(project.nodes.last(), b.end);
+                            if as_planned {
                                 self.stage = Stage::Rail(RailStage::PieceVerdict);
-                            } else {
+                            } else if !self.plan_rail(Node::on(a.end, a.heading)) {
                                 self.give_up_rail("found no route for its track", now);
                             }
                         }
@@ -886,7 +1171,7 @@ impl Brain {
                     return None;
                 }
                 self.rail.as_mut()?.wagons = wagons;
-                self.stage = Stage::Rail(RailStage::Engines);
+                self.stage = Stage::Rail(RailStage::Land);
                 None
             }
             RailStage::Engines => {
@@ -901,7 +1186,8 @@ impl Brain {
                     .clone();
                 // What the line will cost before its train: its money must
                 // leave the train.
-                let money = self.spendable() - RAIL_BUILD;
+                #[allow(clippy::cast_possible_truncation)]
+                let money = self.spendable() - project.estimate.ceil() as i64;
                 // Not electric: its track has no catenary (a C 6/8 bought
                 // for one, the game refused it the line; 2026-10-30).
                 let Some(engine) = models
@@ -913,11 +1199,95 @@ impl Brain {
                     self.give_up_rail("found no engine it can afford", now);
                     return None;
                 };
-                self.rail.as_mut()?.train = Some((engine, wagon));
-                self.stage = Stage::Rail(RailStage::Land);
+                // Trestles for a slow train while they are offered: cheaper
+                // than stone, and their 60 km/h costs it nothing.
+                let trestle =
+                    self.year() < costs::TRESTLE_UNTIL && engine.speed <= costs::TRESTLE_SPEED;
+                let project = self.rail.as_mut()?;
+                project.prices.trestle = trestle;
+                project.train = Some((engine, wagon));
+                // Its whole line laid out before it builds anything.
+                let (at, heading) = project.end(0)?;
+                let laid = self.plan_rail(Node::on(at, heading));
+                self.or_other_sites(laid, "found no route for its track", now);
                 None
             }
             _ => None,
         }
     }
+}
+
+/// The most placements of each station a line is priced between before it
+/// builds anything.
+const PRICED_SITES: usize = 2;
+
+/// What a line costs before its train: its two stations and depot, and the
+/// cheapest track between their ends with a level crossing for every run
+/// of streets it crosses, for the cheapest pair among the first
+/// placements of each station ([`PRICED_SITES`]), which it then tries
+/// first; or why there is no line.
+fn estimate(project: &mut RailProject) -> Result<f64, &'static str> {
+    let mut why = "found no place for a rail station";
+    let mut best: Option<(f64, usize, usize)> = None;
+    // Its searches run in the driver's agent: two lines priced, or two
+    // routes not found, are enough.
+    let (mut priced, mut failed) = (0, 0);
+    for (i, a) in project.tries[0].iter().take(PRICED_SITES).enumerate() {
+        for (j, b) in project.tries[1].iter().take(PRICED_SITES).enumerate() {
+            if priced >= 2 || failed >= 2 {
+                break;
+            }
+            // Each end towards the place the other station serves, as the
+            // stations' ends are read once built.
+            let ((from, leaving), _) = a.ends_toward(P::of(project.to.pos()));
+            let ((to, out), _) = b.ends_toward(P::of(project.from.pos));
+            let arrive = out + std::f64::consts::PI;
+            let prices = &project.prices;
+            let Some(cells) = rail::route(&project.land, prices, from, leaving, to, arrive) else {
+                why = "found no route for its track";
+                failed += 1;
+                continue;
+            };
+            let Some(nodes) = rail::track(&project.land, prices, from, leaving, to, arrive, &cells)
+            else {
+                why = "found no heights for its track within its grade";
+                continue;
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let crossings = rail::street_runs(&project.land, &cells).len() as f64;
+            let cost = rail::cost(&nodes)
+                + crossings * prices.crossing()
+                + prices.stations_and_depot(STATION_MODULES);
+            priced += 1;
+            if best.is_none_or(|(c, _, _)| cost < c) {
+                best = Some((cost, i, j));
+            }
+        }
+    }
+    let (cost, i, j) = best.ok_or(why)?;
+    let a = project.tries[0].remove(i);
+    project.tries[0].insert(0, a);
+    let b = project.tries[1].remove(j);
+    project.tries[1].insert(0, b);
+    Ok(cost)
+}
+
+/// A piece as its verdict is asked before anything of the line is built:
+/// its joins to the stations and to the pieces before it as new nodes.
+fn trial(build: &TrackBuild) -> Option<TrackBuild> {
+    let vertices: Vec<Vertex> = build
+        .polyline
+        .vertices
+        .iter()
+        .map(|v| Vertex {
+            pos: v.pos,
+            resolve: match &v.resolve {
+                Resolve::Node(_) => Resolve::New,
+                r => r.clone(),
+            },
+        })
+        .collect();
+    let mut out = build.clone();
+    out.polyline.vertices = BoundedVec::new(vertices).ok()?;
+    Some(out)
 }

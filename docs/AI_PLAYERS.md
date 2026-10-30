@@ -237,19 +237,58 @@ faster AI.
   streets and tracks), puts a one-track cargo station of three modules by
   each, its building towards the industry or the district within its
   catchment's 150 m, on free ground the land shows, its track's end
-  towards the other station; routes the line over a 40 m grid in 16
-  headings, turning 22.5° at most a step and never on two steps running,
-  off built land and other tracks, crossing streets and bridging water
-  at a cost; smooths it into edges of about 100 m whose headings run on
-  through every node, at heights the ground gives within 2.5 %, bridged
-  where it stands more than 5 m above the ground or over water; and lays
-  it in pieces of six edges, each put to the verdict, routing round any
-  the game refuses. Then a rail depot beyond the first station, joined to
-  its outer end, the line, and the strongest steam or combustion engine
-  it can afford with as many wagons as the platforms take (six at most):
-  no electric engine, as its track has no catenary. Still to come:
-  level crossings laid as the game's track tool lays them, passing loops
-  and signals, more trains a line, passengers by train.
+  towards the other station. It plans by what the game charges, as a
+  player reads the build tool's price (`crates/tpf3mp-ai/src/costs.rs`,
+  from the game's own verdicts on test pieces; investigation, "Track
+  costs"): track 53 a metre on the ground, earth for embankments and
+  cuttings by the cubic metre, stone bridges dearer the higher they
+  stand, tunnels dearer the deeper, a level crossing about 9,600, a
+  station's module 93,000, a rail depot about a million. Before it builds
+  anything it prices the whole line between the cheapest of its first
+  station placements, and a line it cannot pay for, or with no route, it
+  never begins; its train is then the strongest engine the rest of its
+  money buys. Then it lays the whole line out, still before building
+  anything. It routes the line over a 40 m grid in 16 headings, turning
+  22.5° at most a step and never on two steps running, off built land and
+  other tracks, for the least money: going round a hill or a pond where
+  that is cheaper than the earth, bridge or tunnel the straight way
+  needs, keeping to the level where it can, crossing streets and never
+  following them. It smooths the route into edges of about 100 m whose
+  headings run on through every node, asks the game for the streets it
+  crosses, and chooses every node's height for the least cost of the
+  whole line, within a 2.5 % grade where it can and never steeper than
+  4 % (a plant on a hill above its town): an embankment or a cutting, a
+  bridge where the ground falls away (over water always; the game builds
+  one half a metre up), a tunnel where it rises at least 9 m over it, as
+  the prices say. Where it meets a street it may cross on the ground it
+  lays a level crossing as the track tool does: its vertex splits the
+  street's edge at the street's height, the track straight through it
+  and level either side (within 1 %; the game refuses one on a grade,
+  "Too Much Incline"), at 35° or more, on a street no steeper than 4 %,
+  clear of the street's ends, of other crossings and of its stations,
+  never on a street with stops, a company's street or one by a junction
+  a company's edge names. Any other street it passes over, 7.5 m clear,
+  or under, 10 m down, whichever costs less; a node of its line within
+  20 m of a street takes the crossing's place, so no edge is too short
+  for its grade. Before 1970, for a train no faster than 65 km/h, its
+  bridges are trestles, cheaper and as fast as its train. Then it puts
+  every piece of the planned track (about six edges each) to the game's
+  verdict, still before building anything, its joins as new nodes; a
+  piece the game would refuse it routes round and lays the line out
+  again, and a line it cannot lay out between one pair of placements it
+  lays out between others, up to six pairs, before giving up with
+  nothing built. Only then does it build its stations and, if they stand
+  where it planned them, lay the track as planned, a piece at a time,
+  each put to the verdict again (one through something in its way,
+  "Collision", is refused though the game would build it); it keeps its
+  prices in line with the game's by the verdicts' own costs. Then a rail
+  depot beyond the first station, joined to its outer end, the line, and
+  its train with as many wagons as the platforms take (six at most): no
+  electric engine, as its track has no catenary. Its planning runs in
+  the driver's agent, a route search 5 to 25 ms on the big fixture and at
+  most about 0.2 s where there is no way through. Still to come: passing
+  loops and signals, more trains a line, sharing a depot between lines,
+  passengers by train.
 - **Water.** Harbours where both ends touch the same water (from the
   water grid), with their street links. Ships need no route built.
 - **Air.** Airfields and airports near large towns on flat enough ground,
