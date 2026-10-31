@@ -652,7 +652,9 @@ impl Brain {
             }
             RailStage::FrontStreets { end } => {
                 let project = self.rail.as_ref()?;
-                let (a, b) = project.built[end]?.station.front(rail::FRONT_X[0]);
+                let (a, b) = project.built[end]?
+                    .station
+                    .front(rail::FRONT_X[0], &project.land);
                 let at = P {
                     x: (a.x + b.x) / 2.0,
                     y: (a.y + b.y) / 2.0,
@@ -670,7 +672,7 @@ impl Brain {
                 let project = self.rail.as_ref()?;
                 let station = project.built[end]?.station;
                 let street = project.front_street.as_ref()?;
-                match place::front_street(station.front(rail::FRONT_X[at]), street) {
+                match place::front_street(station.front(rail::FRONT_X[at], &project.land), street) {
                     Some(road) => self.verdict(&Action::BuildRoad(road), now),
                     None => {
                         self.next_front(end, now);
@@ -1542,17 +1544,24 @@ impl Brain {
             self.next_front(end, now);
             return;
         };
-        let (a, b) = built.station.front(rail::FRONT_X[0]);
+        let station = built.station;
+        let (a, b) = station.front(rail::FRONT_X[0], &project.land);
         let at = P {
             x: (a.x + b.x) / 2.0,
             y: (a.y + b.y) / 2.0,
             z: a.z,
         };
-        let nearest = streets.into_iter().filter(place::usable).min_by(|x, y| {
-            place::middle(x)
-                .flat_distance(at)
-                .total_cmp(&place::middle(y).flat_distance(at))
-        });
+        // On its building's side, beyond its front: its street need cross
+        // neither the station nor its track to reach it.
+        let nearest = streets
+            .into_iter()
+            .filter(place::usable)
+            .filter(|s| station.across(place::middle(s)).0 < rail::FRONT_X[0])
+            .min_by(|x, y| {
+                place::middle(x)
+                    .flat_distance(at)
+                    .total_cmp(&place::middle(y).flat_distance(at))
+            });
         match nearest {
             Some(street) => {
                 project.front_street = Some(street);

@@ -245,13 +245,27 @@ impl Station {
     }
 
     /// The ends of a street along its building's front, `x` across its own
-    /// axes ([`FRONT_X`]), [`FRONT_HALF`] either way of its middle.
-    pub fn front(&self, x: f64) -> (P, P) {
+    /// axes ([`FRONT_X`]), [`FRONT_HALF`] either way of its middle, at the
+    /// ground's height there: a street on the ground at the platforms'
+    /// height, metres off the ground beside a station on a slope, the game
+    /// refused ("Construction Not Possible", run 55).
+    pub fn front(&self, x: f64, land: &Land) -> (P, P) {
         let mid = f64::from(self.first + self.last) * MODULE / 2.0;
+        let ground = |p: P| P {
+            z: land.height(p.x, p.y),
+            ..p
+        };
         (
-            self.local(x, mid - FRONT_HALF),
-            self.local(x, mid + FRONT_HALF),
+            ground(self.local(x, mid - FRONT_HALF)),
+            ground(self.local(x, mid + FRONT_HALF)),
         )
+    }
+
+    /// Where `p` lies across its own axes: x across, y along its track.
+    pub fn across(&self, p: P) -> (f64, f64) {
+        let (ux, uy) = unit(self.heading);
+        let (dx, dy) = (p.x - self.origin.x, p.y - self.origin.y);
+        (dx * uy - dy * ux, dx * ux + dy * uy)
     }
 
     /// Its track's end towards `heading`, where the line leaves.
@@ -517,9 +531,20 @@ pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) 
                 };
                 // A cargo station turned round its target, its building
                 // facing it; a town's passenger station at its edge turned
-                // to the other town, so its line runs straight out.
+                // to the other town, so its line runs straight out, and end
+                // for end where that faces its building (its own -x side)
+                // to the town: its street runs along that side to the
+                // town's (run 55 found none behind a station facing away).
                 let heading = if passengers {
-                    (other.y - y).atan2(other.x - x)
+                    let h = (other.y - y).atan2(other.x - x);
+                    let (ux, uy) = unit(h);
+                    // Its -x axis is its +y turned a quarter anticlockwise.
+                    let facing = -uy * (target.x - x) + ux * (target.y - y);
+                    if facing >= 0.0 {
+                        h
+                    } else {
+                        h + std::f64::consts::PI
+                    }
                 } else {
                     a + std::f64::consts::FRAC_PI_2
                 };
