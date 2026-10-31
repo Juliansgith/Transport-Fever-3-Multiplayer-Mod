@@ -147,7 +147,7 @@ pub(super) struct RailProject {
     /// key, or the two towns' pair ([`passenger_key`]).
     pub key: u32,
     /// Where its depot is tried at the station it tries now, as an index
-    /// into [`rail::DEPOT_PLACES`]; and the heading its track runs into
+    /// into [`rail::DEPOT_TRIES`] ([`rail::depot_spot`]); and the heading its track runs into
     /// the depot it built at, for the track that joins it.
     pub depot_far: usize,
     pub depot_into: f64,
@@ -237,7 +237,7 @@ pub(super) enum RailStage {
     Trial {
         piece: usize,
     },
-    /// Then the verdict on its depot at place place ([`rail::DEPOT_PLACES`])
+    /// Then the verdict on its depot at place place ([`rail::depot_spot`])
     /// beyond station end's planned site, before anything is built: a line
     /// with no place for a depot at either station is laid out elsewhere or
     /// given up then, not once its stations and track stand.
@@ -593,9 +593,7 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = station.ends_toward(other);
-                let (_, _, build) =
-                    rail::depot_place(depot_end, out, place, year, 0, "Rail Depot")?;
+                let (_, (_, _, build)) = depot_by(station, other, place, year, 0, "Rail Depot")?;
                 self.verdict(&Action::BuildConstruction(build), now)
             }
             RailStage::LinkTrial { end, place } => {
@@ -607,8 +605,8 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = station.ends_toward(other);
-                let (join, into, _) = rail::depot_place(depot_end, out, place, year, 0, "")?;
+                let ((depot_end, out), (join, into, _)) =
+                    depot_by(station, other, place, year, 0, "")?;
                 let link = trial(&rail::depot_link(depot_end, out, join, into, year)?)?;
                 self.verdict(&Action::BuildTrack(link), now)
             }
@@ -634,10 +632,11 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = built.station.ends_toward(other);
                 let name = format!("{} Rail Depot", project.from.name.as_str());
-                match rail::depot_place(depot_end, out, project.depot_far, year, seed, &name) {
-                    Some((_, _, build)) => self.verdict(&Action::BuildConstruction(build), now),
+                match depot_by(&built.station, other, project.depot_far, year, seed, &name) {
+                    Some((_, (_, _, build))) => {
+                        self.verdict(&Action::BuildConstruction(build), now)
+                    }
                     None => {
                         self.give_up_rail("could not lay out a rail depot", now);
                         None
@@ -653,7 +652,8 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = built.station.ends_toward(other);
+                let ((depot_end, out), _) =
+                    rail::depot_spot(&built.station, other, project.depot_far)?;
                 let (_, join) = project.depot?;
                 // Curving from the station's heading to the depot's.
                 match rail::depot_link(depot_end, out, join, project.depot_into, year) {
@@ -922,10 +922,9 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = built.station.ends_toward(other);
                 // Where it was tried: its join and the heading into it.
-                let (join, into, _) =
-                    rail::depot_place(depot_end, out, project.depot_far, 0, 0, "")?;
+                let (_, (join, into, _)) =
+                    depot_by(&built.station, other, project.depot_far, 0, 0, "")?;
                 project.depot = Some((build.transform.origin, join));
                 project.depot_into = into;
                 RailStage::DepotBuilt { end, tries: 0 }
@@ -1053,7 +1052,7 @@ impl Brain {
                 } else {
                     self.say(format!("a rail depot placement would be refused: {why}"));
                 }
-                if place + 1 < rail::DEPOT_PLACES.len() {
+                if place + 1 < rail::DEPOT_TRIES {
                     self.stage = Stage::Rail(RailStage::DepotTrial {
                         end,
                         place: place + 1,
@@ -1140,7 +1139,7 @@ impl Brain {
                 self.say(format!("a rail depot placement was refused: {why}"));
                 let further = self.rail.as_mut().is_some_and(|p| {
                     p.depot_far += 1;
-                    if p.depot_far < rail::DEPOT_PLACES.len() {
+                    if p.depot_far < rail::DEPOT_TRIES {
                         return true;
                     }
                     p.depot_far = 0;
@@ -1194,7 +1193,7 @@ impl Brain {
                 let further = self.rail.as_mut().is_some_and(|p| {
                     p.depot = None;
                     p.depot_far += 1;
-                    if p.depot_far < rail::DEPOT_PLACES.len() {
+                    if p.depot_far < rail::DEPOT_TRIES {
                         return true;
                     }
                     p.depot_far = 0;
@@ -1904,6 +1903,27 @@ fn after_depot(project: &RailProject) -> RailStage {
 
 /// Where its depot is tried first once its stations stand: where its
 /// trial passed, else straight out beyond its first station.
+/// A depot by a station: the station's end its track joins and the heading
+/// out of it; where its track joins, the heading into it, and the build.
+type DepotBy = ((P, f64), (P, f64, tpf3mp_proto::action::ConstructionBuild));
+
+/// Station `station`'s depot at place `place` ([`rail::depot_spot`]), its
+/// line leaving towards `other`.
+fn depot_by(
+    station: &rail::Station,
+    other: P,
+    place: usize,
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<DepotBy> {
+    let ((end, out), spot) = rail::depot_spot(station, other, place)?;
+    Some((
+        (end, out),
+        rail::depot_turned(end, out, spot, year, seed, name)?,
+    ))
+}
+
 fn first_depot(project: &mut RailProject) -> RailStage {
     let (end, place) = project.depot_plan.unwrap_or((0, 0));
     project.depot_far = place;

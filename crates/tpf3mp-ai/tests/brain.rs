@@ -2846,9 +2846,11 @@ fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
             l.starts_with("a rail depot placement would be refused: touches 1 things that stand")
         })
         .count();
+    // Its seven beyond the station's outer end, then four beside its line.
     assert_eq!(
-        trial, 7,
-        "each of its seven places by the sawmill: {said:?}"
+        trial,
+        tpf3mp_ai::rail::DEPOT_TRIES,
+        "each of its places by the sawmill: {said:?}"
     );
     assert!(
         !said
@@ -3865,6 +3867,43 @@ fn a_cargo_railway_waits_until_its_settled_lines_earn_what_a_train_costs() {
     play(&mut brain, &mut world, now, Duration::from_secs(1_800));
     let said = brain.take_said();
     assert!(world.line_modes.iter().any(|(_, m)| *m == 7), "{said:?}");
+}
+
+#[test]
+fn a_passenger_lines_depot_stands_beside_its_line_not_beyond_into_its_town() {
+    // Run 59: every place beyond a passenger line's stations' outer ends,
+    // facing into their towns, touched what stood there.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
+    let depot = world
+        .depots
+        .iter()
+        .find(|d| d.file.as_str().contains("/rail/"))
+        .expect("a rail depot");
+    let at = P::of(depot.at);
+    let mut stations: Vec<P> = world
+        .stations
+        .iter()
+        .filter(|s| world.rail_stations.contains(&s.id))
+        .map(|s| P::of(s.pos))
+        .collect();
+    stations.sort_by(|a, b| a.flat_distance(at).total_cmp(&b.flat_distance(at)));
+    let (own, other) = (stations[0], stations[1]);
+    // Towards the other station from its own: by the line's run out.
+    assert!(
+        at.flat_distance(other) < own.flat_distance(other),
+        "{at:?} by {own:?}, the other {other:?}"
+    );
 }
 
 #[test]

@@ -62,6 +62,22 @@ pub const DEPOT_PLACES: [(f64, f64); 7] = [
     (150.0, std::f64::consts::FRAC_PI_4),
     (150.0, -std::f64::consts::FRAC_PI_4),
 ];
+/// Where a depot is tried off a line's own end, the station's end its line
+/// leaves by, as [`DEPOT_PLACES`] but turned off the line only: a siding
+/// beside its run out, its track a switch off the line's first node. A
+/// passenger station's outer end may face into its town's streets, its run
+/// out kept clear of them ([`EXIT_CLEAR`]): run 59's line had all fourteen
+/// places beyond its two stations' outer ends refused, touching 4 to 24
+/// things that stand, twice, and was built only between its third pair of
+/// station places.
+pub const DEPOT_LINE_PLACES: [(f64, f64); 4] = [
+    (100.0, std::f64::consts::FRAC_PI_6),
+    (100.0, -std::f64::consts::FRAC_PI_6),
+    (150.0, std::f64::consts::FRAC_PI_4),
+    (150.0, -std::f64::consts::FRAC_PI_4),
+];
+/// How many places a depot is tried at by each of a line's stations.
+pub const DEPOT_TRIES: usize = DEPOT_PLACES.len() + DEPOT_LINE_PLACES.len();
 /// The grade a line keeps to where it can, the steepest it climbs at all
 /// (a plant on a hill above its town, 89 m over 3.6 km, 2026-10-30), and
 /// its tightest curve, in metres: well inside the simple track's limits
@@ -446,11 +462,28 @@ pub fn depot(
     depot_at(end, out_heading, DEPOT_GAP, year, seed, name)
 }
 
+/// Depot place `place` (of [`DEPOT_TRIES`]) by `station`, its line leaving
+/// towards `other`: the end its track joins and the heading out of it, how
+/// far beyond that end it joins and how far it turns. A passenger
+/// station's beside its line's run out first ([`DEPOT_LINE_PLACES`]), then
+/// beyond its outer end ([`DEPOT_PLACES`]); a cargo station's the other way
+/// round, its outer end by its industry or town.
+pub fn depot_spot(station: &Station, other: P, place: usize) -> Option<((P, f64), (f64, f64))> {
+    let (line, outer) = station.ends_toward(other);
+    let (a, at_a, b, at_b) = if station.passengers {
+        (&DEPOT_LINE_PLACES[..], line, &DEPOT_PLACES[..], outer)
+    } else {
+        (&DEPOT_PLACES[..], outer, &DEPOT_LINE_PLACES[..], line)
+    };
+    match place.checked_sub(a.len()) {
+        None => Some((at_a, a[place])),
+        Some(k) => Some((at_b, *b.get(k)?)),
+    }
+}
+
 /// A rail depot at place place ([`DEPOT_PLACES`]) beyond a station's
 /// end leaving at out: where its track joins, the heading its track
 /// runs into the depot at (what [`depot_link`] arrives at), and the build.
-/// The join lies at the end of an arc from the station's heading to the
-/// depot's: along the chord, half the turn off the station's line.
 pub fn depot_place(
     end: P,
     out: f64,
@@ -459,7 +492,22 @@ pub fn depot_place(
     seed: i64,
     name: &str,
 ) -> Option<(P, f64, ConstructionBuild)> {
-    let &(gap, turn) = DEPOT_PLACES.get(place)?;
+    let &spot = DEPOT_PLACES.get(place)?;
+    depot_turned(end, out, spot, year, seed, name)
+}
+
+/// A rail depot `spot.0` metres beyond a station's end leaving at `out`,
+/// turned `spot.1` off its line: as [`depot_place`]. The join lies at the
+/// end of an arc from the station's heading to the depot's: along the
+/// chord, half the turn off the station's line.
+pub fn depot_turned(
+    end: P,
+    out: f64,
+    (gap, turn): (f64, f64),
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<(P, f64, ConstructionBuild)> {
     let (cx, cy) = unit(out + turn / 2.0);
     let join = P {
         x: end.x + cx * gap,
@@ -2258,6 +2306,38 @@ pub fn link(from: P, to: P, year: i32) -> Option<TrackBuild> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_passenger_stations_depot_is_tried_beside_its_line_first_a_cargo_stations_beyond_its_end() {
+        // Run 59: all fourteen places beyond a passenger line's two
+        // stations' outer ends, which faced into their towns, were refused.
+        let other = p(5_000.0, 0.0);
+        let passengers = Station::for_passengers(p(0.0, 0.0), 0.0);
+        let (line, outer) = passengers.ends_toward(other);
+        for (k, spot) in DEPOT_LINE_PLACES.iter().enumerate() {
+            assert_eq!(depot_spot(&passengers, other, k), Some((line, *spot)));
+            // Off the line, never along it.
+            assert!(spot.1.abs() >= std::f64::consts::FRAC_PI_6 - 1e-9);
+        }
+        let n = DEPOT_LINE_PLACES.len();
+        for (k, spot) in DEPOT_PLACES.iter().enumerate() {
+            assert_eq!(depot_spot(&passengers, other, n + k), Some((outer, *spot)));
+        }
+        assert_eq!(depot_spot(&passengers, other, DEPOT_TRIES), None);
+        // A cargo station's beyond its outer end first, by its industry.
+        let cargo = Station::new(p(0.0, 0.0), 0.0);
+        let (line, outer) = cargo.ends_toward(other);
+        assert_eq!(depot_spot(&cargo, other, 0), Some((outer, DEPOT_PLACES[0])));
+        assert_eq!(
+            depot_spot(&cargo, other, DEPOT_PLACES.len()),
+            Some((line, DEPOT_LINE_PLACES[0]))
+        );
+        // Beside the line: its join off the run out, towards the other town.
+        let ((end, out), spot) = depot_spot(&passengers, other, 0).unwrap();
+        let (join, _, _) = depot_turned(end, out, spot, 1925, 1, "D").unwrap();
+        assert!(join.flat_distance(other) < passengers.origin.flat_distance(other));
+        assert!(join.y.abs() > 20.0, "{join:?}");
+    }
 
     #[test]
     fn a_depot_turned_aside_joins_on_the_arc_and_runs_in_at_its_turn() {

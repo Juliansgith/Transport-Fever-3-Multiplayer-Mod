@@ -453,8 +453,15 @@ faster AI.
   depot beyond the first station, joined to its outer end: straight out
   30, 90 or 150 m, else turned 30 degrees aside at 100 m or 45 degrees at
   150 m, either way, its track to the station one edge curving from the
-  station's heading to the depot's; then the same beyond the other
-  station. Its depot's places are put to the verdict with its track's
+  station's heading to the depot's; then beside the line's own run out,
+  a siding off its first node turned 30 degrees at 100 m or 45 at 150 m
+  either way; then the same at the other station. A passenger line tries
+  beside its run out first, kept clear of streets, its stations' outer ends
+  facing into their towns (run 59: all fourteen places beyond its two
+  stations' outer ends touched what stood there, twice, and its line was
+  laid only between its third pair of station places, Dinnington's
+  station then reaching 10 buildings where run 57's had reached 24). Its
+  depot's places are put to the verdict with its track's
   pieces, before anything is built, at the stations' planned sites: a
   line with no place for a depot at either is laid out between other
   sites or given up then (straight out met a player's railway at one
