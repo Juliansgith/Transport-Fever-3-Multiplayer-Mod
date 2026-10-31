@@ -1511,8 +1511,11 @@ impl Brain {
         let towns = std::mem::take(&mut self.needing);
         let mut picks: Vec<(f64, CargoRoute)> = Vec::new();
         for from in &industries {
-            // It loads at the industry's own station, on land.
-            if from.station.is_none() || from.water {
+            // It loads at the industry's own station, on land, where no other
+            // company carries from already (its stations by it, its lines at
+            // its station): run 47's two cement railways from one plant each
+            // lost 0.7 to 0.8 million in their first year.
+            if from.station.is_none() || from.water || from.carried > 0 {
                 continue;
             }
             for output in from.outputs.iter().filter(|o| o.per_year >= CARGO_LEAST) {
@@ -1556,7 +1559,9 @@ impl Brain {
         // one: the chain's legs in order, the first now.
         let skip = |from: &AiIndustry, cargo: &ResName| {
             let key = route_key(from.pos, cargo.as_str());
-            self.memo.served.contains(&key) || self.given_up.iter().any(|(id, _)| *id == key)
+            from.carried > 0
+                || self.memo.served.contains(&key)
+                || self.given_up.iter().any(|(id, _)| *id == key)
         };
         let found = chain::chains(
             &industries,

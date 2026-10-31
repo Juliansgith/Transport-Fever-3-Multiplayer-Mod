@@ -1084,6 +1084,7 @@ fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]
         )
         .unwrap(),
         water: false,
+        carried: 0,
     }
 }
 
@@ -3295,4 +3296,32 @@ fn an_ai_whose_settled_lines_earn_less_than_its_loans_take_builds_on_with_its_ca
         "{said:?}"
     );
     assert!(world.lines.len() >= 3, "{said:?}");
+}
+
+#[test]
+fn a_maker_another_company_carries_from_gets_no_line_of_its_own() {
+    // Run 47: two cement railways from one plant, each losing 0.7 to 0.8
+    // million in its first year.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.industries[0].carried = 1;
+    world.money = 30_000_000;
+    world.month_every = Some(Duration::from_secs(30));
+    world.wear_per_month = 1;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    brain.carry_cargo(true);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert!(!said.iter().any(|l| l.contains("planks from")), "{said:?}");
+    assert!(
+        world.line_modes.iter().all(|(_, m)| *m == 3),
+        "buses only: {said:?}"
+    );
 }

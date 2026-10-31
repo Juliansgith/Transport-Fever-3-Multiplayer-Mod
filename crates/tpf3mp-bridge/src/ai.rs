@@ -38,6 +38,9 @@ pub const MAX_AI_LINKED: usize = 8;
 /// How far from one of a town's districts' centres a stop is in that town,
 /// in metres.
 pub const TOWN_REACH: f64 = 600.0;
+/// How far from an industry another company's station counts as at it, in
+/// metres: a cargo station's catchment and its approach.
+pub const INDUSTRY_REACH: f64 = 300.0;
 /// Most loans an [`AiCompany`] lists: the room allows four at once
 /// (`companies.MAX_LOANS`).
 pub const MAX_AI_LOANS: usize = 8;
@@ -284,6 +287,13 @@ pub struct AiIndustry {
     /// It stands on water, as fishing grounds do: no road or rail reaches
     /// it.
     pub water: bool,
+    /// What other companies have at it: their stations within
+    /// [`INDUSTRY_REACH`] of it, held by a construction (a truck or rail
+    /// station, its line opened or not yet), and their cargo lines that load
+    /// at its own station. A maker another company carries from leaves a new
+    /// line little: run 47's two AIs each built a cement railway from one
+    /// plant, and each lost 0.7 to 0.8 million in its first year.
+    pub carried: u16,
 }
 
 /// One cargo an industry makes.

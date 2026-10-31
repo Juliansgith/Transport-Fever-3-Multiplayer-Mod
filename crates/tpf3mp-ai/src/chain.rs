@@ -243,6 +243,7 @@ mod tests {
             )
             .unwrap(),
             water: false,
+            carried: 0,
         }
     }
 

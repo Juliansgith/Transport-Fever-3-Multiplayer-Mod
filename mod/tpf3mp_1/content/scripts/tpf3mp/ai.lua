@@ -756,11 +756,70 @@ end
 -- window reads the same, gui/main/cargo_react_util.tl). 94 on the big
 -- fixture in 1 ms (2026-10-29).
 ai.MAX_INDUSTRIES = 160
-function ai.industries(registry)
+-- What other companies have at each of `industries` (bridge 37): their
+-- station groups held by a construction within INDUSTRY_REACH of it, and
+-- their cargo lines that stop at its own station group (`own`), each once.
+-- A cargo line has room for a cargo other than passengers (its first
+-- vehicle's capacities past the first entry). `me` is the asking company's
+-- entity.
+ai.INDUSTRY_REACH = 300
+local function carriedAt(industries, me)
+	local companies = module("companies")
+	local reach2 = ai.INDUSTRY_REACH * ai.INDUSTRY_REACH
+	for _, g in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.STATION_GROUP) or {}) do
+		local owner = companies.ownerOf(api, g)
+		if owner ~= nil and owner ~= me then
+			local group = component(g, "STATION_GROUP")
+			local first = group and group.stations and group.stations[1]
+			local c
+			if first then
+				local _, held = constructionOf(first, { "getConstructionEntityForStation",
+					"getConstructionEntityForSubconstruction" })
+				c = held
+			end
+			if c then
+				local at = origin(c)
+				for _, i in ipairs(industries) do
+					local dx, dy = at.x - i.at.x, at.y - i.at.y
+					if dx * dx + dy * dy <= reach2 then i.out.carried = math.min(i.out.carried + 1, 65535) end
+				end
+			end
+		end
+	end
+	local byGroup = {}
+	for _, i in ipairs(industries) do if i.group then byGroup[i.group] = i end end
+	local own = {}
+	if me then
+		for _, l in ipairs(api.engine.system.lineSystem.getLinesForPlayer(me) or {}) do own[l] = true end
+	end
+	for _, l in ipairs(api.engine.system.lineSystem.getLines() or {}) do
+		if not own[l] then
+			local cargo = false
+			pcall(function()
+				local first = (api.engine.system.transportVehicleSystem.getLineVehicles(l) or {})[1]
+				local tv = first and component(first, "TRANSPORT_VEHICLE")
+				for k, n in ipairs(tv and tv.config.capacities or {}) do
+					if k > 1 and n > 0 then cargo = true end
+				end
+			end)
+			local line = cargo and component(l, "LINE")
+			local seen = {}
+			for _, s in ipairs(line and line.stops or {}) do
+				local i = byGroup[s.stationGroup]
+				if i and not seen[i] then
+					seen[i] = true
+					i.out.carried = math.min(i.out.carried + 1, 65535)
+				end
+			end
+		end
+	end
+end
+
+function ai.industries(registry, seat, roster)
 	local reg = type(registry) == "function" and registry() or registry
 	local regmod = module("registry")
 	local stock = api.engine.util.stock
-	local out = {}
+	local out, places = {}, {}
 	for _, e in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.INDUSTRY) or {}) do
 		if #out >= ai.MAX_INDUSTRIES then break end
 		pcall(function()
@@ -783,11 +842,12 @@ function ai.industries(registry)
 				end
 			end
 			-- Its own station, where a line loads and unloads its cargo.
-			local station, terminals = nil, 0
+			local station, terminals, ownGroup = nil, 0, nil
 			local first = c.stations and c.stations[1]
 			if first and reg then
 				local okg, group = pcall(api.engine.system.stationGroupSystem.getStationGroup, first)
 				station = okg and regmod.id(reg, "groups", group) or nil
+				if okg and type(group) == "number" and group >= 0 then ownGroup = group end
 				local s = component(first, "STATION")
 				terminals = math.min(#((s and s.terminals) or {}), 255)
 			end
@@ -797,9 +857,12 @@ function ai.industries(registry)
 			local wet = false
 			pcall(function() wet = api.engine.terrain.isOnWater(api.type.Vec2f.new(at.x, at.y)) == true end)
 			out[#out + 1] = { name = text(ok and name or "", 48), pos = pos(at), station = station,
-				terminals = terminals, inputs = inputs, outputs = outputs, water = wet }
+				terminals = terminals, inputs = inputs, outputs = outputs, water = wet, carried = 0 }
+			places[#places + 1] = { out = out[#out], at = at, group = ownGroup }
 		end)
 	end
+	local c = roster and companyOf(roster, seat)
+	pcall(carriedAt, places, c and c.entity)
 	return { Industries = out }
 end
 
@@ -894,7 +957,7 @@ function ai.answer(ask, roster, registry)
 	if q == "Towns" then return ai.towns(registry, ask.seat, roster) end
 	if type(q) == "table" and q.Streets then return ai.streets(q.Streets.at, q.Streets.radius) end
 	if type(q) == "table" and q.Models then return ai.models(q.Models.mode, q.Models.cargo) end
-	if q == "Industries" then return ai.industries(registry) end
+	if q == "Industries" then return ai.industries(registry, ask.seat, roster) end
 	if type(q) == "table" and q.Route then return ai.route(q.Route.from, q.Route.to) end
 	if type(q) == "table" and q.Land then return ai.land(q.Land.at, q.Land.cells, q.Land.step) end
 	if type(q) == "table" and q.Verdict then return ai.verdict(ask.seat, q.Verdict, roster) end
