@@ -92,6 +92,16 @@ pub const PEOPLE_LEAST: usize = 15;
 /// built-up area's edge facing the line, as a player's first station, the
 /// houses behind it in reach.
 pub const EXIT_CLEAR: f64 = 200.0;
+/// Where a passenger station's street runs along its building's front,
+/// across its own x axis, in metres, and the places tried after where the
+/// game finds that one touching the station: the fixture player's station's
+/// street runs 30 m from its track's axis along its building (run 54).
+pub const FRONT_X: [f64; 3] = [-30.0, -34.0, -38.0];
+/// How far along its front that street runs either way of its middle, in
+/// metres.
+pub const FRONT_HALF: f64 = 30.0;
+/// How far from its front it looks for a street to join, in metres.
+pub const FRONT_REACH: u32 = 300;
 /// What a metre of track through town houses costs beyond the ground, the
 /// houses it clears: about what a road depot among houses cost beyond one
 /// on open ground (up to 800,000 for its 40 by 20 metres), over a track's
@@ -232,6 +242,16 @@ impl Station {
             y: self.origin.y + lx * xy + ly * uy,
             z: self.origin.z,
         }
+    }
+
+    /// The ends of a street along its building's front, `x` across its own
+    /// axes ([`FRONT_X`]), [`FRONT_HALF`] either way of its middle.
+    pub fn front(&self, x: f64) -> (P, P) {
+        let mid = f64::from(self.first + self.last) * MODULE / 2.0;
+        (
+            self.local(x, mid - FRONT_HALF),
+            self.local(x, mid + FRONT_HALF),
+        )
     }
 
     /// Its track's end towards `heading`, where the line leaves.

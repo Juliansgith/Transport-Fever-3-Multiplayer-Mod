@@ -1096,6 +1096,17 @@ impl Brain {
                 None
             }
             (AiQuestion::Streets { .. }, AiAnswer::Streets(streets))
+                if matches!(
+                    self.stage,
+                    Stage::Rail(train::RailStage::FrontStreets { .. })
+                ) =>
+            {
+                if let Stage::Rail(train::RailStage::FrontStreets { end }) = self.stage {
+                    self.rail_front_streets(streets.into_inner(), end, now);
+                }
+                None
+            }
+            (AiQuestion::Streets { .. }, AiAnswer::Streets(streets))
                 if matches!(self.stage, Stage::Rail(_)) =>
             {
                 self.rail_streets(streets.into_inner(), now);

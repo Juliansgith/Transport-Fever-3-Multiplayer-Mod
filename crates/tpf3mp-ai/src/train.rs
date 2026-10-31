@@ -30,6 +30,7 @@ use super::{Brain, CONFIRM_TRIES, GIVE_UP_FOR, Out, SETTLE, Stage, cargo_name, r
 use crate::{
     chain::{Leg, Taker},
     costs::{self, Prices},
+    place,
     place::P,
     rail::{self, Land, Node, Piece, Station},
 };
@@ -143,6 +144,9 @@ pub(super) struct RailProject {
     /// The station and place its depot's trial passed at, where its depot
     /// is tried first once its stations stand.
     pub depot_plan: Option<(usize, usize)>,
+    /// The street a passenger station's own street joins, by the end it is
+    /// for.
+    pub front_street: Option<AiStreet>,
 }
 
 /// Whether a rail line was given up for something the land decides: no
@@ -305,6 +309,17 @@ pub(super) enum RailStage {
         vehicle: VehicleId,
         tries: u32,
     },
+    /// A passenger line running: reading the streets by station `end`'s
+    /// front, for a street of its own along it to join to them.
+    FrontStreets {
+        end: usize,
+    },
+    /// Asking the verdict on that street, along the front at
+    /// [`rail::FRONT_X`]`[at]`.
+    FrontVerdict {
+        end: usize,
+        at: usize,
+    },
 }
 
 impl Brain {
@@ -400,6 +415,7 @@ impl Brain {
             depot_far: 0,
             depot_into: 0.0,
             depot_plan: None,
+            front_street: None,
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
@@ -630,6 +646,34 @@ impl Brain {
                     Some(link) => self.verdict(&Action::BuildTrack(link), now),
                     None => {
                         self.give_up_rail("could not lay out a depot's track", now);
+                        None
+                    }
+                }
+            }
+            RailStage::FrontStreets { end } => {
+                let project = self.rail.as_ref()?;
+                let (a, b) = project.built[end]?.station.front(rail::FRONT_X[0]);
+                let at = P {
+                    x: (a.x + b.x) / 2.0,
+                    y: (a.y + b.y) / 2.0,
+                    z: a.z,
+                };
+                self.ask(
+                    AiQuestion::Streets {
+                        at: at.pos(),
+                        radius: rail::FRONT_REACH,
+                    },
+                    now,
+                )
+            }
+            RailStage::FrontVerdict { end, at } => {
+                let project = self.rail.as_ref()?;
+                let station = project.built[end]?.station;
+                let street = project.front_street.as_ref()?;
+                match place::front_street(station.front(rail::FRONT_X[at]), street) {
+                    Some(road) => self.verdict(&Action::BuildRoad(road), now),
+                    None => {
+                        self.next_front(end, now);
                         None
                     }
                 }
@@ -874,6 +918,24 @@ impl Brain {
             (RailStage::LinkVerdict { .. }, Action::BuildTrack(_)) => {
                 RailStage::LinkBuilt { tries: 0 }
             }
+            // Its station's street sent: the other station's, or done.
+            (RailStage::FrontVerdict { end, .. }, Action::BuildRoad(_)) => {
+                let out = self.act(action, now);
+                if out.is_some() {
+                    let described = self
+                        .rail
+                        .as_ref()
+                        .map(RailProject::describe)
+                        .unwrap_or_default();
+                    self.say(format!(
+                        "joins its station to the town's streets for {described}"
+                    ));
+                    self.next_front(end, now);
+                } else {
+                    self.wake = Some(now + SETTLE);
+                }
+                return out;
+            }
             (RailStage::LoopVerdict { lp }, Action::BuildTrack(_)) => RailStage::LoopBuilt { lp },
             (RailStage::SignalVerdict { lp, n, .. }, Action::PlaceStop(_)) => {
                 RailStage::SignalBuilt { lp, n }
@@ -1089,6 +1151,15 @@ impl Brain {
             }
             // Its depot stands but cannot be joined: another place, as a
             // depot refused, rather than the line, built already.
+            // The next place along its front, else this station goes without.
+            RailStage::FrontVerdict { end, at } => {
+                self.say(format!("its station's street would be refused: {why}"));
+                if at + 1 < rail::FRONT_X.len() {
+                    self.stage = Stage::Rail(RailStage::FrontVerdict { end, at: at + 1 });
+                } else {
+                    self.next_front(end, now);
+                }
+            }
             RailStage::LinkVerdict { end } => {
                 self.say(format!("its depot's track was refused: {why}"));
                 let further = self.rail.as_mut().is_some_and(|p| {
@@ -1433,6 +1504,12 @@ impl Brain {
                         .map(RailProject::describe)
                         .unwrap_or_default();
                     self.say(format!("runs a train on {described}"));
+                    // A passenger line's stations joined to the towns'
+                    // streets, that people walk to them.
+                    if self.rail.as_ref().is_some_and(|p| p.passengers) {
+                        self.stage = Stage::Rail(RailStage::FrontStreets { end: 0 });
+                        return None;
+                    }
                     self.rail = None;
                     self.leg_now = None;
                     self.rest(now);
@@ -1451,6 +1528,51 @@ impl Brain {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// The streets read by station `end`'s front: the nearest street it may
+    /// split, its middle within reach, then the verdict on its own street to
+    /// it; none such, the next station.
+    pub(super) fn rail_front_streets(&mut self, streets: Vec<AiStreet>, end: usize, now: Instant) {
+        let Some(project) = self.rail.as_mut() else {
+            return;
+        };
+        let Some(built) = project.built[end] else {
+            self.next_front(end, now);
+            return;
+        };
+        let (a, b) = built.station.front(rail::FRONT_X[0]);
+        let at = P {
+            x: (a.x + b.x) / 2.0,
+            y: (a.y + b.y) / 2.0,
+            z: a.z,
+        };
+        let nearest = streets.into_iter().filter(place::usable).min_by(|x, y| {
+            place::middle(x)
+                .flat_distance(at)
+                .total_cmp(&place::middle(y).flat_distance(at))
+        });
+        match nearest {
+            Some(street) => {
+                project.front_street = Some(street);
+                self.stage = Stage::Rail(RailStage::FrontVerdict { end, at: 0 });
+            }
+            None => {
+                self.say("found no street to join its station to".into());
+                self.next_front(end, now);
+            }
+        }
+    }
+
+    /// On from station `end`'s street: the other's, or the line is done.
+    fn next_front(&mut self, end: usize, now: Instant) {
+        if end == 0 {
+            self.stage = Stage::Rail(RailStage::FrontStreets { end: 1 });
+        } else {
+            self.rail = None;
+            self.leg_now = None;
+            self.rest(now);
         }
     }
 

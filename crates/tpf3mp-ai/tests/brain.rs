@@ -15,7 +15,7 @@ use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
     action::{
         Action, CompanyOp, EdgeEnds, EdgeObjectKind, LineChange, LineId, LoanOp, LoanTerms,
-        PlaceStop, Pos, Resolve, StationId, Structure, TownId, VehicleId,
+        PlaceStop, Pos, Resolve, RoadBuild, StationId, Structure, TownId, VehicleId,
     },
 };
 
@@ -134,6 +134,8 @@ struct World {
     /// Its towns built up: every cell within 500 m of a town's middle that
     /// is no street a town house's.
     houses: bool,
+    /// The streets of its own the AI built, as sent.
+    roads: Vec<RoadBuild>,
     /// The buses the game offers, where not the stand-in's two.
     buses: Option<Vec<AiModel>>,
     wear_per_month: u16,
@@ -224,6 +226,7 @@ impl World {
             line_recent: None,
             no_road_from: None,
             houses: false,
+            roads: Vec::new(),
             buses: None,
             wear_per_month: 0,
             lowest: 0,
@@ -1043,6 +1046,10 @@ impl World {
                     "a line deleted with its vehicles on it"
                 );
                 self.lines.retain(|l| l.id != edit.line);
+            }
+            Action::BuildRoad(road) => {
+                self.money -= 20_000;
+                self.roads.push(road);
             }
             other => panic!("the brain sent {other:?}"),
         }
@@ -3845,4 +3852,48 @@ fn a_cargo_railway_waits_until_its_settled_lines_earn_what_a_train_costs() {
     play(&mut brain, &mut world, now, Duration::from_secs(1_800));
     let said = brain.take_said();
     assert!(world.line_modes.iter().any(|(_, m)| *m == 7), "{said:?}");
+}
+
+#[test]
+fn a_passenger_station_gets_a_street_along_its_front_joined_to_the_towns() {
+    // Run 54: its stations among the houses, no street at their front,
+    // reached 0 and 1 people in the game's catchment, counted along the
+    // streets from a station's entrance; the fixture player's, a street
+    // along its building, 13 to 48.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
+    assert_eq!(world.roads.len(), 2, "one for each station: {said:?}");
+    for road in &world.roads {
+        let v = &road.polyline.vertices;
+        assert_eq!(v.len(), 3);
+        // Along the front, 60 m, then on to a town street it splits.
+        let (a, b) = (P::of(v[0].pos), P::of(v[1].pos));
+        assert!((a.flat_distance(b) - 60.0).abs() < 1.0, "{a:?} {b:?}");
+        assert!(matches!(v[2].resolve, Resolve::Split(_)));
+        let joined = world.streets.iter().any(|s| s.mid == v[2].pos);
+        assert!(joined, "at a street's middle: {:?}", v[2].pos);
+        // 30 m off the station's track, on its building's side.
+        let near = world
+            .stations
+            .iter()
+            .filter(|s| world.rail_stations.contains(&s.id))
+            .map(|s| P::of(s.pos))
+            .any(|o| (o.flat_distance(a) - 30.0f64.hypot(30.0)).abs() < 15.0);
+        assert!(near, "by a station: {a:?}");
+    }
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("joins its station to the town's streets")),
+        "{said:?}"
+    );
 }

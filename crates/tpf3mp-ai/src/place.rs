@@ -9,8 +9,8 @@ use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
         ConstructionBuild, EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, Link, Network, Param,
-        ParamValue, PlaceStop, Polyline, Pos, ResName, Resolve, Structure, Tangent, Transform,
-        UnitDir, Vertex,
+        ParamValue, PlaceStop, Polyline, Pos, ResName, Resolve, RoadBuild, Structure, Tangent,
+        Tram, Transform, UnitDir, Vertex,
     },
 };
 
@@ -119,6 +119,76 @@ fn edge_ref(street: &AiStreet) -> EdgeRef {
             b: street.b,
         },
     }
+}
+
+/// A street along a station's front, from `front.0` to `front.1`, then on to
+/// `street`'s middle, which it splits: of `street`'s own template, on the
+/// ground. A station's catchment is counted along the streets from its
+/// entrance, and the AI's stations, no street at their front, reached none
+/// of the people about them (run 54: 0 and 1, the fixture player's, a street
+/// along its building, 13 to 48; 2026-10-31). Its far end the one further
+/// from the street, so the street joins at the near one.
+pub fn front_street(front: (P, P), street: &AiStreet) -> Option<RoadBuild> {
+    let to = middle(street);
+    let (far, near) = if front.0.flat_distance(to) >= front.1.flat_distance(to) {
+        (front.0, front.1)
+    } else {
+        (front.1, front.0)
+    };
+    let tangent = |a: Pos, b: Pos| Tangent {
+        x: b.x - a.x,
+        y: b.y - a.y,
+        z: b.z - a.z,
+    };
+    let (a, b, c) = (far.pos(), near.pos(), street.mid);
+    let link = |from: u16, to: u16, t: Tangent| Link {
+        from,
+        to,
+        tangent0: t,
+        tangent1: t,
+        structure: Structure::Ground,
+        kind: Some(EdgeKind {
+            network: Network::Street,
+            template: street.template.clone(),
+            style: None,
+        }),
+        decorations: BoundedVec::default(),
+        locked: false,
+        owned: true,
+        lanes: BoundedVec::default(),
+        precedence: None,
+        position0: None,
+        position1: None,
+        kept: BoundedVec::default(),
+    };
+    let polyline = Polyline::new(
+        BoundedVec::new(vec![
+            Vertex {
+                pos: a,
+                resolve: Resolve::New,
+            },
+            Vertex {
+                pos: b,
+                resolve: Resolve::New,
+            },
+            Vertex {
+                pos: c,
+                resolve: Resolve::Split(edge_ref(street)),
+            },
+        ])
+        .ok()?,
+        BoundedVec::new(vec![link(0, 1, tangent(a, b)), link(1, 2, tangent(b, c))]).ok()?,
+        BoundedVec::default(),
+    )
+    .ok()?;
+    Some(RoadBuild {
+        street: street.template.clone(),
+        style: None,
+        bus_lane: false,
+        tram: Tram::None,
+        polyline,
+        crossing_type: None,
+    })
 }
 
 /// Whether the AI may stop buses on this edge, or split it for a depot: the
