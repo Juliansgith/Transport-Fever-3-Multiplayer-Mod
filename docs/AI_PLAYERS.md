@@ -160,7 +160,13 @@ and the slowest, and its slowest frame of them (`ai: answers in 60 s:
 ## How the AI plays
 
 Four layers, each run on the game's calendar so a faster room makes a
-faster AI.
+faster AI. Once a project is done or given up it rests one look (the
+difficulty's "thinks" below, sooner in a faster room), then goes straight
+on to what that look leads to; until run 57 the look's wait was put on the
+survey after it too, so each difficulty thought half as often as its table
+says (Normal planned something new every 4 minutes). Its upkeep changes a
+line's vehicles no more than once in two looks, as it did then: one more
+or one fewer shows in a line's load and money only over the next weeks.
 
 1. **Strategy** (each think). Its money: cash, loans, the reserve its
    difficulty keeps. Its opportunities, ranked by the return each would
