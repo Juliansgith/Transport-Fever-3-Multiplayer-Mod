@@ -1417,14 +1417,17 @@ impl Brain {
             .as_ref()
             .map(|c| c.vehicles.iter().map(|v| v.id).collect())
             .unwrap_or_default();
-        self.say(format!(
+        let bought = format!(
             "buys a train: {} and {wagons} {}",
             engine.model.as_str(),
             wagon.model.as_str()
-        ));
+        );
         self.stage = Stage::Rail(RailStage::Bought { before, tries: 0 });
         let out = self.act(&action, now);
-        if out.is_none() {
+        // Said once it is sent: until its hands may act again, it is not.
+        if out.is_some() {
+            self.say(bought);
+        } else {
             self.stage = Stage::Rail(RailStage::Buying);
             self.wake = Some(now + SETTLE);
         }

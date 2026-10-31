@@ -423,6 +423,12 @@ pub struct Brain {
     /// How many young lines it last said it waits on: said once, not at
     /// every look.
     young_said: usize,
+    /// Its look found a passenger station of its own with no bus line by
+    /// it: the towns' answer is for buses to it.
+    feeding: bool,
+    /// Its stations no town by them would take a bus line, and until when
+    /// they are left.
+    unfed_left: Vec<(P, Instant)>,
     carries_cargo: bool,
     /// Towns given up on, until when.
     given_up: Vec<(u32, Instant)>,
@@ -472,6 +478,8 @@ impl Brain {
             no_rail: Vec::new(),
             next_cargo: false,
             young_said: 0,
+            feeding: false,
+            unfed_left: Vec::new(),
             carries_cargo: CARRIES_CARGO,
             given_up: Vec::new(),
             said: Vec::new(),
@@ -724,6 +732,56 @@ impl Brain {
             .filter(|v| v.line == Some(line.id))
             .peekable();
         on.peek().is_some() && on.all(|v| v.worn >= upkeep::SETTLED)
+    }
+
+    /// Where its passenger train stations stand.
+    fn passenger_stations(&self, company: &AiCompany) -> Vec<P> {
+        company
+            .lines
+            .iter()
+            .filter(|l| {
+                self.memo.rail_lines.contains(&l.id.0)
+                    && self
+                        .memo
+                        .cargo_lines
+                        .iter()
+                        .any(|(id, cargo)| *id == l.id.0 && cargo == train::PASSENGERS)
+            })
+            .flat_map(|l| l.stops.iter())
+            .filter_map(|s| company.stations.iter().find(|st| st.id == *s))
+            .map(|s| P::of(s.pos))
+            .collect()
+    }
+
+    /// Where its bus lines stop: its stations a line of its stops at that
+    /// carries no cargo of its memo (a stop a project left behind serves no
+    /// one).
+    fn bus_stops(&self, company: &AiCompany) -> Vec<P> {
+        company
+            .stations
+            .iter()
+            .filter(|s| {
+                company
+                    .lines
+                    .iter()
+                    .filter(|l| !self.memo.cargo_lines.iter().any(|(id, _)| *id == l.id.0))
+                    .any(|l| l.stops.contains(&s.id))
+            })
+            .map(|s| P::of(s.pos))
+            .collect()
+    }
+
+    /// Whether a passenger station of its own has no bus line of its within
+    /// [`FEEDER_REACH`], and is not left for now.
+    fn unfed(&self, company: &AiCompany) -> bool {
+        let stops = self.bus_stops(company);
+        self.passenger_stations(company).iter().any(|s| {
+            !stops.iter().any(|b| b.flat_distance(*s) <= FEEDER_REACH)
+                && !self
+                    .unfed_left
+                    .iter()
+                    .any(|(p, _)| p.flat_distance(*s) < 1.0)
+        })
     }
 
     /// A line too young for its money to say anything yet: it runs, and none
@@ -1261,6 +1319,11 @@ impl Brain {
             self.next_leg(now);
             return None;
         }
+        // Buses to a passenger station of its own come before anything new,
+        // its young lines' wait included: they bring its trains' riders, as
+        // a chain's later legs bring its first one's cargo.
+        self.unfed_left.retain(|(_, until)| *until > now);
+        let feeding = self.unfed(company);
         // Nothing new while as many of its lines as its difficulty waits on
         // are too young for their money to say what pays.
         let young = company
@@ -1268,7 +1331,7 @@ impl Brain {
             .iter()
             .filter(|l| self.young(company, l))
             .count();
-        if young >= self.profile.young_most {
+        if young >= self.profile.young_most && !feeding {
             if young != self.young_said {
                 self.young_said = young;
                 self.say(format!(
@@ -1282,6 +1345,11 @@ impl Brain {
         // Then a new line: a town's buses and a cargo's trucks in turn, a
         // kind whose settled lines lose money passed over while the other
         // pays, as a player builds more of what earns.
+        self.feeding = feeding;
+        if feeding {
+            self.stage = Stage::Survey;
+            return None;
+        }
         let mut cargo = self.next_cargo && self.carries_cargo;
         self.next_cargo = !self.next_cargo;
         let (buses, trucks) = (
@@ -1584,6 +1652,7 @@ impl Brain {
         // A passenger train between two large towns, its money and
         // difficulty allowing, in turn with buses.
         if self.profile.passenger_trains
+            && !self.feeding
             && self.spendable() >= train::RAIL_MONEY
             && self.random().is_multiple_of(2)
             && let Some((a, b)) = self.passenger_pair(&towns)
@@ -1591,47 +1660,13 @@ impl Brain {
         {
             return;
         }
-        // Its stations a line of its stops at: a stop a project left behind
-        // serves no one.
-        let served: Vec<P> = self
-            .company
-            .as_ref()
-            .map(|c| {
-                c.stations
-                    .iter()
-                    .filter(|s| {
-                        c.lines
-                            .iter()
-                            .filter(|l| !self.memo.cargo_lines.iter().any(|(id, _)| *id == l.id.0))
-                            .any(|l| l.stops.contains(&s.id))
-                    })
-                    .map(|s| P::of(s.pos))
-                    .collect()
-            })
-            .unwrap_or_default();
-        // Its passenger train stations: a town by one wants buses to it, as
-        // a player runs buses to a station (the fixture's player's station
-        // halts); a station at a town's edge reaches few people on foot.
-        let stations: Vec<P> = self
-            .company
-            .as_ref()
-            .map(|c| {
-                c.lines
-                    .iter()
-                    .filter(|l| {
-                        self.memo.rail_lines.contains(&l.id.0)
-                            && self
-                                .memo
-                                .cargo_lines
-                                .iter()
-                                .any(|(id, cargo)| *id == l.id.0 && cargo == train::PASSENGERS)
-                    })
-                    .flat_map(|l| l.stops.iter())
-                    .filter_map(|s| c.stations.iter().find(|st| st.id == *s))
-                    .map(|s| P::of(s.pos))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Its bus lines' stops, and its passenger train stations: a town by
+        // one wants buses to it, as a player runs buses to a station (the
+        // fixture's player's station halts); a station at a town's edge
+        // reaches few people on foot.
+        let (served, stations) = self.company.as_ref().map_or_else(Default::default, |c| {
+            (self.bus_stops(c), self.passenger_stations(c))
+        });
         let station_by = |t: &AiTown| {
             stations
                 .iter()
@@ -1662,6 +1697,17 @@ impl Brain {
                 .then(share(b).total_cmp(&share(a)))
         });
         candidates.truncate(self.profile.towns_weighed);
+        // Looking for buses to its station: none of the towns by its
+        // stations takes a line now, and those stations are left a while.
+        if std::mem::take(&mut self.feeding)
+            && candidates.first().is_none_or(|t| station_by(t).is_none())
+        {
+            let until = now + GIVE_UP_FOR;
+            self.unfed_left.extend(stations.iter().map(|s| (*s, until)));
+            self.say("found no town by its stations to run buses to them".into());
+            self.rest(now);
+            return;
+        }
         if candidates.is_empty() {
             self.say("found no town to serve".into());
             self.rest(now);

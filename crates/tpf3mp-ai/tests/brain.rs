@@ -2062,12 +2062,15 @@ fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
     road.objects = 2;
     world.streets.push(road);
     world.money = 30_000_000;
+    // Its first lines settle as the months go: Hard opens three at a time.
+    world.month_every = Some(Duration::from_secs(60));
+    world.wear_per_month = 1;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
         &mut brain,
         &mut world,
         Instant::now(),
-        Duration::from_secs(1_200),
+        Duration::from_secs(1_800),
     );
     let said = brain.take_said();
     assert!(world.crossings.is_empty(), "{said:?}");
@@ -3031,4 +3034,40 @@ fn a_town_by_its_passenger_station_gets_buses_to_that_station() {
             })
     });
     assert!(fed, "{said:?}");
+}
+
+#[test]
+fn buses_to_its_station_come_before_its_young_lines_wait_and_cargo() {
+    // Its lines never settle here: Normal waits on two young ones. A cargo
+    // to carry waits too.
+    let mut world = World::new();
+    world.money = 60_000_000;
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    brain.carry_cargo(true);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(3_600),
+    );
+    let said = brain.take_said();
+    let bought = said
+        .iter()
+        .filter(|l| l.starts_with("buys a train"))
+        .count();
+    assert_eq!(bought, 1, "one train, said once: {said:?}");
+    let opened = said
+        .iter()
+        .position(|l| l.starts_with("opened a rail line carrying passengers"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    let next = said[opened + 1..]
+        .iter()
+        .find(|l| l.starts_with("plans "))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert!(
+        next.starts_with("plans buses to its station in"),
+        "{said:?}"
+    );
 }

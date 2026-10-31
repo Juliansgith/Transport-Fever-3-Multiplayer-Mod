@@ -192,7 +192,11 @@ faster AI.
      player's line joined carried no one. A town within 1.2 km of one of
      its own passenger stations comes before any other, its bus line's
      first stop by that station: riders off its trains walk to the bus,
-     as the fixture's player runs buses to a station;
+     as the fixture's player runs buses to a station. Such a bus line,
+     while one of its stations has none within 1.2 km, comes before any
+     other new line or cargo, and its young lines' wait does not hold it
+     back, as a chain's later legs; a station no town by it takes a line
+     for is left for 15 minutes;
    - with a transport mode chosen by distance, volume, terrain and water:
      streets for short and small, track for long and heavy, water where
      both ends touch the same water, air for long distance between large
@@ -269,9 +273,9 @@ faster AI.
    It opens no new line while one, two or three of its lines (Easy,
    Normal, Hard) are too young for their money to say anything (no
    vehicle a twentieth through its life), a production chain's later legs
-   excepted: the long run's Hard AI opened nine lines in its first sixteen
-   minutes, before any had earned, all of them losing, and both AIs ran
-   below nothing.
+   and buses to its own stations excepted: the long run's Hard AI opened
+   nine lines in its first sixteen minutes, before any had earned, all of
+   them losing, and both AIs ran below nothing.
    Flush, its lines covering its loans, it pays back the dearest loan whose
    remainder its cash covers beyond its cushion by 3 million. In the long
    run of 2026-10-30 it had borrowed whenever it ran short: 98 million at
