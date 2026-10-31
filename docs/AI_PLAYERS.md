@@ -298,12 +298,16 @@ faster AI.
    its monthly payment, and the game's month. It keeps four months of its
    loans' payments in hand beyond its difficulty's reserve before it spends,
    and four months of what its lines lose where they lose money together.
-   It borrows to start out (a founded company has no money): at Hard the
-   largest of the offers that cost little a month for what they lend
-   (within one and a half times the cheapest a million), otherwise the one
-   that takes least a month; never a loan paid back within the year, whose
-   payment no new line carries (5 million over 12 months took 425,750 a
-   month in the long run of 2026-10-31). After, only when what its
+   It borrows to start out (a founded company has no money) what its first
+   lines need at the least interest: of the offers paid back over two years
+   or more, the one at the lowest rate that lends 5 million or more, the
+   smallest of equals, else the lowest rate of any; never a loan paid back
+   within the year, whose payment no new line carries (5 million over 12
+   months took 425,750 a month in the long run of 2026-10-31). A loan can
+   only be paid back whole, and what it does not build on it pays interest
+   on: run 52's AIs started on 27 and 23 million at 10 %, built bus lines for
+   about five, all of them paying, and by 1930 stood at 13.7 and 7.1 million
+   below nothing with 13.6 and 14.3 million still owed. After, only when what its
    lines earn a month beyond what its loans take covers the new loan's
    payment 3, 2 or 1.25 times over (Easy, Normal, Hard); never to pay its
    loans. While its settled lines lose money together and its lines do not
@@ -324,7 +328,9 @@ faster AI.
    that lost 695,803 in its first eight months and planned another at once.
    It opens no new line while one, two or three of its lines (Easy,
    Normal, Hard) are too young for their money to say anything (no
-   vehicle a twentieth through its life), a production chain's later legs
+   vehicle a twentieth through its life), twice as many once two or more
+   of its settled lines earn together (run 52's Hard AI, opening three at a
+   time, built some four lines a year, all paying), a production chain's later legs
    and buses to its own stations excepted: the long run's Hard AI opened
    nine lines in its first sixteen minutes, before any had earned, all of
    them losing, and both AIs ran below nothing.
