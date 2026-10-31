@@ -170,10 +170,26 @@ pub struct Memo {
     /// kind ([`Kind::code`]) and what it made over its last year, a loss. A
     /// kind is judged by these as well as by its lines still running.
     pub closed: Vec<(u32, u8, i64)>,
+    /// Its production chains' lines, each chain's by the room's line ids,
+    /// the latest [`CHAINS_KEPT`]: no line of a chain is judged while
+    /// another of it is young, its cargo not yet come. Run 48's Normal AI
+    /// closed a fuel line six months in, eight minutes after the crude oil
+    /// line feeding its refinery opened.
+    pub chains: Vec<Vec<u32>>,
 }
 
-/// A memo as drivers before the closed lines kept it: read on, its closed
-/// lines none.
+/// A memo as drivers before the chains kept it.
+#[derive(Deserialize)]
+struct MemoClosed {
+    served: Vec<u32>,
+    given_up: Vec<u32>,
+    cargo_lines: Vec<(u32, String)>,
+    rail_lines: Vec<u32>,
+    looped: Vec<(u32, u8)>,
+    closed: Vec<(u32, u8, i64)>,
+}
+
+/// A memo as drivers before the closed lines kept it.
 #[derive(Deserialize)]
 struct MemoBefore {
     served: Vec<u32>,
@@ -184,21 +200,38 @@ struct MemoBefore {
 }
 
 impl Memo {
-    /// The memo its last driver left, of this version or the one before.
+    /// The memo its last driver left, of this version or one before: what
+    /// an older one lacks, none.
     pub fn read(bytes: &[u8]) -> Option<Self> {
-        postcard::from_bytes::<Self>(bytes).ok().or_else(|| {
-            let before = postcard::from_bytes::<MemoBefore>(bytes).ok()?;
-            Some(Self {
-                served: before.served,
-                given_up: before.given_up,
-                cargo_lines: before.cargo_lines,
-                rail_lines: before.rail_lines,
-                looped: before.looped,
-                closed: Vec::new(),
-            })
+        if let Ok(memo) = postcard::from_bytes::<Self>(bytes) {
+            return Some(memo);
+        }
+        if let Ok(m) = postcard::from_bytes::<MemoClosed>(bytes) {
+            return Some(Self {
+                served: m.served,
+                given_up: m.given_up,
+                cargo_lines: m.cargo_lines,
+                rail_lines: m.rail_lines,
+                looped: m.looped,
+                closed: m.closed,
+                chains: Vec::new(),
+            });
+        }
+        let m = postcard::from_bytes::<MemoBefore>(bytes).ok()?;
+        Some(Self {
+            served: m.served,
+            given_up: m.given_up,
+            cargo_lines: m.cargo_lines,
+            rail_lines: m.rail_lines,
+            looped: m.looped,
+            closed: Vec::new(),
+            chains: Vec::new(),
         })
     }
 }
+
+/// How many production chains its memo keeps.
+pub const CHAINS_KEPT: usize = 16;
 
 /// How many settled or closed lines of a kind its money judges that kind
 /// by; a passenger train, dearer than any, by one.
@@ -396,6 +429,11 @@ enum Stage {
     SurveyIndustries,
     /// Asking whether its next pick of cargo route is joined by road.
     Route,
+    /// Asking whether its planned chain's later leg `leg`, one trucks must
+    /// carry, is joined by road, before any of the chain is built: run 43's
+    /// and run 48's meat railways, from a farm that makes meat only of
+    /// grain, ran empty when the grain leg found no road after them.
+    ChainRoads { leg: usize },
     /// Reading the streets by a centre of the project's town.
     Streets,
     /// Asking the verdict on the next stop.
@@ -482,6 +520,9 @@ pub struct Brain {
     /// How many young lines it last said it waits on: said once, not at
     /// every look.
     young_said: usize,
+    /// The chain of its memo's [`Memo::chains`] the lines it opens now
+    /// belong to, while it builds one.
+    chain_group: Option<usize>,
     /// It said it holds back, and has not built since: said once.
     held_said: bool,
     /// Its look found a passenger station of its own with no bus line by
@@ -541,6 +582,7 @@ impl Brain {
             no_rail: Vec::new(),
             next_cargo: false,
             young_said: 0,
+            chain_group: None,
             held_said: false,
             feeding: false,
             unfed_left: Vec::new(),
@@ -711,6 +753,14 @@ impl Brain {
                 };
                 self.ask(question, now)
             }
+            Stage::ChainRoads { leg } => {
+                let leg = self.chain.get(leg)?;
+                let question = AiQuestion::Route {
+                    from: leg.from.pos,
+                    to: leg.to.pos(),
+                };
+                self.ask(question, now)
+            }
             Stage::Streets => {
                 let project = self.project.as_ref()?;
                 let at = project.centres.first().copied()?;
@@ -807,6 +857,29 @@ impl Brain {
             .filter(|v| v.line == Some(line.id))
             .peekable();
         on.peek().is_some() && on.all(|v| v.worn >= upkeep::SETTLED)
+    }
+
+    /// Keeps a line it opened among the lines of the chain it builds, if it
+    /// builds one.
+    pub(super) fn chain_line(&mut self, line: u32) {
+        if let Some(group) = self.chain_group.and_then(|g| self.memo.chains.get_mut(g))
+            && !group.contains(&line)
+        {
+            group.push(line);
+        }
+    }
+
+    /// Whether another line of `line`'s chain is young, its cargo perhaps
+    /// not yet come: none of the chain is judged meanwhile.
+    pub(super) fn chain_young(&self, company: &AiCompany, line: &AiLine) -> bool {
+        self.memo
+            .chains
+            .iter()
+            .filter(|group| group.contains(&line.id.0))
+            .flat_map(|group| group.iter())
+            .filter(|id| **id != line.id.0)
+            .filter_map(|id| company.lines.iter().find(|l| l.id.0 == *id))
+            .any(|l| self.young(company, l))
     }
 
     /// Where its passenger train stations stand.
@@ -974,6 +1047,10 @@ impl Brain {
                 None
             }
             (AiQuestion::Route { .. }, AiAnswer::Route(route)) => {
+                if let Stage::ChainRoads { leg } = self.stage {
+                    self.on_chain_road(&route, leg, now);
+                    return None;
+                }
                 self.on_route(&route, now);
                 None
             }
@@ -1225,6 +1302,8 @@ impl Brain {
                     let described = project.serves.describe();
                     if let Some(cargo) = project.serves.cargo() {
                         let entry = (line.id.0, cargo.as_str().to_owned());
+                        let id = line.id.0;
+                        self.chain_line(id);
                         if !self.memo.cargo_lines.contains(&entry) {
                             self.memo.cargo_lines.push(entry);
                         }
@@ -1508,6 +1587,7 @@ impl Brain {
     /// 19); towns take what they need.
     fn on_industries(&mut self, industries: Vec<AiIndustry>, now: Instant) {
         self.given_up.retain(|(_, until)| *until > now);
+        self.chain_group = None;
         let towns = std::mem::take(&mut self.needing);
         let mut picks: Vec<(f64, CargoRoute)> = Vec::new();
         for from in &industries {
@@ -1591,7 +1671,11 @@ impl Brain {
                 first.to.name()
             ));
             self.chain = legs.into_iter().collect();
-            self.next_leg(now);
+            self.memo.chains.push(Vec::new());
+            let over = self.memo.chains.len().saturating_sub(CHAINS_KEPT);
+            self.memo.chains.drain(..over);
+            self.chain_group = Some(self.memo.chains.len() - 1);
+            self.check_chain_roads(1, now);
             return;
         }
         // Trains first: with money enough for a rail line, among the
@@ -1690,6 +1774,43 @@ impl Brain {
         }
     }
 
+    /// Its chain's later legs that trucks would carry (shorter than a
+    /// railway runs, or any while its money stretches to no railway) asked
+    /// of the pathfinder in turn from leg `from`, before any is built; then
+    /// its first leg.
+    fn check_chain_roads(&mut self, from: usize, now: Instant) {
+        let rail = self.spendable() >= train::RAIL_MONEY;
+        let next = (from..self.chain.len()).find(|&i| {
+            let d = self.chain[i].distance();
+            d <= self.profile.cargo_most && (d < train::RAIL_FROM || !rail)
+        });
+        match next {
+            Some(leg) => self.stage = Stage::ChainRoads { leg },
+            None => self.next_leg(now),
+        }
+    }
+
+    /// The pathfinder's answer for a chain's later leg: on to the next, or
+    /// the chain given up before any of it is built, that leg left out of
+    /// its chains a long while (so is every chain that needs it).
+    fn on_chain_road(&mut self, route: &AiRoute, leg: usize, now: Instant) {
+        if route.connected {
+            self.check_chain_roads(leg + 1, now);
+            return;
+        }
+        if let Some(l) = self.chain.get(leg) {
+            self.given_up
+                .push((route_key(l.from.pos, l.cargo.as_str()), now + DEAD_LEG_FOR));
+            self.say(format!(
+                "found no road for its chain's {} from {}; built none of it",
+                cargo_name(l.cargo.as_str()),
+                l.from.name.as_str()
+            ));
+        }
+        self.chain.clear();
+        self.stage = Stage::Survey;
+    }
+
     /// Starts its chain's next leg: by train where it is far enough and its
     /// money allows, else by truck within its reach, else the chain goes no
     /// further.
@@ -1783,6 +1904,8 @@ impl Brain {
 
     fn on_towns(&mut self, towns: Vec<AiTown>, now: Instant) {
         self.given_up.retain(|(_, until)| *until > now);
+        // A new project from a look at the world: no chain's.
+        self.chain_group = None;
         // A passenger train between two large towns, its money and
         // difficulty allowing, in turn with buses.
         if self.profile.passenger_trains

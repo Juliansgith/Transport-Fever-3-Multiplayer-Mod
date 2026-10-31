@@ -127,6 +127,8 @@ struct World {
     month_at: Option<Instant>,
     line_profit: Option<fn(&AiLine) -> i64>,
     line_income: Option<fn(&AiLine) -> i64>,
+    /// No road from within 100 m of here, whatever `roads_join` says.
+    no_road_from: Option<Pos>,
     /// The buses the game offers, where not the stand-in's two.
     buses: Option<Vec<AiModel>>,
     wear_per_month: u16,
@@ -214,6 +216,7 @@ impl World {
             month_at: None,
             line_profit: None,
             line_income: None,
+            no_road_from: None,
             buses: None,
             wear_per_month: 0,
             lowest: 0,
@@ -382,10 +385,16 @@ impl World {
                     .unwrap(),
                 )
             }
-            AiQuestion::Route { .. } => AiAnswer::Route(AiRoute {
-                connected: self.roads_join,
-                edges: if self.roads_join { 40 } else { 0 },
-            }),
+            AiQuestion::Route { from, .. } => {
+                let joined = self.roads_join
+                    && !self
+                        .no_road_from
+                        .is_some_and(|p| P::of(*from).flat_distance(P::of(p)) <= 100.0);
+                AiAnswer::Route(AiRoute {
+                    connected: joined,
+                    edges: if joined { 40 } else { 0 },
+                })
+            }
             AiQuestion::Models { cargo: None, .. } if self.buses.is_some() => {
                 AiAnswer::Models(BoundedVec::new(self.buses.clone().unwrap()).unwrap())
             }
@@ -3324,4 +3333,134 @@ fn a_maker_another_company_carries_from_gets_no_line_of_its_own() {
         world.line_modes.iter().all(|(_, m)| *m == 3),
         "buses only: {said:?}"
     );
+}
+
+#[test]
+fn a_chain_whose_later_leg_finds_no_road_is_built_none_of() {
+    // Runs 43 and 48: a meat railway from a farm that makes meat only of
+    // grain, built first; the grain leg found no road after it, and the
+    // railway ran empty. Here the forest's logs have no road to the
+    // sawmill: nothing of the goods chain is built.
+    let mut world = World::new();
+    const GOODS: &str = "::/cargos/goods/goods.cargo";
+    const PLANKS_: &str = "::/cargos/planks/planks.cargo";
+    const LOGS: &str = "::/cargos/logs/logs.cargo";
+    world.industries = vec![
+        industry("Didcot Factory", 300.0, 200.0, &[PLANKS_], &[(GOODS, 0)]),
+        industry("Witney Sawmill", -300.0, -300.0, &[LOGS], &[(PLANKS_, 0)]),
+        industry("Wychwood Forest", 4_800.0, 300.0, &[], &[(LOGS, 150)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(GOODS).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.no_road_from = Some(pos(4_800.0, 300.0));
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "plans a chain of 3 lines bringing goods to Ely"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("found no road for its chain's logs from Wychwood Forest")),
+        "{said:?}"
+    );
+    assert!(
+        world.line_modes.iter().all(|(_, m)| *m == 3),
+        "buses only: {said:?}"
+    );
+}
+
+#[test]
+fn a_chains_line_is_not_judged_while_another_of_its_chain_is_young() {
+    // Run 48: a fuel line closed six months in, eight minutes after the
+    // crude oil line feeding its refinery opened.
+    let mut world = World::new();
+    const GOODS: &str = "::/cargos/goods/goods.cargo";
+    const PLANKS_: &str = "::/cargos/planks/planks.cargo";
+    world.industries = vec![
+        industry("Didcot Factory", 300.0, 200.0, &[PLANKS_], &[(GOODS, 0)]),
+        industry("Witney Sawmill", -300.0, -900.0, &[], &[(PLANKS_, 150)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(GOODS).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let now = play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let line = |world: &World, name: &str| {
+        world
+            .lines
+            .iter()
+            .find(|l| l.name.as_str().contains(name))
+            .map(|l| l.id)
+    };
+    let goods = line(&world, "goods").unwrap_or_else(|| panic!("{said:?}"));
+    let planks = line(&world, "planks").unwrap_or_else(|| panic!("{said:?}"));
+    // Both losing much; the goods line settled, the planks line feeding its
+    // factory still young.
+    world.month_every = Some(Duration::from_secs(60));
+    world.line_income = Some(|_| 1_000);
+    world.line_profit = Some(|_| -200_000);
+    for v in &mut world.vehicles {
+        v.worn = if v.line == Some(planks) { 1 } else { 10 };
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(line(&world, "goods") == Some(goods), "kept: {said:?}");
+    // The planks line settled too: the chain judged, and closed.
+    for v in &mut world.vehicles {
+        v.worn = 10;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(1_200));
+    let said = brain.take_said();
+    assert!(line(&world, "goods").is_none(), "{said:?}");
+}
+
+#[test]
+fn a_memo_from_before_chains_were_kept_reads_on() {
+    #[derive(serde::Serialize)]
+    struct Before {
+        served: Vec<u32>,
+        given_up: Vec<u32>,
+        cargo_lines: Vec<(u32, String)>,
+        rail_lines: Vec<u32>,
+        looped: Vec<(u32, u8)>,
+        closed: Vec<(u32, u8, i64)>,
+    }
+    let bytes = postcard::to_allocvec(&Before {
+        served: vec![7],
+        given_up: vec![],
+        cargo_lines: vec![],
+        rail_lines: vec![],
+        looped: vec![],
+        closed: vec![(3, 3, -695_803)],
+    })
+    .unwrap();
+    let memo = tpf3mp_ai::Memo::read(&bytes).unwrap();
+    assert_eq!(memo.served, [7]);
+    assert_eq!(memo.closed, [(3, 3, -695_803)]);
+    assert!(memo.chains.is_empty());
 }

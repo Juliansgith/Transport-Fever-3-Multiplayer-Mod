@@ -279,6 +279,10 @@ impl Brain {
             let Some(oldest) = vehicles.iter().max_by_key(|v| v.worn) else {
                 continue;
             };
+            // A chain's line waits on its chain's young lines' cargo.
+            if self.chain_young(company, line) {
+                continue;
+            }
             if oldest.worn < DEAD_AFTER
                 || line.income.is_none_or(|i| i > 0)
                 || line.load > 0
@@ -307,7 +311,10 @@ impl Brain {
         // 0.6 to 1 million a year each).
         for line in company.lines.iter() {
             let vehicles = on(line);
-            if vehicles.is_empty() || vehicles.iter().any(|v| v.worn < SETTLED) {
+            if vehicles.is_empty()
+                || vehicles.iter().any(|v| v.worn < SETTLED)
+                || self.chain_young(company, line)
+            {
                 continue;
             }
             let losing = line.profit < 0;
