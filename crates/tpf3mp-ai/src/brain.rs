@@ -116,6 +116,9 @@ pub const CHAIN_MONEY: i64 = 1_500_000;
 /// three-stop town lines carried at a time (6 of 36 seats, 5 of 12; the
 /// long run of 2026-10-31).
 pub const TOWN_RIDERS: u32 = 8;
+/// How many of its settled lines must earn together for it to open twice
+/// as many young lines at once.
+pub const PROVEN_LINES: usize = 2;
 /// What its settled lines must make a month before it begins a passenger
 /// train: about what one costs to run, its engine and coaches (the long
 /// runs' China JF1, 673,872 a year, and six coaches at 61,126).
@@ -1610,13 +1613,19 @@ impl Brain {
         self.unfed_left.retain(|(_, until)| *until > now);
         let feeding = self.unfed(company);
         // Nothing new while as many of its lines as its difficulty waits on
-        // are too young for their money to say what pays.
+        // are too young for their money to say what pays: twice as many once
+        // [`PROVEN_LINES`] of its settled lines earn together, its money
+        // put to work on what it has seen pay. Opening three at a time, nine
+        // months each to settle, run 52's Hard AI built some four lines a
+        // year, all paying, and its 27 million sat idle.
         let young = company
             .lines
             .iter()
             .filter(|l| self.young(company, l))
             .count();
-        if young >= self.profile.young_most && !feeding {
+        let proven = self.settled_lines(company) >= PROVEN_LINES && settled_earning > 0;
+        let young_most = self.profile.young_most * if proven { 2 } else { 1 };
+        if young >= young_most && !feeding {
             if young != self.young_said {
                 self.young_said = young;
                 self.say(format!(
