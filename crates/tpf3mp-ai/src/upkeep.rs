@@ -24,6 +24,10 @@ use crate::{place::P, rail};
 /// How far through their lives every vehicle of a line must be before its
 /// load and money are judged, in percent: about a year of a bus of 20.
 pub const SETTLED: u16 = 5;
+/// How far through their lives a production chain's lines must all be
+/// before any of them is judged: twice a line's, its cargo first made, then
+/// carried on (about a year of a truck of 10).
+pub const CHAIN_SETTLED: u16 = 2 * SETTLED;
 /// The cargo waiting at a cargo line's stops that makes it a line running
 /// full: a trainload, several truckloads. A cargo line runs full one way
 /// and empty back, so its load, over both, says little of how busy it is.

@@ -182,15 +182,17 @@ faster AI.
      industry it feeds, no industry twice, eight legs at most. Each leg by
      train where it runs 1.8 km or more and its money allows, else by
      truck. Before any of a chain is built it asks the pathfinder whether
-     each later leg trucks would carry (shorter than a railway runs, or any
-     while its money stretches to no railway) is joined by road, and builds
+     each later leg within its trucks' reach is joined by road (one long
+     enough for a railway too: trucks carry it where its railway is not
+     built, run 49's grain leg got neither), and builds
      none of it if one is not: runs 43 and 48 built a meat railway from a
      farm that makes meat only of grain, and it ran empty when the grain
      leg found no road after it. A leg that fails ends its chain; one no
      road joins is left out of its chains for an hour. Its memo keeps each
      chain's lines (the latest 16 chains), and no line of a chain is sold
-     from or closed while another of its chain is young, its cargo perhaps
-     not yet come: run 48 closed a fuel line six months in, eight minutes
+     from or closed until every line of its chain has run a tenth of its
+     life (twice a line's twentieth), its cargo first made, then carried
+     on: run 48 closed a fuel line six months in, eight minutes
      after the crude oil line feeding its refinery opened. It takes chains in turn with single lines,
      with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their
