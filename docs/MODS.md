@@ -283,7 +283,8 @@ A shared mod's GUI half often tells its game script what the player chose
 (a setting, a toggle, a rule for a line) with
 `makeScriptingSendEventCmd(src, id, name, param)`. From the GUI that reaches
 this game's game scripts alone, at an update of its own, so the GUI's guard
-refused it, and the mod's controls did nothing in a room.
+refused it, and the mod's controls did nothing in a room. The room now
+carries the events on a list, as below (DECISIONS.md, D34).
 
 `tpf3mp/modevents.lua` carries the events it lists (`modevents.ALLOW`, by
 id and name, each naming the mod whose game script hears it) as a

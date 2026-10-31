@@ -1770,3 +1770,32 @@ Rejected:
   session.
 - **Ending old games when their players update**: the owner chose the
   hand-over.
+
+## D34 (2026-10-31, owner-approved): a shared mod's listed GUI events reach its game script through the room
+
+Proposed by silver2127 in #190, which asked the owner to settle it; the
+owner approved it on 2026-10-31. A shared mod's GUI half tells its game
+script what the player chose with `makeScriptingSendEventCmd`, which the
+GUI's guard refused in a room, so such mods did nothing there.
+
+- **A list, by mod.** `tpf3mp/modevents.lua`'s `ALLOW` names each event a
+  room carries, by its id and name, and the mod it belongs to. An event
+  not on it is refused as before.
+- **Ordered like any action.** A listed event goes to the room as a
+  `ModEvent` action (action schema 29), and every game sends it in its
+  simulation state at the same step, each checking the list again.
+- **Plain data, the same everywhere.** Its parameter is encoded in one key
+  order with exact numbers, at most 4,096 bytes and 8 levels deep; lines
+  and vehicles travel by canonical id, the acting company's own only, and
+  depots by their reference.
+- **Carried first:** Realistic Environment Pro's `Neige SetClimate` and
+  `SetMist` and its clock service's line, vehicle and life rules; Real
+  Cant Engineering's `cayde_cant.toggle` and `cayde_cant.manual`. Still
+  refused: Realistic Environment Pro's `ManualWeather` and `ManualWind`,
+  whose delays follow each game's own speed-up, and its clock's
+  time-of-day loop, refused without a notice.
+
+Rejected:
+
+- **Carrying any event a mod sends**: one mod's event could reach another
+  mod's state, or carry entity ids no game checked.
