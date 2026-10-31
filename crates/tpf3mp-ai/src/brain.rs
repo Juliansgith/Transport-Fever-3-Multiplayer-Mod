@@ -266,8 +266,9 @@ impl Kind {
         }
     }
 
+    /// A train of either kind, dearer than any bus or truck, judged by one.
     fn judged_by(self) -> usize {
-        if self == Kind::Passengers {
+        if matches!(self, Kind::Passengers | Kind::Rail) {
             1
         } else {
             KIND_JUDGED
@@ -842,6 +843,18 @@ impl Brain {
             .as_ref()
             .map_or(0, |c| money::Books::of(c).cushion());
         money - (money.max(0) * self.profile.reserve_percent / 100).max(cushion)
+    }
+
+    /// Whether its settled lines make what a train costs to run
+    /// ([`TRAIN_EARNING`]): no railway of either kind before. Every AI
+    /// train of the long runs lost money in its first year, cargo trains
+    /// too: run 51's fuel train took 146,000 against the 930,000 a year it
+    /// cost, its refinery fed by one crude oil truck, and took its company
+    /// below nothing.
+    fn trains_carried(&self) -> bool {
+        self.company
+            .as_ref()
+            .is_some_and(|c| self.settled_earning(c) >= TRAIN_EARNING)
     }
 
     /// What its settled lines make a month together, their year's profit
@@ -1966,12 +1979,8 @@ impl Brain {
         // (runs 46 to 50), some seven million with what it cost to lay, its
         // stations at the towns' edges; run 50's Hard AI began one when its
         // settled lines made 2,500 a month.
-        let earns = self
-            .company
-            .as_ref()
-            .is_some_and(|c| self.settled_earning(c) >= TRAIN_EARNING);
         if self.profile.passenger_trains
-            && earns
+            && self.trains_carried()
             && !self.feeding
             && self.spendable() >= train::RAIL_MONEY
             && self.random().is_multiple_of(2)

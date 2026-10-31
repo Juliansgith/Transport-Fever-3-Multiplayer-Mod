@@ -1773,6 +1773,8 @@ fn it_plans_no_truck_lines_when_told_not_to() {
 #[test]
 fn a_cargo_too_far_for_trucks_goes_by_train() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     // A sawmill in open country 3.7 km from the district of Ely that
     // takes planks, and money enough for a rail line.
@@ -1908,6 +1910,8 @@ fn a_starved_maker_is_carried_to_the_town_then_fed_its_inputs() {
 #[test]
 fn a_chains_leg_refused_by_train_goes_by_truck() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     // A mill north of Didcot's streets starved of grain, Ely's need of food,
     // and a farm in Ely 4.6 km from the mill, where no rail station may
@@ -1966,6 +1970,8 @@ fn a_chains_leg_refused_by_train_goes_by_truck() {
 #[test]
 fn no_rail_line_is_built_for_a_cargo_no_wagon_carries() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.industries = vec![industry(
         "Witney Sawmill",
         1_800.0,
@@ -1997,6 +2003,8 @@ fn no_rail_line_is_built_for_a_cargo_no_wagon_carries() {
 #[test]
 fn a_rail_line_crosses_a_country_road_on_the_level() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
@@ -2042,6 +2050,8 @@ fn a_rail_line_crosses_a_country_road_on_the_level() {
 #[test]
 fn a_rail_line_it_cannot_pay_for_is_never_begun() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.industries = vec![industry(
         "Witney Sawmill",
         1_800.0,
@@ -2082,6 +2092,8 @@ fn a_rail_line_it_cannot_pay_for_is_never_begun() {
 #[test]
 fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.industries = vec![industry(
         "Witney Sawmill",
         1_800.0,
@@ -2125,6 +2137,8 @@ fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
 #[test]
 fn a_line_whose_track_would_be_refused_builds_no_station() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
@@ -2313,6 +2327,8 @@ fn a_hard_ai_feeds_a_starved_feeder_in_turn_three_levels_deep() {
 #[test]
 fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
@@ -2450,6 +2466,8 @@ fn two_towns_joined_by_train_are_not_joined_again_as_they_grow() {
 #[test]
 fn a_longer_line_gets_two_loops_and_runs_up_to_three_trains() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     // A sawmill 6.6 km from the district of Ely that takes planks.
     world.industries = vec![industry(
@@ -2494,6 +2512,8 @@ fn a_longer_line_gets_two_loops_and_runs_up_to_three_trains() {
 #[test]
 fn a_second_rail_line_from_one_place_shares_the_first_ones_depot() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     // A sawmill making planks and goods, both wanted in Ely.
     const GOODS: &str = "::/cargos/goods/goods.cargo";
@@ -2734,6 +2754,8 @@ fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
     // is not given up with its stations and track built, its depot goes to
     // the other end.
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
@@ -2795,6 +2817,8 @@ fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
 #[test]
 fn a_rail_depot_touching_what_stands_at_first_goes_further_out_at_that_end() {
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
@@ -2851,6 +2875,8 @@ fn a_rail_depot_blocked_straight_out_turns_aside_on_a_curved_track() {
     // and streets at another (2026-10-31): the depot turns 30 degrees
     // aside, its track one edge curving from the station's heading.
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
@@ -3132,6 +3158,8 @@ fn a_rail_depot_whose_track_would_touch_what_stands_goes_elsewhere_before_anythi
     // Run 44: a cement railway laid, its depot built, the depot's track
     // refused ("Collision") and the line given up, four million spent.
     let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
     world.small_towns();
     world.industries = vec![industry(
         "Witney Sawmill",
@@ -3750,4 +3778,38 @@ fn a_chain_none_of_whose_lines_carries_anything_is_closed_before_its_year() {
     let said = brain.take_said();
     assert!(line(&world, "goods").is_none(), "{said:?}");
     assert!(line(&world, "planks").is_none(), "{said:?}");
+}
+
+#[test]
+fn a_cargo_railway_waits_until_its_settled_lines_earn_what_a_train_costs() {
+    // Run 51: a fuel railway, its refinery fed by one crude oil truck,
+    // took 146,000 against 930,000 a year and its company below nothing.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let now = play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        !world.line_modes.iter().any(|(_, m)| *m == 7),
+        "no railway yet: {said:?}"
+    );
+    // A line of its own earning what a train costs: then the railway.
+    an_earning_line(&mut world);
+    play(&mut brain, &mut world, now, Duration::from_secs(1_800));
+    let said = brain.take_said();
+    assert!(world.line_modes.iter().any(|(_, m)| *m == 7), "{said:?}");
 }

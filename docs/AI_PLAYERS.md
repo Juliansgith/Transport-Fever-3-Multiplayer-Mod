@@ -315,7 +315,12 @@ faster AI.
    together is passed over while the other pays, and no railway is begun
    while its railways lose; the lines it closed count, as its memo keeps
    them (the latest 16, each one's loss over its last year), and one
-   passenger train that lost money is enough: run 46's Hard AI closed one
+   train of either kind that lost money is enough. No railway of either
+   kind is begun before its settled lines make 90,000 a month, what a train
+   costs to run: every AI train of the long runs lost money in its first
+   year, run 51's fuel train taking 146,000 against 930,000, its refinery
+   fed by one crude oil truck, and its company below nothing. One passenger
+   train that lost money was enough before: run 46's Hard AI closed one
    that lost 695,803 in its first eight months and planned another at once.
    It opens no new line while one, two or three of its lines (Easy,
    Normal, Hard) are too young for their money to say anything (no
