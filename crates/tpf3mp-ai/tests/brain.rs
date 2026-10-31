@@ -3615,8 +3615,22 @@ fn a_passenger_train_waits_until_its_settled_lines_earn() {
             .any(|l| l.starts_with("plans a rail line carrying passengers")),
         "{said:?}"
     );
-    // Its bus lines settled and earning: then a train.
+    // Its bus lines settled, earning less than a train costs to run: still
+    // none (run 50: 2,500 a month).
     world.month_every = Some(Duration::from_secs(30));
+    world.line_profit = Some(|_| 15_000);
+    for v in &mut world.vehicles {
+        v.worn = 10;
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(1_200));
+    let said = brain.take_said();
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+        "{said:?}"
+    );
+    // Earning what a train costs: then a train.
     world.line_profit = Some(|_| 600_000);
     for v in &mut world.vehicles {
         v.worn = 10;

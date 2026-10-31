@@ -475,8 +475,10 @@ faster AI.
   pair given up for want of a route or a station's place stays given up,
   in the memo its next driver keeps, one given up for money is tried
   again) by
-  passenger train, in turn with buses, once its settled lines earn (never
-  its first venture on borrowed money: each AI's first passenger train lost
+  passenger train, in turn with buses, once its settled lines make what a
+  train costs to run, 90,000 a month (never its first venture on borrowed
+  money, nor one its lines cannot carry while it finds its riders; run 50
+  began one when its settled lines made 2,500 a month: each AI's first passenger train lost
   0.65 to 0.86 million in its first eight months in runs 46 to 49, some
   seven million with what it cost to lay, its stations at the towns'
   edges): a one-track passenger station by
