@@ -233,7 +233,11 @@ faster AI.
    of a settled line (every vehicle a twentieth through its life) that runs
    under 25, 30 or 35 % full (a cargo line under half that) or loses money;
    a line down to its last vehicle that lost money over its year, rail
-   lines included, is closed: its last vehicle sold and the line deleted.
+   lines included, is closed: its last vehicle sold and the line deleted,
+   when it lost more than a quarter of what it costs to run (what it
+   earned less what it made); one about breaking even is kept, its first
+   months before any fare weighing on its year (run 47 closed a bus line
+   that had lost 561 in eight months).
    A line whose oldest vehicle is a twenty-fifth through its life (about
    seven of the game's months for a bus or a train's wagons, five for a
    truck) and that has earned nothing at all, no one aboard or waiting for
@@ -274,8 +278,11 @@ faster AI.
    month in the long run of 2026-10-31). After, only when what its
    lines earn a month beyond what its loans take covers the new loan's
    payment 3, 2 or 1.25 times over (Easy, Normal, Hard); never to pay its
-   loans. While its settled lines earn less than its loans take it starts
-   nothing new, its upkeep selling what loses. A kind of line (buses,
+   loans. While its settled lines lose money together and its lines do not
+   cover its loans it starts nothing new, its upkeep selling what loses;
+   settled lines that earn, if less than its loans take, it builds on with
+   what it has beyond its cushion (run 47's Hard AI, 17 million in hand,
+   held back because no bus network of 1923 earns 322,672 a month). A kind of line (buses,
    trucks, cargo trains, passenger trains) whose settled lines lose money
    together is passed over while the other pays, and no railway is begun
    while its railways lose; the lines it closed count, as its memo keeps

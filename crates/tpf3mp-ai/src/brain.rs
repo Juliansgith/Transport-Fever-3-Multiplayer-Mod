@@ -482,6 +482,8 @@ pub struct Brain {
     /// How many young lines it last said it waits on: said once, not at
     /// every look.
     young_said: usize,
+    /// It said it holds back, and has not built since: said once.
+    held_said: bool,
     /// Its look found a passenger station of its own with no bus line by
     /// it: the towns' answer is for buses to it.
     feeding: bool,
@@ -539,6 +541,7 @@ impl Brain {
             no_rail: Vec::new(),
             next_cargo: false,
             young_said: 0,
+            held_said: false,
             feeding: false,
             unfed_left: Vec::new(),
             first_line_at: None,
@@ -1403,17 +1406,32 @@ impl Brain {
         if let Some(out) = self.upkeep(company, now) {
             return out;
         }
-        // Nothing new while its settled lines earn less than its loans
-        // take: it waits, its upkeep selling what loses money.
-        if !books.covered() && self.settled_lines(company) >= 2 {
-            self.say(format!(
-                "holds back: its lines earn {} a month, its loans take {}",
-                books.earning, books.owing
-            ));
+        // Nothing new while its settled lines lose money together and its
+        // lines do not cover its loans: it waits, its upkeep selling what
+        // loses. Settled lines that earn, if less than its loans take, it
+        // builds on with what it has beyond its cushion: run 47's Hard AI,
+        // 17 million in hand, held back because no bus network of 1923 earns
+        // 322,672 a month, and would have paid its loan down idle. Its young
+        // lines' first months, before any fare, count for nothing here.
+        let settled_earning = company
+            .lines
+            .iter()
+            .filter(|l| self.settled(company, l))
+            .map(|l| l.profit)
+            .sum::<i64>()
+            / 12;
+        if !books.covered() && self.settled_lines(company) >= 2 && settled_earning <= 0 {
+            if !std::mem::replace(&mut self.held_said, true) {
+                self.say(format!(
+                    "holds back: its settled lines make {settled_earning} a month, its loans take {}",
+                    books.owing
+                ));
+            }
             self.chain.clear();
             self.rest(now);
             return None;
         }
+        self.held_said = false;
         // Its chain's next leg, before anything new.
         if !self.chain.is_empty() {
             self.next_leg(now);
