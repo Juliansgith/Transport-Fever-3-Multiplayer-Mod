@@ -1114,6 +1114,17 @@ impl Brain {
                 None
             }
             (AiQuestion::Streets { .. }, AiAnswer::Streets(streets))
+                if matches!(
+                    self.stage,
+                    Stage::Rail(train::RailStage::FrontStreets { .. })
+                ) =>
+            {
+                if let Stage::Rail(train::RailStage::FrontStreets { end }) = self.stage {
+                    self.rail_front_streets(streets.into_inner(), end, now);
+                }
+                None
+            }
+            (AiQuestion::Streets { .. }, AiAnswer::Streets(streets))
                 if matches!(self.stage, Stage::Rail(_)) =>
             {
                 self.rail_streets(streets.into_inner(), now);
@@ -1995,16 +2006,14 @@ impl Brain {
         // A new project from a look at the world: no chain's.
         self.chain_group = None;
         // A passenger train between two large towns, its money and
-        // difficulty allowing, in turn with buses, once its settled lines
-        // earn what a train costs to run ([`TRAIN_EARNING`]): never its
-        // first venture on borrowed money, nor one its lines cannot carry
-        // while it finds its riders. Each AI's first passenger train lost
-        // 0.65 to 0.86 million in its first eight months in every long run
-        // (runs 46 to 50), some seven million with what it cost to lay, its
-        // stations at the towns' edges; run 50's Hard AI began one when its
-        // settled lines made 2,500 a month.
+        // difficulty allowing, in turn with buses, where both its stations
+        // find places reaching people enough on foot ([`rail::WALK`],
+        // [`rail::PEOPLE_LEAST`]), not once its settled lines earn as a
+        // cargo railway waits: each AI's first passenger train lost 0.65 to
+        // 0.86 million in its first eight months in every long run (runs 46
+        // to 50), its stations at the towns' edges reaching 4 to 27 people,
+        // and run 57's, one station reaching none, lost 0.82 million.
         if self.profile.passenger_trains
-            && self.trains_carried()
             && !self.feeding
             && self.spendable() >= train::RAIL_MONEY
             && self.random().is_multiple_of(2)

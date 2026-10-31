@@ -342,6 +342,50 @@ Persistence details:
   the game with others, so keep offering rules while games use them.
   `native`, the game's own economy, is always offered.
 
+## Two versions at once
+
+A release that changes the protocol can run beside the one before it, so
+nobody's running game is cut off (DECISIONS.md, D33). From the release
+after 1.4.0 on, whose server can drain:
+
+1. **Its own address.** Pick the newer release's UDP port, such as 29426
+   (29400 plus its protocol), and set the repository variable
+   `TPF3MP_DEFAULT_SERVER` to `<host>:<port>` before its release is built;
+   its launchers then connect there, and through the tunnel at
+   `wss://<host>/tpf3mp/<port>`.
+2. **Its server**, as a compose project of its own beside the old one,
+   sharing the old one's `invite.key` (so invites carry across) and the
+   `tpf3mp-handover` volume (`docker volume create tpf3mp-handover`):
+
+   ```sh
+   cat > p26.env <<'EOF'
+   TPF3MP_VERSION=1.5.0
+   TPF3MP_UDP_PORT=29426
+   TPF3MP_TUNNEL_PORT=29481
+   TPF3MP_ADMIN_PORT=9481
+   EOF
+   docker compose -p tpf3mp-p26 --env-file p26.env up -d
+   docker cp <old container>:/data/invite.key - | docker cp - <new container>:/data/
+   docker compose -p tpf3mp-p26 --env-file p26.env restart
+   ```
+
+   Open the UDP port (`ufw allow 29426/udp`) and give the tunnel a
+   location in nginx, `location /tpf3mp/29426 { proxy_pass
+   http://127.0.0.1:29481/tpf3mp; ... }`, as the first one's.
+3. **Drain the old one** once the release is published:
+   `tpf3mp-ctl drain` (or `curl -X POST http://127.0.0.1:9470/drain`). It
+   opens no rooms and takes no new players, and tells their launchers to
+   update; its players play on. Each of its games nobody has been connected
+   to for three minutes (`--handover-after-mins`) is handed over through
+   `/handover`, and the newer server takes it in; its players rejoin it
+   there with their invite once updated. Its `tpf3mp_games_handed_over_total`
+   and the newer one's `tpf3mp_games_taken_in_total` count them;
+   `tpf3mp_draining` is 1 while it drains.
+4. **Retire it** once `tpf3mp_rooms` is 0: `docker compose -p tpf3mp down`
+   (its data volume stays until removed). A hand-over the newer server
+   could not take in is set aside in the volume as `<room>.broken`,
+   unchanged; the old server keeps any game it could not write.
+
 ## Room lifetime
 
 A room closes when nobody is left to play it:

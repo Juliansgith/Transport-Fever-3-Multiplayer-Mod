@@ -1,6 +1,8 @@
 //! The admin endpoint: Prometheus metrics at `/metrics`, a health check at
 //! `/healthz`, `POST /announce`, which tells everyone connected the
-//! request's body (up to 280 bytes of UTF-8), and players' diagnostics:
+//! request's body (up to 280 bytes of UTF-8), `POST /drain`, which starts
+//! draining the server beside a newer one (DECISIONS.md, D33), and
+//! players' diagnostics:
 //! `/diagnostics` lists the sessions and runs with some,
 //! `/diagnostics/<code>` gives one session's or run's (`?source=hook` one
 //! source's), and `/rooms` the rooms open now with their members (one
@@ -102,6 +104,14 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
                     "send the notice as the body, with a Content-Length\n".to_owned(),
                 ),
             }
+        }
+        b"POST /drain HTTP/1.1" | b"POST /drain HTTP/1.0" => {
+            let said = if stats.start_draining() {
+                "draining: running games stay, no new ones\n"
+            } else {
+                "draining already\n"
+            };
+            ("200 OK", "text/plain", said.to_owned())
         }
         b"GET /metrics HTTP/1.1" | b"GET /metrics HTTP/1.0" => (
             "200 OK",

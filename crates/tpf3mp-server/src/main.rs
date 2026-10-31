@@ -178,6 +178,29 @@ struct Args {
     #[arg(long, env = "TPF3MP_AI_PLAYERS")]
     ai_players: bool,
 
+    /// Start draining: a newer release's server runs beside this one, which
+    /// keeps only its running games, opens no rooms and takes no new players
+    /// (DECISIONS.md, D33). `POST /drain` on the admin endpoint starts it
+    /// while running. See OPERATIONS.md, "Two versions at once".
+    #[arg(long, env = "TPF3MP_DRAIN")]
+    drain: bool,
+
+    /// While draining, hand each running game nobody is connected to over
+    /// to the newer server through this directory, which it reads with
+    /// --import-dir.
+    #[arg(long, env = "TPF3MP_HANDOVER_DIR")]
+    handover_dir: Option<PathBuf>,
+
+    /// How long nobody must be connected to a running game before it is
+    /// handed over, in minutes.
+    #[arg(long, default_value_t = 3, requires = "handover_dir")]
+    handover_after_mins: u64,
+
+    /// Take in the games an older server hands over through this directory
+    /// (its --handover-dir).
+    #[arg(long, env = "TPF3MP_IMPORT_DIR")]
+    import_dir: Option<PathBuf>,
+
     /// The URL path tunnels open.
     #[arg(long, default_value = "/tpf3mp")]
     tunnel_path: String,
@@ -285,6 +308,21 @@ async fn main() -> Result<()> {
         warn!("no snapshots: players cannot join games that have started");
     }
     config.ai_players = args.ai_players;
+    config.draining = args.drain;
+    config.handover = args.handover_dir.clone().map(|dir| {
+        let mut handover = tpf3mp_server::HandoverConfig::new(dir);
+        handover.after = Duration::from_secs(args.handover_after_mins.max(1) * 60);
+        handover
+    });
+    config.import_dir = args.import_dir.clone();
+    if config.handover.is_some() && config.data_dir.is_none() {
+        warn!(
+            "--handover-dir without --data-dir: games are not logged, so none can be handed over"
+        );
+    }
+    if config.draining {
+        warn!("draining: keeping only the running games, opening none");
+    }
     if config.ai_players {
         warn!("AI players on: rooms' owners may seat them, though they are not yet released");
     }

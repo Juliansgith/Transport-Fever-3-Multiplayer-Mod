@@ -468,6 +468,9 @@ Dev C:
 - [x] The auto-updater (D7; needs the owner's update key, OPERATIONS.md
   "Before the first release").
 - [x] The server: deployed beside tf2mp-relay (OPERATIONS.md).
+- [ ] *Added (D33):* two releases' servers at once: the old drains and
+  hands its games over to the newer (protocol 26, OPERATIONS.md "Two
+  versions at once"). Built; tick once used at an upgrade.
 - [x] Building into the TF2 launcher: *decided by the owner* (D20): our
   own native window, drawn in the exact look of tearded's launcher as
   ported to TF3, with its release notes. No web view.

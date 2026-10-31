@@ -62,6 +62,22 @@ pub const DEPOT_PLACES: [(f64, f64); 7] = [
     (150.0, std::f64::consts::FRAC_PI_4),
     (150.0, -std::f64::consts::FRAC_PI_4),
 ];
+/// Where a depot is tried off a line's own end, the station's end its line
+/// leaves by, as [`DEPOT_PLACES`] but turned off the line only: a siding
+/// beside its run out, its track a switch off the line's first node. A
+/// passenger station's outer end may face into its town's streets, its run
+/// out kept clear of them ([`EXIT_CLEAR`]): run 59's line had all fourteen
+/// places beyond its two stations' outer ends refused, touching 4 to 24
+/// things that stand, twice, and was built only between its third pair of
+/// station places.
+pub const DEPOT_LINE_PLACES: [(f64, f64); 4] = [
+    (100.0, std::f64::consts::FRAC_PI_6),
+    (100.0, -std::f64::consts::FRAC_PI_6),
+    (150.0, std::f64::consts::FRAC_PI_4),
+    (150.0, -std::f64::consts::FRAC_PI_4),
+];
+/// How many places a depot is tried at by each of a line's stations.
+pub const DEPOT_TRIES: usize = DEPOT_PLACES.len() + DEPOT_LINE_PLACES.len();
 /// The grade a line keeps to where it can, the steepest it climbs at all
 /// (a plant on a hill above its town, 89 m over 3.6 km, 2026-10-30), and
 /// its tightest curve, in metres: well inside the simple track's limits
@@ -76,6 +92,61 @@ pub const STEEP: f64 = 100_000.0;
 /// The land grid's cell, in metres, and a tile's cells a side: a tile is
 /// one question, about 7 ms of the driving game's frame.
 pub const STEP: f64 = 40.0;
+/// How far a passenger station reaches people on foot, in metres walked
+/// from its front: along its own street to the nearest of the town's, then
+/// along the town's. The game counts a station's catchment so, town
+/// buildings by the street lanes its walk reaches from the station's
+/// entrance (`getStation2edgesMap`, its lane values stopping at about 150).
+/// Run 57's two stations, the land read round them: Dinnington's, 24
+/// buildings in the game's catchment, reaches 12 cells of houses so;
+/// Wolverton's, 32 houses within 300 m but its own street 159 m long to the
+/// town's, none in the game's, reaches 1. Within 250 m in a straight line,
+/// as before, both passed.
+pub const WALK: f64 = 150.0;
+/// The fewest town houses a passenger station must reach on foot, cells of
+/// [`STEP`] built on by houses within its [`WALK`]: run 57's Dinnington
+/// station reaches 12, Wolverton's 1. The AI's stations at the towns' edges
+/// reached 4 and 5 people, the fixture player's 16 to 53, and every AI
+/// passenger train lost money (runs 43 to 52).
+pub const PEOPLE_LEAST: usize = 8;
+/// How many bearings round its town a passenger station is tried at on each
+/// ring, and how far apart the rings are, in metres: what its walk reaches
+/// turns on where the cells of street fall about it. On the land read round
+/// run 58's four large towns, 16 bearings on 8 rings found 2 to 25 places
+/// a town, 0 to 3 of them reaching enough, and a place shifted 20 m reached
+/// 4 where it had reached 19; 64 on rings 20 m apart find 42 to 359, 3 to 37
+/// reaching enough, however shifted.
+pub const PASSENGER_BEARINGS: u32 = 64;
+pub const PASSENGER_RING_STEP: f64 = 20.0;
+/// How far straight out of a passenger station no street may lie, in
+/// metres: a street met sooner, unless it takes a level crossing, the line
+/// must clear by [`OVER`] or [`UNDER`], more than its grade climbs in that
+/// space; the first stations among houses found no heights for their track
+/// for the streets round them (run 53, 2026-10-31). It stands at the
+/// built-up area's edge facing the line, as a player's first station, the
+/// houses behind it in reach.
+pub const EXIT_CLEAR: f64 = 200.0;
+/// Where a passenger station's street runs along its building's front,
+/// across its own x axis, in metres, and the places tried after where the
+/// game finds that one touching the station: the fixture player's station's
+/// street runs 30 m from its track's axis along its building (run 54).
+pub const FRONT_X: [f64; 3] = [-30.0, -34.0, -38.0];
+/// How far along its front that street runs either way of its middle, in
+/// metres.
+pub const FRONT_HALF: f64 = 30.0;
+/// How far from its front it looks for a street to join, in metres, and
+/// how many of the nearest places to join it tries, a street's end or its
+/// middle: run 56 joined one station, its street reaching 24 people (0 to 5
+/// before), and found the nearest street to the other refused at every
+/// place along its front; run 57's second, joined to the next street's
+/// middle 159 m off, where a town street's end lay 45 m off, reached none.
+pub const FRONT_REACH: u32 = 300;
+pub const FRONT_JOINS: usize = 4;
+/// What a metre of track through town houses costs beyond the ground, the
+/// houses it clears: about what a road depot among houses cost beyond one
+/// on open ground (up to 800,000 for its 40 by 20 metres), over a track's
+/// width of some 8 m.
+pub const HOUSE_PER_M: f64 = 8_000.0;
 pub const TILE: u8 = 16;
 /// How far beyond the line's two ends the land is read, in metres.
 pub const MARGIN: f64 = 480.0;
@@ -211,6 +282,30 @@ impl Station {
             y: self.origin.y + lx * xy + ly * uy,
             z: self.origin.z,
         }
+    }
+
+    /// The ends of a street along its building's front, `x` across its own
+    /// axes ([`FRONT_X`]), [`FRONT_HALF`] either way of its middle, at the
+    /// ground's height there: a street on the ground at the platforms'
+    /// height, metres off the ground beside a station on a slope, the game
+    /// refused ("Construction Not Possible", run 55).
+    pub fn front(&self, x: f64, land: &Land) -> (P, P) {
+        let mid = f64::from(self.first + self.last) * MODULE / 2.0;
+        let ground = |p: P| P {
+            z: land.height(p.x, p.y),
+            ..p
+        };
+        (
+            ground(self.local(x, mid - FRONT_HALF)),
+            ground(self.local(x, mid + FRONT_HALF)),
+        )
+    }
+
+    /// Where `p` lies across its own axes: x across, y along its track.
+    pub fn across(&self, p: P) -> (f64, f64) {
+        let (ux, uy) = unit(self.heading);
+        let (dx, dy) = (p.x - self.origin.x, p.y - self.origin.y);
+        (dx * uy - dy * ux, dx * ux + dy * uy)
     }
 
     /// Its track's end towards `heading`, where the line leaves.
@@ -367,11 +462,28 @@ pub fn depot(
     depot_at(end, out_heading, DEPOT_GAP, year, seed, name)
 }
 
+/// Depot place `place` (of [`DEPOT_TRIES`]) by `station`, its line leaving
+/// towards `other`: the end its track joins and the heading out of it, how
+/// far beyond that end it joins and how far it turns. A passenger
+/// station's beside its line's run out first ([`DEPOT_LINE_PLACES`]), then
+/// beyond its outer end ([`DEPOT_PLACES`]); a cargo station's the other way
+/// round, its outer end by its industry or town.
+pub fn depot_spot(station: &Station, other: P, place: usize) -> Option<((P, f64), (f64, f64))> {
+    let (line, outer) = station.ends_toward(other);
+    let (a, at_a, b, at_b) = if station.passengers {
+        (&DEPOT_LINE_PLACES[..], line, &DEPOT_PLACES[..], outer)
+    } else {
+        (&DEPOT_PLACES[..], outer, &DEPOT_LINE_PLACES[..], line)
+    };
+    match place.checked_sub(a.len()) {
+        None => Some((at_a, a[place])),
+        Some(k) => Some((at_b, *b.get(k)?)),
+    }
+}
+
 /// A rail depot at place place ([`DEPOT_PLACES`]) beyond a station's
 /// end leaving at out: where its track joins, the heading its track
 /// runs into the depot at (what [`depot_link`] arrives at), and the build.
-/// The join lies at the end of an arc from the station's heading to the
-/// depot's: along the chord, half the turn off the station's line.
 pub fn depot_place(
     end: P,
     out: f64,
@@ -380,7 +492,22 @@ pub fn depot_place(
     seed: i64,
     name: &str,
 ) -> Option<(P, f64, ConstructionBuild)> {
-    let &(gap, turn) = DEPOT_PLACES.get(place)?;
+    let &spot = DEPOT_PLACES.get(place)?;
+    depot_turned(end, out, spot, year, seed, name)
+}
+
+/// A rail depot `spot.0` metres beyond a station's end leaving at `out`,
+/// turned `spot.1` off its line: as [`depot_place`]. The join lies at the
+/// end of an arc from the station's heading to the depot's: along the
+/// chord, half the turn off the station's line.
+pub fn depot_turned(
+    end: P,
+    out: f64,
+    (gap, turn): (f64, f64),
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<(P, f64, ConstructionBuild)> {
     let (cx, cy) = unit(out + turn / 2.0);
     let join = P {
         x: end.x + cx * gap,
@@ -457,14 +584,18 @@ fn depot_joined(
 /// (on its own -x side) faces `target`, at the ground's height; those whose
 /// ground the land shows built on, a street, a track or water left out.
 /// The nearest ring first, and on each the bearings nearest `other` first.
+/// A passenger station may stand on town houses, the game clearing them
+/// for their price, as a player puts a station in town: those reaching
+/// the most houses on foot ([`Land::people`]) first.
 #[allow(clippy::cast_precision_loss)]
 pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) -> Vec<Station> {
     let towards = (other.y - target.y).atan2(other.x - target.x);
     let mut out = Vec::new();
     for r in radii {
-        let mut ring: Vec<(f64, Station)> = (0..16)
+        let bearings = if passengers { PASSENGER_BEARINGS } else { 16 };
+        let mut ring: Vec<(f64, Station)> = (0..bearings)
             .map(|k| {
-                let a = std::f64::consts::TAU * f64::from(k) / 16.0;
+                let a = std::f64::consts::TAU * f64::from(k) / f64::from(bearings);
                 let (x, y) = (target.x + r * a.cos(), target.y + r * a.sin());
                 let origin = P {
                     x,
@@ -473,9 +604,20 @@ pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) 
                 };
                 // A cargo station turned round its target, its building
                 // facing it; a town's passenger station at its edge turned
-                // to the other town, so its line runs straight out.
+                // to the other town, so its line runs straight out, and end
+                // for end where that faces its building (its own -x side)
+                // to the town: its street runs along that side to the
+                // town's (run 55 found none behind a station facing away).
                 let heading = if passengers {
-                    (other.y - y).atan2(other.x - x)
+                    let h = (other.y - y).atan2(other.x - x);
+                    let (ux, uy) = unit(h);
+                    // Its -x axis is its +y turned a quarter anticlockwise.
+                    let facing = -uy * (target.x - x) + ux * (target.y - y);
+                    if facing >= 0.0 {
+                        h
+                    } else {
+                        h + std::f64::consts::PI
+                    }
                 } else {
                     a + std::f64::consts::FRAC_PI_2
                 };
@@ -489,23 +631,39 @@ pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) 
             })
             .filter(|(_, s)| {
                 let clear = |x: f64, y: f64, also: u8| {
-                    land.flags_at(x, y)
-                        .is_some_and(|f| f & (land::BUILT | land::TRACK | land::WATER | also) == 0)
+                    land.flags_at(x, y).is_some_and(|f| {
+                        let houses = passengers && f & land::HOUSE != 0;
+                        (f & land::BUILT == 0 || houses)
+                            && f & (land::TRACK | land::WATER | also) == 0
+                    })
                 };
                 // Its ground free, and room for its line to leave it: the
-                // route starts straight out, two cells beyond its lead.
+                // route starts straight out, two cells beyond its lead; a
+                // passenger station's, no street within [`EXIT_CLEAR`].
                 let ((end, out), _) = s.ends_toward(other);
                 let (ux, uy) = unit(out);
+                let lead: Vec<(f64, u8)> = if passengers {
+                    let cells = (EXIT_CLEAR / STEP).ceil() as u32;
+                    (1..=cells)
+                        .map(|k| (f64::from(k) * STEP, land::STREET))
+                        .collect()
+                } else {
+                    vec![(LEAD, 0), (LEAD + STEP, 0), (LEAD + 2.0 * STEP, 0)]
+                };
                 s.footprint()
                     .iter()
                     .all(|(x, y)| clear(*x, *y, land::STREET))
-                    && [LEAD, LEAD + STEP, LEAD + 2.0 * STEP]
+                    && lead
                         .iter()
-                        .all(|d| clear(end.x + ux * d, end.y + uy * d, 0))
+                        .all(|(d, also)| clear(end.x + ux * d, end.y + uy * d, *also))
             })
             .collect();
         ring.sort_by(|a, b| a.0.total_cmp(&b.0));
         out.extend(ring.into_iter().map(|(_, s)| s));
+    }
+    if passengers {
+        // Stable: the nearer ring first among those reaching as many.
+        out.sort_by_cached_key(|s| std::cmp::Reverse(land.people(s)));
     }
     out
 }
@@ -611,6 +769,134 @@ impl Land {
 
     fn flags_at(&self, x: f64, y: f64) -> Option<u8> {
         self.cell(x, y).map(|(i, j)| self.flags[j * self.w + i])
+    }
+
+    /// The town houses a passenger station at `station` reaches on foot,
+    /// cells built on by houses ([`land::HOUSE`]) its [`WALK`] reaches: from
+    /// its front's nearer end along its own street, straight, to a street
+    /// cell on its building's side, then from cell to cell of street, a
+    /// house counted where it is a street's cell or beside one, half a cell
+    /// on. Those its own ground clears not counted. The walk keeps within
+    /// [`WALK`] of its front's middle, so only the cells about it are read:
+    /// a town's places are thousands (`sites`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    pub fn people(&self, station: &Station) -> usize {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let (a, b) = station.front(FRONT_X[0], self);
+        let mid = P {
+            x: (a.x + b.x) / 2.0,
+            y: (a.y + b.y) / 2.0,
+            z: 0.0,
+        };
+        let Some((ci, cj)) = self.cell(mid.x, mid.y) else {
+            return 0;
+        };
+        // The cells within the walk of its front's middle, a cell beside.
+        let span = ((WALK + STEP) / STEP).ceil() as i64;
+        let reach = span + 1;
+        let side = (2 * reach + 1) as usize;
+        let (i0, j0) = (ci as i64 - reach, cj as i64 - reach);
+        let (w, h) = (self.w as i64, self.h as i64);
+        // A cell of the window: its place in the window and on the grid.
+        let at = |i: i64, j: i64| {
+            let (li, lj) = (i - i0, j - j0);
+            let window = 0..side as i64;
+            (window.contains(&li)
+                && window.contains(&lj)
+                && (0..w).contains(&i)
+                && (0..h).contains(&j))
+            .then(|| {
+                (
+                    lj as usize * side + li as usize,
+                    j as usize * self.w + i as usize,
+                )
+            })
+        };
+        let under: Vec<usize> = station
+            .footprint()
+            .iter()
+            .filter_map(|(x, y)| self.cell(*x, *y))
+            .map(|(i, j)| j * self.w + i)
+            .collect();
+        let street = |k: usize| self.flags[k] & land::STREET != 0 && !under.contains(&k);
+        let house = |k: usize| self.flags[k] & land::HOUSE != 0 && !under.contains(&k);
+        let mut cost = vec![f64::INFINITY; side * side];
+        // Centimetres walked, for the heap's order.
+        let key = |c: f64| (c * 100.0).round() as u64;
+        let mut heap = BinaryHeap::new();
+        for j in cj as i64 - span..=cj as i64 + span {
+            for i in ci as i64 - span..=ci as i64 + span {
+                let Some((l, k)) = at(i, j) else {
+                    continue;
+                };
+                let (x, y) = self.centre(k % self.w, k / self.w);
+                let p = P { x, y, z: 0.0 };
+                if !street(k) || station.across(p).0 >= FRONT_X[0] {
+                    continue;
+                }
+                let c = FRONT_HALF + a.flat_distance(p).min(b.flat_distance(p));
+                if c <= WALK && c < cost[l] {
+                    cost[l] = c;
+                    heap.push(Reverse((key(c), i, j)));
+                }
+            }
+        }
+        let neighbours = |i: i64, j: i64| {
+            (-1..=1).flat_map(move |dj| {
+                (-1..=1).filter_map(move |di| {
+                    ((di, dj) != (0, 0)).then_some((i + di, j + dj, di != 0 && dj != 0))
+                })
+            })
+        };
+        while let Some(Reverse((c, i, j))) = heap.pop() {
+            let Some((l, _)) = at(i, j) else {
+                continue;
+            };
+            if c > key(cost[l]) {
+                continue;
+            }
+            for (ni, nj, diagonal) in neighbours(i, j) {
+                let Some((nl, nk)) = at(ni, nj) else {
+                    continue;
+                };
+                let step = if diagonal {
+                    STEP * std::f64::consts::SQRT_2
+                } else {
+                    STEP
+                };
+                let next = cost[l] + step;
+                if street(nk) && next <= WALK && next < cost[nl] {
+                    cost[nl] = next;
+                    heap.push(Reverse((key(next), ni, nj)));
+                }
+            }
+        }
+        let mut reached = vec![false; side * side];
+        for lj in 0..side as i64 {
+            for li in 0..side as i64 {
+                let (i, j) = (i0 + li, j0 + lj);
+                let Some((l, k)) = at(i, j) else {
+                    continue;
+                };
+                if cost[l] > WALK {
+                    continue;
+                }
+                reached[l] |= house(k);
+                if cost[l] + STEP / 2.0 <= WALK {
+                    for (ni, nj, _) in neighbours(i, j) {
+                        if let Some((nl, nk)) = at(ni, nj) {
+                            reached[nl] |= house(nk);
+                        }
+                    }
+                }
+            }
+        }
+        reached.iter().filter(|r| **r).count()
     }
 
     /// The ground's height at a point, between the cells' centres.
@@ -733,7 +1019,7 @@ impl Ord for Open {
 }
 
 /// What a step of route costs in money, or none where it may not go: over
-/// built land. Its track; a bridge over the water it crosses, and over
+/// built land but town houses, which it crosses at [`HOUSE_PER_M`]. Its track; a bridge over the water it crosses, and over
 /// another railway, at the height that clears it; the cheapest of earth, bridge or tunnel for the height its
 /// slope asks beyond the line's grade (half that rise, on average, over
 /// the step); a level crossing where it meets a street, which it crosses
@@ -741,13 +1027,18 @@ impl Ord for Open {
 /// falls, so it keeps to the level where it can.
 fn step_cost(land: &Land, prices: &Prices, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
     let len = (b.0 - a.0).hypot(b.1 - a.1);
-    let (mut wet, mut rail, mut street) = (0u8, 0u8, false);
+    let (mut wet, mut rail, mut street, mut houses) = (0u8, 0u8, false, 0u8);
     for k in 1..=4 {
         let t = f64::from(k) / 4.0;
         let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
         let f = land.flags_at(x, y)?;
+        // Through town houses at what clearing them costs; never through
+        // anything else built.
         if f & land::BUILT != 0 {
-            return None;
+            if f & land::HOUSE == 0 {
+                return None;
+            }
+            houses += 1;
         }
         street |= f & land::STREET != 0;
         wet += u8::from(f & land::WATER != 0);
@@ -759,6 +1050,7 @@ fn step_cost(land: &Land, prices: &Prices, a: (f64, f64), b: (f64, f64)) -> Opti
     let (wet, rail) = (f64::from(wet) / 4.0, f64::from(rail) / 4.0);
     let dry = (1.0 - wet - rail).max(0.0);
     let mut cost = len * (dry * flat + wet * over_water + rail * over_rail);
+    cost += len * f64::from(houses) / 4.0 * HOUSE_PER_M;
     // The ramps up to clear a railway, as dear again as the bridge.
     if rail > 0.0 {
         cost += len * rail * over_rail;
@@ -2016,6 +2308,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_passenger_stations_depot_is_tried_beside_its_line_first_a_cargo_stations_beyond_its_end() {
+        // Run 59: all fourteen places beyond a passenger line's two
+        // stations' outer ends, which faced into their towns, were refused.
+        let other = p(5_000.0, 0.0);
+        let passengers = Station::for_passengers(p(0.0, 0.0), 0.0);
+        let (line, outer) = passengers.ends_toward(other);
+        for (k, spot) in DEPOT_LINE_PLACES.iter().enumerate() {
+            assert_eq!(depot_spot(&passengers, other, k), Some((line, *spot)));
+            // Off the line, never along it.
+            assert!(spot.1.abs() >= std::f64::consts::FRAC_PI_6 - 1e-9);
+        }
+        let n = DEPOT_LINE_PLACES.len();
+        for (k, spot) in DEPOT_PLACES.iter().enumerate() {
+            assert_eq!(depot_spot(&passengers, other, n + k), Some((outer, *spot)));
+        }
+        assert_eq!(depot_spot(&passengers, other, DEPOT_TRIES), None);
+        // A cargo station's beyond its outer end first, by its industry.
+        let cargo = Station::new(p(0.0, 0.0), 0.0);
+        let (line, outer) = cargo.ends_toward(other);
+        assert_eq!(depot_spot(&cargo, other, 0), Some((outer, DEPOT_PLACES[0])));
+        assert_eq!(
+            depot_spot(&cargo, other, DEPOT_PLACES.len()),
+            Some((line, DEPOT_LINE_PLACES[0]))
+        );
+        // Beside the line: its join off the run out, towards the other town.
+        let ((end, out), spot) = depot_spot(&passengers, other, 0).unwrap();
+        let (join, _, _) = depot_turned(end, out, spot, 1925, 1, "D").unwrap();
+        assert!(join.flat_distance(other) < passengers.origin.flat_distance(other));
+        assert!(join.y.abs() > 20.0, "{join:?}");
+    }
+
+    #[test]
     fn a_depot_turned_aside_joins_on_the_arc_and_runs_in_at_its_turn() {
         let end = P {
             x: 100.0,
@@ -2050,6 +2374,310 @@ mod tests {
         P { x, y, z: 10.0 }
     }
 
+    /// Flat land at 10 m with town houses wherever `houses` says, and
+    /// another construction wherever `other` says.
+    fn town(
+        a: P,
+        b: P,
+        houses: impl Fn(f64, f64) -> bool,
+        other: impl Fn(f64, f64) -> bool,
+    ) -> Land {
+        let mut land = flat(a, b, |_, _| false);
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                if other(x, y) {
+                    land.flags[j * land.w + i] = land::BUILT;
+                } else if houses(x, y) {
+                    land.flags[j * land.w + i] = land::BUILT | land::HOUSE;
+                }
+            }
+        }
+        land
+    }
+
+    /// Streets through `land` on a grid of every third cell where `on`
+    /// says, over what stands there.
+    fn streets(land: &mut Land, on: impl Fn(f64, f64) -> bool) {
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                if on(x, y) && (i % 3 == 0 || j % 3 == 0) {
+                    land.flags[j * land.w + i] |= land::STREET;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_passenger_station_stands_among_a_towns_houses_reaching_the_most() {
+        // A town of houses 400 m round its middle at the origin, its
+        // streets 120 m apart, the other town 5 km east: the AI's stations
+        // stood at its edge on free ground, reaching 4 and 5 people
+        // (2026-10-31).
+        let (centre, other) = (p(0.0, 0.0), p(5_000.0, 0.0));
+        let in_town = |x: f64, y: f64| x.hypot(y) <= 400.0;
+        let mut land = town(centre, other, in_town, |_, _| false);
+        streets(&mut land, in_town);
+        let rings = [60.0, 120.0, 180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
+        let sites = sites(&land, centre, other, &rings, true);
+        let best = sites.first().expect("a place");
+        let reached = land.people(best);
+        assert!(reached >= PEOPLE_LEAST, "{reached}");
+        // Those reaching the most first; a place out of town reaches fewer.
+        let edge = sites
+            .iter()
+            .find(|s| s.origin.flat_distance(centre) >= 600.0)
+            .expect("a place out of town");
+        assert!(land.people(edge) < reached);
+        for w in sites.windows(2) {
+            assert!(land.people(&w[0]) >= land.people(&w[1]));
+        }
+        // A cargo station keeps off the houses.
+        assert!(sites_free_of_houses(&land, centre, other));
+    }
+
+    fn sites_free_of_houses(land: &Land, centre: P, other: P) -> bool {
+        sites(land, centre, other, &[60.0, 120.0, 180.0], false).is_empty()
+    }
+
+    #[test]
+    fn a_passenger_station_never_stands_on_anything_built_but_houses() {
+        // Houses all round, an industry's ground through the middle 200 m
+        // east and west: no place over it.
+        let (centre, other) = (p(0.0, 0.0), p(5_000.0, 0.0));
+        let land = town(
+            centre,
+            other,
+            |x, y| x.hypot(y) <= 600.0,
+            |_, y| y.abs() <= 120.0,
+        );
+        for s in sites(&land, centre, other, &[60.0, 120.0, 180.0, 260.0], true) {
+            for (x, y) in s.footprint() {
+                assert!(y.abs() > 100.0, "over the industry at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stations_people_are_walked_to_along_the_streets_from_its_front() {
+        // Run 57: Wolverton's station, 32 houses within 300 m but its own
+        // street 159 m long to the town's, reached none in the game's
+        // catchment, counted along the streets from its entrance.
+        let (centre, other) = (p(0.0, 0.0), p(5_000.0, 0.0));
+        // Heading east: its building, on its own -x side, to the north.
+        let station = Station::for_passengers(centre, 0.0);
+        assert!(station.across(p(0.0, 50.0)).0 < FRONT_X[0]);
+        let houses = town(centre, other, |_, _| true, |_, _| false);
+        let street_at = |y: f64| {
+            let mut land = houses.clone();
+            for i in 0..land.w {
+                let (x, _) = land.centre(i, 0);
+                let (i, j) = land.cell(x, y).unwrap();
+                land.flags[j * land.w + i] |= land::STREET;
+            }
+            land
+        };
+        // Houses all round and no street: no one.
+        assert_eq!(houses.people(&station), 0);
+        // A street along its front 60 m off: the houses by it its walk
+        // reaches, some cells either way, three rows wide at most.
+        let near = street_at(60.0);
+        let n = near.people(&station);
+        assert!(n >= PEOPLE_LEAST, "{n}");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let most = 3 * (2.0 * WALK / STEP) as usize;
+        assert!(n <= most, "{n} of at most {most}");
+        // The same street beyond its walk, or behind its track, which its
+        // own street does not cross: no one.
+        assert_eq!(street_at(200.0).people(&station), 0);
+        assert_eq!(street_at(-60.0).people(&station), 0);
+        // Further off, less of the walk left for the town's street: fewer.
+        assert!(street_at(140.0).people(&station) < n);
+        // Its own ground not counted: on a street beside it, a station on
+        // bare land reaches no one.
+        let mut bare = flat(centre, other, |_, _| false);
+        for i in 0..bare.w {
+            let (x, _) = bare.centre(i, 0);
+            let (i, j) = bare.cell(x, 60.0).unwrap();
+            bare.flags[j * bare.w + i] = land::STREET;
+        }
+        assert_eq!(bare.people(&station), 0);
+    }
+
+    /// Run 57's two stations and the land read round them
+    /// (`testdata/run57_stations.txt`).
+    fn run57() -> Vec<(Station, Land)> {
+        const DIGITS: &str = "0123456789abcdefghijklmnopqrstuv";
+        include_str!("testdata/run57_stations.txt")
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                let n = |k: usize| f[k].parse::<f64>().unwrap();
+                let flags: Vec<u8> = f[7]
+                    .chars()
+                    .map(|c| u8::try_from(DIGITS.find(c).unwrap()).unwrap())
+                    .collect();
+                let land = Land {
+                    x0: n(5),
+                    y0: n(6),
+                    w: 24,
+                    h: 24,
+                    z: vec![0.0; flags.len()],
+                    flags,
+                    read: vec![true],
+                };
+                // Its own x axis is its heading turned a quarter clockwise.
+                let (xx, xy) = (n(3), n(4));
+                let origin = P {
+                    x: n(1),
+                    y: n(2),
+                    z: 0.0,
+                };
+                (Station::for_passengers(origin, xx.atan2(-xy)), land)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn run_57s_stations_reach_people_as_the_game_counted_them() {
+        let stations = run57();
+        assert_eq!(stations.len(), 2);
+        // Dinnington's front 30 m from its track, as the AI built it.
+        let (dinnington, land) = &stations[0];
+        let (a, _) = dinnington.front(FRONT_X[0], land);
+        assert!((dinnington.across(a).0 - FRONT_X[0]).abs() < 1e-6);
+        // The game counted 24 buildings in Dinnington's catchment, none in
+        // Wolverton's.
+        let reached: Vec<usize> = stations.iter().map(|(s, l)| l.people(s)).collect();
+        assert!(reached[0] >= PEOPLE_LEAST, "{reached:?}");
+        assert!(reached[1] < PEOPLE_LEAST, "{reached:?}");
+    }
+
+    /// Run 58's four large towns, each with the land read round it
+    /// (`testdata/run58_towns.txt`): name, centre and land.
+    fn run58() -> Vec<(String, P, Land)> {
+        const DIGITS: &str = "0123456789abcdefghijklmnopqrstuv";
+        include_str!("testdata/run58_towns.txt")
+            .lines()
+            .filter(|l| !l.starts_with('#') && l.contains('|'))
+            .map(|l| {
+                let f: Vec<&str> = l.split('|').collect();
+                let n = |k: usize| f[k].parse::<f64>().unwrap();
+                let flags: Vec<u8> = f[6]
+                    .chars()
+                    .map(|c| u8::try_from(DIGITS.find(c).unwrap()).unwrap())
+                    .collect();
+                assert_eq!(flags.len(), 48 * 48);
+                let land = Land {
+                    x0: n(4),
+                    y0: n(5),
+                    w: 48,
+                    h: 48,
+                    z: vec![0.0; flags.len()],
+                    flags,
+                    read: vec![true; 9],
+                };
+                let centre = P {
+                    x: n(2),
+                    y: n(3),
+                    z: 0.0,
+                };
+                (f[0].to_owned(), centre, land)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn run_58s_large_towns_each_find_station_places_reaching_people_however_the_grid_falls() {
+        // Run 58 gave up on its two lines, finding no station place
+        // reaching people enough: 16 bearings on 8 rings found 0 to 3 such a
+        // town, and none at Basingstoke towards Dinnington.
+        let towns = run58();
+        assert_eq!(towns.len(), 4);
+        let rings: Vec<f64> = (0..)
+            .map(|k| 60.0 + PASSENGER_RING_STEP * f64::from(k))
+            .take_while(|r| *r <= 600.0)
+            .collect();
+        let mut pairs = 0;
+        for (name, centre, land) in &towns {
+            for (other, to, _) in &towns {
+                if !(3_000.0..=10_000.0).contains(&centre.flat_distance(*to)) {
+                    continue;
+                }
+                pairs += 1;
+                // The town's centre half a cell off, as a line's own grid
+                // falls on it.
+                for (dx, dy) in [(0.0, 0.0), (20.0, 0.0), (0.0, 20.0), (20.0, 20.0)] {
+                    let at = P {
+                        x: centre.x + dx,
+                        y: centre.y + dy,
+                        z: 0.0,
+                    };
+                    let found = sites(land, at, *to, &rings, true);
+                    let best = found.first().map_or(0, |s| land.people(s));
+                    assert!(
+                        best >= PEOPLE_LEAST,
+                        "{name} towards {other}, {dx},{dy} off: {best}"
+                    );
+                }
+            }
+        }
+        // Dinnington and Wolverton, Hunstanton and Wolverton, Hunstanton
+        // and Basingstoke, Dinnington and Basingstoke, each way.
+        assert_eq!(pairs, 8);
+    }
+
+    #[test]
+    fn a_passenger_station_has_no_street_within_its_first_run_out() {
+        // A town of houses 400 m round, streets every 100 m through it: run
+        // 53's stations among them found no heights for their track. Its
+        // place leaves a clear run out towards the other town.
+        let (centre, other) = (p(0.0, 0.0), p(5_000.0, 0.0));
+        let street = |x: f64, y: f64| {
+            (x.hypot(y) <= 400.0) && ((x.rem_euclid(100.0) < 20.0) || (y.rem_euclid(100.0) < 20.0))
+        };
+        let mut land = town(centre, other, |x, y| x.hypot(y) <= 400.0, |_, _| false);
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                if street(x, y) {
+                    land.flags[j * land.w + i] = land::STREET;
+                }
+            }
+        }
+        let rings = [60.0, 120.0, 180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
+        let found = sites(&land, centre, other, &rings, true);
+        let best = found.first().expect("a place");
+        let ((end, out), _) = best.ends_toward(other);
+        let (ux, uy) = unit(out);
+        let mut d = STEP;
+        while d <= EXIT_CLEAR {
+            assert!(
+                !street(end.x + ux * d, end.y + uy * d),
+                "a street {d} m out"
+            );
+            d += STEP;
+        }
+        assert!(land.people(best) >= PEOPLE_LEAST, "{}", land.people(best));
+    }
+    #[test]
+    fn track_crosses_town_houses_at_their_price_and_nothing_else_built() {
+        let (a, b) = (p(0.0, 0.0), p(4_000.0, 0.0));
+        let prices = Prices::default();
+        let open = flat(a, b, |_, _| false);
+        let houses = town(a, b, |_, _| true, |_, _| false);
+        let built = flat(a, b, |_, _| true);
+        let step = ((100.0, 0.0), (140.0, 0.0));
+        let free = step_cost(&open, &prices, step.0, step.1).unwrap();
+        let through = step_cost(&houses, &prices, step.0, step.1).unwrap();
+        assert!(
+            (through - free - 40.0 * HOUSE_PER_M).abs() < 1.0,
+            "{free} {through}"
+        );
+        assert!(step_cost(&built, &prices, step.0, step.1).is_none());
+    }
     /// Flat land at 10 m, read whole, with `blocked` cells built on.
     fn flat(a: P, b: P, blocked: impl Fn(f64, f64) -> bool) -> Land {
         let mut land = Land::around(a, b);

@@ -33,6 +33,8 @@ pub(crate) struct Metrics {
     pub(crate) tunnels_refused: AtomicU64,
     pub(crate) diagnostics_kept: AtomicU64,
     pub(crate) diagnostics_dropped: AtomicU64,
+    pub(crate) games_handed_over: AtomicU64,
+    pub(crate) games_taken_in: AtomicU64,
 }
 
 /// Values measured at scrape time rather than counted.
@@ -40,6 +42,8 @@ pub(crate) struct Gauges {
     pub(crate) sessions: usize,
     pub(crate) rooms: usize,
     pub(crate) tunnels: usize,
+    /// 1 while the server drains.
+    pub(crate) draining: usize,
 }
 
 pub(crate) fn increment(counter: &AtomicU64) {
@@ -52,7 +56,7 @@ pub(crate) fn add(counter: &AtomicU64, amount: u64) {
 
 impl Metrics {
     pub(crate) fn render(&self, gauges: &Gauges) -> String {
-        let counters: [(&str, &str, &AtomicU64); 26] = [
+        let counters: [(&str, &str, &AtomicU64); 28] = [
             (
                 "sessions_opened",
                 "Sessions that completed the handshake.",
@@ -171,6 +175,16 @@ impl Metrics {
                 "Lines of players' diagnostics dropped: over a session's quota, or the writer behind.",
                 &self.diagnostics_dropped,
             ),
+            (
+                "games_handed_over",
+                "Running games this draining server handed over to a newer one.",
+                &self.games_handed_over,
+            ),
+            (
+                "games_taken_in",
+                "Running games an older server handed over and this one took in.",
+                &self.games_taken_in,
+            ),
         ];
         let mut out = String::new();
         for (name, help, counter) in counters {
@@ -186,6 +200,11 @@ impl Metrics {
             ("sessions", "Sessions open now.", gauges.sessions),
             ("rooms", "Rooms hosted now.", gauges.rooms),
             ("tunnels", "Tunnels open now.", gauges.tunnels),
+            (
+                "draining",
+                "1 while the server drains beside a newer one.",
+                gauges.draining,
+            ),
         ] {
             let _ = writeln!(out, "# HELP tpf3mp_{name} {help}");
             let _ = writeln!(out, "# TYPE tpf3mp_{name} gauge");
@@ -208,7 +227,13 @@ mod tests {
             sessions: 3,
             rooms: 1,
             tunnels: 0,
+            draining: 1,
         });
+        assert!(text.contains(
+            "# TYPE tpf3mp_draining gauge
+tpf3mp_draining 1
+"
+        ));
         assert!(
             text.contains(
                 "# TYPE tpf3mp_turns_sealed_total counter\ntpf3mp_turns_sealed_total 1\n"

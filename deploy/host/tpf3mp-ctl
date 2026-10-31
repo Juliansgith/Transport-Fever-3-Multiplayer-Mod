@@ -23,6 +23,11 @@
 #   metrics                       the server's Prometheus metrics
 #   deploy [<commit>]             build and run main, or an earlier commit
 #                                 of main, from the project's repository
+#   drain                         keep only the server's running games, for
+#                                 a newer release's server beside it: no new
+#                                 rooms or players, each game handed over
+#                                 once nobody is connected (docs/OPERATIONS.md,
+#                                 "Two versions at once")
 #
 # Every argument is checked here; nothing given is ever run by a shell.
 # Each use is logged to syslog as tpf3mp-ctl, with the developer's name.
@@ -78,6 +83,10 @@ code_of() {
 }
 
 case "$command" in
+  drain)
+    [ $# -eq 0 ] || die "drain takes nothing more"
+    curl -sS --fail-with-body --max-time 10 -X POST "$ADMIN/drain"
+    ;;
   status)
     [ $# -eq 0 ] || die "status takes nothing more"
     compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'
@@ -222,6 +231,8 @@ case "$command" in
     fi
     git -C "$REPO" -c advice.detachedHead=false checkout --quiet --detach "$target"
     echo "building $(git -C "$REPO" log -1 --format='%h %s')"
+    # Shared with any other release's server on the host (compose.yaml).
+    docker volume inspect tpf3mp-handover >/dev/null 2>&1 || docker volume create tpf3mp-handover >/dev/null
     compose build
     compose up -d
     for _ in $(seq 1 60); do

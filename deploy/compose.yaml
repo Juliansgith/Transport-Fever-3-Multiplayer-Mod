@@ -14,19 +14,26 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    # The host's ports: these by default. A newer release's server beside
+    # an older one takes others, as its own project (`docker compose -p
+    # tpf3mp-p26 --env-file p26.env up -d`; docs/OPERATIONS.md, "Two versions
+    # at once").
     ports:
       # Players: QUIC over UDP.
-      - "29470:29470/udp"
+      - "${TPF3MP_UDP_PORT:-29470}:29470/udp"
       # Players whose networks block UDP: WebSocket tunnels, for the host's
       # reverse proxy only (see docs/OPERATIONS.md, "Tunnels").
-      - "127.0.0.1:29471:29471/tcp"
+      - "127.0.0.1:${TPF3MP_TUNNEL_PORT:-29471}:29471/tcp"
       # Metrics and health, for the host only. Never publish this publicly.
-      - "127.0.0.1:9470:9470/tcp"
+      - "127.0.0.1:${TPF3MP_ADMIN_PORT:-9470}:9470/tcp"
     volumes:
       # fullchain.pem and privkey.pem, readable by UID 65532 (see
       # docs/OPERATIONS.md).
       - ./certs:/certs:ro
       - tpf3mp-data:/data
+      # Where a draining server hands its games over and the newer one takes
+      # them in, the same for every release's server on the host.
+      - tpf3mp-handover:/handover
     environment:
       RUST_LOG: info
       # "json" for a log collector; "text" reads best in `docker compose logs`.
@@ -59,3 +66,8 @@ services:
 
 volumes:
   tpf3mp-data:
+  # Shared by the projects of every release on the host: create it once
+  # (`docker volume create tpf3mp-handover`; `tpf3mp-ctl deploy` does).
+  tpf3mp-handover:
+    external: true
+    name: tpf3mp-handover

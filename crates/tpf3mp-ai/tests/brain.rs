@@ -15,7 +15,7 @@ use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
     action::{
         Action, CompanyOp, EdgeEnds, EdgeObjectKind, LineChange, LineId, LoanOp, LoanTerms,
-        PlaceStop, Pos, Resolve, StationId, Structure, TownId, VehicleId,
+        Network, PlaceStop, Pos, Resolve, RoadBuild, StationId, Structure, TownId, VehicleId,
     },
 };
 
@@ -131,6 +131,13 @@ struct World {
     line_recent: Option<fn(&AiLine) -> i64>,
     /// No road from within 100 m of here, whatever `roads_join` says.
     no_road_from: Option<Pos>,
+    /// Its towns built up: every cell within 500 m of a town's middle that
+    /// is no street a town house's.
+    houses: bool,
+    /// The streets of its own the AI built, as sent.
+    roads: Vec<RoadBuild>,
+    /// So many road verdicts refused, the first first.
+    refuse_roads: u32,
     /// The buses the game offers, where not the stand-in's two.
     buses: Option<Vec<AiModel>>,
     wear_per_month: u16,
@@ -220,6 +227,9 @@ impl World {
             line_income: None,
             line_recent: None,
             no_road_from: None,
+            houses: false,
+            roads: Vec::new(),
+            refuse_roads: 0,
             buses: None,
             wear_per_month: 0,
             lowest: 0,
@@ -231,6 +241,31 @@ impl World {
 
     /// Its towns too small for a passenger train: a test of a cargo's
     /// railway alone.
+    /// Its towns built up: town houses on every cell within 540 m of each
+    /// town's middle, by its streets too and a row beyond the last, as the
+    /// game's land read round run 57's stations; its streets 250 m apart,
+    /// blocks a station fits in among the houses.
+    fn built_up(&mut self) {
+        self.houses = true;
+        self.streets.clear();
+        for town in self.towns.clone() {
+            let (cx, cy) = (
+                f64::from(town.pos.x) / 1000.0,
+                f64::from(town.pos.y) / 1000.0,
+            );
+            for k in -2..=2 {
+                let o = f64::from(k) * 250.0;
+                for s in -5..5 {
+                    let (a, b) = (f64::from(s) * 100.0, f64::from(s + 1) * 100.0);
+                    self.streets
+                        .push(street(pos(cx + o, cy + a), pos(cx + o, cy + b)));
+                    self.streets
+                        .push(street(pos(cx + a, cy + o), pos(cx + b, cy + o)));
+                }
+            }
+        }
+    }
+
     fn small_towns(&mut self) {
         for town in &mut self.towns {
             town.buildings = 120;
@@ -328,9 +363,16 @@ impl World {
                             let o = P::of(s.pos);
                             (o.x - x).hypot(o.y - y) <= 70.0 + f64::from(*step) * 0.71
                         });
+                        let house = self.houses
+                            && !built
+                            && self.towns.iter().any(|t| {
+                                let c = P::of(t.pos);
+                                (c.x - x).abs() <= 540.0 && (c.y - y).abs() <= 540.0
+                            });
                         flags.push(
                             if street { land::STREET } else { 0 }
-                                | if built { land::BUILT } else { 0 },
+                                | if built { land::BUILT } else { 0 }
+                                | if house { land::BUILT | land::HOUSE } else { 0 },
                         );
                     }
                 }
@@ -448,6 +490,12 @@ impl World {
                 {
                     self.rail_depot_touches -= 1;
                     verdict.collisions = verdict.collisions.max(1);
+                }
+                if matches!(action, Action::BuildRoad(_)) && self.refuse_roads > 0 {
+                    self.refuse_roads -= 1;
+                    verdict.ok = false;
+                    verdict.messages =
+                        BoundedVec::new(vec![Text::lossy("Construction Not Possible")]).unwrap();
                 }
                 if let Action::BuildTrack(track) = &action
                     && track.polyline.vertices.len() == 2
@@ -1007,6 +1055,10 @@ impl World {
                     "a line deleted with its vehicles on it"
                 );
                 self.lines.retain(|l| l.id != edit.line);
+            }
+            Action::BuildRoad(road) => {
+                self.money -= 20_000;
+                self.roads.push(road);
             }
             other => panic!("the brain sent {other:?}"),
         }
@@ -2419,6 +2471,8 @@ fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full()
 #[test]
 fn a_normal_ai_joins_two_large_towns_by_passenger_train() {
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     // Didcot and Ely, 300 and 200 buildings, 5 km apart; no cargo to carry;
@@ -2471,6 +2525,8 @@ fn two_towns_joined_by_train_are_not_joined_again_as_they_grow() {
     // As in run 40: the towns' district centres move as they grow, and
     // the pair, known by a centre's place, was planned and built again.
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -2655,11 +2711,11 @@ fn an_ai_whose_lines_lose_money_borrows_no_more_and_keeps_out_of_debt() {
             .any(|l| l.starts_with("closes ") && l.contains("Bus")),
         "{said:?}"
     );
-    // No passenger train while its lines lose money.
+    // No passenger train opened: its towns' edges reach no one.
     assert!(
         !said
             .iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+            .any(|l| l.starts_with("opened a rail line carrying passengers")),
         "{said:?}"
     );
 }
@@ -2826,9 +2882,11 @@ fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
             l.starts_with("a rail depot placement would be refused: touches 1 things that stand")
         })
         .count();
+    // Its seven beyond the station's outer end, then four beside its line.
     assert_eq!(
-        trial, 7,
-        "each of its seven places by the sawmill: {said:?}"
+        trial,
+        tpf3mp_ai::rail::DEPOT_TRIES,
+        "each of its places by the sawmill: {said:?}"
     );
     assert!(
         !said
@@ -3111,6 +3169,8 @@ fn a_town_pair_another_companys_line_joins_gets_no_train_of_its_own() {
 #[test]
 fn a_town_by_its_passenger_station_gets_buses_to_that_station() {
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -3160,6 +3220,8 @@ fn buses_to_its_station_come_before_its_young_lines_wait_and_cargo() {
     // Its lines never settle here: Normal waits on two young ones. A cargo
     // to carry waits too.
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -3269,6 +3331,8 @@ fn a_passenger_train_that_lost_money_is_not_followed_by_another() {
     // Run 46: the Hard AI closed a passenger train that lost 695,803 in
     // its first eight months, and planned another at once.
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -3664,13 +3728,15 @@ fn an_earning_line(world: &mut World) {
 }
 
 #[test]
-fn a_passenger_train_waits_until_its_settled_lines_earn() {
-    // Runs 46 to 49: each AI's first venture, on borrowed money, a passenger
-    // train that lost 0.65 to 0.86 million in eight months.
+fn a_passenger_train_waits_for_station_places_that_reach_people() {
+    // Runs 46 to 52: every AI passenger train lost money, its stations at
+    // the towns' edges reaching 4 to 27 people. Towns of streets alone, no
+    // house to reach: no line opened, its line given up before anything is
+    // built.
     let mut world = World::new();
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
-    let now = play(
+    play(
         &mut brain,
         &mut world,
         Instant::now(),
@@ -3678,40 +3744,25 @@ fn a_passenger_train_waits_until_its_settled_lines_earn() {
     );
     let said = brain.take_said();
     assert!(
-        !said
-            .iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
-        "{said:?}"
-    );
-    // Its bus lines settled, earning less than a train costs to run: still
-    // none (run 50: 2,500 a month).
-    world.month_every = Some(Duration::from_secs(30));
-    world.line_profit = Some(|_| 15_000);
-    for v in &mut world.vehicles {
-        v.worn = 10;
-    }
-    let now = play(&mut brain, &mut world, now, Duration::from_secs(1_200));
-    let said = brain.take_said();
-    assert!(
-        !said
-            .iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
-        "{said:?}"
-    );
-    // Earning what a train costs: then a train.
-    world.line_profit = Some(|_| 600_000);
-    for v in &mut world.vehicles {
-        v.worn = 10;
-    }
-    play(&mut brain, &mut world, now, Duration::from_secs(2_400));
-    let said = brain.take_said();
-    assert!(
         said.iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+            .any(|l| l.starts_with("found no station place reaching people enough")),
         "{said:?}"
     );
+    assert_eq!(world.passenger_stations, 0, "{said:?}");
+    // Its towns built up: a line between them, its stations by their houses.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
 }
-
 #[test]
 fn a_young_chains_losses_hold_nothing_back() {
     // Run 50: its oil chain's lines six months in, losing as a young chain
@@ -3852,6 +3903,123 @@ fn a_cargo_railway_waits_until_its_settled_lines_earn_what_a_train_costs() {
     play(&mut brain, &mut world, now, Duration::from_secs(1_800));
     let said = brain.take_said();
     assert!(world.line_modes.iter().any(|(_, m)| *m == 7), "{said:?}");
+}
+
+#[test]
+fn a_passenger_lines_depot_stands_beside_its_line_not_beyond_into_its_town() {
+    // Run 59: every place beyond a passenger line's stations' outer ends,
+    // facing into their towns, touched what stood there.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
+    let depot = world
+        .depots
+        .iter()
+        .find(|d| d.file.as_str().contains("/rail/"))
+        .expect("a rail depot");
+    let at = P::of(depot.at);
+    let mut stations: Vec<P> = world
+        .stations
+        .iter()
+        .filter(|s| world.rail_stations.contains(&s.id))
+        .map(|s| P::of(s.pos))
+        .collect();
+    stations.sort_by(|a, b| a.flat_distance(at).total_cmp(&b.flat_distance(at)));
+    let (own, other) = (stations[0], stations[1]);
+    // Towards the other station from its own: by the line's run out.
+    assert!(
+        at.flat_distance(other) < own.flat_distance(other),
+        "{at:?} by {own:?}, the other {other:?}"
+    );
+}
+
+#[test]
+fn a_passenger_station_gets_a_street_along_its_front_joined_to_the_towns() {
+    // Run 54: its stations among the houses, no street at their front,
+    // reached 0 and 1 people in the game's catchment, counted along the
+    // streets from a station's entrance; the fixture player's, a street
+    // along its building, 13 to 48.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
+    assert_eq!(world.roads.len(), 2, "one for each station: {said:?}");
+    for road in &world.roads {
+        let v = &road.polyline.vertices;
+        assert_eq!(v.len(), 3);
+        // Along the front, 60 m, then on to a town street: at its end, a
+        // node there, or its middle, which it splits, whichever is nearer
+        // (run 57: joined to a street's middle 159 m off, a town street's
+        // end 45 m off, its station reached no one).
+        let (a, b) = (P::of(v[0].pos), P::of(v[1].pos));
+        assert!((a.flat_distance(b) - 60.0).abs() < 1.0, "{a:?} {b:?}");
+        let street = world
+            .streets
+            .iter()
+            .find(|s| [s.a, s.b, s.mid].contains(&v[2].pos))
+            .expect("at a street's end or middle");
+        match &v[2].resolve {
+            Resolve::Split(_) => assert_eq!(street.mid, v[2].pos),
+            Resolve::Node(Network::Street) => assert_ne!(street.mid, v[2].pos),
+            other => panic!("{other:?}"),
+        }
+        let to = P::of(v[2].pos);
+        assert!(to.flat_distance(b) <= P::of(street.mid).flat_distance(b) + 1e-6);
+        // 30 m off the station's track, on its building's side.
+        let near = world
+            .stations
+            .iter()
+            .filter(|s| world.rail_stations.contains(&s.id))
+            .map(|s| P::of(s.pos))
+            .any(|o| (o.flat_distance(a) - 30.0f64.hypot(30.0)).abs() < 15.0);
+        assert!(near, "by a station: {a:?}");
+    }
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("joins its station to the town's streets")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_station_whose_nearest_street_is_refused_joins_the_next() {
+    // Run 56: the nearest street to one station refused at every place
+    // along its front, the station left reaching no one.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    world.refuse_roads = 3;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let refused = said
+        .iter()
+        .filter(|l| l.starts_with("its station's street would be refused"))
+        .count();
+    assert_eq!(refused, 3, "{said:?}");
+    assert_eq!(world.roads.len(), 2, "both stations joined: {said:?}");
 }
 
 #[test]

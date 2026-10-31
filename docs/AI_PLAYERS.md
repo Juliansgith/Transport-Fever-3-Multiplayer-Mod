@@ -474,8 +474,15 @@ or one fewer shows in a line's load and money only over the next weeks.
   depot beyond the first station, joined to its outer end: straight out
   30, 90 or 150 m, else turned 30 degrees aside at 100 m or 45 degrees at
   150 m, either way, its track to the station one edge curving from the
-  station's heading to the depot's; then the same beyond the other
-  station. Its depot's places are put to the verdict with its track's
+  station's heading to the depot's; then beside the line's own run out,
+  a siding off its first node turned 30 degrees at 100 m or 45 at 150 m
+  either way; then the same at the other station. A passenger line tries
+  beside its run out first, kept clear of streets, its stations' outer ends
+  facing into their towns (run 59: all fourteen places beyond its two
+  stations' outer ends touched what stood there, twice, and its line was
+  laid only between its third pair of station places, Dinnington's
+  station then reaching 10 buildings where run 57's had reached 24). Its
+  depot's places are put to the verdict with its track's
   pieces, before anything is built, at the stations' planned sites: a
   line with no place for a depot at either is laid out between other
   sites or given up then (straight out met a player's railway at one
@@ -513,10 +520,51 @@ or one fewer shows in a line's load and money only over the next weeks.
   pair given up for want of a route or a station's place stays given up,
   in the memo its next driver keeps, one given up for money is tried
   again) by
-  passenger train, in turn with buses, once its settled lines make what a
-  train costs to run, 90,000 a month (never its first venture on borrowed
-  money, nor one its lines cannot carry while it finds its riders; run 50
-  began one when its settled lines made 2,500 a month: each AI's first passenger train lost
+  passenger train, in turn with buses, its stations among the towns'
+  houses: since bridge version 40 the land answer marks the cells built on
+  by town houses alone, which a construction may clear for their price, as
+  a player puts a station in town. Its station places run from 60 m out of
+  a town's centre to 600 m, on rings 20 m apart at 64 bearings, those
+  reaching the most houses on foot first, the best 24 kept; a line whose
+  stations would reach fewer than 8 cells of houses at either end is not
+  begun. On the land read round run 58's four large towns, 16 bearings on 8
+  rings found 0 to 3 places reaching enough a town, and a place 20 m off
+  reached 4 where it had reached 19 (run 58 gave up both its lines so);
+  the dense search finds 3 to 37 at every one, however the grid falls. The
+  game counts a station's catchment as the
+  town buildings by the street lanes a walk from its entrance reaches
+  (`getStationCatchables`, `getStation2edgesMap`, the lanes' values stopping
+  at about 150), its own street to the town's taken out of that walk; so
+  the AI walks 150 m from the front's nearer end, straight to a street cell
+  on its building's side, then from street cell to street cell, counting
+  the cells of houses on them or beside them, its own ground left out.
+  Run 57's two stations, the land read round them: Dinnington's, 24
+  buildings in the game's catchment, reaches 12 cells so; Wolverton's, 32
+  houses within 300 m but its own street 159 m long to the town's, none in
+  the game's, reaches 1 (within 250 m straight, as before, both passed).
+  No street may lie within 200 m straight out of it towards
+  the line, which would have to be crossed by bridge or tunnel sooner than
+  its grade climbs (the first stations among houses, in run 53, found no
+  heights for their track for the streets round them): it stands at the
+  built-up area's edge facing the line, the houses behind it in reach,
+  its building turned to the town. A station's catchment is counted along
+  the streets from its entrance (`getStationCatchables`): once its train
+  runs, the AI builds each station a street 60 m along its building's
+  front, 30 m off its track as the fixture player's runs (34 or 38 where the
+  game finds that touching the station), its ends on the ground, joined to
+  the nearest place on that side to join a town street at: a town street's
+  end, a node there, or a street's middle, which it splits (the next of the
+  four nearest where refused; never at a company's junction, D21), each put
+  to the verdict first. Run 56's station so joined reached 24 people, those
+  without a street 0 to 5; run 57's second, joined to a street's middle
+  159 m off where a town street's end lay 45 m off, none. Its track may
+  cross houses at about 8,000 a metre beyond
+  the ground, so it keeps out of towns where it can and still leaves a
+  station in town. Before, its stations stood on free ground at the towns'
+  edges, reaching 4 to 27 people, and every one of its passenger trains
+  lost money (runs 46 to 52: until then a passenger train waited, as a
+  cargo railway still does, for its settled lines to make 90,000 a month;
+  run 50 began one when its settled lines made 2,500 a month: each AI's first passenger train lost
   0.65 to 0.86 million in its first eight months in runs 46 to 49, some
   seven million with what it cost to lay, its stations at the towns'
   edges): a one-track passenger station by
