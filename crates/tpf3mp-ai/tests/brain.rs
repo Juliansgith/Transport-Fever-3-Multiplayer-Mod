@@ -1275,10 +1275,13 @@ fn a_hard_ai_serves_town_after_town_while_its_money_lasts() {
         Duration::from_secs(900),
     );
     assert_eq!(world.lines_with_buses(1), 2, "both towns, a bus each");
+    // Right after founding, the loan at the least interest: of the
+    // stand-in's two at 5 %, neither lending what its first lines need, the
+    // smaller (`money::start_loan`).
     assert!(
         matches!(&world.actions[1].1, Action::Loan(op)
-            if matches!(&**op, LoanOp::Take { offer, .. } if offer.kind.as_str() == "Large")),
-        "Hard borrows the large loan right after founding"
+            if matches!(&**op, LoanOp::Take { offer, .. } if offer.kind.as_str() == "Small")),
+        "Hard borrows the cheapest loan right after founding"
     );
     let memo = brain.memo();
     assert!(
@@ -2658,6 +2661,7 @@ fn a_truck_station_goes_where_it_is_cheapest_of_several_priced() {
     world.station_cost = Some(|o| {
         300_000 + i64::from((o.x / 1000).rem_euclid(53) + (o.y / 1000).rem_euclid(47)) * 7_000
     });
+    world.money = 3_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     brain.carry_cargo(true);
     play(
@@ -3812,4 +3816,66 @@ fn a_cargo_railway_waits_until_its_settled_lines_earn_what_a_train_costs() {
     play(&mut brain, &mut world, now, Duration::from_secs(1_800));
     let said = brain.take_said();
     assert!(world.line_modes.iter().any(|(_, m)| *m == 7), "{said:?}");
+}
+
+#[test]
+fn an_ai_whose_settled_lines_earn_opens_twice_as_many_young_lines_at_once() {
+    // Run 52: three young lines at a time, nine months each to settle; some
+    // four lines a year, all paying, its loan idle.
+    let mut world = World::new();
+    world.small_towns();
+    // Six more towns, 6 km apart: room for more lines than it waits on.
+    for n in 0..6 {
+        let mut town = world.towns[0].clone();
+        town.id = TownId(10 + n);
+        town.name = Text::lossy(&format!("Town {n}"));
+        let shift = |p: Pos| Pos {
+            x: p.x + 6_000_000 * i32::try_from(n % 3).unwrap(),
+            y: p.y + 6_000_000 * (1 + i32::try_from(n / 3).unwrap()),
+            z: p.z,
+        };
+        town.pos = shift(town.pos);
+        town.centres = BoundedVec::new(town.centres.iter().map(|c| shift(*c)).collect()).unwrap();
+        // Its streets: a 1 km grid of 100 m blocks, as Didcot's and Ely's.
+        let (cx, cy) = (
+            f64::from(town.pos.x) / 1000.0,
+            f64::from(town.pos.y) / 1000.0,
+        );
+        for i in -5..=5 {
+            for j in -5..5 {
+                let (x, y) = (cx + f64::from(i) * 100.0, cy + f64::from(j) * 100.0);
+                world.streets.push(street(pos(x, y), pos(x, y + 100.0)));
+                world.streets.push(street(
+                    pos(y - cy + cx, x - cx + cy),
+                    pos(y - cy + cx + 100.0, x - cx + cy),
+                ));
+            }
+        }
+        world.towns.push(town);
+    }
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let now = play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    // Nothing proven yet: Hard's three.
+    assert_eq!(world.lines.len(), 3, "{said:?}");
+    // Two settled lines of its own earning: up to six young ones.
+    an_earning_line(&mut world);
+    let mut second = world.lines.last().unwrap().clone();
+    second.id = LineId(9010);
+    second.vehicles = BoundedVec::new(vec![VehicleId(9012)]).unwrap();
+    world.lines.push(second);
+    let mut bus = world.vehicles.last().unwrap().clone();
+    bus.id = VehicleId(9012);
+    bus.line = Some(LineId(9010));
+    world.vehicles.push(bus);
+    play(&mut brain, &mut world, now, Duration::from_secs(1_200));
+    let said = brain.take_said();
+    let young = world.lines.iter().filter(|l| l.id.0 < 9000).count();
+    assert_eq!(young, 6, "{said:?}");
 }

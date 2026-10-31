@@ -78,12 +78,8 @@ pub fn payment(offer: &LoanTerms, month: u32) -> Option<i64> {
     Some(annuity(offer.amount, rate, months as i64))
 }
 
-/// The loan to take, if any. To start, one whose payments its first lines
-/// can carry: the largest (`big`) of those that cost little a month for
-/// what they lend (within [`DEAR_START`] of the cheapest a million), or the
-/// one that takes least a month; a loan paid back within the year takes
-/// so much a month that no new line carries it (the long run's 5 million
-/// over 12 months took 425,750 a month, 2026-10-31). Once it runs lines,
+/// The loan to take, if any. To start, what its first lines need at the
+/// least interest ([`start_loan`]). Once it runs lines,
 /// only one whose payment what its lines earn over what its loans take
 /// already covers `cover` times over, of those the largest (`big`) or the
 /// smallest. A company whose lines do not pay borrows nothing more:
@@ -95,7 +91,7 @@ pub fn offer_to_take(
     cover: f64,
 ) -> Option<LoanTerms> {
     let starting = company.lines.is_empty() && company.owed.is_empty();
-    if starting && let Some(offer) = start_loan(company, big) {
+    if starting && let Some(offer) = start_loan(company) {
         return Some(offer);
     }
     let spare = books.earning - books.owing;
@@ -115,30 +111,39 @@ pub fn offer_to_take(
     .cloned()
 }
 
-/// How many times the cheapest a month for what it lends a loan to start
-/// may cost, for the largest to be taken.
-pub const DEAR_START: f64 = 1.5;
+/// What its first lines need, at least: bus and truck lines of half a
+/// million or so each, its railways waiting on its lines' earnings.
+pub const START_NEED: i64 = 5_000_000;
+/// The fewest of the game's months a loan to start with is paid back over:
+/// one paid back within the year takes so much a month no new line carries
+/// it (the long run's 5 million over 12 months, 425,750 a month).
+pub const START_MONTHS: i64 = 24;
 
-/// The loan to start with, where the game's month says what each costs a
-/// month; none where it does not.
-#[allow(clippy::cast_precision_loss)]
-fn start_loan(company: &AiCompany, big: bool) -> Option<LoanTerms> {
-    let priced: Vec<(&LoanTerms, i64)> = company
+/// The loan to start with: of those paid back over [`START_MONTHS`] or
+/// more, the one at the least interest that lends what its first lines
+/// need ([`START_NEED`]), the smallest of equals; else the least interest of
+/// any. A loan can only be paid back whole, and what it does not build on
+/// it pays interest on: run 52's AIs started on 27 and 23 million at 10 %,
+/// built bus lines for about five, and by 1930 had paid some 13 and 9
+/// million off their loans with all their lines in profit, 13.7 and 7.1
+/// million below nothing, 13.6 and 14.3 million still owed. None where the
+/// game's month is not known.
+fn start_loan(company: &AiCompany) -> Option<LoanTerms> {
+    let month = i64::from(company.month);
+    if month == 0 {
+        return None;
+    }
+    let long: Vec<&LoanTerms> = company
         .offers
         .iter()
-        .filter_map(|o| Some((o, payment(o, company.month)?)))
+        .filter(|o| o.duration / month >= START_MONTHS)
         .collect();
-    if big {
-        let per = |(o, p): &(&LoanTerms, i64)| *p as f64 / o.amount as f64;
-        let cheapest = priced.iter().map(per).min_by(f64::total_cmp)?;
-        priced
-            .iter()
-            .filter(|x| per(x) <= cheapest * DEAR_START)
-            .max_by_key(|(o, _)| o.amount)
-    } else {
-        priced.iter().min_by_key(|(_, p)| *p)
-    }
-    .map(|(o, _)| (*o).clone())
+    let cheapest = |list: &mut dyn Iterator<Item = &&LoanTerms>| {
+        list.min_by_key(|o| (o.percentage, o.amount))
+            .map(|o| (*o).clone())
+    };
+    cheapest(&mut long.iter().filter(|o| o.amount >= START_NEED))
+        .or_else(|| cheapest(&mut long.iter()))
 }
 
 /// The loan to pay back early, if any: the dearest whose whole remainder
@@ -275,16 +280,24 @@ mod tests {
         ])
         .unwrap();
         let books = Books::of(&start);
-        // Hard: the largest of the long, cheap ones.
-        assert_eq!(
-            offer_to_take(&start, &books, true, 1.25).map(|o| o.amount),
-            Some(27_000_000)
-        );
-        // Normal: the one that takes least a month, never the year's
-        // 425,750 a month.
-        let small = offer_to_take(&start, &books, false, 2.0).unwrap();
-        assert_eq!(small.amount, 6_000_000);
-        assert!(payment(&small, start.month).unwrap() < 200_000);
+        // Every difficulty: what its first lines need at the least interest,
+        // 6 million over three years at 3 %, never the year's 425,750 a
+        // month nor 27 million at 10 % it would not build on.
+        for big in [true, false] {
+            let offer = offer_to_take(&start, &books, big, 1.25).unwrap();
+            assert_eq!(offer.amount, 6_000_000);
+            assert!(payment(&offer, start.month).unwrap() < 200_000);
+        }
+        // Where no offer lends that much, the cheapest of the long ones;
+        // never the year's.
+        start.offers = BoundedVec::new(vec![
+            terms(3_000_000, 12, 2),
+            terms(4_000_000, 48, 6),
+            terms(4_500_000, 60, 5),
+        ])
+        .unwrap();
+        let offer = offer_to_take(&start, &books, false, 2.0).unwrap();
+        assert_eq!(offer.amount, 4_500_000);
     }
 
     #[test]
