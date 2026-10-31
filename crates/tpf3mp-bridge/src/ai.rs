@@ -33,6 +33,8 @@ pub const MAX_AI_NEEDS: usize = 4;
 pub const MAX_AI_LAND: usize = 576;
 /// Most track ends an [`AiStation`] lists.
 pub const MAX_AI_ENDS: usize = 8;
+/// The game's months [`AiLine::recent`] reaches back.
+pub const RECENT_MONTHS: u32 = 3;
 /// Most towns a [`AiTown::linked`] lists.
 pub const MAX_AI_LINKED: usize = 8;
 /// How far from one of a town's districts' centres a stop is in that town,
@@ -214,6 +216,11 @@ pub struct AiLine {
     /// 2026-10-31); none where the game did not say. A line that has run
     /// for months and earned nothing carries no one.
     pub income: Option<i64>,
+    /// What it made over the last [`RECENT_MONTHS`] of the game's months, its
+    /// costs taken off as in [`AiLine::profit`]: how it does now, its first
+    /// months before riders found it left out. None where the game did not
+    /// say.
+    pub recent: Option<i64>,
     /// Problems the game sees on it (no path, no vehicle, ...).
     pub problems: u16,
 }

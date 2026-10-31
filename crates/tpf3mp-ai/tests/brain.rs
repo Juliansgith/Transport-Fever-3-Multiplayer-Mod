@@ -127,6 +127,8 @@ struct World {
     month_at: Option<Instant>,
     line_profit: Option<fn(&AiLine) -> i64>,
     line_income: Option<fn(&AiLine) -> i64>,
+    /// What each running line made over its last three months.
+    line_recent: Option<fn(&AiLine) -> i64>,
     /// No road from within 100 m of here, whatever `roads_join` says.
     no_road_from: Option<Pos>,
     /// The buses the game offers, where not the stand-in's two.
@@ -216,6 +218,7 @@ impl World {
             month_at: None,
             line_profit: None,
             line_income: None,
+            line_recent: None,
             no_road_from: None,
             buses: None,
             wear_per_month: 0,
@@ -914,6 +917,7 @@ impl World {
                     waiting: 0,
                     profit: 0,
                     income: None,
+                    recent: None,
                     problems: 0,
                 });
             }
@@ -1039,6 +1043,11 @@ impl World {
         if let Some(income) = self.line_income {
             for line in &mut self.lines {
                 line.income = Some(income(line));
+            }
+        }
+        if let Some(recent) = self.line_recent {
+            for line in &mut self.lines {
+                line.recent = Some(recent(line));
             }
         }
         for v in &mut self.vehicles {
@@ -3463,4 +3472,27 @@ fn a_memo_from_before_chains_were_kept_reads_on() {
     assert_eq!(memo.served, [7]);
     assert_eq!(memo.closed, [(3, 3, -695_803)]);
     assert!(memo.chains.is_empty());
+}
+
+#[test]
+fn a_line_whose_last_months_pay_is_kept_whatever_its_year() {
+    // Run 48: three bus lines closed eight months in for small losses over
+    // a year whose first months, before riders found them, earned nothing.
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    for v in world.vehicles.iter_mut().filter(|v| v.line == Some(line)) {
+        v.worn = 10;
+    }
+    world.month_every = Some(Duration::from_secs(60));
+    world.line_income = Some(|_| 5_000);
+    world.line_profit = Some(|_| -20_000);
+    world.line_recent = Some(|_| 3_000);
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(world.lines.iter().any(|l| l.id == line), "kept: {said:?}");
+    // Its last months losing too: closed.
+    world.line_recent = Some(|_| -4_000);
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
 }

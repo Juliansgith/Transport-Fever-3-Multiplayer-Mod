@@ -351,6 +351,7 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
         Some(21_001),
         "what it earned, its costs not off"
     );
+    assert_eq!(line.recent, Some(-98_159), "its last three months");
     assert_eq!(line.load, 25, "9 of 36");
     assert_eq!(line.waiting, 6);
     let asked: (i64, f64, f64, bool) = lua
