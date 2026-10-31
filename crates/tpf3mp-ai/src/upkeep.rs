@@ -28,6 +28,27 @@ pub const SETTLED: u16 = 5;
 /// full: a trainload, several truckloads. A cargo line runs full one way
 /// and empty back, so its load, over both, says little of how busy it is.
 pub const CARGO_BACKLOG: u32 = 60;
+/// The share of what a line costs to run that it must lose, over its last
+/// year, to be closed down to its last vehicle: one about breaking even is
+/// kept, its first months, before any fare, weighing on its year. Run 47's
+/// Normal AI closed a bus line that had lost 561 in eight months.
+pub const CLOSE_LOSS: f64 = 0.25;
+
+/// Whether a line loses enough to be closed ([`CLOSE_LOSS`]): any loss
+/// where the game did not say what it earned.
+#[allow(clippy::cast_precision_loss)]
+fn losing_much(line: &AiLine) -> bool {
+    if line.profit >= 0 {
+        return false;
+    }
+    let Some(income) = line.income else {
+        return true;
+    };
+    // Its costs: what it earned, less what it made.
+    let costs = (income - line.profit).max(1);
+    -line.profit as f64 > CLOSE_LOSS * costs as f64
+}
+
 /// How far through its life a line's oldest vehicle must be, in percent,
 /// for a line that has earned nothing at all to be given up: about seven of
 /// the game's months for a bus or a train's wagons of 15 years, five for a
@@ -305,7 +326,7 @@ impl Brain {
                     why,
                 });
             }
-            if losing {
+            if losing_much(line) {
                 return Some(Task::Close {
                     vehicle: v.id,
                     line: line.id,

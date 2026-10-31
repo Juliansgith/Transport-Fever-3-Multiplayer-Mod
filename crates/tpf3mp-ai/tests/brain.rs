@@ -3244,3 +3244,25 @@ fn a_memo_from_before_closed_lines_were_kept_reads_on() {
     assert_eq!(memo.rail_lines, [4]);
     assert!(memo.closed.is_empty());
 }
+
+#[test]
+fn a_settled_line_about_breaking_even_is_kept_one_losing_much_is_closed() {
+    // Run 47: a bus line closed for losing 561 in eight months.
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    for v in world.vehicles.iter_mut().filter(|v| v.line == Some(line)) {
+        v.worn = 10;
+    }
+    world.month_every = Some(Duration::from_secs(60));
+    world.line_income = Some(|_| 20_000);
+    world.line_profit = Some(|_| -561);
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(world.lines.iter().any(|l| l.id == line), "{said:?}");
+    // Earning 5,000 of the 25,000 it costs: closed.
+    world.line_income = Some(|_| 5_000);
+    world.line_profit = Some(|_| -20_000);
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
+}
