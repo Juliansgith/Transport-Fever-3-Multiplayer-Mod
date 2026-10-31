@@ -462,6 +462,49 @@ fn the_room_panel_keeps_large_rosters_and_unicode_chat_inside_scroll_areas() {
 }
 
 #[test]
+fn the_room_panel_offers_ai_players_only_where_the_server_seats_them() {
+    // AI players are off on a server unless its operator turns them on
+    // (`--ai-players`): the room's owner is offered none to seat there.
+    let offered = |ai_seats: bool| -> bool {
+        let lua = gui();
+        lua.load(FAKE_HOOK).exec().unwrap();
+        lua.load(FAKE_CMD).exec().unwrap();
+        lua.globals().set("AI_SEATS", ai_seats).unwrap();
+        lua.load(
+            r#"
+            HOOK.room = true
+            HOOK.status = { room = 'A room', me_id = 'me', ai_seats = AI_SEATS,
+                players = { { name = 'Ann', id = 'me', connected = true, me = true, owner = true } },
+                ais = { { id = 'ai', name = 'Rossi Transport', difficulty = 'hard', yours = true } } }
+            BAR = mount(loadPlugin()) BAR.step() BAR.render()
+            local shared = package.loaded['tpf3mp.ui']
+            shared.companies = { list = {}, members = {}, loans = {} }
+            api.type.Vec3f = { new = function(x,y,z) return { x=x, y=y, z=z } end }
+            views(BAR.layout)[1].params.onClick()
+            LAYOUT = WINDOWS.Tpf3mpWindow.render()
+            "#,
+        )
+        .exec()
+        .unwrap();
+        lua.load(
+            r#"
+            local seen, ai = false, false
+            for _, v in ipairs(views(LAYOUT)) do
+                if v.view == 'TextView' and v.params.text == 'Add an AI player:' then seen = true end
+                if v.view == 'TextView' and v.params.text == 'Rossi Transport' then ai = true end
+            end
+            assert(ai, 'the AI player is shown either way')
+            return seen
+            "#,
+        )
+        .eval()
+        .unwrap()
+    };
+    assert!(offered(true));
+    assert!(!offered(false));
+}
+
+#[test]
 fn only_the_newest_chat_lines_show_in_the_window() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();

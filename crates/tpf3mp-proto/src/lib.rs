@@ -110,7 +110,10 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// [`RoomView::ais`], [`EventBody::AiJoined`], [`EventBody::AiLeft`], and the
 /// driver's [`ServerMessage::AiDrive`], [`GameMessage::AiIntent`] and
 /// [`GameMessage::AiMemo`] (docs/AI_PLAYERS.md).
-pub const PROTOCOL_VERSION: u32 = 24;
+/// Version 25 says whether a server seats AI players
+/// ([`Welcome::ai_players`]), refusing them where it does not
+/// ([`RequestError::AiPlayersOff`]).
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

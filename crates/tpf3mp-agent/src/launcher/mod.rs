@@ -2929,6 +2929,7 @@ async fn connect_to(
         view.server_version = Some(client.welcome().server_version.as_str().to_owned());
         view.session = Some(client.welcome().session_id.to_string());
         view.rules = client.welcome().rules.clone();
+        view.ai_players = client.welcome().ai_players;
     }
     if let Some(file) = &config.remember {
         let mut remembered = Remembered::load(file);
@@ -3400,6 +3401,7 @@ async fn set_server(
         view.rooms = None;
         view.server_version = None;
         view.session = None;
+        view.ai_players = false;
         view.name.clone()
     };
     shared.lookouts.stop().await;

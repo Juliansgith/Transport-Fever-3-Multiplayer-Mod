@@ -121,6 +121,10 @@ pub struct Welcome {
     pub session_id: SessionId,
     /// The rules this server offers rooms, the default first.
     pub rules: Vec<RulesOffer>,
+    /// Whether its rooms' owners may seat AI players
+    /// ([`Request::AddAi`]): an operator's choice, off unless they turn it
+    /// on. The Multiplayer windows offer AI players only where it is.
+    pub ai_players: bool,
 }
 
 /// The name of a set of rules a room is played by, such as `native`: the
@@ -546,6 +550,8 @@ pub enum RequestError {
     // Last, so the earlier variants keep their tags on the wire.
     /// The room seats [`MAX_AI_SEATS`] AI players already.
     TooManyAis,
+    /// The server seats no AI players ([`Welcome::ai_players`]).
+    AiPlayersOff,
 }
 
 impl fmt::Display for RequestError {
@@ -577,6 +583,7 @@ impl fmt::Display for RequestError {
             }
             Self::NotListed => "the room is private, so it is in no list",
             Self::TooManyAis => "the room seats as many AI players as it may",
+            Self::AiPlayersOff => "this server does not seat AI players",
             Self::ScanPlanMismatch => "world-check settings differ from this room; use the same native scan mode and parts/stride, then restart the launcher and game",
             Self::UnknownBanner => "there is no such banner",
         })

@@ -103,6 +103,8 @@ pub struct Room {
     pub upload: Option<(String, u8)>,
     /// The room's AI players.
     pub ais: Vec<AiPlayer>,
+    /// Whether its owner may seat more: the server seats AI players.
+    pub ai_seats: bool,
 }
 
 /// An AI player of the room (docs/AI_PLAYERS.md).
@@ -739,6 +741,7 @@ impl LobbyState {
                     .upload
                     .as_ref()
                     .map(|upload| (upload.save.as_str().to_owned(), upload.percent.min(100))),
+                ai_seats: room.ai_seats,
                 ais: room
                     .ais
                     .iter()
@@ -1083,7 +1086,7 @@ impl LobbyState {
                         ai.yours
                     ));
                 }
-                out.push_str(" }");
+                out.push_str(&format!(" }}, ai_seats = {}", room.ai_seats));
                 match &room.start {
                     None => out.push_str(", start = nil"),
                     Some(start) => out.push_str(&format!(
@@ -1420,6 +1423,7 @@ mod tests {
                     save: Text::new("Güterzug").unwrap(),
                     percent: 35,
                 }),
+                ai_seats: false,
                 ais: BoundedVec::default(),
             }),
             chat: BoundedVec::new(vec![LobbyLine {

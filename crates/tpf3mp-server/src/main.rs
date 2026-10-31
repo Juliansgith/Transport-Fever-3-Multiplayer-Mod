@@ -172,6 +172,12 @@ struct Args {
     #[arg(long, requires = "tunnel_listen")]
     tunnel_behind_proxy: bool,
 
+    /// Let rooms' owners seat AI players, a computer playing a company of
+    /// its own (docs/AI_PLAYERS.md). Off by default: they are not yet
+    /// released, and are for trying.
+    #[arg(long, env = "TPF3MP_AI_PLAYERS")]
+    ai_players: bool,
+
     /// The URL path tunnels open.
     #[arg(long, default_value = "/tpf3mp")]
     tunnel_path: String,
@@ -277,6 +283,10 @@ async fn main() -> Result<()> {
     });
     if config.snapshots.is_none() {
         warn!("no snapshots: players cannot join games that have started");
+    }
+    config.ai_players = args.ai_players;
+    if config.ai_players {
+        warn!("AI players on: rooms' owners may seat them, though they are not yet released");
     }
     config.native_registry =
         args.native_mods_registry

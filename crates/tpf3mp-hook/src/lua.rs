@@ -2217,6 +2217,11 @@ fn room_status() -> Option<LuaValue> {
             .collect(),
     );
     fields.push((LuaValue::string("ais"), ais));
+    // Whether its owner may seat more: the server seats AI players.
+    fields.push((
+        LuaValue::string("ai_seats"),
+        LuaValue::Boolean(info.ai_seats),
+    ));
     Some(LuaValue::Table(fields))
 }
 
@@ -4816,6 +4821,7 @@ my_timetables";
                 },
             ])
             .unwrap(),
+            ai_seats: false,
             ais: BoundedVec::default(),
         }));
         notice(&Notice::Speed(Speed(200)));

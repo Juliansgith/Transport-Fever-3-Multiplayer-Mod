@@ -305,6 +305,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     description: Text::new("TPF2MP's economy, run by the server.").unwrap(),
                 },
             ],
+            ai_players: false,
         }),
         ServerMessage::Reject(Reject {
             reason: RejectReason::TooManyConnections,
