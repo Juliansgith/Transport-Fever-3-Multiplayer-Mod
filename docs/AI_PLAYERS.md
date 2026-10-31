@@ -236,8 +236,11 @@ faster AI.
    lines included, is closed: its last vehicle sold and the line deleted.
    A line whose oldest vehicle is a twenty-fifth through its life (about
    seven of the game's months for a bus or a train's wagons, five for a
-   truck) and that has earned nothing at all carries no one: its vehicles
-   are sold and it is closed without waiting for it to settle (since
+   truck) and that has earned nothing at all, no one aboard or waiting for
+   it, carries no one: its vehicles are sold and it is closed without
+   waiting for it to settle (a train's first paying trip may take months;
+   run 45 closed one whose stations buses fed before its first trip had
+   paid) (since
    bridge version 36 the company answer says what each line earned,
    `calculateBalance` of the journal's income; investigation, "What its
    lines earn").

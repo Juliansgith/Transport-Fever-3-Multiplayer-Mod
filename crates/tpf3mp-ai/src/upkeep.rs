@@ -246,15 +246,23 @@ impl Brain {
                 engine: first.model.clone(),
             });
         }
-        // Carrying no one: run for a while and earned nothing at all. Its
-        // vehicles sold, then the line closed, without waiting for it to
-        // settle: nothing it might earn later is worth what it costs.
+        // Carrying no one: run for a while, earned nothing at all, and no
+        // one aboard or waiting for it. Its vehicles sold, then the line
+        // closed, without waiting for it to settle: nothing it might earn
+        // later is worth what it costs. A train's first paying trip may take
+        // months, its loads waited for at each end; one with riders aboard
+        // or waiting is on its way (run 45 closed a passenger train, its
+        // stations fed by buses, before its first trip had paid).
         for line in company.lines.iter() {
             let vehicles = on(line);
             let Some(oldest) = vehicles.iter().max_by_key(|v| v.worn) else {
                 continue;
             };
-            if oldest.worn < DEAD_AFTER || line.income.is_none_or(|i| i > 0) {
+            if oldest.worn < DEAD_AFTER
+                || line.income.is_none_or(|i| i > 0)
+                || line.load > 0
+                || line.waiting > 0
+            {
                 continue;
             }
             if vehicles.len() >= 2 {

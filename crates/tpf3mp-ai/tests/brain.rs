@@ -2954,8 +2954,14 @@ fn a_line_that_earns_nothing_is_closed_after_its_first_months() {
     }
     let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
     assert!(world.lines.iter().any(|l| l.id == line));
-    // Earning nothing: closed, not waiting for it to settle.
+    // Earning nothing yet, riders waiting for it: on its way, kept.
     world.line_income = Some(|_| 0);
+    world.lines[0].waiting = 12;
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    assert!(world.lines.iter().any(|l| l.id == line));
+    // Earning nothing, no one aboard or waiting: closed, not waiting for it
+    // to settle.
+    world.lines[0].waiting = 0;
     play(&mut brain, &mut world, now, Duration::from_secs(600));
     let said = brain.take_said();
     assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
