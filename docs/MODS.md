@@ -95,12 +95,10 @@ It prints each mod's class and every reason, `!` for those that make it
 shared, and a count at the end. `--installed` scans every mod this player
 has, from each place the game keeps them (`tpf3mp_modscan::roots`):
 
-- Mod Hub (mod.io) downloads: `%PUBLIC%\mod.io\10640\mods\<mod.io id>`,
-  then `%LOCALAPPDATA%\mod.io\10640\mods\<mod.io id>`, each `mod.json`
-  naming the mod (`revyn112_towns_de` in `...\6414521`) (SEEN on Windows:
-  58 mods under `%PUBLIC%` on one PC on 2026-10-03, while
-  `%LOCALAPPDATA%\mod.io\10640` held only its user's file; on 2026-09-30
-  they were found under `%LOCALAPPDATA%`. Linux and macOS to confirm);
+- Mod Hub (mod.io) downloads: `<storage>\10640\mods\<mod.io id>`, each
+  `mod.json` naming the mod (`revyn112_towns_de` in `...\6414521`), with
+  mod.io's index `<storage>\10640\metadata\state.json` beside them (see
+  "Where Mod Hub keeps its downloads" below);
 - local mods: `<Steam>\userdata\<account>\3493540\local\staging_area\<modId>`
   and `...\local\mods`;
 - the game's own: `<game>\mods`, `<game>\mods\release` and `<game>\dlcs`.
@@ -113,6 +111,83 @@ has, from each place the game keeps them (`tpf3mp_modscan::roots`):
 A mod is found by its `mod.json`'s `modId`, else its folder's name. A save
 lists a Mod Hub mod by its `modId`, the mod.io number only as its hub id
 (SEEN, below).
+
+### Where Mod Hub keeps its downloads
+
+The game downloads Mod Hub mods through mod.io's SDK (its strings are in
+build 40425's binary: `RootLocalStoragePath`, `../../globalsettings.json`,
+`{}/mods/{}`). The SDK keeps them in one storage folder (modio-sdk
+2026.10, `LoadGlobalConfigOverrideFileDataOp.h`,
+`FileSystemImplementation.h`; docs.mod.io, "SDK structure"):
+
+1. `RootLocalStoragePath` in the player's
+   `%LOCALAPPDATA%\mod.io\10640\<user>\user.json`, if it names one (this
+   game alone, SDK 2024.7 on);
+2. else `RootLocalStoragePath` in `%LOCALAPPDATA%\mod.io\globalsettings.json`,
+   which the SDK writes with its default on first use and which mod.io's
+   support tells players to edit to keep their mods on another drive. It
+   moves the downloads of every game on the SDK;
+3. else its default, `mod.io` in the users' shared folder (`%PUBLIC%`,
+   `C:\Users\Public\mod.io`).
+
+The scan (`roots::hub_roots`, `HubSearch::used`) reads the same settings
+and looks in the first of those folders alone, `<storage>\10640\mods`
+(the value is the storage folder itself, whatever its name: the game id is
+joined to it directly). An old folder left behind after a move is not
+looked in, and a folder named but not there (a drive not connected, a
+folder chosen that the game has not used yet) is not looked past: its mods
+are then missing until the game has downloaded them there, rather than
+taken from a folder the game will not load. `%LOCALAPPDATA%\mod.io`, where
+they were found on 2026-09-30, counts only where no default folder is
+known. A setting that is no absolute path is passed over, and only
+`RootLocalStoragePath` is read from a `user.json`, which also holds the
+player's mod.io login. Linux and macOS: the per-user data folder's
+`mod.io`, to confirm.
+
+The game's own last log, its `stdout.txt`
+(`<Steam>\userdata\<account>\3493540\local\crash_dump`), names each mod's
+folder as it loads it, `Reading content cache from json for dir
+'<storage>/10640/mods/<mod.io id>/content/'`. The folders it names are
+said in the launcher's log, as the same folder as the one looked in or
+not: a log tells of the game's last start, not of where mod.io keeps the
+downloads now, so they are never looked in.
+
+Until 2026-10-25 the scan looked only in `%PUBLIC%\mod.io` and
+`%LOCALAPPDATA%\mod.io`: a room owner had 23 of his save's 28 mods shown
+"Missing", although his game loaded them (report 2026-10-25). Another
+game on mod.io's SDK, Sins of a Solar Empire 2, had written the shared
+`globalsettings.json` with its own folder,
+`{ "RootLocalStoragePath": "C:/Users/<name>/AppData/Local/sins2/mods/modio" }`,
+and Transport Fever 3 kept its downloads in `...\modio\10640\mods` since,
+while `%PUBLIC%\mod.io\10640\mods` stayed there, empty.
+
+The launcher's log says where it looked, in words that survive the path
+redaction of diagnostics: what each settings file said (`mod.io's settings
+(globalsettings.json): names a folder`), then for each place its source
+and what became of it:
+
+```
+mod.io's settings (globalsettings.json): names a folder
+Mod Hub's downloads, place 1 (mod.io's settings (globalsettings.json)): looked in: 31 mods, 31 of them with the file mod.io installed
+Mod Hub's downloads, place 2 (mod.io's default folder): there, but mod.io uses place 1: not looked in
+Mod Hub's downloads, place 3 (the local app data folder): not there, but mod.io uses place 1: not looked in
+Mod Hub's downloads, place 4 (the game's log (stdout.txt)): the same folder as place 1
+```
+
+**A mod found twice.** The game, finding one id in two folders, loads one
+and logs `Multiple (2) mods with same id found <id>, the one from
+<folder>/ has been selected`. In each case seen it chose the local copy
+(the staging area's, or `local\mods`) over a Mod Hub download of the same
+id (two PCs, 2026-10-25), but nothing says it always does. So
+(`roots::settle`): the copy the game's last log names counts; where it
+names none, or two logs (two Steam accounts' games) name different
+copies, and one copy is a Mod Hub download and another a local mod, the
+mod is shared, never a personal choice, and gets a version no other game
+has (the same at each scan while the launcher runs, so a rescan changes
+nothing), with a warning in the log; with `--mods` too (fail closed: two copies of a mod's
+author, the published and the one in work, may well differ). Copies all
+local, such as the game's own `mw_*` in both `mods` and `mods\release`,
+count as the first, as before.
 
 ## At run time
 
@@ -291,11 +366,13 @@ shared mods only.
 
 Without `--mods`, the launcher (`crates/tpf3mp-agent/src/picker.rs`):
 
-- **finds every installed mod** by itself when it starts: Mod Hub's cache
-  (`mod.io\10640\mods` under `%PUBLIC%`, then `%LOCALAPPDATA%`), each Steam account's
-  `staging_area` and `mods`, the game's `mods`, `mods\release` and `dlcs` (the first of each
-  id counts), scans each and keeps its class and first reason, its name
-  (`_metadata/modinfo.json`) and its `revision`. Each goes to the launcher's
+- **finds every installed mod** by itself when it starts: Mod Hub's
+  downloads (where mod.io keeps them, see "Where Mod Hub keeps its
+  downloads"), each Steam account's `staging_area` and `mods`, the game's
+  `mods`, `mods\release` and `dlcs` (the first of each id counts, but for a
+  mod found twice as said there), scans each and keeps its class and first
+  reason, its name (`_metadata/modinfo.json`) and its `revision`. Where it
+  looked for Mod Hub's downloads, and each mod, goes to the launcher's
   log: `mod schbrongx_minimap 1 is personal: only what this player sees`;
 - **finds them again** before what it declares to a room follows them, since
   the game may download a Mod Hub update at any time (seen in the playtest
