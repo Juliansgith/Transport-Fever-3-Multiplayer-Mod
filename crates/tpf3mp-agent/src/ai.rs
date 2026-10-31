@@ -27,6 +27,9 @@ const MEMO_EVERY: Duration = Duration::from_secs(30);
 /// room hands seats to a game that keeps up with it, which may have loaded
 /// the room's world a moment ago and still be replaying turns.
 const SETTLE_IN: Duration = Duration::from_secs(5);
+/// How far apart the room's AI seats open their first lines, in the order
+/// the room lists them: about how long one takes to plan and build.
+const FIRST_LINES_APART: Duration = Duration::from_secs(180);
 /// How often the minds' thread looks at them while nothing comes in.
 const LOOK_EVERY: Duration = Duration::from_millis(10);
 
@@ -52,6 +55,8 @@ pub(crate) trait Mind: Send {
     fn rejected(&mut self, reason: IntentRejection, now: Instant);
     fn take_said(&mut self) -> Vec<String>;
     fn memo(&self) -> Vec<u8>;
+    /// Opens its first line no sooner than `until`.
+    fn first_line_after(&mut self, _until: Instant) {}
 }
 
 impl Mind for Brain {
@@ -73,6 +78,10 @@ impl Mind for Brain {
 
     fn memo(&self) -> Vec<u8> {
         Brain::memo(self)
+    }
+
+    fn first_line_after(&mut self, until: Instant) {
+        Brain::first_line_after(self, until);
     }
 }
 
@@ -131,7 +140,8 @@ impl Minds {
     /// new one, from its memo; a seat no longer handed over is let go.
     fn drive(&mut self, seats: Vec<AiSeat>) {
         let mut kept = Vec::new();
-        for seat in seats {
+        let now = Instant::now();
+        for (nth, seat) in seats.into_iter().enumerate() {
             match self.seats.iter().position(|s| s.seat.player == seat.player) {
                 Some(index) => {
                     let mut known = self.seats.swap_remove(index);
@@ -139,7 +149,12 @@ impl Minds {
                     kept.push(known);
                 }
                 None => {
-                    let mind = (self.make)(&seat);
+                    let mut mind = (self.make)(&seat);
+                    // Each seat's first line a while after the one before
+                    // its own in the room's list (`Brain::first_line_after`).
+                    mind.first_line_after(
+                        now + FIRST_LINES_APART * u32::try_from(nth).unwrap_or(0),
+                    );
                     kept.push(Seat {
                         memo: mind.memo(),
                         mind,
@@ -617,5 +632,60 @@ mod tests {
         // Ticks 2 ms apart, as the agent's loop polls; a busy runner's sleep
         // is longer (41 in the 600 ms on macOS), never none.
         assert!(ticks >= 10, "the loop ran on meanwhile: {ticks} ticks");
+    }
+
+    /// A mind that keeps when it may open its first line.
+    struct FirstLine(std::sync::Arc<std::sync::Mutex<Vec<Instant>>>);
+
+    impl Mind for FirstLine {
+        fn poll(&mut self, _now: Instant, _speed: u16) -> Option<Out> {
+            None
+        }
+
+        fn answered(&mut self, _answer: Result<AiAnswer, String>, _now: Instant) -> Option<Out> {
+            None
+        }
+
+        fn rejected(&mut self, _reason: IntentRejection, _now: Instant) {}
+
+        fn take_said(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn memo(&self) -> Vec<u8> {
+            Vec::new()
+        }
+
+        fn first_line_after(&mut self, until: Instant) {
+            self.0.lock().unwrap().push(until);
+        }
+    }
+
+    #[test]
+    fn the_rooms_ai_seats_open_their_first_lines_apart() {
+        let kept = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let shared = kept.clone();
+        let mut driver = AiDriver::with_minds(Box::new(move |_: &AiSeat| -> Box<dyn Mind> {
+            Box::new(FirstLine(shared.clone()))
+        }));
+        driver.drive(vec![seat(0), seat(1), seat(2)]);
+        // Made on the minds' thread.
+        let end = Instant::now() + Duration::from_secs(5);
+        while kept.lock().unwrap().len() < 3 && Instant::now() < end {
+            driver.tick(100, true);
+            thread::sleep(Duration::from_millis(2));
+        }
+        let at = kept.lock().unwrap().clone();
+        assert_eq!(at.len(), 3);
+        assert_eq!(at[1] - at[0], FIRST_LINES_APART);
+        assert_eq!(at[2] - at[0], FIRST_LINES_APART * 2);
+        // A seat it drives already keeps its time.
+        driver.drive(vec![seat(0), seat(1), seat(2)]);
+        let end = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < end {
+            driver.tick(100, true);
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(kept.lock().unwrap().len(), 3);
     }
 }

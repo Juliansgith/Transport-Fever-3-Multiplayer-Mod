@@ -86,6 +86,11 @@ that member's agent which seats it drives.
   seat's intent. Every game applies it as that player's action, so the
   mod books it to the AI's company (`companies.lua`), as it would a
   player's.
+- The seats it is handed open their first lines three minutes apart, in
+  the order the room lists them; each founds its company and borrows at
+  once. AIs that start together weigh the same world: in runs 44 and 45
+  two picked the same pair of towns at once and both built toward it,
+  the second giving up with part of its line laid.
 - When the driver leaves, falls behind or loses its game, the server hands
   its seats to the next member with each seat's memo. With no member to
   drive it, the AI rests: its company runs on; it decides nothing new.

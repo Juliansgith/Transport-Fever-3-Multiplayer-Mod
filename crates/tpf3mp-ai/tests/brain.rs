@@ -3134,3 +3134,24 @@ fn a_rail_depot_whose_track_would_touch_what_stands_goes_elsewhere_before_anythi
         "{said:?}"
     );
 }
+
+#[test]
+fn an_ai_opens_its_first_line_only_after_the_rooms_ai_players_before_it() {
+    let mut world = World::new();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Hard, None);
+    let start = Instant::now();
+    brain.first_line_after(start + Duration::from_secs(300));
+    let now = play(&mut brain, &mut world, start, Duration::from_secs(280));
+    let said = brain.take_said();
+    assert_eq!(world.company, Some(1), "founded meanwhile: {said:?}");
+    assert!(world.lines.is_empty(), "{said:?}");
+    let waits = said
+        .iter()
+        .filter(|l| *l == "lets the room's other AI players start first")
+        .count();
+    assert_eq!(waits, 1, "{said:?}");
+    play(&mut brain, &mut world, now, Duration::from_secs(320));
+    let said = brain.take_said();
+    assert!(!world.lines.is_empty(), "{said:?}");
+}

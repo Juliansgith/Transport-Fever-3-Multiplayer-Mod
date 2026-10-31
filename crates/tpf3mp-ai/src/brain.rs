@@ -429,6 +429,10 @@ pub struct Brain {
     /// Its stations no town by them would take a bus line, and until when
     /// they are left.
     unfed_left: Vec<(P, Instant)>,
+    /// Before this, a company of no lines opens none: the room's AI players
+    /// start their first lines apart ([`Brain::first_line_after`]).
+    first_line_at: Option<Instant>,
+    first_line_said: bool,
     carries_cargo: bool,
     /// Towns given up on, until when.
     given_up: Vec<(u32, Instant)>,
@@ -480,6 +484,8 @@ impl Brain {
             young_said: 0,
             feeding: false,
             unfed_left: Vec::new(),
+            first_line_at: None,
+            first_line_said: false,
             carries_cargo: CARRIES_CARGO,
             given_up: Vec::new(),
             said: Vec::new(),
@@ -498,6 +504,15 @@ impl Brain {
     /// perhaps right after loading a world it is still catching up in.
     pub fn hold(&mut self, until: Instant) {
         self.wake = Some(until);
+    }
+
+    /// Opens its first line no sooner than `until`, founding and borrowing
+    /// meanwhile. The room's AI players start together and weigh the same
+    /// world: two picked the same pair of towns at once and both built
+    /// toward it, the second giving up with part of its line laid (runs 44
+    /// and 45, 2026-10-31). Started apart, the later sees the earlier's line.
+    pub fn first_line_after(&mut self, until: Instant) {
+        self.first_line_at = Some(until);
     }
 
     /// Whether it plans truck lines for cargo as well as town buses (on by
@@ -1317,6 +1332,17 @@ impl Brain {
         // Its chain's next leg, before anything new.
         if !self.chain.is_empty() {
             self.next_leg(now);
+            return None;
+        }
+        // Its first line not yet: the room's other AI players' first.
+        if company.lines.is_empty() && self.first_line_at.is_some_and(|at| at > now) {
+            if !std::mem::replace(&mut self.first_line_said, true) {
+                self.say("lets the room's other AI players start first".into());
+            }
+            self.rest(now);
+            if let Some(at) = self.first_line_at {
+                self.wake = Some(at.min(now + self.profile.think_every));
+            }
             return None;
         }
         // Buses to a passenger station of its own come before anything new,
