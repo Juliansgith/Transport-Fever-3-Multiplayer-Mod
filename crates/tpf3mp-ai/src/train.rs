@@ -53,9 +53,10 @@ const SCALE_RANGE: (f64, f64) = (0.25, 8.0);
 /// catchment reaches 150 m from its building (`main_building_1_cargo`).
 const MAKER_RINGS: [f64; 3] = [150.0, 200.0, 250.0];
 const TOWN_RINGS: [f64; 4] = [120.0, 180.0, 260.0, 340.0];
-/// The rings a passenger station is tried on around its town's centre: out
-/// to the town's edge, where there is room, as a player's first station.
-const PASSENGER_RINGS: [f64; 6] = [180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
+/// The rings a passenger station is tried on around its town's centre: in
+/// among its houses, which it may clear, and out to its edge, those
+/// reaching the most houses on foot first (`rail::sites`).
+const PASSENGER_RINGS: [f64; 8] = [60.0, 120.0, 180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
 /// How many times a line is routed round pieces the game refused.
 pub const REPLANS: u32 = 8;
 /// Around a refused piece's middle the land is taken as built on, in
@@ -344,7 +345,9 @@ impl Brain {
     }
 
     fn start_rail_of(&mut self, leg: Leg, passengers: bool, key: u32) -> bool {
-        if self.spendable() < RAIL_MONEY || !self.trains_carried() {
+        // A cargo railway waits on its lines' earnings; a passenger one on
+        // stations that reach people enough (the Land stage).
+        if self.spendable() < RAIL_MONEY || (!passengers && !self.trains_carried()) {
             return false;
         }
         // No new railway while its settled ones lose money together: the
@@ -470,6 +473,22 @@ impl Brain {
                             rail::sites(&project.land, from, at, near, passengers),
                             rail::sites(&project.land, at, from, rings, passengers),
                         ];
+                        // A passenger station reaching too few houses on
+                        // foot is no place for one: a line with none such
+                        // at either end is not begun.
+                        if passengers {
+                            let land = &project.land;
+                            for tries in &mut project.tries {
+                                tries.retain(|s| land.people(s) >= rail::PEOPLE_LEAST);
+                            }
+                            if project.tries.iter().any(Vec::is_empty) {
+                                self.give_up_rail(
+                                    "found no station place reaching people enough",
+                                    now,
+                                );
+                                return None;
+                            }
+                        }
                         // What the line costs, from its first placements,
                         // before it builds anything: a line it cannot pay
                         // for, or with no route, is never begun.

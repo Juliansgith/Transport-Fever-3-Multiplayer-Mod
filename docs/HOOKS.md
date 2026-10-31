@@ -3956,7 +3956,7 @@ replay builds at the game's cost for its proposal).
 ### AI players' questions
 
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 38):
+whose game drives it, and asks that game about the world (bridge 39):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
 seat's company (its rail stations with their track ends since bridge
 version 33: where the world's track meets each, and whether any does
@@ -3994,6 +3994,8 @@ engine is electric, from `landVehicle` and `extent` as the game's
 vehicle store reads them), the land on a grid of at most 24 by 24 cells
 (since bridge version 33: each cell's height and what the octree finds
 within its half diagonal, water, a construction, a street or a track;
+since bridge version 39 whether its constructions are town houses alone,
+the town buildings' own (`TOWN_BUILDING.construction`);
 16 by 16 cells read in about 7 ms on the rig's big fixture), or the
 game's verdict on an action), the session
 hands it on as `Notice::AiAsk`, and `crate::ai` keeps it until the GUI

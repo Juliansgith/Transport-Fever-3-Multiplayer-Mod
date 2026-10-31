@@ -738,12 +738,27 @@ fn the_land_reads_cell_by_cell_as_a_route_needs_it() {
         }
         api.engine.util.octree.findEntitiesInCircle = function(p, r, ct)
             assert(math.abs(r - 40 * 0.71) < 1e-6, "the half diagonal")
-            if ct == api.type.ComponentType.CONSTRUCTION then return p.y > 30 and { 1001 } or {} end
+            -- Row 2 built on by a town house (1002), row 1 by something else.
+            if ct == api.type.ComponentType.CONSTRUCTION then
+                if p.y > 60 then return { 1002 } end
+                return p.y > 30 and { 1001 } or {}
+            end
             if ct == api.type.ComponentType.BASE_EDGE then
                 if p.x == 0 and p.y == 0 then return { 900 } end
                 if p.x == 40 and p.y == 0 then return { 410 } end
             end
             return {}
+        end
+        local CT = api.type.ComponentType
+        local scan, base = api.engine.getEntitiesWithComponent, api.engine.getComponent
+        api.engine.getEntitiesWithComponent = function(ct)
+            local out = scan(ct)
+            if ct == CT.TOWN_BUILDING then out[#out + 1] = 803 end
+            return out
+        end
+        api.engine.getComponent = function(e, ct)
+            if ct == CT.TOWN_BUILDING and e == 803 then return { town = 700, construction = 1002 } end
+            return base(e, ct)
         end
         "#,
     )
@@ -761,9 +776,9 @@ fn the_land_reads_cell_by_cell_as_a_route_needs_it() {
         [600, 1_000, 1_400, 600, 1_000, 1_400, 600, 1_000, 1_400]
     );
     // Row 0: water, a street, a track; rows 1 and 2 built on (water still
-    // in the first column).
+    // in the first column), row 2 by a town house only (16).
     let flags: Vec<u8> = land.flags.iter().copied().collect();
-    assert_eq!(flags, [1, 4, 8, 3, 2, 2, 3, 2, 2]);
+    assert_eq!(flags, [1, 4, 8, 3, 2, 2, 19, 18, 18]);
     // Too large a grid is refused, not read.
     let value: Result<Value, _> = lua
         .load("return AI.answer({ id = 1, seat = SEAT, question = { Land = { at = { x = 0, y = 0, z = 0 }, cells = 40, step = 40 } } }, ROSTER, REGISTRY)")

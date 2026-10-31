@@ -98,7 +98,8 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// ([`ai::AiTown::rivals`], [`ai::AiTown::linked`]). 37 what other
 /// companies have at each industry ([`ai::AiIndustry::carried`]). 38 what
 /// each AI line made over its last three months ([`ai::AiLine::recent`]).
-pub const BRIDGE_VERSION: u32 = 38;
+/// 39 the land cells built on by town houses only ([`ai::land::HOUSE`]).
+pub const BRIDGE_VERSION: u32 = 39;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
