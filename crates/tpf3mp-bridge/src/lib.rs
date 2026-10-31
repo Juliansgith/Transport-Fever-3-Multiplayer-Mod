@@ -95,8 +95,9 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// AI's company owes ([`ai::AiLine::profit`], [`ai::AiCompany::owed`]). 36
 /// each AI line's income ([`ai::AiLine::income`]), and other companies'
 /// stops in each town and the towns their lines join it to
-/// ([`ai::AiTown::rivals`], [`ai::AiTown::linked`]).
-pub const BRIDGE_VERSION: u32 = 36;
+/// ([`ai::AiTown::rivals`], [`ai::AiTown::linked`]). 37 what other
+/// companies have at each industry ([`ai::AiIndustry::carried`]).
+pub const BRIDGE_VERSION: u32 = 37;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told

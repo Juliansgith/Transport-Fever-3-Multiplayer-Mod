@@ -513,6 +513,59 @@ fn a_town_counts_other_companies_passenger_stops_and_the_towns_their_lines_join(
 }
 
 #[test]
+fn an_industry_counts_what_other_companies_have_at_it() {
+    let lua = lua();
+    // By the farm, another company's truck station (a construction), and
+    // its truck line loading at the farm's own station; nothing by the
+    // livestock farm. The AI's own line (500) stops nowhere near.
+    lua.load(
+        r#"
+        api.engine.system.lineSystem.getLines = function() return { 500, 530 } end
+        local vehicles = api.engine.system.transportVehicleSystem.getLineVehicles
+        api.engine.system.transportVehicleSystem.getLineVehicles = function(l)
+            return ({ [530] = { 630 } })[l] or vehicles(l) end
+        local held = api.engine.system.streetConnectorSystem.getConstructionEntityForStation
+        api.engine.system.streetConnectorSystem.getConstructionEntityForStation = function(s)
+            if s == 1051 then return 1052 end
+            return held(s)
+        end
+        local CT = api.type.ComponentType
+        local base = api.engine.getComponent
+        local extra = {
+            [CT.LINE] = { [530] = { stops = { { stationGroup = 1004 }, { stationGroup = 320 } } } },
+            [CT.TRANSPORT_VEHICLE] = { [630] = { config = { capacities = { 0, 12 } } } },
+            [CT.STATION_GROUP] = { [1050] = { stations = { 1051 } } },
+            [CT.PLAYER_OWNED] = { [1050] = { player = 88 } },
+            [CT.CONSTRUCTION] = { [1052] = { fileName = "station/street/truck_station.con",
+                transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 6500,-6600,20,1 } } },
+        }
+        local scan = api.engine.getEntitiesWithComponent
+        api.engine.getEntitiesWithComponent = function(ct)
+            local out = scan(ct)
+            for e in pairs(extra[ct] or {}) do out[#out + 1] = e end
+            table.sort(out)
+            return out
+        end
+        api.engine.getComponent = function(e, ct)
+            return (extra[ct] and extra[ct][e]) or base(e, ct)
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Industries(industries) = answer(&lua, "'Industries'") else {
+        panic!("not industries")
+    };
+    let farm = &industries[0];
+    assert_eq!(farm.name.as_str(), "Hunstanton Crop Farm");
+    assert_eq!(
+        farm.carried, 2,
+        "the other's station by it and its line at its own station"
+    );
+    assert_eq!(industries[1].carried, 0);
+}
+
+#[test]
 fn a_question_of_no_kind_is_an_error_not_an_answer() {
     let lua = lua();
     let err: String = lua

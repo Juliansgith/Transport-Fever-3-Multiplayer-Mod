@@ -207,7 +207,15 @@ faster AI.
      both ends touch the same water, air for long distance between large
      towns;
    - and who already serves a flow, how well (line capacity used, cargo
-     waiting, delivery time and quality) and at what price.
+     waiting, delivery time and quality) and at what price. *Built so far
+     (2026-10-31):* since bridge version 37 the industries answer says
+     what other companies have at each industry: their stations within
+     300 m of it held by a construction (a truck or rail station, its line
+     opened or not yet), and their cargo lines loading at its own station.
+     It carries from no industry another company carries from, by a
+     single line or a chain's leg: in run 47 the two AIs each built a
+     cement railway from one plant, and each lost 0.7 to 0.8 million in
+     its first year;
 2. **Projects.** A chosen opportunity becomes a project: its actions in
    order, from stations and depots to the route, signals, the line and its
    vehicles. Each piece is tested with a verdict before it is sent, sent

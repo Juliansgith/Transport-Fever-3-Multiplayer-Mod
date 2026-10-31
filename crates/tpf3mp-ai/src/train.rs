@@ -329,6 +329,7 @@ impl Brain {
             inputs: BoundedVec::default(),
             outputs: BoundedVec::default(),
             water: false,
+            carried: 0,
         };
         let to = Taker::Town {
             town: b.clone(),
