@@ -192,7 +192,8 @@ faster AI.
      chain's lines (the latest 16 chains), and no line of a chain is sold
      from or closed until every line of its chain has run a tenth of its
      life (twice a line's twentieth), its cargo first made, then carried
-     on: run 48 closed a fuel line six months in, eight minutes
+     on; till then its lines count as settled nowhere, holding nothing
+     back with their first months' losses: run 48 closed a fuel line six months in, eight minutes
      after the crude oil line feeding its refinery opened. It takes chains in turn with single lines,
      with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their

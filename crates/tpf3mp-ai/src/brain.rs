@@ -866,13 +866,18 @@ impl Brain {
             .count()
     }
 
+    /// A chain's line settles with its chain ([`Brain::chain_young`]): its
+    /// first months' losses, its cargo not yet flowing, say nothing yet, and
+    /// run 50's Hard AI held back for its young oil chain's.
     fn settled(&self, company: &AiCompany, line: &AiLine) -> bool {
         let mut on = company
             .vehicles
             .iter()
             .filter(|v| v.line == Some(line.id))
             .peekable();
-        on.peek().is_some() && on.all(|v| v.worn >= upkeep::SETTLED)
+        on.peek().is_some()
+            && on.all(|v| v.worn >= upkeep::SETTLED)
+            && !self.chain_young(company, line)
     }
 
     /// Keeps a line it opened among the lines of the chain it builds, if it

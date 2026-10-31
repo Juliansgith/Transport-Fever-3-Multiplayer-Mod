@@ -3643,3 +3643,51 @@ fn a_passenger_train_waits_until_its_settled_lines_earn() {
         "{said:?}"
     );
 }
+
+#[test]
+fn a_young_chains_losses_hold_nothing_back() {
+    // Run 50: its oil chain's lines six months in, losing as a young chain
+    // does, its bus lines earning: it held back.
+    let mut world = World::new();
+    const GOODS: &str = "::/cargos/goods/goods.cargo";
+    const PLANKS_: &str = "::/cargos/planks/planks.cargo";
+    world.industries = vec![
+        industry("Didcot Factory", 300.0, 200.0, &[PLANKS_], &[(GOODS, 0)]),
+        industry("Witney Sawmill", -300.0, -900.0, &[], &[(PLANKS_, 150)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(GOODS).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.small_towns();
+    world.offers = vec![offer("Large", 27_000_000, 144, 10)];
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let now = play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    brain.take_said();
+    world.month_every = Some(Duration::from_secs(60));
+    world.line_profit = Some(|l| {
+        let name = l.name.as_str();
+        if name.contains("goods") || name.contains("planks") {
+            -600_000
+        } else {
+            120_000
+        }
+    });
+    for v in &mut world.vehicles {
+        v.worn = 6;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(
+        !said.iter().any(|l| l.starts_with("holds back")),
+        "{said:?}"
+    );
+}
