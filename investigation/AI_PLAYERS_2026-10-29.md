@@ -509,6 +509,68 @@ costs little a month; it closes a line that earned nothing after its first
 months; it prefers towns no one serves, never doubles another's train
 between two towns, and runs buses to its own passenger stations.
 
+## Stations among houses (2026-10-31)
+
+Every AI passenger train of runs 43 to 52 lost money: 0.65 to 0.86
+million in its first eight months, some seven million with what it cost
+to lay. Its stations stood on free ground at the towns' edges (the land
+answer marked every construction alike, a town house as an industry, and
+the route planner kept off all of them), reaching 4 to 27 people in the
+game's catchment (`catchmentAreaSystem.getStationCatchables`); the fixture
+player's reach 16 to 53, with buses feeding them, and earn 2 to 9 million
+a year.
+
+So (bridge version 40) the land answer marks the cells whose constructions
+are town houses alone (`TOWN_BUILDING.construction`): a construction may
+clear them, the game charging for them, as road depots among houses showed
+(207,000 on open ground, up to a million among houses). A passenger
+station's places now run from 60 m out of a town's centre to its edge,
+those reaching the most houses within 250 m first, its own ground left
+out; a line whose stations would reach fewer than 15 such cells at either
+end is not begun, and passenger trains no longer wait for 90,000 a month
+of earnings (cargo railways still do). Track may cross houses at about
+8,000 a metre beyond the ground.
+
+Run 54 put the first stations among the houses, at the built-up edge, and
+they reached 0 and 1 people: the game counts a station's catchment along
+the streets from its entrance, and no street reached the AI's station
+fronts. The fixture player's station has a street along its building,
+30 m off its track (its nodes at local x -30.3 and -29.6; neither station
+construction has street edges of its own). So the AI builds a street 60 m
+along its station's front at that offset, joined to the nearest street on
+the building's side. Run 55's were refused at every offset, their ends at
+the platforms' height off sloping ground; with the ground's height and
+the building turned to its town, run 56 joined one station, which reached
+24 people, and found the other's nearest street refused at every offset,
+hence the next nearest tried.
+
+Run 57 joined both of Rossi's stations, the second after its nearest
+street was refused at every offset. Dinnington's reached 24 town buildings
+again, Wolverton's none. The game's catchables are town buildings, and
+`getStation2edgesMap` lists the street lanes a station's walk reaches, each
+with a value that stops at about 150 (151 and 154 the most of the two).
+Wolverton's own street ran 159 m to the middle of a town street, where a
+town street's dead end lay 45 m from its front; the walk reached the
+town's streets at about 96 and its houses' streets only at their near
+ends (141 to 149), none of its 32 houses within 300 m counted. A model on
+the land read round both stations (`crates/tpf3mp-ai/src/testdata`),
+walking 150 m from the front's nearer end straight to a street cell on the
+building's side and then from street cell to street cell, gives 12 cells of
+houses at Dinnington and 1 at Wolverton; 250 m gives 49 and 26, 200 m 34
+and 16. The AI now ranks station places so, at least 8 cells, and joins
+its street to the nearest town street's end or middle.
+
+Run 58, so built, gave up both its passenger lines (Dinnington to
+Wolverton, Hunstanton to Basingstoke): "found no station place reaching
+people enough". The land read round the fixture's four large towns
+(`crates/tpf3mp-ai/src/testdata/run58_towns.txt`) showed why: the 16
+bearings on 8 rings left 2 to 25 places a town once the station's ground
+and its run out were clear, 0 to 3 of them reaching 8 cells, and moving the
+town's centre 20 m (a line's own grid falls on a town anywhere) turned a
+place reaching 19 into one reaching 4. With 64 bearings on rings 20 m apart
+every one of the eight town pairs finds 3 to 37 places reaching enough at
+each end, the best reaching 10 to 28 cells, under every half-cell shift.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

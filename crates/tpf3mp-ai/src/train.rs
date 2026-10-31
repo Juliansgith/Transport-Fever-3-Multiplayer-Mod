@@ -30,6 +30,7 @@ use super::{Brain, CONFIRM_TRIES, GIVE_UP_FOR, Out, SETTLE, Stage, cargo_name, r
 use crate::{
     chain::{Leg, Taker},
     costs::{self, Prices},
+    place,
     place::P,
     rail::{self, Land, Node, Piece, Station},
 };
@@ -45,6 +46,10 @@ const STATION_MODULES: i32 = 3;
 /// The most pairs of station placements a line is laid out between before
 /// it builds anything.
 const SITE_PAIRS: u32 = 6;
+/// The most places kept for each of a passenger line's stations, those
+/// reaching the most people on foot: a refused station tries the next, and
+/// a town's dense search ([`rail::PASSENGER_BEARINGS`]) finds hundreds.
+const PASSENGER_PLACES: usize = 24;
 /// How far the game's prices may stand from the AI's before it doubts its
 /// reading of them.
 const SCALE_RANGE: (f64, f64) = (0.25, 8.0);
@@ -53,9 +58,16 @@ const SCALE_RANGE: (f64, f64) = (0.25, 8.0);
 /// catchment reaches 150 m from its building (`main_building_1_cargo`).
 const MAKER_RINGS: [f64; 3] = [150.0, 200.0, 250.0];
 const TOWN_RINGS: [f64; 4] = [120.0, 180.0, 260.0, 340.0];
-/// The rings a passenger station is tried on around its town's centre: out
-/// to the town's edge, where there is room, as a player's first station.
-const PASSENGER_RINGS: [f64; 6] = [180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
+/// The rings a passenger station is tried on around its town's centre, 60
+/// to 600 m out, [`rail::PASSENGER_RING_STEP`] apart: in among its houses,
+/// which it may clear, and out to its edge, those reaching the most houses
+/// on foot first (`rail::sites`).
+fn passenger_rings() -> Vec<f64> {
+    (0..)
+        .map(|k| 60.0 + rail::PASSENGER_RING_STEP * f64::from(k))
+        .take_while(|r| *r <= 600.0)
+        .collect()
+}
 /// How many times a line is routed round pieces the game refused.
 pub const REPLANS: u32 = 8;
 /// Around a refused piece's middle the land is taken as built on, in
@@ -181,13 +193,16 @@ pub(super) struct RailProject {
     /// key, or the two towns' pair ([`passenger_key`]).
     pub key: u32,
     /// Where its depot is tried at the station it tries now, as an index
-    /// into [`rail::DEPOT_PLACES`]; and the heading its track runs into
+    /// into [`rail::DEPOT_TRIES`] ([`rail::depot_spot`]); and the heading its track runs into
     /// the depot it built at, for the track that joins it.
     pub depot_far: usize,
     pub depot_into: f64,
     /// The station and place its depot's trial passed at, where its depot
     /// is tried first once its stations stand.
     pub depot_plan: Option<(usize, usize)>,
+    /// The places a passenger station's own street may join the town's
+    /// streets at, the nearest first ([`rail::FRONT_JOINS`] of them).
+    pub front_joins: Vec<place::Join>,
 }
 
 /// Whether a rail line was given up for something the land decides: no
@@ -268,7 +283,7 @@ pub(super) enum RailStage {
     Trial {
         piece: usize,
     },
-    /// Then the verdict on its depot at place place ([`rail::DEPOT_PLACES`])
+    /// Then the verdict on its depot at place place ([`rail::depot_spot`])
     /// beyond station end's planned site, before anything is built: a line
     /// with no place for a depot at either station is laid out elsewhere or
     /// given up then, not once its stations and track stand.
@@ -350,6 +365,19 @@ pub(super) enum RailStage {
         vehicle: VehicleId,
         tries: u32,
     },
+    /// A passenger line running: reading the streets by station `end`'s
+    /// front, for a street of its own along it to join to them.
+    FrontStreets {
+        end: usize,
+    },
+    /// Asking the verdict on that street, along the front at
+    /// [`rail::FRONT_X`]`[at]`, joined to the town's at the `join`th
+    /// nearest place.
+    FrontVerdict {
+        end: usize,
+        at: usize,
+        join: usize,
+    },
 }
 
 impl Brain {
@@ -390,7 +418,9 @@ impl Brain {
     }
 
     fn start_rail_of(&mut self, leg: Leg, passengers: bool, key: u32) -> bool {
-        if self.spendable() < RAIL_MONEY || !self.trains_carried() {
+        // A cargo railway waits on its lines' earnings; a passenger one on
+        // stations that reach people enough (the Land stage).
+        if self.spendable() < RAIL_MONEY || (!passengers && !self.trains_carried()) {
             return false;
         }
         // No new railway while its settled ones lose money together: the
@@ -443,6 +473,7 @@ impl Brain {
             depot_far: 0,
             depot_into: 0.0,
             depot_plan: None,
+            front_joins: Vec::new(),
         };
         self.say(format!("plans {}", project.describe()));
         self.rail = Some(project);
@@ -502,13 +533,14 @@ impl Brain {
                         // By a town's district, or by the industry it feeds.
                         // A passenger line's ends are both towns'.
                         let passengers = project.passengers;
+                        let town_rings = passenger_rings();
                         let rings: &[f64] = match (&project.to, passengers) {
-                            (_, true) => &PASSENGER_RINGS,
+                            (_, true) => &town_rings,
                             (Taker::Town { .. }, false) => &TOWN_RINGS,
                             (Taker::Industry(_), false) => &MAKER_RINGS,
                         };
                         let near: &[f64] = if passengers {
-                            &PASSENGER_RINGS
+                            &town_rings
                         } else {
                             &MAKER_RINGS
                         };
@@ -516,6 +548,23 @@ impl Brain {
                             rail::sites(&project.land, from, at, near, passengers),
                             rail::sites(&project.land, at, from, rings, passengers),
                         ];
+                        // A passenger station reaching too few houses on
+                        // foot is no place for one: a line with none such
+                        // at either end is not begun.
+                        if passengers {
+                            let land = &project.land;
+                            for tries in &mut project.tries {
+                                tries.retain(|s| land.people(s) >= rail::PEOPLE_LEAST);
+                                tries.truncate(PASSENGER_PLACES);
+                            }
+                            if project.tries.iter().any(Vec::is_empty) {
+                                self.give_up_rail(
+                                    "found no station place reaching people enough",
+                                    now,
+                                );
+                                return None;
+                            }
+                        }
                         // What the line costs, from its first placements,
                         // before it builds anything: a line it cannot pay
                         // for, or with no route, is never begun.
@@ -590,9 +639,7 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = station.ends_toward(other);
-                let (_, _, build) =
-                    rail::depot_place(depot_end, out, place, year, 0, "Rail Depot")?;
+                let (_, (_, _, build)) = depot_by(station, other, place, year, 0, "Rail Depot")?;
                 self.verdict(&Action::BuildConstruction(build), now)
             }
             RailStage::LinkTrial { end, place } => {
@@ -604,8 +651,8 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = station.ends_toward(other);
-                let (join, into, _) = rail::depot_place(depot_end, out, place, year, 0, "")?;
+                let ((depot_end, out), (join, into, _)) =
+                    depot_by(station, other, place, year, 0, "")?;
                 let link = trial(&rail::depot_link(depot_end, out, join, into, year)?)?;
                 self.verdict(&Action::BuildTrack(link), now)
             }
@@ -631,10 +678,11 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = built.station.ends_toward(other);
                 let name = format!("{} Rail Depot", project.from.name.as_str());
-                match rail::depot_place(depot_end, out, project.depot_far, year, seed, &name) {
-                    Some((_, _, build)) => self.verdict(&Action::BuildConstruction(build), now),
+                match depot_by(&built.station, other, project.depot_far, year, seed, &name) {
+                    Some((_, (_, _, build))) => {
+                        self.verdict(&Action::BuildConstruction(build), now)
+                    }
                     None => {
                         self.give_up_rail("could not lay out a rail depot", now);
                         None
@@ -650,13 +698,44 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = built.station.ends_toward(other);
+                let ((depot_end, out), _) =
+                    rail::depot_spot(&built.station, other, project.depot_far)?;
                 let (_, join) = project.depot?;
                 // Curving from the station's heading to the depot's.
                 match rail::depot_link(depot_end, out, join, project.depot_into, year) {
                     Some(link) => self.verdict(&Action::BuildTrack(link), now),
                     None => {
                         self.give_up_rail("could not lay out a depot's track", now);
+                        None
+                    }
+                }
+            }
+            RailStage::FrontStreets { end } => {
+                let project = self.rail.as_ref()?;
+                let (a, b) = project.built[end]?
+                    .station
+                    .front(rail::FRONT_X[0], &project.land);
+                let at = P {
+                    x: (a.x + b.x) / 2.0,
+                    y: (a.y + b.y) / 2.0,
+                    z: a.z,
+                };
+                self.ask(
+                    AiQuestion::Streets {
+                        at: at.pos(),
+                        radius: rail::FRONT_REACH,
+                    },
+                    now,
+                )
+            }
+            RailStage::FrontVerdict { end, at, join } => {
+                let project = self.rail.as_ref()?;
+                let station = project.built[end]?.station;
+                let join = project.front_joins.get(join)?;
+                match place::front_street(station.front(rail::FRONT_X[at], &project.land), join) {
+                    Some(road) => self.verdict(&Action::BuildRoad(road), now),
+                    None => {
+                        self.next_front(end, now);
                         None
                     }
                 }
@@ -889,10 +968,9 @@ impl Brain {
                 } else {
                     project.from.pos
                 });
-                let (_, (depot_end, out)) = built.station.ends_toward(other);
                 // Where it was tried: its join and the heading into it.
-                let (join, into, _) =
-                    rail::depot_place(depot_end, out, project.depot_far, 0, 0, "")?;
+                let (_, (join, into, _)) =
+                    depot_by(&built.station, other, project.depot_far, 0, 0, "")?;
                 project.depot = Some((build.transform.origin, join));
                 project.depot_into = into;
                 RailStage::DepotBuilt { end, tries: 0 }
@@ -900,6 +978,24 @@ impl Brain {
             (RailStage::ShareVerdict, Action::BuildTrack(_)) => RailStage::ShareBuilt { tries: 0 },
             (RailStage::LinkVerdict { .. }, Action::BuildTrack(_)) => {
                 RailStage::LinkBuilt { tries: 0 }
+            }
+            // Its station's street sent: the other station's, or done.
+            (RailStage::FrontVerdict { end, .. }, Action::BuildRoad(_)) => {
+                let out = self.act(action, now);
+                if out.is_some() {
+                    let described = self
+                        .rail
+                        .as_ref()
+                        .map(RailProject::describe)
+                        .unwrap_or_default();
+                    self.say(format!(
+                        "joins its station to the town's streets for {described}"
+                    ));
+                    self.next_front(end, now);
+                } else {
+                    self.wake = Some(now + SETTLE);
+                }
+                return out;
             }
             (RailStage::LoopVerdict { lp }, Action::BuildTrack(_)) => RailStage::LoopBuilt { lp },
             (RailStage::SignalVerdict { lp, n, .. }, Action::PlaceStop(_)) => {
@@ -1002,7 +1098,7 @@ impl Brain {
                 } else {
                     self.say(format!("a rail depot placement would be refused: {why}"));
                 }
-                if place + 1 < rail::DEPOT_PLACES.len() {
+                if place + 1 < rail::DEPOT_TRIES {
                     self.stage = Stage::Rail(RailStage::DepotTrial {
                         end,
                         place: place + 1,
@@ -1089,7 +1185,7 @@ impl Brain {
                 self.say(format!("a rail depot placement was refused: {why}"));
                 let further = self.rail.as_mut().is_some_and(|p| {
                     p.depot_far += 1;
-                    if p.depot_far < rail::DEPOT_PLACES.len() {
+                    if p.depot_far < rail::DEPOT_TRIES {
                         return true;
                     }
                     p.depot_far = 0;
@@ -1116,12 +1212,34 @@ impl Brain {
             }
             // Its depot stands but cannot be joined: another place, as a
             // depot refused, rather than the line, built already.
+            // The next place along its front, then the next place to join,
+            // else this station goes without.
+            RailStage::FrontVerdict { end, at, join } => {
+                self.say(format!("its station's street would be refused: {why}"));
+                let joins = self.rail.as_ref().map_or(0, |p| p.front_joins.len());
+                if at + 1 < rail::FRONT_X.len() {
+                    self.stage = Stage::Rail(RailStage::FrontVerdict {
+                        end,
+                        at: at + 1,
+                        join,
+                    });
+                } else if join + 1 < joins {
+                    self.stage = Stage::Rail(RailStage::FrontVerdict {
+                        end,
+                        at: 0,
+                        join: join + 1,
+                    });
+                } else {
+                    self.say("found no street to join its station to".into());
+                    self.next_front(end, now);
+                }
+            }
             RailStage::LinkVerdict { end } => {
                 self.say(format!("its depot's track was refused: {why}"));
                 let further = self.rail.as_mut().is_some_and(|p| {
                     p.depot = None;
                     p.depot_far += 1;
-                    if p.depot_far < rail::DEPOT_PLACES.len() {
+                    if p.depot_far < rail::DEPOT_TRIES {
                         return true;
                     }
                     p.depot_far = 0;
@@ -1460,6 +1578,12 @@ impl Brain {
                         .map(RailProject::describe)
                         .unwrap_or_default();
                     self.say(format!("runs a train on {described}"));
+                    // A passenger line's stations joined to the towns'
+                    // streets, that people walk to them.
+                    if self.rail.as_ref().is_some_and(|p| p.passengers) {
+                        self.stage = Stage::Rail(RailStage::FrontStreets { end: 0 });
+                        return None;
+                    }
                     self.rail = None;
                     self.leg_now = None;
                     self.rest(now);
@@ -1478,6 +1602,64 @@ impl Brain {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// The streets read by station `end`'s front: the nearest places to join
+    /// them at, a street's end or its middle, those its own street reaches
+    /// first along its front, then the verdict on its own street to the
+    /// nearest; none such, the next station. The game counts its catchment
+    /// along the streets from its entrance, its own street's length taken
+    /// from what the walk reaches ([`rail::WALK`]).
+    pub(super) fn rail_front_streets(&mut self, streets: Vec<AiStreet>, end: usize, now: Instant) {
+        let Some(project) = self.rail.as_mut() else {
+            return;
+        };
+        let Some(built) = project.built[end] else {
+            self.next_front(end, now);
+            return;
+        };
+        let station = built.station;
+        let (a, b) = station.front(rail::FRONT_X[0], &project.land);
+        let off = |j: &place::Join| {
+            let p = P::of(j.at);
+            a.flat_distance(p).min(b.flat_distance(p))
+        };
+        // On its building's side, beyond its front: its street need cross
+        // neither the station nor its track to reach it.
+        let mut near: Vec<place::Join> = streets
+            .iter()
+            .flat_map(place::joins)
+            .filter(|j| station.across(P::of(j.at)).0 < rail::FRONT_X[0])
+            .collect();
+        near.sort_by(|x, y| off(x).total_cmp(&off(y)));
+        // A node two streets meet at, once.
+        near.dedup_by(|x, y| x.at == y.at);
+        near.truncate(rail::FRONT_JOINS);
+        match near.is_empty() {
+            false => {
+                project.front_joins = near;
+                self.stage = Stage::Rail(RailStage::FrontVerdict {
+                    end,
+                    at: 0,
+                    join: 0,
+                });
+            }
+            true => {
+                self.say("found no street to join its station to".into());
+                self.next_front(end, now);
+            }
+        }
+    }
+
+    /// On from station `end`'s street: the other's, or the line is done.
+    fn next_front(&mut self, end: usize, now: Instant) {
+        if end == 0 {
+            self.stage = Stage::Rail(RailStage::FrontStreets { end: 1 });
+        } else {
+            self.rail = None;
+            self.leg_now = None;
+            self.rest(now);
         }
     }
 
@@ -1780,6 +1962,27 @@ fn after_depot(project: &RailProject) -> RailStage {
 
 /// Where its depot is tried first once its stations stand: where its
 /// trial passed, else straight out beyond its first station.
+/// A depot by a station: the station's end its track joins and the heading
+/// out of it; where its track joins, the heading into it, and the build.
+type DepotBy = ((P, f64), (P, f64, tpf3mp_proto::action::ConstructionBuild));
+
+/// Station `station`'s depot at place `place` ([`rail::depot_spot`]), its
+/// line leaving towards `other`.
+fn depot_by(
+    station: &rail::Station,
+    other: P,
+    place: usize,
+    year: i32,
+    seed: i64,
+    name: &str,
+) -> Option<DepotBy> {
+    let ((end, out), spot) = rail::depot_spot(station, other, place)?;
+    Some((
+        (end, out),
+        rail::depot_turned(end, out, spot, year, seed, name)?,
+    ))
+}
+
 fn first_depot(project: &mut RailProject) -> RailStage {
     let (end, place) = project.depot_plan.unwrap_or((0, 0));
     project.depot_far = place;

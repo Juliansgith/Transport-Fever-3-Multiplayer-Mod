@@ -57,6 +57,12 @@ pub mod land {
     pub const STREET: u8 = 4;
     /// A track.
     pub const TRACK: u8 = 8;
+    /// Built on by town houses only, [`BUILT`] too: a construction may
+    /// clear them, the game charging for them, as a road depot among houses
+    /// did (207,000 on open ground, up to a million among houses). A town's
+    /// people live and work in them: a station reaches those within its
+    /// catchment.
+    pub const HOUSE: u8 = 16;
 }
 
 /// One question about the world, for an AI seat the asking game drives.
