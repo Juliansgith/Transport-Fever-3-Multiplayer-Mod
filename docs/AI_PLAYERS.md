@@ -496,9 +496,19 @@ faster AI.
   by town houses alone, which a construction may clear for their price, as
   a player puts a station in town. Its station places run from 60 m out of
   a town's centre to its edge, those reaching the most houses on foot
-  first (cells of houses within 250 m of the station, its own ground left
-  out), and a line whose stations would reach fewer than 15 at either end
-  is not begun; no street may lie within 200 m straight out of it towards
+  first, and a line whose stations would reach fewer than 8 cells of houses
+  at either end is not begun. The game counts a station's catchment as the
+  town buildings by the street lanes a walk from its entrance reaches
+  (`getStationCatchables`, `getStation2edgesMap`, the lanes' values stopping
+  at about 150), its own street to the town's taken out of that walk; so
+  the AI walks 150 m from the front's nearer end, straight to a street cell
+  on its building's side, then from street cell to street cell, counting
+  the cells of houses on them or beside them, its own ground left out.
+  Run 57's two stations, the land read round them: Dinnington's, 24
+  buildings in the game's catchment, reaches 12 cells so; Wolverton's, 32
+  houses within 300 m but its own street 159 m long to the town's, none in
+  the game's, reaches 1 (within 250 m straight, as before, both passed).
+  No street may lie within 200 m straight out of it towards
   the line, which would have to be crossed by bridge or tunnel sooner than
   its grade climbs (the first stations among houses, in run 53, found no
   heights for their track for the streets round them): it stands at the
@@ -508,9 +518,13 @@ faster AI.
   runs, the AI builds each station a street 60 m along its building's
   front, 30 m off its track as the fixture player's runs (34 or 38 where the
   game finds that touching the station), its ends on the ground, joined to
-  the middle of the nearest street on that side (the next of the three
-  nearest where refused), each put to the verdict first; run 56's station so
-  joined reached 24 people, those without a street 0 to 5; its track may cross houses at about 8,000 a metre beyond
+  the nearest place on that side to join a town street at: a town street's
+  end, a node there, or a street's middle, which it splits (the next of the
+  four nearest where refused; never at a company's junction, D21), each put
+  to the verdict first. Run 56's station so joined reached 24 people, those
+  without a street 0 to 5; run 57's second, joined to a street's middle
+  159 m off where a town street's end lay 45 m off, none. Its track may
+  cross houses at about 8,000 a metre beyond
   the ground, so it keeps out of towns where it can and still leaves a
   station in town. Before, its stations stood on free ground at the towns'
   edges, reaching 4 to 27 people, and every one of its passenger trains

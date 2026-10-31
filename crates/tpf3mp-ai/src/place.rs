@@ -121,15 +121,50 @@ fn edge_ref(street: &AiStreet) -> EdgeRef {
     }
 }
 
+/// Where a station's street joins a town street: at `at`, one of its ends
+/// (a node there) or its middle, which it splits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Join {
+    pub street: AiStreet,
+    pub at: Pos,
+    pub split: bool,
+}
+
+/// The places `street` may be joined at: its middle where it may be split
+/// ([`usable`]); its ends where it is the town's street on the ground, no
+/// company's junction at them (D21: the room refuses a change to another
+/// company's junction).
+pub fn joins(street: &AiStreet) -> Vec<Join> {
+    let mut out = Vec::new();
+    if usable(street) {
+        out.push(Join {
+            street: street.clone(),
+            at: street.mid,
+            split: true,
+        });
+    }
+    if !street.structure && !street.owned && !street.company_junction {
+        for at in [street.a, street.b] {
+            out.push(Join {
+                street: street.clone(),
+                at,
+                split: false,
+            });
+        }
+    }
+    out
+}
+
 /// A street along a station's front, from `front.0` to `front.1`, then on to
-/// `street`'s middle, which it splits: of `street`'s own template, on the
-/// ground. A station's catchment is counted along the streets from its
-/// entrance, and the AI's stations, no street at their front, reached none
-/// of the people about them (run 54: 0 and 1, the fixture player's, a street
-/// along its building, 13 to 48; 2026-10-31). Its far end the one further
-/// from the street, so the street joins at the near one.
-pub fn front_street(front: (P, P), street: &AiStreet) -> Option<RoadBuild> {
-    let to = middle(street);
+/// `join`: of its street's own template, on the ground. A station's
+/// catchment is counted along the streets from its entrance, and the AI's
+/// stations, no street at their front, reached none of the people about
+/// them (run 54: 0 and 1, the fixture player's, a street along its
+/// building, 13 to 48; 2026-10-31). Its far end the one further from the
+/// join, so the street joins at the near one.
+pub fn front_street(front: (P, P), join: &Join) -> Option<RoadBuild> {
+    let street = &join.street;
+    let to = P::of(join.at);
     let (far, near) = if front.0.flat_distance(to) >= front.1.flat_distance(to) {
         (front.0, front.1)
     } else {
@@ -140,7 +175,7 @@ pub fn front_street(front: (P, P), street: &AiStreet) -> Option<RoadBuild> {
         y: b.y - a.y,
         z: b.z - a.z,
     };
-    let (a, b, c) = (far.pos(), near.pos(), street.mid);
+    let (a, b, c) = (far.pos(), near.pos(), join.at);
     let link = |from: u16, to: u16, t: Tangent| Link {
         from,
         to,
@@ -173,7 +208,11 @@ pub fn front_street(front: (P, P), street: &AiStreet) -> Option<RoadBuild> {
             },
             Vertex {
                 pos: c,
-                resolve: Resolve::Split(edge_ref(street)),
+                resolve: if join.split {
+                    Resolve::Split(edge_ref(street))
+                } else {
+                    Resolve::Node(Network::Street)
+                },
             },
         ])
         .ok()?,
@@ -444,6 +483,57 @@ mod tests {
             structure: false,
             company_junction: false,
         }
+    }
+
+    #[test]
+    fn a_stations_street_joins_a_town_street_at_its_ends_or_splits_its_middle() {
+        // Run 57: joined to a street's middle 159 m off, a town street's
+        // end 45 m off, a station reached no one.
+        let town = street(0, 0, 100_000, 0);
+        let joins = joins(&town);
+        let at: Vec<(Pos, bool)> = joins.iter().map(|j| (j.at, j.split)).collect();
+        assert_eq!(at, vec![(town.mid, true), (town.a, false), (town.b, false)]);
+        let front = (
+            P {
+                x: 200.0,
+                y: 60.0,
+                z: 5.0,
+            },
+            P {
+                x: 140.0,
+                y: 60.0,
+                z: 5.0,
+            },
+        );
+        // At an end, a node there: from the front's nearer end.
+        let road = front_street(front, &joins[2]).unwrap();
+        let v = &road.polyline.vertices;
+        assert_eq!(P::of(v[1].pos).x, 140.0);
+        assert_eq!(v[2].pos, town.b);
+        assert!(matches!(v[2].resolve, Resolve::Node(Network::Street)));
+        // At its middle, split.
+        let road = front_street(front, &joins[0]).unwrap();
+        let v = &road.polyline.vertices;
+        assert!(matches!(&v[2].resolve, Resolve::Split(e) if e.ends.a == town.a));
+        // A company's street, a bridge, or one with a company's junction:
+        // not at its ends (D21), its middle where it may be split.
+        for s in [
+            AiStreet {
+                owned: true,
+                ..town.clone()
+            },
+            AiStreet {
+                company_junction: true,
+                ..town.clone()
+            },
+        ] {
+            assert!(super::joins(&s).iter().all(|j| j.split));
+        }
+        let bridge = AiStreet {
+            structure: true,
+            ..town.clone()
+        };
+        assert!(super::joins(&bridge).is_empty());
     }
 
     #[test]

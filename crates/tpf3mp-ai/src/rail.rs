@@ -76,14 +76,23 @@ pub const STEEP: f64 = 100_000.0;
 /// The land grid's cell, in metres, and a tile's cells a side: a tile is
 /// one question, about 7 ms of the driving game's frame.
 pub const STEP: f64 = 40.0;
-/// How far a passenger station reaches people on foot, in metres from its
-/// middle, about as the game's catchment overlay shows a station's.
-pub const PEOPLE_REACH: f64 = 250.0;
+/// How far a passenger station reaches people on foot, in metres walked
+/// from its front: along its own street to the nearest of the town's, then
+/// along the town's. The game counts a station's catchment so, town
+/// buildings by the street lanes its walk reaches from the station's
+/// entrance (`getStation2edgesMap`, its lane values stopping at about 150).
+/// Run 57's two stations, the land read round them: Dinnington's, 24
+/// buildings in the game's catchment, reaches 12 cells of houses so;
+/// Wolverton's, 32 houses within 300 m but its own street 159 m long to the
+/// town's, none in the game's, reaches 1. Within 250 m in a straight line,
+/// as before, both passed.
+pub const WALK: f64 = 150.0;
 /// The fewest town houses a passenger station must reach on foot, cells of
-/// [`STEP`] built on by houses within [`PEOPLE_REACH`]: the AI's stations at
-/// the towns' edges reached 4 and 5 people (the game's catchment), the
-/// fixture player's 16 to 53, and every AI passenger train lost money.
-pub const PEOPLE_LEAST: usize = 15;
+/// [`STEP`] built on by houses within its [`WALK`]: run 57's Dinnington
+/// station reaches 12, Wolverton's 1. The AI's stations at the towns' edges
+/// reached 4 and 5 people, the fixture player's 16 to 53, and every AI
+/// passenger train lost money (runs 43 to 52).
+pub const PEOPLE_LEAST: usize = 8;
 /// How far straight out of a passenger station no street may lie, in
 /// metres: a street met sooner, unless it takes a level crossing, the line
 /// must clear by [`OVER`] or [`UNDER`], more than its grade climbs in that
@@ -101,11 +110,13 @@ pub const FRONT_X: [f64; 3] = [-30.0, -34.0, -38.0];
 /// metres.
 pub const FRONT_HALF: f64 = 30.0;
 /// How far from its front it looks for a street to join, in metres, and
-/// how many of the nearest it tries: run 56 joined one station, its street
-/// reaching 24 people (0 to 5 before), and found the nearest street to the
-/// other refused at every place along its front.
+/// how many of the nearest places to join it tries, a street's end or its
+/// middle: run 56 joined one station, its street reaching 24 people (0 to 5
+/// before), and found the nearest street to the other refused at every
+/// place along its front; run 57's second, joined to the next street's
+/// middle 159 m off, where a town street's end lay 45 m off, reached none.
 pub const FRONT_REACH: u32 = 300;
-pub const FRONT_STREETS: usize = 3;
+pub const FRONT_JOINS: usize = 4;
 /// What a metre of track through town houses costs beyond the ground, the
 /// houses it clears: about what a road depot among houses cost beyond one
 /// on open ground (up to 800,000 for its 40 by 20 metres), over a track's
@@ -702,44 +713,105 @@ impl Land {
         self.cell(x, y).map(|(i, j)| self.flags[j * self.w + i])
     }
 
-    /// The town houses a passenger station at `station` reaches on foot:
-    /// cells built on by houses alone ([`land::HOUSE`]) within
-    /// [`PEOPLE_REACH`] of its middle, those its own ground clears not
-    /// counted.
+    /// The town houses a passenger station at `station` reaches on foot,
+    /// cells built on by houses ([`land::HOUSE`]) its [`WALK`] reaches: from
+    /// its front's nearer end along its own street, straight, to a street
+    /// cell on its building's side, then from cell to cell of street, a
+    /// house counted where it is a street's cell or beside one, half a cell
+    /// on. Those its own ground clears not counted.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss
     )]
     pub fn people(&self, station: &Station) -> usize {
-        let middle = station.local(0.0, f64::from(station.first + station.last) * MODULE / 2.0);
-        let under: Vec<(usize, usize)> = station
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let (a, b) = station.front(FRONT_X[0], self);
+        let under: Vec<usize> = station
             .footprint()
             .iter()
             .filter_map(|(x, y)| self.cell(*x, *y))
+            .map(|(i, j)| j * self.w + i)
             .collect();
-        let span = (PEOPLE_REACH / STEP).ceil() as i64;
-        let Some((ci, cj)) = self.cell(middle.x, middle.y) else {
+        let street = |k: usize| self.flags[k] & land::STREET != 0 && !under.contains(&k);
+        let centre = |k: usize| {
+            let (x, y) = self.centre(k % self.w, k / self.w);
+            P { x, y, z: 0.0 }
+        };
+        let mut cost = vec![f64::INFINITY; self.w * self.h];
+        // Centimetres walked, for the heap's order.
+        let key = |c: f64| (c * 100.0).round() as u64;
+        let mut heap = BinaryHeap::new();
+        let span = ((WALK + STEP) / STEP).ceil() as i64;
+        let mid = P {
+            x: (a.x + b.x) / 2.0,
+            y: (a.y + b.y) / 2.0,
+            z: 0.0,
+        };
+        let Some((ci, cj)) = self.cell(mid.x, mid.y) else {
             return 0;
         };
-        let mut n = 0;
+        let neighbours = |k: usize| {
+            let (i, j) = ((k % self.w) as i64, (k / self.w) as i64);
+            let (w, h) = (self.w as i64, self.h as i64);
+            (-1..=1).flat_map(move |dj| {
+                (-1..=1).filter_map(move |di| {
+                    let (ni, nj) = (i + di, j + dj);
+                    ((di, dj) != (0, 0) && ni >= 0 && nj >= 0 && ni < w && nj < h)
+                        .then(|| ((nj * w + ni) as usize, di != 0 && dj != 0))
+                })
+            })
+        };
         for dj in -span..=span {
             for di in -span..=span {
                 let (i, j) = (ci as i64 + di, cj as i64 + dj);
                 if i < 0 || j < 0 || i >= self.w as i64 || j >= self.h as i64 {
                     continue;
                 }
-                let (i, j) = (i as usize, j as usize);
-                let (x, y) = (self.x0 + i as f64 * STEP, self.y0 + j as f64 * STEP);
-                if (x - middle.x).hypot(y - middle.y) <= PEOPLE_REACH
-                    && self.flags[j * self.w + i] & land::HOUSE != 0
-                    && !under.contains(&(i, j))
-                {
-                    n += 1;
+                let k = j as usize * self.w + i as usize;
+                let p = centre(k);
+                if !street(k) || station.across(p).0 >= FRONT_X[0] {
+                    continue;
+                }
+                let c = FRONT_HALF + a.flat_distance(p).min(b.flat_distance(p));
+                if c <= WALK && c < cost[k] {
+                    cost[k] = c;
+                    heap.push(Reverse((key(c), k)));
                 }
             }
         }
-        n
+        while let Some(Reverse((c, k))) = heap.pop() {
+            if c > key(cost[k]) {
+                continue;
+            }
+            for (n, diagonal) in neighbours(k) {
+                let step = if diagonal {
+                    STEP * std::f64::consts::SQRT_2
+                } else {
+                    STEP
+                };
+                let next = cost[k] + step;
+                if street(n) && next <= WALK && next < cost[n] {
+                    cost[n] = next;
+                    heap.push(Reverse((key(next), n)));
+                }
+            }
+        }
+        let house = |k: usize| self.flags[k] & land::HOUSE != 0 && !under.contains(&k);
+        let mut reached = vec![false; self.w * self.h];
+        for k in 0..cost.len() {
+            if cost[k] > WALK {
+                continue;
+            }
+            reached[k] |= house(k);
+            if cost[k] + STEP / 2.0 <= WALK {
+                for (n, _) in neighbours(k) {
+                    reached[n] |= house(n);
+                }
+            }
+        }
+        reached.iter().filter(|r| **r).count()
     }
 
     /// The ground's height at a point, between the cells' centres.
@@ -2207,28 +2279,39 @@ mod tests {
         land
     }
 
+    /// Streets through `land` on a grid of every third cell where `on`
+    /// says, over what stands there.
+    fn streets(land: &mut Land, on: impl Fn(f64, f64) -> bool) {
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                if on(x, y) && (i % 3 == 0 || j % 3 == 0) {
+                    land.flags[j * land.w + i] |= land::STREET;
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_passenger_station_stands_among_a_towns_houses_reaching_the_most() {
-        // A town of houses 400 m round its middle at the origin, the other
-        // town 5 km east: the AI's stations stood at its edge on free
-        // ground, reaching 4 and 5 people (2026-10-31).
+        // A town of houses 400 m round its middle at the origin, its
+        // streets 120 m apart, the other town 5 km east: the AI's stations
+        // stood at its edge on free ground, reaching 4 and 5 people
+        // (2026-10-31).
         let (centre, other) = (p(0.0, 0.0), p(5_000.0, 0.0));
-        let land = town(centre, other, |x, y| x.hypot(y) <= 400.0, |_, _| false);
+        let in_town = |x: f64, y: f64| x.hypot(y) <= 400.0;
+        let mut land = town(centre, other, in_town, |_, _| false);
+        streets(&mut land, in_town);
         let rings = [60.0, 120.0, 180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
         let sites = sites(&land, centre, other, &rings, true);
         let best = sites.first().expect("a place");
         let reached = land.people(best);
         assert!(reached >= PEOPLE_LEAST, "{reached}");
-        assert!(
-            best.origin.flat_distance(centre) <= 200.0,
-            "{:?}",
-            best.origin
-        );
-        // Those reaching the most first; an edge place reaches fewer.
+        // Those reaching the most first; a place out of town reaches fewer.
         let edge = sites
             .iter()
-            .find(|s| s.origin.flat_distance(centre) >= 500.0)
-            .expect("an edge place");
+            .find(|s| s.origin.flat_distance(centre) >= 600.0)
+            .expect("a place out of town");
         assert!(land.people(edge) < reached);
         for w in sites.windows(2) {
             assert!(land.people(&w[0]) >= land.people(&w[1]));
@@ -2260,21 +2343,99 @@ mod tests {
     }
 
     #[test]
-    fn a_houses_reach_is_counted_round_the_station_its_own_ground_left_out() {
+    fn a_stations_people_are_walked_to_along_the_streets_from_its_front() {
+        // Run 57: Wolverton's station, 32 houses within 300 m but its own
+        // street 159 m long to the town's, reached none in the game's
+        // catchment, counted along the streets from its entrance.
         let (centre, other) = (p(0.0, 0.0), p(5_000.0, 0.0));
-        let land = town(centre, other, |_, _| true, |_, _| false);
+        // Heading east: its building, on its own -x side, to the north.
         let station = Station::for_passengers(centre, 0.0);
-        let all = land.people(&station);
-        // About the cells within 250 m, less the 6 or so under it.
-        let circle = std::f64::consts::PI * PEOPLE_REACH * PEOPLE_REACH / (STEP * STEP);
-        #[allow(clippy::cast_precision_loss)]
-        let n = all as f64;
-        assert!(
-            n > circle * 0.8 && n < circle * 1.1,
-            "{all} of about {circle:.0}"
-        );
-        let bare = flat(centre, other, |_, _| false);
+        assert!(station.across(p(0.0, 50.0)).0 < FRONT_X[0]);
+        let houses = town(centre, other, |_, _| true, |_, _| false);
+        let street_at = |y: f64| {
+            let mut land = houses.clone();
+            for i in 0..land.w {
+                let (x, _) = land.centre(i, 0);
+                let (i, j) = land.cell(x, y).unwrap();
+                land.flags[j * land.w + i] |= land::STREET;
+            }
+            land
+        };
+        // Houses all round and no street: no one.
+        assert_eq!(houses.people(&station), 0);
+        // A street along its front 60 m off: the houses by it its walk
+        // reaches, some cells either way, three rows wide at most.
+        let near = street_at(60.0);
+        let n = near.people(&station);
+        assert!(n >= PEOPLE_LEAST, "{n}");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let most = 3 * (2.0 * WALK / STEP) as usize;
+        assert!(n <= most, "{n} of at most {most}");
+        // The same street beyond its walk, or behind its track, which its
+        // own street does not cross: no one.
+        assert_eq!(street_at(200.0).people(&station), 0);
+        assert_eq!(street_at(-60.0).people(&station), 0);
+        // Further off, less of the walk left for the town's street: fewer.
+        assert!(street_at(140.0).people(&station) < n);
+        // Its own ground not counted: on a street beside it, a station on
+        // bare land reaches no one.
+        let mut bare = flat(centre, other, |_, _| false);
+        for i in 0..bare.w {
+            let (x, _) = bare.centre(i, 0);
+            let (i, j) = bare.cell(x, 60.0).unwrap();
+            bare.flags[j * bare.w + i] = land::STREET;
+        }
         assert_eq!(bare.people(&station), 0);
+    }
+
+    /// Run 57's two stations and the land read round them
+    /// (`testdata/run57_stations.txt`).
+    fn run57() -> Vec<(Station, Land)> {
+        const DIGITS: &str = "0123456789abcdefghijklmnopqrstuv";
+        include_str!("testdata/run57_stations.txt")
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                let n = |k: usize| f[k].parse::<f64>().unwrap();
+                let flags: Vec<u8> = f[7]
+                    .chars()
+                    .map(|c| u8::try_from(DIGITS.find(c).unwrap()).unwrap())
+                    .collect();
+                let land = Land {
+                    x0: n(5),
+                    y0: n(6),
+                    w: 24,
+                    h: 24,
+                    z: vec![0.0; flags.len()],
+                    flags,
+                    read: vec![true],
+                };
+                // Its own x axis is its heading turned a quarter clockwise.
+                let (xx, xy) = (n(3), n(4));
+                let origin = P {
+                    x: n(1),
+                    y: n(2),
+                    z: 0.0,
+                };
+                (Station::for_passengers(origin, xx.atan2(-xy)), land)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn run_57s_stations_reach_people_as_the_game_counted_them() {
+        let stations = run57();
+        assert_eq!(stations.len(), 2);
+        // Dinnington's front 30 m from its track, as the AI built it.
+        let (dinnington, land) = &stations[0];
+        let (a, _) = dinnington.front(FRONT_X[0], land);
+        assert!((dinnington.across(a).0 - FRONT_X[0]).abs() < 1e-6);
+        // The game counted 24 buildings in Dinnington's catchment, none in
+        // Wolverton's.
+        let reached: Vec<usize> = stations.iter().map(|(s, l)| l.people(s)).collect();
+        assert!(reached[0] >= PEOPLE_LEAST, "{reached:?}");
+        assert!(reached[1] < PEOPLE_LEAST, "{reached:?}");
     }
 
     #[test]

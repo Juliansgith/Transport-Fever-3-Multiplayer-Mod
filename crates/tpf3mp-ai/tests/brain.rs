@@ -15,7 +15,7 @@ use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
     action::{
         Action, CompanyOp, EdgeEnds, EdgeObjectKind, LineChange, LineId, LoanOp, LoanTerms,
-        PlaceStop, Pos, Resolve, RoadBuild, StationId, Structure, TownId, VehicleId,
+        Network, PlaceStop, Pos, Resolve, RoadBuild, StationId, Structure, TownId, VehicleId,
     },
 };
 
@@ -241,9 +241,10 @@ impl World {
 
     /// Its towns too small for a passenger train: a test of a cargo's
     /// railway alone.
-    /// Its towns built up: town houses on every cell no street crosses
-    /// within 500 m of each town's middle, its streets 250 m apart, blocks
-    /// a station fits in among the houses.
+    /// Its towns built up: town houses on every cell within 540 m of each
+    /// town's middle, by its streets too and a row beyond the last, as the
+    /// game's land read round run 57's stations; its streets 250 m apart,
+    /// blocks a station fits in among the houses.
     fn built_up(&mut self) {
         self.houses = true;
         self.streets.clear();
@@ -363,11 +364,10 @@ impl World {
                             (o.x - x).hypot(o.y - y) <= 70.0 + f64::from(*step) * 0.71
                         });
                         let house = self.houses
-                            && !street
                             && !built
                             && self.towns.iter().any(|t| {
                                 let c = P::of(t.pos);
-                                (c.x - x).abs() <= 500.0 && (c.y - y).abs() <= 500.0
+                                (c.x - x).abs() <= 540.0 && (c.y - y).abs() <= 540.0
                             });
                         flags.push(
                             if street { land::STREET } else { 0 }
@@ -3889,12 +3889,24 @@ fn a_passenger_station_gets_a_street_along_its_front_joined_to_the_towns() {
     for road in &world.roads {
         let v = &road.polyline.vertices;
         assert_eq!(v.len(), 3);
-        // Along the front, 60 m, then on to a town street it splits.
+        // Along the front, 60 m, then on to a town street: at its end, a
+        // node there, or its middle, which it splits, whichever is nearer
+        // (run 57: joined to a street's middle 159 m off, a town street's
+        // end 45 m off, its station reached no one).
         let (a, b) = (P::of(v[0].pos), P::of(v[1].pos));
         assert!((a.flat_distance(b) - 60.0).abs() < 1.0, "{a:?} {b:?}");
-        assert!(matches!(v[2].resolve, Resolve::Split(_)));
-        let joined = world.streets.iter().any(|s| s.mid == v[2].pos);
-        assert!(joined, "at a street's middle: {:?}", v[2].pos);
+        let street = world
+            .streets
+            .iter()
+            .find(|s| [s.a, s.b, s.mid].contains(&v[2].pos))
+            .expect("at a street's end or middle");
+        match &v[2].resolve {
+            Resolve::Split(_) => assert_eq!(street.mid, v[2].pos),
+            Resolve::Node(Network::Street) => assert_ne!(street.mid, v[2].pos),
+            other => panic!("{other:?}"),
+        }
+        let to = P::of(v[2].pos);
+        assert!(to.flat_distance(b) <= P::of(street.mid).flat_distance(b) + 1e-6);
         // 30 m off the station's track, on its building's side.
         let near = world
             .stations

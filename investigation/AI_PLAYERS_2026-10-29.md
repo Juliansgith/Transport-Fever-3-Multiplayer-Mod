@@ -544,6 +544,22 @@ the building turned to its town, run 56 joined one station, which reached
 24 people, and found the other's nearest street refused at every offset,
 hence the next nearest tried.
 
+Run 57 joined both of Rossi's stations, the second after its nearest
+street was refused at every offset. Dinnington's reached 24 town buildings
+again, Wolverton's none. The game's catchables are town buildings, and
+`getStation2edgesMap` lists the street lanes a station's walk reaches, each
+with a value that stops at about 150 (151 and 154 the most of the two).
+Wolverton's own street ran 159 m to the middle of a town street, where a
+town street's dead end lay 45 m from its front; the walk reached the
+town's streets at about 96 and its houses' streets only at their near
+ends (141 to 149), none of its 32 houses within 300 m counted. A model on
+the land read round both stations (`crates/tpf3mp-ai/src/testdata`),
+walking 150 m from the front's nearer end straight to a street cell on the
+building's side and then from street cell to street cell, gives 12 cells of
+houses at Dinnington and 1 at Wolverton; 250 m gives 49 and 26, 200 m 34
+and 16. The AI now ranks station places so, at least 8 cells, and joins
+its street to the nearest town street's end or middle.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by
