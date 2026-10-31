@@ -1348,6 +1348,7 @@ impl Brain {
                     if !self.memo.rail_lines.contains(&line.id.0) {
                         self.memo.rail_lines.push(line.id.0);
                     }
+                    self.chain_line(line.id.0);
                     self.say(format!("opened {described}"));
                     self.stage = Stage::Rail(RailStage::Buying);
                 } else if tries >= CONFIRM_TRIES {
