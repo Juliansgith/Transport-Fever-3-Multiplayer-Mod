@@ -24,6 +24,11 @@ use crate::{place::P, rail};
 /// How far through their lives every vehicle of a line must be before its
 /// load and money are judged, in percent: about a year of a bus of 20.
 pub const SETTLED: u16 = 5;
+/// How many looks a line waits, once upkeep has given it a vehicle or
+/// taken one, before the next: what one more or one fewer does shows in
+/// its load and money only over the next weeks. Two, the pace it kept
+/// while each look took two (run 57).
+pub const TUNE_LOOKS: u32 = 2;
 /// How far through their lives a production chain's lines must all be
 /// before any of them is judged: twice a line's, its cargo first made, then
 /// carried on (about a year of a truck of 10).
@@ -134,6 +139,7 @@ enum Task {
     },
     Sell {
         vehicle: VehicleId,
+        id: LineId,
         line: String,
         why: &'static str,
     },
@@ -195,7 +201,14 @@ impl Brain {
     /// What its lines need now, the most pressing first: a worn vehicle
     /// replaced, then a full line given one more, then an empty one one
     /// fewer.
-    fn task(&self, company: &AiCompany) -> Option<Task> {
+    fn task(&self, company: &AiCompany, now: Instant) -> Option<Task> {
+        // Changed lately: left as it is a while.
+        let wait = self.profile.think_after(self.speed) * TUNE_LOOKS;
+        let tuned = |line: &AiLine| {
+            self.tuned
+                .iter()
+                .any(|(id, at)| *id == line.id && now.saturating_duration_since(*at) < wait)
+        };
         let lines = self.road_lines(company);
         let on = |line: &AiLine| {
             company
@@ -218,9 +231,9 @@ impl Brain {
             });
         }
         // Running full, with more waiting.
-        let full = lines
-            .iter()
-            .find(|l| self.full(l) && on(l).len() < usize::from(self.profile.buses_most));
+        let full = lines.iter().find(|l| {
+            self.full(l) && !tuned(l) && on(l).len() < usize::from(self.profile.buses_most)
+        });
         if let Some(line) = full {
             return Some(Task::Add {
                 line: (*line).clone(),
@@ -240,10 +253,7 @@ impl Brain {
             let Some(first) = trains.first() else {
                 continue;
             };
-            if trains.len() > loops {
-                continue;
-            }
-            if !self.full(line) {
+            if trains.len() > loops || !self.full(line) || tuned(line) {
                 continue;
             }
             let Some(cargo) = self.cargo_of(line) else {
@@ -298,12 +308,16 @@ impl Brain {
             {
                 continue;
             }
-            if vehicles.len() >= 2 {
+            if vehicles.len() >= 2 && !tuned(line) {
                 return Some(Task::Sell {
                     vehicle: oldest.id,
+                    id: line.id,
                     line: line.name.as_str().to_owned(),
                     why: "carrying no one",
                 });
+            }
+            if vehicles.len() >= 2 {
+                continue;
             }
             return Some(Task::Close {
                 vehicle: oldest.id,
@@ -335,8 +349,12 @@ impl Brain {
             };
             let v = vehicles.iter().max_by_key(|v| v.worn)?;
             if vehicles.len() >= 2 {
+                if tuned(line) {
+                    continue;
+                }
                 return Some(Task::Sell {
                     vehicle: v.id,
+                    id: line.id,
                     line: line.name.as_str().to_owned(),
                     why,
                 });
@@ -356,7 +374,18 @@ impl Brain {
     /// Care of its lines at a look, if any is due: Some if it took a task,
     /// with its first want.
     pub(super) fn upkeep(&mut self, company: &AiCompany, now: Instant) -> Option<Option<Out>> {
-        match self.task(company)? {
+        let task = self.task(company, now)?;
+        // A line given a vehicle or losing one: when, for its next.
+        let tuned = match &task {
+            Task::Add { line } | Task::Train { line, .. } => Some(line.id),
+            Task::Sell { id, .. } => Some(*id),
+            Task::Replace { .. } | Task::Close { .. } => None,
+        };
+        if let Some(id) = tuned {
+            self.tuned.retain(|(l, _)| *l != id);
+            self.tuned.push((id, now));
+        }
+        match task {
             Task::Replace {
                 vehicle,
                 cargo,
@@ -394,7 +423,9 @@ impl Brain {
                 });
                 Some(None)
             }
-            Task::Sell { vehicle, line, why } => {
+            Task::Sell {
+                vehicle, line, why, ..
+            } => {
                 self.say(format!("sells a vehicle from {line}, {why}"));
                 let action = Action::SellVehicle {
                     vehicles: BoundedVec::new(vec![vehicle]).ok()?,

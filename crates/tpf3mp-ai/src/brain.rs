@@ -501,12 +501,18 @@ pub struct Brain {
     /// When it last sent an action, and when it may look again.
     acted: Option<Instant>,
     wake: Option<Instant>,
+    /// The room's speed it was last polled at, in percent: how soon it
+    /// looks again after a rest ([`Profile::think_after`]).
+    speed: u16,
     company: Option<AiCompany>,
     project: Option<Project>,
     /// The bus it buys this year, once read.
     model: Option<AiModel>,
     /// The line it adds a vehicle to outside a project.
     topping: Option<(LineId, AiDepot)>,
+    /// When its upkeep last gave each line a vehicle or took one
+    /// ([`upkeep::TUNE_LOOKS`]).
+    tuned: Vec<(LineId, Instant)>,
     /// Cargo routes still to put to the pathfinder, its pick first.
     routes: Vec<CargoRoute>,
     /// The towns read for a cargo to carry, with what they need.
@@ -577,10 +583,12 @@ impl Brain {
             asked: None,
             acted: None,
             wake: None,
+            speed: 100,
             company: None,
             project: None,
             model: None,
             topping: None,
+            tuned: Vec::new(),
             routes: Vec::new(),
             needing: Vec::new(),
             rail: None,
@@ -712,14 +720,17 @@ impl Brain {
         self.rest(now);
     }
 
+    /// Rests one look ([`Profile::think_after`], at the room's speed); the
+    /// look then goes on to whatever it leads to at once.
     fn rest(&mut self, now: Instant) {
         self.stage = Stage::Rest;
-        self.wake = Some(now + self.profile.think_every);
+        self.wake = Some(now + self.profile.think_after(self.speed));
     }
 
     /// What it wants now, if anything: one question or one action at a time.
     /// `speed` is the room's, in percent, for how soon it thinks again.
     pub fn poll(&mut self, now: Instant, speed: u16) -> Option<Out> {
+        self.speed = speed;
         if let Some((question, at)) = &self.asked {
             if now.saturating_duration_since(*at) < ANSWER_WAIT {
                 return None;
@@ -735,9 +746,13 @@ impl Brain {
         match self.stage.clone() {
             Stage::Rail(stage) => self.rail_poll(stage, now),
             Stage::Upkeep(stage) => self.upkeep_poll(stage, now),
+            // Its rest over, a look: what the look leads to waits no more
+            // than its hands do. Run 57's Normal AI, a look's wait also put
+            // on the survey it led to, planned something new every 4
+            // minutes, twice its 2 between looks.
             Stage::Rest => {
                 self.stage = Stage::Look;
-                self.wake = Some(now + self.profile.think_after(speed));
+                self.wake = Some(now + self.profile.action_gap);
                 self.ask(AiQuestion::Company, now)
             }
             Stage::Look
@@ -1603,7 +1618,7 @@ impl Brain {
             }
             self.rest(now);
             if let Some(at) = self.first_line_at {
-                self.wake = Some(at.min(now + self.profile.think_every));
+                self.wake = Some(at.min(now + self.profile.think_after(self.speed)));
             }
             return None;
         }

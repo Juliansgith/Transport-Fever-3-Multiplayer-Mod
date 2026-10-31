@@ -1317,6 +1317,35 @@ fn an_easy_ai_is_slower_buys_the_cheapest_bus_and_runs_one() {
 }
 
 #[test]
+fn an_ai_plans_its_next_line_one_look_after_the_last_not_two() {
+    // Run 57: Normal's Lindqvist Lines planned something new every 4
+    // minutes, twice its 2 between looks: its rest waited one look, then
+    // its look's answer waited another before the survey it led to.
+    let mut world = World::new();
+    let mut brain = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Normal, None);
+    let mut now = Instant::now();
+    // From its first line's bus put on, the line done, to its next plan.
+    let (mut opened, mut next) = (None, None);
+    for _ in 0..900 {
+        now = play(&mut brain, &mut world, now, Duration::from_secs(1));
+        for line in brain.take_said() {
+            if opened.is_none() && line.starts_with("runs ") {
+                opened = Some(now);
+            } else if opened.is_some() && next.is_none() && line.starts_with("plans ") {
+                next = Some(now);
+            }
+        }
+        if next.is_some() {
+            break;
+        }
+    }
+    let (opened, next) = (opened.expect("a line"), next.expect("a next plan"));
+    let gap = next - opened;
+    let look = tpf3mp_ai::profile::Profile::of(AiDifficulty::Normal).think_every;
+    assert!(gap <= look + Duration::from_secs(10), "{gap:?}");
+}
+
+#[test]
 fn a_hard_ai_serves_town_after_town_while_its_money_lasts() {
     let mut world = World::new();
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
