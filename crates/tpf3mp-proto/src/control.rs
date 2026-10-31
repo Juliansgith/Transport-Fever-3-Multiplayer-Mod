@@ -125,6 +125,11 @@ pub struct Welcome {
     /// ([`Request::AddAi`]): an operator's choice, off unless they turn it
     /// on. The Multiplayer windows offer AI players only where it is.
     pub ai_players: bool,
+    /// The server is draining: a newer release's server has taken over, and
+    /// this one keeps only the games running on it, for their own players,
+    /// until each is over or handed over to the newer one. It opens no
+    /// rooms and takes no new players ([`RequestError::Draining`]).
+    pub draining: bool,
 }
 
 /// The name of a set of rules a room is played by, such as `native`: the
@@ -552,6 +557,10 @@ pub enum RequestError {
     TooManyAis,
     /// The server seats no AI players ([`Welcome::ai_players`]).
     AiPlayersOff,
+    /// The server is draining ([`Welcome::draining`]): it opens no rooms,
+    /// takes nobody into a room they hold no seat in, and a game it handed
+    /// over to the newer release's server is played on there.
+    Draining,
 }
 
 impl fmt::Display for RequestError {
@@ -584,6 +593,9 @@ impl fmt::Display for RequestError {
             Self::NotListed => "the room is private, so it is in no list",
             Self::TooManyAis => "the room seats as many AI players as it may",
             Self::AiPlayersOff => "this server does not seat AI players",
+            Self::Draining => {
+                "this server keeps only the games running on it: update TPF3-MP to play on"
+            }
             Self::ScanPlanMismatch => "world-check settings differ from this room; use the same native scan mode and parts/stride, then restart the launcher and game",
             Self::UnknownBanner => "there is no such banner",
         })

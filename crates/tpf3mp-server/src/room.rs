@@ -33,6 +33,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     admission::RoomShare,
     directory::Directory,
+    drain::{self, Drain},
     limit::TokenBucket,
     metrics::{self, Metrics},
     pacing::Pacer,
@@ -938,6 +939,11 @@ pub(crate) struct Room {
     compact_log_at: u64,
     /// Since when no member has been connected, while the game runs.
     unattended_since: Option<Instant>,
+    /// Whether the server drains, and where its games go (D33).
+    drain: Arc<Drain>,
+    /// Its game being handed over to a newer server, or when it is tried
+    /// again.
+    handover: Option<Handover>,
     password_guard: PasswordGuard,
     /// Company passwords sent with intents ([`SecretBudget`]).
     secret_budget: SecretBudget,
@@ -1010,6 +1016,8 @@ pub(crate) struct RoomEnv {
     pub(crate) snapshots: Option<Arc<Snapshots>>,
     /// A game's log is compacted once it grows past this many bytes.
     pub(crate) compact_log_at: u64,
+    /// Whether the server drains, and where its games go (D33).
+    pub(crate) drain: Arc<Drain>,
 }
 
 /// Why a room log could not be turned back into a room.
@@ -1126,6 +1134,8 @@ impl Room {
             compact_at: spec.env.compact_log_at,
             compact_log_at: spec.env.compact_log_at,
             unattended_since: None,
+            drain: spec.env.drain,
+            handover: None,
             password_guard: PasswordGuard::new(),
             secret_budget: SecretBudget::new(),
             banned: BTreeSet::new(),
@@ -1453,6 +1463,8 @@ impl Room {
             // Nobody is connected after a restart; the abandon timeout runs
             // from here.
             unattended_since: None,
+            drain: env.drain,
+            handover: None,
             password_guard: PasswordGuard::new(),
             secret_budget: SecretBudget::new(),
             banned,
@@ -1623,6 +1635,7 @@ impl Room {
                 },
                 _ = ticker.tick() => self.on_tick(Instant::now()),
                 done = compaction_done(&mut self.compaction) => self.finish_compaction(done),
+                done = handover_done(&mut self.handover) => self.finish_handover(done),
             }
         }
         directory.remove(&self.id);
@@ -1887,6 +1900,11 @@ impl Room {
             return Err(RequestError::BadInvite);
         }
         let seated = self.members.iter().any(|m| m.player == new.player);
+        // Draining beside a newer server (D33): only the room's own players
+        // come back to it.
+        if !seated && self.drain.draining() {
+            return Err(RequestError::Draining);
+        }
         match self.secrets.check(&self.id, invite, password) {
             Admittance::Admitted if seated || self.password_guard.open(now) => {}
             Admittance::WrongPassword if !seated => {
@@ -2738,6 +2756,94 @@ impl Room {
         }
     }
 
+    /// Hands a running game nobody has been connected to for the drain's
+    /// while over to the newer server (`drain.rs`): written on a blocking
+    /// thread while the room goes on; [`Room::finish_handover`] decides.
+    fn hand_over_if_unattended(&mut self, now: Instant) {
+        let Some(config) = self.drain.hands_over() else {
+            return;
+        };
+        match &self.handover {
+            Some(Handover::Writing { .. }) => return,
+            Some(Handover::Waiting(at)) if now < *at => return,
+            _ => {}
+        }
+        let Some(since) = self.unattended_since else {
+            return;
+        };
+        if self.members.iter().any(|member| member.link.is_some())
+            || now.saturating_duration_since(since) < config.after
+        {
+            return;
+        }
+        let (Some(data_dir), Some(written), Phase::Running(game)) = (
+            &self.data_dir,
+            self.log.as_ref().map(RoomLog::written),
+            &self.phase,
+        ) else {
+            return;
+        };
+        let held = game.saves.held();
+        let (data_dir, dir, room) = (data_dir.clone(), config.dir.clone(), self.id);
+        let snapshots = self.snapshots.clone();
+        info!(room = %self.id, "nobody is connected to the game; handing it over to the newer server");
+        let to = dir.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            drain::export(&data_dir, snapshots.as_deref(), &room, &held, &to)
+        });
+        self.handover = Some(Handover::Writing { task, written, dir });
+    }
+
+    /// Hands the written game over, if nobody came back and nothing was
+    /// logged while it was written: then the newer server takes it in, and
+    /// it closes here. Else, or if it could not be written, the game stays
+    /// and is tried again after the drain's while.
+    fn finish_handover(&mut self, done: Result<io::Result<PathBuf>, tokio::task::JoinError>) {
+        let Some(Handover::Writing { written, dir, .. }) = self.handover.take() else {
+            return;
+        };
+        let after = self
+            .drain
+            .handover
+            .as_ref()
+            .map_or(Duration::from_secs(60), |config| config.after);
+        let retry = Some(Handover::Waiting(Instant::now() + after));
+        let partial = match done {
+            Ok(Ok(partial)) => partial,
+            Ok(Err(error)) => {
+                warn!(room = %self.id, %error, "cannot write the game for the newer server; it stays here");
+                self.handover = retry;
+                return;
+            }
+            Err(error) => {
+                warn!(room = %self.id, %error, "cannot write the game for the newer server; it stays here");
+                self.handover = retry;
+                return;
+            }
+        };
+        let back = self.members.iter().any(|member| member.link.is_some());
+        let logged = self.log.as_ref().map(RoomLog::written) != Some(written);
+        if back || logged || self.closed {
+            info!(room = %self.id, back, logged, "the game went on while it was written; it stays here");
+            discard_partial(partial);
+            self.handover = retry;
+            return;
+        }
+        match drain::publish(&partial, &dir, &self.id) {
+            Ok(()) => {
+                info!(room = %self.id, "handed the game over to the newer server");
+                metrics::increment(&self.metrics.games_handed_over);
+                self.discard_game();
+                self.closed = true;
+            }
+            Err(error) => {
+                warn!(room = %self.id, %error, "cannot hand the game over; it stays here");
+                discard_partial(partial);
+                self.handover = retry;
+            }
+        }
+    }
+
     /// Drops a running compaction, for a game that is over: its log, once
     /// written, is deleted rather than put in place.
     fn cancel_compaction(&mut self) {
@@ -3583,6 +3689,16 @@ impl Room {
         if !matches!(self.phase, Phase::Running(_)) {
             return;
         }
+        // Draining with a newer server to hand games to: a game nobody
+        // returns to moves there, never deleted while it may.
+        if self.drain.hands_over().is_some() {
+            if self.members.iter().any(|member| member.link.is_some()) {
+                self.unattended_since = None;
+            } else {
+                self.unattended_since.get_or_insert(now);
+            }
+            return;
+        }
         if self.members.iter().any(|member| member.link.is_some()) {
             self.unattended_since = None;
             return;
@@ -3686,6 +3802,7 @@ impl Room {
         self.sweep_closed_links();
         self.sweep_lobby();
         self.expire_if_abandoned(now);
+        self.hand_over_if_unattended(now);
         if self.closed {
             return;
         }
@@ -4138,6 +4255,39 @@ struct Compaction {
     task: tokio::task::JoinHandle<io::Result<RoomLog>>,
     /// Turns sealed since it began, which the new log needs too.
     tail: Vec<Arc<[u8]>>,
+}
+
+/// A game being handed over to a newer server (D33).
+enum Handover {
+    /// Being written; the log was this long when it began.
+    Writing {
+        task: tokio::task::JoinHandle<io::Result<PathBuf>>,
+        written: u64,
+        dir: PathBuf,
+    },
+    /// Not handed over; tried again from then.
+    Waiting(Instant),
+}
+
+/// The written hand-over, or never while none is written.
+async fn handover_done(
+    handover: &mut Option<Handover>,
+) -> Result<io::Result<PathBuf>, tokio::task::JoinError> {
+    match handover {
+        Some(Handover::Writing { task, .. }) => task.await,
+        _ => std::future::pending().await,
+    }
+}
+
+/// Removes a hand-over written and not handed over, on a blocking thread.
+fn discard_partial(partial: PathBuf) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn_blocking(move || {
+            if let Err(error) = std::fs::remove_dir_all(&partial) {
+                warn!(path = %partial.display(), %error, "cannot remove a hand-over not handed over");
+            }
+        });
+    }
 }
 
 /// The result of the running compaction, or never without one.
@@ -4766,6 +4916,8 @@ mod tests {
             compact_at: u64::MAX,
             compact_log_at: u64::MAX,
             unattended_since: None,
+            drain: Arc::new(Drain::new(false, None)),
+            handover: None,
             password_guard: PasswordGuard::new(),
             secret_budget: SecretBudget::new(),
             banned: BTreeSet::new(),
@@ -4992,6 +5144,7 @@ mod tests {
             },
             snapshots: None,
             compact_log_at: u64::MAX,
+            drain: Arc::new(Drain::new(false, None)),
         };
         let key = hmac::Key::new(hmac::HMAC_SHA256, &[0; 32]);
         Room::recover(path, key, menu, env)
@@ -5513,6 +5666,7 @@ mod tests {
             },
             snapshots: None,
             compact_log_at: u64::MAX,
+            drain: Arc::new(Drain::new(false, None)),
         };
         let key = hmac::Key::new(hmac::HMAC_SHA256, &[0; 32]);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

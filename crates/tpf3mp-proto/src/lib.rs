@@ -113,7 +113,10 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// Version 25 says whether a server seats AI players
 /// ([`Welcome::ai_players`]), refusing them where it does not
 /// ([`RequestError::AiPlayersOff`]).
-pub const PROTOCOL_VERSION: u32 = 25;
+/// Version 26 lets an old server drain beside a newer one
+/// ([`Welcome::draining`], [`RequestError::Draining`]): it keeps its
+/// running games and hands them over, and opens no new ones.
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

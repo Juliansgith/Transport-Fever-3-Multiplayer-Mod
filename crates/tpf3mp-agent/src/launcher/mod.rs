@@ -3797,15 +3797,20 @@ pub(crate) async fn base_options(
     name: Text<32>,
 ) -> Result<ConnectOptions, String> {
     let server = server.trim();
-    let (host, _port) = server
+    let (host, port) = server
         .rsplit_once(':')
         .ok_or("the server address must be host:port")?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| "the server address must be host:port")?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
     let address = crate::resolve(server)
         .await
         .map_err(|error| format!("cannot find {server}: {error}"))?;
     let mut options = ConnectOptions::new(address, host, trust.clone(), Arc::clone(identity), name);
-    options.route = tunnel.route(host).map_err(|error| error.to_string())?;
+    options.route = tunnel
+        .route(host, port)
+        .map_err(|error| error.to_string())?;
     Ok(options)
 }
 

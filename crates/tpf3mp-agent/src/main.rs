@@ -484,10 +484,11 @@ async fn open(server: &Server) -> Result<(Client, Events)> {
 }
 
 async fn options(server: &Server) -> Result<ConnectOptions> {
-    let (host, _port) = server
+    let (host, port) = server
         .server
         .rsplit_once(':')
         .context("the server address must be host:port")?;
+    let port: u16 = port.parse().context("the server's port")?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
     let address = tpf3mp_agent::resolve(&server.server)
         .await
@@ -498,7 +499,7 @@ async fn options(server: &Server) -> Result<ConnectOptions> {
     )?)?);
     let name = Text::new(server.name.clone()).context("player name")?;
     let mut options = ConnectOptions::new(address, host, trust, identity, name);
-    options.route = server.tunnel.choice()?.route(host)?;
+    options.route = server.tunnel.choice()?.route(host, port)?;
     Ok(options)
 }
 

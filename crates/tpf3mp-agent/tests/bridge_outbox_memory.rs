@@ -127,6 +127,7 @@ async fn a_hostile_server_cannot_fill_the_bridge_outbox() {
             session_id: SessionId("AB2CD3".parse().unwrap()),
             rules: Vec::new(),
             ai_players: false,
+            draining: false,
         });
         write_message(&mut send, &welcome, CONTROL_MAX_FRAME)
             .await

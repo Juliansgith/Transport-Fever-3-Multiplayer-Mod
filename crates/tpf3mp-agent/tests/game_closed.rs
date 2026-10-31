@@ -80,6 +80,7 @@ async fn connected() -> (Client, Events, JoinHandle<()>) {
             session_id: SessionId("AB2CD3".parse().unwrap()),
             rules: Vec::new(),
             ai_players: false,
+            draining: false,
         });
         write_message(&mut send, &welcome, CONTROL_MAX_FRAME)
             .await
