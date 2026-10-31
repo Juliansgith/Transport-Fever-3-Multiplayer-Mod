@@ -560,6 +560,17 @@ houses at Dinnington and 1 at Wolverton; 250 m gives 49 and 26, 200 m 34
 and 16. The AI now ranks station places so, at least 8 cells, and joins
 its street to the nearest town street's end or middle.
 
+Run 58, so built, gave up both its passenger lines (Dinnington to
+Wolverton, Hunstanton to Basingstoke): "found no station place reaching
+people enough". The land read round the fixture's four large towns
+(`crates/tpf3mp-ai/src/testdata/run58_towns.txt`) showed why: the 16
+bearings on 8 rings left 2 to 25 places a town once the station's ground
+and its run out were clear, 0 to 3 of them reaching 8 cells, and moving the
+town's centre 20 m (a line's own grid falls on a town anywhere) turned a
+place reaching 19 into one reaching 4. With 64 bearings on rings 20 m apart
+every one of the eight town pairs finds 3 to 37 places reaching enough at
+each end, the best reaching 10 to 28 cells, under every half-cell shift.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

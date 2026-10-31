@@ -495,9 +495,14 @@ faster AI.
   houses: since bridge version 39 the land answer marks the cells built on
   by town houses alone, which a construction may clear for their price, as
   a player puts a station in town. Its station places run from 60 m out of
-  a town's centre to its edge, those reaching the most houses on foot
-  first, and a line whose stations would reach fewer than 8 cells of houses
-  at either end is not begun. The game counts a station's catchment as the
+  a town's centre to 600 m, on rings 20 m apart at 64 bearings, those
+  reaching the most houses on foot first, the best 24 kept; a line whose
+  stations would reach fewer than 8 cells of houses at either end is not
+  begun. On the land read round run 58's four large towns, 16 bearings on 8
+  rings found 0 to 3 places reaching enough a town, and a place 20 m off
+  reached 4 where it had reached 19 (run 58 gave up both its lines so);
+  the dense search finds 3 to 37 at every one, however the grid falls. The
+  game counts a station's catchment as the
   town buildings by the street lanes a walk from its entrance reaches
   (`getStationCatchables`, `getStation2edgesMap`, the lanes' values stopping
   at about 150), its own street to the town's taken out of that walk; so

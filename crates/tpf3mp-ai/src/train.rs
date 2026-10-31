@@ -46,6 +46,10 @@ const STATION_MODULES: i32 = 3;
 /// The most pairs of station placements a line is laid out between before
 /// it builds anything.
 const SITE_PAIRS: u32 = 6;
+/// The most places kept for each of a passenger line's stations, those
+/// reaching the most people on foot: a refused station tries the next, and
+/// a town's dense search ([`rail::PASSENGER_BEARINGS`]) finds hundreds.
+const PASSENGER_PLACES: usize = 24;
 /// How far the game's prices may stand from the AI's before it doubts its
 /// reading of them.
 const SCALE_RANGE: (f64, f64) = (0.25, 8.0);
@@ -54,10 +58,16 @@ const SCALE_RANGE: (f64, f64) = (0.25, 8.0);
 /// catchment reaches 150 m from its building (`main_building_1_cargo`).
 const MAKER_RINGS: [f64; 3] = [150.0, 200.0, 250.0];
 const TOWN_RINGS: [f64; 4] = [120.0, 180.0, 260.0, 340.0];
-/// The rings a passenger station is tried on around its town's centre: in
-/// among its houses, which it may clear, and out to its edge, those
-/// reaching the most houses on foot first (`rail::sites`).
-const PASSENGER_RINGS: [f64; 8] = [60.0, 120.0, 180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
+/// The rings a passenger station is tried on around its town's centre, 60
+/// to 600 m out, [`rail::PASSENGER_RING_STEP`] apart: in among its houses,
+/// which it may clear, and out to its edge, those reaching the most houses
+/// on foot first (`rail::sites`).
+fn passenger_rings() -> Vec<f64> {
+    (0..)
+        .map(|k| 60.0 + rail::PASSENGER_RING_STEP * f64::from(k))
+        .take_while(|r| *r <= 600.0)
+        .collect()
+}
 /// How many times a line is routed round pieces the game refused.
 pub const REPLANS: u32 = 8;
 /// Around a refused piece's middle the land is taken as built on, in
@@ -477,13 +487,14 @@ impl Brain {
                         // By a town's district, or by the industry it feeds.
                         // A passenger line's ends are both towns'.
                         let passengers = project.passengers;
+                        let town_rings = passenger_rings();
                         let rings: &[f64] = match (&project.to, passengers) {
-                            (_, true) => &PASSENGER_RINGS,
+                            (_, true) => &town_rings,
                             (Taker::Town { .. }, false) => &TOWN_RINGS,
                             (Taker::Industry(_), false) => &MAKER_RINGS,
                         };
                         let near: &[f64] = if passengers {
-                            &PASSENGER_RINGS
+                            &town_rings
                         } else {
                             &MAKER_RINGS
                         };
@@ -498,6 +509,7 @@ impl Brain {
                             let land = &project.land;
                             for tries in &mut project.tries {
                                 tries.retain(|s| land.people(s) >= rail::PEOPLE_LEAST);
+                                tries.truncate(PASSENGER_PLACES);
                             }
                             if project.tries.iter().any(Vec::is_empty) {
                                 self.give_up_rail(

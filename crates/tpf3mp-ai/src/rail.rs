@@ -93,6 +93,15 @@ pub const WALK: f64 = 150.0;
 /// reached 4 and 5 people, the fixture player's 16 to 53, and every AI
 /// passenger train lost money (runs 43 to 52).
 pub const PEOPLE_LEAST: usize = 8;
+/// How many bearings round its town a passenger station is tried at on each
+/// ring, and how far apart the rings are, in metres: what its walk reaches
+/// turns on where the cells of street fall about it. On the land read round
+/// run 58's four large towns, 16 bearings on 8 rings found 2 to 25 places
+/// a town, 0 to 3 of them reaching enough, and a place shifted 20 m reached
+/// 4 where it had reached 19; 64 on rings 20 m apart find 42 to 359, 3 to 37
+/// reaching enough, however shifted.
+pub const PASSENGER_BEARINGS: u32 = 64;
+pub const PASSENGER_RING_STEP: f64 = 20.0;
 /// How far straight out of a passenger station no street may lie, in
 /// metres: a street met sooner, unless it takes a level crossing, the line
 /// must clear by [`OVER`] or [`UNDER`], more than its grade climbs in that
@@ -535,9 +544,10 @@ pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) 
     let towards = (other.y - target.y).atan2(other.x - target.x);
     let mut out = Vec::new();
     for r in radii {
-        let mut ring: Vec<(f64, Station)> = (0..16)
+        let bearings = if passengers { PASSENGER_BEARINGS } else { 16 };
+        let mut ring: Vec<(f64, Station)> = (0..bearings)
             .map(|k| {
-                let a = std::f64::consts::TAU * f64::from(k) / 16.0;
+                let a = std::f64::consts::TAU * f64::from(k) / f64::from(bearings);
                 let (x, y) = (target.x + r * a.cos(), target.y + r * a.sin());
                 let origin = P {
                     x,
@@ -718,7 +728,9 @@ impl Land {
     /// its front's nearer end along its own street, straight, to a street
     /// cell on its building's side, then from cell to cell of street, a
     /// house counted where it is a street's cell or beside one, half a cell
-    /// on. Those its own ground clears not counted.
+    /// on. Those its own ground clears not counted. The walk keeps within
+    /// [`WALK`] of its front's middle, so only the cells about it are read:
+    /// a town's places are thousands (`sites`).
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -728,22 +740,6 @@ impl Land {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
         let (a, b) = station.front(FRONT_X[0], self);
-        let under: Vec<usize> = station
-            .footprint()
-            .iter()
-            .filter_map(|(x, y)| self.cell(*x, *y))
-            .map(|(i, j)| j * self.w + i)
-            .collect();
-        let street = |k: usize| self.flags[k] & land::STREET != 0 && !under.contains(&k);
-        let centre = |k: usize| {
-            let (x, y) = self.centre(k % self.w, k / self.w);
-            P { x, y, z: 0.0 }
-        };
-        let mut cost = vec![f64::INFINITY; self.w * self.h];
-        // Centimetres walked, for the heap's order.
-        let key = |c: f64| (c * 100.0).round() as u64;
-        let mut heap = BinaryHeap::new();
-        let span = ((WALK + STEP) / STEP).ceil() as i64;
         let mid = P {
             x: (a.x + b.x) / 2.0,
             y: (a.y + b.y) / 2.0,
@@ -752,62 +748,103 @@ impl Land {
         let Some((ci, cj)) = self.cell(mid.x, mid.y) else {
             return 0;
         };
-        let neighbours = |k: usize| {
-            let (i, j) = ((k % self.w) as i64, (k / self.w) as i64);
-            let (w, h) = (self.w as i64, self.h as i64);
-            (-1..=1).flat_map(move |dj| {
-                (-1..=1).filter_map(move |di| {
-                    let (ni, nj) = (i + di, j + dj);
-                    ((di, dj) != (0, 0) && ni >= 0 && nj >= 0 && ni < w && nj < h)
-                        .then(|| ((nj * w + ni) as usize, di != 0 && dj != 0))
-                })
+        // The cells within the walk of its front's middle, a cell beside.
+        let span = ((WALK + STEP) / STEP).ceil() as i64;
+        let reach = span + 1;
+        let side = (2 * reach + 1) as usize;
+        let (i0, j0) = (ci as i64 - reach, cj as i64 - reach);
+        let (w, h) = (self.w as i64, self.h as i64);
+        // A cell of the window: its place in the window and on the grid.
+        let at = |i: i64, j: i64| {
+            let (li, lj) = (i - i0, j - j0);
+            let window = 0..side as i64;
+            (window.contains(&li)
+                && window.contains(&lj)
+                && (0..w).contains(&i)
+                && (0..h).contains(&j))
+            .then(|| {
+                (
+                    lj as usize * side + li as usize,
+                    j as usize * self.w + i as usize,
+                )
             })
         };
-        for dj in -span..=span {
-            for di in -span..=span {
-                let (i, j) = (ci as i64 + di, cj as i64 + dj);
-                if i < 0 || j < 0 || i >= self.w as i64 || j >= self.h as i64 {
+        let under: Vec<usize> = station
+            .footprint()
+            .iter()
+            .filter_map(|(x, y)| self.cell(*x, *y))
+            .map(|(i, j)| j * self.w + i)
+            .collect();
+        let street = |k: usize| self.flags[k] & land::STREET != 0 && !under.contains(&k);
+        let house = |k: usize| self.flags[k] & land::HOUSE != 0 && !under.contains(&k);
+        let mut cost = vec![f64::INFINITY; side * side];
+        // Centimetres walked, for the heap's order.
+        let key = |c: f64| (c * 100.0).round() as u64;
+        let mut heap = BinaryHeap::new();
+        for j in cj as i64 - span..=cj as i64 + span {
+            for i in ci as i64 - span..=ci as i64 + span {
+                let Some((l, k)) = at(i, j) else {
                     continue;
-                }
-                let k = j as usize * self.w + i as usize;
-                let p = centre(k);
+                };
+                let (x, y) = self.centre(k % self.w, k / self.w);
+                let p = P { x, y, z: 0.0 };
                 if !street(k) || station.across(p).0 >= FRONT_X[0] {
                     continue;
                 }
                 let c = FRONT_HALF + a.flat_distance(p).min(b.flat_distance(p));
-                if c <= WALK && c < cost[k] {
-                    cost[k] = c;
-                    heap.push(Reverse((key(c), k)));
+                if c <= WALK && c < cost[l] {
+                    cost[l] = c;
+                    heap.push(Reverse((key(c), i, j)));
                 }
             }
         }
-        while let Some(Reverse((c, k))) = heap.pop() {
-            if c > key(cost[k]) {
+        let neighbours = |i: i64, j: i64| {
+            (-1..=1).flat_map(move |dj| {
+                (-1..=1).filter_map(move |di| {
+                    ((di, dj) != (0, 0)).then_some((i + di, j + dj, di != 0 && dj != 0))
+                })
+            })
+        };
+        while let Some(Reverse((c, i, j))) = heap.pop() {
+            let Some((l, _)) = at(i, j) else {
+                continue;
+            };
+            if c > key(cost[l]) {
                 continue;
             }
-            for (n, diagonal) in neighbours(k) {
+            for (ni, nj, diagonal) in neighbours(i, j) {
+                let Some((nl, nk)) = at(ni, nj) else {
+                    continue;
+                };
                 let step = if diagonal {
                     STEP * std::f64::consts::SQRT_2
                 } else {
                     STEP
                 };
-                let next = cost[k] + step;
-                if street(n) && next <= WALK && next < cost[n] {
-                    cost[n] = next;
-                    heap.push(Reverse((key(next), n)));
+                let next = cost[l] + step;
+                if street(nk) && next <= WALK && next < cost[nl] {
+                    cost[nl] = next;
+                    heap.push(Reverse((key(next), ni, nj)));
                 }
             }
         }
-        let house = |k: usize| self.flags[k] & land::HOUSE != 0 && !under.contains(&k);
-        let mut reached = vec![false; self.w * self.h];
-        for k in 0..cost.len() {
-            if cost[k] > WALK {
-                continue;
-            }
-            reached[k] |= house(k);
-            if cost[k] + STEP / 2.0 <= WALK {
-                for (n, _) in neighbours(k) {
-                    reached[n] |= house(n);
+        let mut reached = vec![false; side * side];
+        for lj in 0..side as i64 {
+            for li in 0..side as i64 {
+                let (i, j) = (i0 + li, j0 + lj);
+                let Some((l, k)) = at(i, j) else {
+                    continue;
+                };
+                if cost[l] > WALK {
+                    continue;
+                }
+                reached[l] |= house(k);
+                if cost[l] + STEP / 2.0 <= WALK {
+                    for (ni, nj, _) in neighbours(i, j) {
+                        if let Some((nl, nk)) = at(ni, nj) {
+                            reached[nl] |= house(nk);
+                        }
+                    }
                 }
             }
         }
@@ -2436,6 +2473,80 @@ mod tests {
         let reached: Vec<usize> = stations.iter().map(|(s, l)| l.people(s)).collect();
         assert!(reached[0] >= PEOPLE_LEAST, "{reached:?}");
         assert!(reached[1] < PEOPLE_LEAST, "{reached:?}");
+    }
+
+    /// Run 58's four large towns, each with the land read round it
+    /// (`testdata/run58_towns.txt`): name, centre and land.
+    fn run58() -> Vec<(String, P, Land)> {
+        const DIGITS: &str = "0123456789abcdefghijklmnopqrstuv";
+        include_str!("testdata/run58_towns.txt")
+            .lines()
+            .filter(|l| !l.starts_with('#') && l.contains('|'))
+            .map(|l| {
+                let f: Vec<&str> = l.split('|').collect();
+                let n = |k: usize| f[k].parse::<f64>().unwrap();
+                let flags: Vec<u8> = f[6]
+                    .chars()
+                    .map(|c| u8::try_from(DIGITS.find(c).unwrap()).unwrap())
+                    .collect();
+                assert_eq!(flags.len(), 48 * 48);
+                let land = Land {
+                    x0: n(4),
+                    y0: n(5),
+                    w: 48,
+                    h: 48,
+                    z: vec![0.0; flags.len()],
+                    flags,
+                    read: vec![true; 9],
+                };
+                let centre = P {
+                    x: n(2),
+                    y: n(3),
+                    z: 0.0,
+                };
+                (f[0].to_owned(), centre, land)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn run_58s_large_towns_each_find_station_places_reaching_people_however_the_grid_falls() {
+        // Run 58 gave up on its two lines, finding no station place
+        // reaching people enough: 16 bearings on 8 rings found 0 to 3 such a
+        // town, and none at Basingstoke towards Dinnington.
+        let towns = run58();
+        assert_eq!(towns.len(), 4);
+        let rings: Vec<f64> = (0..)
+            .map(|k| 60.0 + PASSENGER_RING_STEP * f64::from(k))
+            .take_while(|r| *r <= 600.0)
+            .collect();
+        let mut pairs = 0;
+        for (name, centre, land) in &towns {
+            for (other, to, _) in &towns {
+                if !(3_000.0..=10_000.0).contains(&centre.flat_distance(*to)) {
+                    continue;
+                }
+                pairs += 1;
+                // The town's centre half a cell off, as a line's own grid
+                // falls on it.
+                for (dx, dy) in [(0.0, 0.0), (20.0, 0.0), (0.0, 20.0), (20.0, 20.0)] {
+                    let at = P {
+                        x: centre.x + dx,
+                        y: centre.y + dy,
+                        z: 0.0,
+                    };
+                    let found = sites(land, at, *to, &rings, true);
+                    let best = found.first().map_or(0, |s| land.people(s));
+                    assert!(
+                        best >= PEOPLE_LEAST,
+                        "{name} towards {other}, {dx},{dy} off: {best}"
+                    );
+                }
+            }
+        }
+        // Dinnington and Wolverton, Hunstanton and Wolverton, Hunstanton
+        // and Basingstoke, Dinnington and Basingstoke, each way.
+        assert_eq!(pairs, 8);
     }
 
     #[test]
