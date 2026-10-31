@@ -84,6 +84,14 @@ pub const PEOPLE_REACH: f64 = 250.0;
 /// the towns' edges reached 4 and 5 people (the game's catchment), the
 /// fixture player's 16 to 53, and every AI passenger train lost money.
 pub const PEOPLE_LEAST: usize = 15;
+/// How far straight out of a passenger station no street may lie, in
+/// metres: a street met sooner, unless it takes a level crossing, the line
+/// must clear by [`OVER`] or [`UNDER`], more than its grade climbs in that
+/// space; the first stations among houses found no heights for their track
+/// for the streets round them (run 53, 2026-10-31). It stands at the
+/// built-up area's edge facing the line, as a player's first station, the
+/// houses behind it in reach.
+pub const EXIT_CLEAR: f64 = 200.0;
 /// What a metre of track through town houses costs beyond the ground, the
 /// houses it clears: about what a road depot among houses cost beyond one
 /// on open ground (up to 800,000 for its 40 by 20 metres), over a track's
@@ -512,15 +520,24 @@ pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) 
                     })
                 };
                 // Its ground free, and room for its line to leave it: the
-                // route starts straight out, two cells beyond its lead.
+                // route starts straight out, two cells beyond its lead; a
+                // passenger station's, no street within [`EXIT_CLEAR`].
                 let ((end, out), _) = s.ends_toward(other);
                 let (ux, uy) = unit(out);
+                let lead: Vec<(f64, u8)> = if passengers {
+                    let cells = (EXIT_CLEAR / STEP).ceil() as u32;
+                    (1..=cells)
+                        .map(|k| (f64::from(k) * STEP, land::STREET))
+                        .collect()
+                } else {
+                    vec![(LEAD, 0), (LEAD + STEP, 0), (LEAD + 2.0 * STEP, 0)]
+                };
                 s.footprint()
                     .iter()
                     .all(|(x, y)| clear(*x, *y, land::STREET))
-                    && [LEAD, LEAD + STEP, LEAD + 2.0 * STEP]
+                    && lead
                         .iter()
-                        .all(|d| clear(end.x + ux * d, end.y + uy * d, 0))
+                        .all(|(d, also)| clear(end.x + ux * d, end.y + uy * d, *also))
             })
             .collect();
         ring.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -2211,6 +2228,39 @@ mod tests {
         assert_eq!(bare.people(&station), 0);
     }
 
+    #[test]
+    fn a_passenger_station_has_no_street_within_its_first_run_out() {
+        // A town of houses 400 m round, streets every 100 m through it: run
+        // 53's stations among them found no heights for their track. Its
+        // place leaves a clear run out towards the other town.
+        let (centre, other) = (p(0.0, 0.0), p(5_000.0, 0.0));
+        let street = |x: f64, y: f64| {
+            (x.hypot(y) <= 400.0) && ((x.rem_euclid(100.0) < 20.0) || (y.rem_euclid(100.0) < 20.0))
+        };
+        let mut land = town(centre, other, |x, y| x.hypot(y) <= 400.0, |_, _| false);
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                if street(x, y) {
+                    land.flags[j * land.w + i] = land::STREET;
+                }
+            }
+        }
+        let rings = [60.0, 120.0, 180.0, 260.0, 340.0, 420.0, 500.0, 600.0];
+        let found = sites(&land, centre, other, &rings, true);
+        let best = found.first().expect("a place");
+        let ((end, out), _) = best.ends_toward(other);
+        let (ux, uy) = unit(out);
+        let mut d = STEP;
+        while d <= EXIT_CLEAR {
+            assert!(
+                !street(end.x + ux * d, end.y + uy * d),
+                "a street {d} m out"
+            );
+            d += STEP;
+        }
+        assert!(land.people(best) >= PEOPLE_LEAST, "{}", land.people(best));
+    }
     #[test]
     fn track_crosses_town_houses_at_their_price_and_nothing_else_built() {
         let (a, b) = (p(0.0, 0.0), p(4_000.0, 0.0));

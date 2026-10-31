@@ -492,7 +492,11 @@ faster AI.
   a town's centre to its edge, those reaching the most houses on foot
   first (cells of houses within 250 m of the station, its own ground left
   out), and a line whose stations would reach fewer than 15 at either end
-  is not begun; its track may cross houses at about 8,000 a metre beyond
+  is not begun; no street may lie within 200 m straight out of it towards
+  the line, which would have to be crossed by bridge or tunnel sooner than
+  its grade climbs (the first stations among houses, in run 53, found no
+  heights for their track for the streets round them): it stands at the
+  built-up area's edge facing the line, the houses behind it in reach; its track may cross houses at about 8,000 a metre beyond
   the ground, so it keeps out of towns where it can and still leaves a
   station in town. Before, its stations stood on free ground at the towns'
   edges, reaching 4 to 27 people, and every one of its passenger trains
