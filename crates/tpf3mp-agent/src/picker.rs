@@ -28,6 +28,7 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use tpf3mp_bridge::{
@@ -66,6 +67,36 @@ pub struct Installed {
 /// each id counts.
 pub fn discover(game: Option<&Path>, steam_roots: &[PathBuf]) -> Vec<Installed> {
     scanned(&roots::installed(&roots::default_roots(game, steam_roots)))
+}
+
+/// How the launcher finds the installed mods, at its start and again before
+/// what it declares to a room follows them: the game may download a Mod Hub
+/// update at any time (docs/MODS.md, "Choosing mods").
+#[derive(Clone)]
+pub struct Finder(Arc<dyn Fn() -> Vec<Installed> + Send + Sync>);
+
+impl Finder {
+    /// [`discover`], with the game installed in `game`.
+    pub fn installed(game: Option<PathBuf>) -> Self {
+        Self::new(move || discover(game.as_deref(), &crate::steam::steam_roots()))
+    }
+
+    /// The mods `find` says are installed, each time it is asked.
+    pub fn new(find: impl Fn() -> Vec<Installed> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(find))
+    }
+
+    /// The mods installed now. Reads every mod's files: call it off the
+    /// async runtime.
+    pub fn find(&self) -> Vec<Installed> {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for Finder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Finder")
+    }
 }
 
 /// The mods `found`, scanned; the first of each id counts.
@@ -315,8 +346,10 @@ impl Mods {
     }
 
     /// Takes in the mods found again (after a Mod Hub download, say),
-    /// keeping the choices of those still choosable. Returns whether
-    /// anything changed.
+    /// keeping the choices of those still choosable. The room's owner's
+    /// list follows: each of its mods in the version installed now, as
+    /// [`Mods::own_start`] and [`Mods::choose_room`] take it. Returns
+    /// whether anything changed.
     pub fn rescan(&mut self, installed: Vec<Installed>) -> bool {
         if installed == self.installed {
             return false;
@@ -325,6 +358,16 @@ impl Mods {
         let chosen = std::mem::take(&mut self.chosen);
         for id in chosen {
             let _ = self.choose(&id, true);
+        }
+        if self.owner
+            && let Some(mut room) = self.room.take()
+        {
+            room.mods = room
+                .mods
+                .into_iter()
+                .map(|m| self.room_mod(m.id.as_str(), m.info))
+                .collect();
+            self.room = Some(room);
         }
         true
     }
@@ -825,6 +868,37 @@ mod tests {
         assert_eq!(room.mods[0].info.modio, Some(6414521));
         assert_eq!(room.mods[1].id.as_str(), OWN_MOD);
         assert_eq!(room.mods[1].info.modio, None);
+    }
+
+    /// The owner's game downloaded a Mod Hub update while the launcher ran
+    /// (playtest 2026-10-24): found again, the room's list is in the version
+    /// installed now, and the owner has every one of its mods.
+    #[test]
+    fn the_owners_room_follows_a_mod_found_again_in_another_version() {
+        let hub = |file| {
+            Some(roots::HubFile {
+                mod_id: 6472761,
+                file: Some(file),
+            })
+        };
+        let mut list = catalog();
+        list[1].version = "7+m8368015".into();
+        list[1].hub = hub(8368015);
+        let mut owner = Mods::new(Text::lossy("40425"), list.clone(), [], false);
+        owner.own_start(&save(&["vehicles_pack"])).unwrap();
+        list[1].version = "8+m8400000".into();
+        list[1].hub = hub(8400000);
+        assert!(owner.rescan(list.clone()));
+        let room = told(owner.declaration().unwrap());
+        assert_eq!(room.mods[0].version.as_str(), "8+m8400000");
+        assert_eq!(room.mods[0].info.modio, Some(6472761));
+        let required = owner.required();
+        assert_eq!(required[0].version, "8+m8400000");
+        assert_eq!(
+            required.iter().map(|r| r.have).collect::<Vec<_>>(),
+            [Have::Yes, Have::Yes]
+        );
+        assert!(!owner.rescan(list), "found as it was: nothing changes");
     }
 
     /// The game's own settings (difficulty, costs, ...) travel with the

@@ -277,8 +277,9 @@ for good, without a word (2026-10-01). So:
   existing content check then refuses Start and a join to the running game
   (`ContentMismatch`), and the player with the other copy is told "Your
   TPF3-MP mod differs from the host's (yours fedcba98, host 01234567):
-  reinstall the same version". The launcher computes it once, at start: a
-  mod reinstalled while it runs counts after a restart.
+  reinstall the same version". The launcher computes it at start and each
+  time it finds the installed mods again ("Choosing mods" below): a mod
+  reinstalled while it runs counts from the next of those.
 - With `--mods`, a listed `tpf3mp_1` that is installed gets the same
   version; one not found keeps its listed version, uncompared.
 
@@ -296,6 +297,24 @@ Without `--mods`, the launcher (`crates/tpf3mp-agent/src/picker.rs`):
   id counts), scans each and keeps its class and first reason, its name
   (`_metadata/modinfo.json`) and its `revision`. Each goes to the launcher's
   log: `mod schbrongx_minimap 1 is personal: only what this player sees`;
+- **finds them again** before what it declares to a room follows them, since
+  the game may download a Mod Hub update at any time (seen in the playtest
+  of 2026-10-24: the owner's game updated a mod mid-session, the room kept
+  declaring the version found at the launcher's start, and a guest who
+  subscribed since could never match it). The owner's launcher finds them
+  again as it creates a room and as the owner picks the room's mods or its
+  save; a guest's as it joins a room, and in the lobby when the room tells
+  it a list naming a mod it lacks or has in another version; anyone's when
+  the game's window asks (`LobbyAction::RescanMods`, below). The scan
+  (under a second for some 350 mods on a warm disk) runs off the
+  launcher's async tasks and finds what the start would: a folder that
+  cannot be read is left out, a Mod Hub download whose file mod.io's index
+  does not give gets a version no other game has. A scan that cannot
+  finish refuses the action. When the mods found changed and the owner's
+  pick is then refused (a mod not installed, a save without TPF3-MP), the
+  room is still declared the versions installed now. Each mod new or
+  changed goes to the log as at the start, and each gone as
+  `mod <id> is no longer installed`;
 - **lets the player choose** their personal mods, and carried ones with
   `--personal-game-scripts` (`LobbyAction::ChooseMod`, the page's
   `choose_mod`). A shared mod is never chosen: every player needs the
@@ -312,7 +331,8 @@ Without `--mods`, the launcher (`crates/tpf3mp-agent/src/picker.rs`):
   with its name and source as the owner's game knows it, and the settings
   of the room's mods and the game's own, `GAME_SETTINGS`), and the
   launcher (`Mods::choose_room`) makes them the room's: each in the
-  owner's installed version, TPF3-MP's own last, the owner's personal
+  owner's installed version (found again first, above; a later scan
+  updates the owner's list too, `Mods::rescan`), TPF3-MP's own last, the owner's personal
   mods left out. A mod the owner's game has from Mod Hub is named with its
   Mod Hub number, read from the installed copy, whatever source the save
   recorded (a save made while the mod was a local copy still says
