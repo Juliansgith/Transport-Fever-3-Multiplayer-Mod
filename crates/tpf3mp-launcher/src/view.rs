@@ -827,6 +827,7 @@ mod tests {
                 has_password: false,
                 members,
                 competitive: false,
+                ai_seats: false,
                 ais: Vec::new(),
             }),
             ..State::default()

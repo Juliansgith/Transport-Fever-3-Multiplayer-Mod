@@ -484,6 +484,22 @@ the others play on. Their saves are larger too: a 1.4 GB world must upload
 within the 90-minute limit, so at least about 260 KB/s from the player who
 uploads it.
 
+## AI players
+
+AI players (docs/AI_PLAYERS.md) are not yet released, and a server seats
+none unless its operator turns them on:
+
+```sh
+tpf3mp-server ... --ai-players
+```
+
+(or `TPF3MP_AI_PLAYERS=true`). With it, rooms' owners may seat them, and
+the server logs a warning that they are on; without it, it says so to
+every launcher (`Welcome::ai_players`), the Multiplayer windows offer none,
+and a request to seat one is refused (`AiPlayersOff`). AI players seated
+before stay seated, and may be removed. The test rig's local server
+(`tpf3mp-rig`) turns them on.
+
 ## Native mods
 
 A server can offer its players native mods such as Big Maps

@@ -1034,7 +1034,8 @@ function data()
 			players[#players + 1] = box(cells, false, PLAYERS_WIDTH - 24, 10, true)
 			players[#players + 1] = gap(8)
 		end
-		if owner and #(status.ais or {}) < 7 then
+		-- Where the server seats them: off unless its operator turns them on.
+		if owner and status.ai_seats and #(status.ais or {}) < 7 then
 			local adds = { label("Add an AI player:", "font-scale-annotation") }
 			for _, d in ipairs({ { "easy", "Easy" }, { "normal", "Normal" }, { "hard", "Hard" } }) do
 				adds[#adds + 1] = builtin.Button{ meta = { class = "secondary", tooltip = "Seat a " .. d[2] .. " AI player" },

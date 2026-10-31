@@ -520,7 +520,7 @@ game's catchment (`catchmentAreaSystem.getStationCatchables`); the fixture
 player's reach 16 to 53, with buses feeding them, and earn 2 to 9 million
 a year.
 
-So (bridge version 39) the land answer marks the cells whose constructions
+So (bridge version 40) the land answer marks the cells whose constructions
 are town houses alone (`TOWN_BUILDING.construction`): a construction may
 clear them, the game charging for them, as road depots among houses showed
 (207,000 on open ground, up to a million among houses). A passenger

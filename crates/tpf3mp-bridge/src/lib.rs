@@ -98,8 +98,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// ([`ai::AiTown::rivals`], [`ai::AiTown::linked`]). 37 what other
 /// companies have at each industry ([`ai::AiIndustry::carried`]). 38 what
 /// each AI line made over its last three months ([`ai::AiLine::recent`]).
-/// 39 the land cells built on by town houses only ([`ai::land::HOUSE`]).
-pub const BRIDGE_VERSION: u32 = 39;
+/// 39 whether the room's owner may seat AI players
+/// ([`LobbyRoom::ai_seats`], [`RoomInfo::ai_seats`]). 40 the land cells
+/// built on by town houses only ([`ai::land::HOUSE`]).
+pub const BRIDGE_VERSION: u32 = 40;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
@@ -483,6 +485,9 @@ pub struct LobbyRoom {
     pub upload: Option<LobbyUpload>,
     /// The room's AI players, in the order they were seated.
     pub ais: BoundedVec<LobbyAi, { tpf3mp_proto::MAX_AI_SEATS }>,
+    /// Whether its owner may seat more: the server seats AI players
+    /// ([`tpf3mp_proto::Welcome::ai_players`]).
+    pub ai_seats: bool,
 }
 
 /// An AI player of the room, as the Multiplayer windows show it.
@@ -676,6 +681,8 @@ pub struct RoomInfo {
     pub members: BoundedVec<RoomMember, { MAX_ROOM_MEMBERS as usize }>,
     /// The room's AI players, in the order they were seated.
     pub ais: BoundedVec<LobbyAi, { tpf3mp_proto::MAX_AI_SEATS }>,
+    /// Whether its owner may seat more, as [`LobbyRoom::ai_seats`].
+    pub ai_seats: bool,
 }
 
 /// One member of the room.
@@ -924,6 +931,7 @@ mod tests {
                     save: Text::new("u".repeat(MAX_SAVE_NAME)).unwrap(),
                     percent: 100,
                 }),
+                ai_seats: false,
                 ais: BoundedVec::new(vec![
                     LobbyAi {
                         player: PlayerId(FixedBytes([0xaa; 32])),

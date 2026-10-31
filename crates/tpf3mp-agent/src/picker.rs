@@ -25,9 +25,10 @@
 //! their game ([`Mods::lists`]).
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use tpf3mp_bridge::{
@@ -63,9 +64,44 @@ pub struct Installed {
 }
 
 /// Every mod in the places this player keeps them, scanned; the first of
-/// each id counts.
+/// each id counts. Where Mod Hub's downloads were looked for, and what
+/// each place held, goes to the log.
 pub fn discover(game: Option<&Path>, steam_roots: &[PathBuf]) -> Vec<Installed> {
-    scanned(&roots::installed(&roots::default_roots(game, steam_roots)))
+    let (hub, found) = roots::discovered(game, steam_roots);
+    for line in hub.report(&found) {
+        tracing::info!("{line}");
+    }
+    scanned(&found)
+}
+
+/// How the launcher finds the installed mods, at its start and again before
+/// what it declares to a room follows them: the game may download a Mod Hub
+/// update at any time (docs/MODS.md, "Choosing mods").
+#[derive(Clone)]
+pub struct Finder(Arc<dyn Fn() -> Vec<Installed> + Send + Sync>);
+
+impl Finder {
+    /// [`discover`], with the game installed in `game`.
+    pub fn installed(game: Option<PathBuf>) -> Self {
+        Self::new(move || discover(game.as_deref(), &crate::steam::steam_roots()))
+    }
+
+    /// The mods `find` says are installed, each time it is asked.
+    pub fn new(find: impl Fn() -> Vec<Installed> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(find))
+    }
+
+    /// The mods installed now. Reads every mod's files: call it off the
+    /// async runtime.
+    pub fn find(&self) -> Vec<Installed> {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for Finder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Finder")
+    }
 }
 
 /// The mods `found`, scanned; the first of each id counts.
@@ -77,17 +113,29 @@ pub fn scanned(found: &[roots::Found]) -> Vec<Installed> {
             continue;
         }
         let report = tpf3mp_modscan::scan(&mod_found.path);
-        let reason = match report.sharing().next() {
+        let mut reason = match report.sharing().next() {
             Some(reason) => format!("{}: {}", kind_word(report.class), reason.detail),
             None => "only what this player sees".to_owned(),
         };
+        let mut class = report.class;
         let revision = report.revision.map(|r| r.to_string()).unwrap_or_default();
         out.push(Installed {
             id: mod_found.id.clone(),
             name: display_name(&mod_found.path).unwrap_or_else(|| mod_found.id.clone()),
+            // Installed twice, and which copy the game loads is not known:
+            // shared, so that it is never left out of what the room
+            // compares, and of a version no other game has (fail closed).
+            version: if mod_found.unsure {
+                tracing::warn!(
+                    "mod {} is installed twice, as a Mod Hub download and as a local mod, and the game's log does not say which one it loads, so the room cannot compare it: remove one of them",
+                    mod_found.id
+                );
+                class = Class::Shared;
+                reason = "installed twice, as a Mod Hub download and a local mod".to_owned();
+                unsure_version(&revision, &mod_found.id, &mod_found.path)
             // TPF3-MP's own mod: its revision and the fingerprint of its
             // files, so that an old copy of the same revision differs.
-            version: if mod_found.id == OWN_MOD {
+            } else if mod_found.id == OWN_MOD {
                 crate::own_mod::version(&revision, &mod_found.path)
             } else if let Some(hub) = mod_found.hub {
                 hub_version(&revision, hub, &mod_found.id)
@@ -95,7 +143,7 @@ pub fn scanned(found: &[roots::Found]) -> Vec<Installed> {
                 revision
             },
             hub: mod_found.hub,
-            class: report.class,
+            class,
             reason: shorten(&reason),
             path: mod_found.path.clone(),
         });
@@ -110,8 +158,7 @@ pub fn scanned(found: &[roots::Found]) -> Vec<Installed> {
 /// update pending, no index) gets a version no other game has (fail closed),
 /// and a warning in the log.
 pub fn hub_version(revision: &str, hub: roots::HubFile, id: &str) -> String {
-    // Short enough to fit a manifest's version with the largest file id.
-    let revision: String = revision.chars().take(8).collect();
+    let revision = short_revision(revision);
     match hub.file {
         Some(file) => format!("{revision}+m{file}"),
         None => {
@@ -119,12 +166,38 @@ pub fn hub_version(revision: &str, hub: roots::HubFile, id: &str) -> String {
                 "Mod Hub's mod {id} ({}): mod.io's index gives no installed file, so the room cannot compare it",
                 hub.mod_id
             );
-            let mut unique = [0u8; 4];
-            let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut unique);
-            let unique: String = unique.iter().map(|b| format!("{b:02x}")).collect();
-            format!("{revision}+m?{unique}")
+            format!("{revision}+m?{}", unique())
         }
     }
+}
+
+/// The version of the mod `id` of `revision` at `path`, installed twice so
+/// that which copy the game loads is not known (`roots::settle`): one no
+/// other game has, the same at each scan while this launcher runs, so that
+/// a rescan of the same files changes nothing.
+pub(crate) fn unsure_version(revision: &str, id: &str, path: &Path) -> String {
+    static NONCES: std::sync::Mutex<BTreeMap<(String, PathBuf, String), String>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let mut nonces = NONCES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let nonce = nonces
+        .entry((id.to_owned(), path.to_owned(), revision.to_owned()))
+        .or_insert_with(unique);
+    format!("{}+?{nonce}", short_revision(revision))
+}
+
+/// A revision short enough to fit a manifest's version with the largest
+/// file id.
+fn short_revision(revision: &str) -> String {
+    revision.chars().take(8).collect()
+}
+
+/// Eight hex digits no other game will have.
+fn unique() -> String {
+    let mut unique = [0u8; 4];
+    let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut unique);
+    unique.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn kind_word(class: Class) -> &'static str {
@@ -315,8 +388,10 @@ impl Mods {
     }
 
     /// Takes in the mods found again (after a Mod Hub download, say),
-    /// keeping the choices of those still choosable. Returns whether
-    /// anything changed.
+    /// keeping the choices of those still choosable. The room's owner's
+    /// list follows: each of its mods in the version installed now, as
+    /// [`Mods::own_start`] and [`Mods::choose_room`] take it. Returns
+    /// whether anything changed.
     pub fn rescan(&mut self, installed: Vec<Installed>) -> bool {
         if installed == self.installed {
             return false;
@@ -325,6 +400,16 @@ impl Mods {
         let chosen = std::mem::take(&mut self.chosen);
         for id in chosen {
             let _ = self.choose(&id, true);
+        }
+        if self.owner
+            && let Some(mut room) = self.room.take()
+        {
+            room.mods = room
+                .mods
+                .into_iter()
+                .map(|m| self.room_mod(m.id.as_str(), m.info))
+                .collect();
+            self.room = Some(room);
         }
         true
     }
@@ -754,6 +839,66 @@ mod tests {
         assert!(Text::<32>::new(&longest).is_ok(), "{longest}");
     }
 
+    /// A mod installed both as a Mod Hub download and as a local mod, of
+    /// which the game's log does not say which copy it loads (2026-10-25:
+    /// an author's own mods): shared, never a personal choice, and of a
+    /// version no other game has. The copy the log names counts as itself.
+    #[test]
+    fn a_mod_installed_twice_is_compared_with_no_one_unless_the_game_said_which() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("D").join("ModStore");
+        let staging = dir.path().join("staging_area");
+        let write = |path: PathBuf, text: &str| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write(
+            storage.join("10640/mods/6400001/mod.json"),
+            r#"{"modId": "day_mode", "revision": 1}"#,
+        );
+        write(
+            storage.join("10640/metadata/state.json"),
+            r#"{"Mods": [{"ID": 6400001, "State": 1, "Profile": {"modfile": {"id": 5}}}]}"#,
+        );
+        write(
+            staging.join("day_mode/mod.json"),
+            r#"{"modId": "day_mode", "revision": 8}"#,
+        );
+        let mut found = roots::installed(&[staging.clone().into()]);
+        found.splice(
+            0..0,
+            roots::installed(&roots::roots(
+                None,
+                &[],
+                &[roots::HubRoot {
+                    source: roots::HubSource::Settings,
+                    storage,
+                }],
+            )),
+        );
+        assert_eq!(found.len(), 2);
+
+        let twice = scanned(&roots::settle(found.clone(), &[]));
+        assert_eq!(twice.len(), 1);
+        assert_eq!(twice[0].class, Class::Shared);
+        assert!(twice[0].version.starts_with("1+?"), "{}", twice[0].version);
+        assert_ne!(twice[0].version, "1+m5", "not the Mod Hub copy's version");
+        // A rescan of the same files declares the same: the room is not
+        // told of a change that is none.
+        assert_eq!(
+            twice[0].version,
+            scanned(&roots::settle(found.clone(), &[]))[0].version
+        );
+
+        let chosen = scanned(&roots::settle(
+            found,
+            &[("day_mode".to_owned(), staging.join("day_mode"))],
+        ));
+        assert_eq!(chosen[0].version, "8");
+        assert_eq!(chosen[0].class, Class::Personal);
+        assert_eq!(chosen[0].hub, None);
+    }
+
     fn catalog() -> Vec<Installed> {
         vec![
             installed("tpf3mp_1", Class::Shared, "1"),
@@ -825,6 +970,37 @@ mod tests {
         assert_eq!(room.mods[0].info.modio, Some(6414521));
         assert_eq!(room.mods[1].id.as_str(), OWN_MOD);
         assert_eq!(room.mods[1].info.modio, None);
+    }
+
+    /// The owner's game downloaded a Mod Hub update while the launcher ran
+    /// (playtest 2026-10-24): found again, the room's list is in the version
+    /// installed now, and the owner has every one of its mods.
+    #[test]
+    fn the_owners_room_follows_a_mod_found_again_in_another_version() {
+        let hub = |file| {
+            Some(roots::HubFile {
+                mod_id: 6472761,
+                file: Some(file),
+            })
+        };
+        let mut list = catalog();
+        list[1].version = "7+m8368015".into();
+        list[1].hub = hub(8368015);
+        let mut owner = Mods::new(Text::lossy("40425"), list.clone(), [], false);
+        owner.own_start(&save(&["vehicles_pack"])).unwrap();
+        list[1].version = "8+m8400000".into();
+        list[1].hub = hub(8400000);
+        assert!(owner.rescan(list.clone()));
+        let room = told(owner.declaration().unwrap());
+        assert_eq!(room.mods[0].version.as_str(), "8+m8400000");
+        assert_eq!(room.mods[0].info.modio, Some(6472761));
+        let required = owner.required();
+        assert_eq!(required[0].version, "8+m8400000");
+        assert_eq!(
+            required.iter().map(|r| r.have).collect::<Vec<_>>(),
+            [Have::Yes, Have::Yes]
+        );
+        assert!(!owner.rescan(list), "found as it was: nothing changes");
     }
 
     /// The game's own settings (difficulty, costs, ...) travel with the
@@ -1251,7 +1427,7 @@ mod tests {
         )
         .unwrap();
         fs::write(mod_dir.join("content/tpf3mp/act.lua"), "return {}").unwrap();
-        let found = roots::installed(&[dir.path().to_owned()]);
+        let found = roots::installed(&[dir.path().to_owned().into()]);
         let scanned = scanned(&found);
         let own = scanned.iter().find(|m| m.id == "tpf3mp_1").unwrap();
         assert_eq!(

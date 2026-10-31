@@ -204,6 +204,7 @@ fn in_room(members: Vec<LobbyMember>, you_own: bool) -> LobbyView {
             competitive: false,
             start: None,
             upload: None,
+            ai_seats: false,
             ais: BoundedVec::default(),
         }),
         chat: BoundedVec::new(vec![LobbyLine {
@@ -594,7 +595,7 @@ fn in_the_room_the_owner_starts_once_everyone_is_ready() {
 fn the_owner_seats_and_removes_ai_players_and_a_guest_only_sees_them() {
     let lua = menu();
     let ai = PlayerId::ai_seat(&tpf3mp_proto::RoomId(tpf3mp_proto::FixedBytes([3; 16])), 0);
-    let with_ai = |you_own: bool| {
+    let with_ai = |you_own: bool, ai_seats: bool| {
         let mut view = in_room(
             vec![
                 member(1, "Ann", true, you_own, true),
@@ -610,10 +611,11 @@ fn the_owner_seats_and_removes_ai_players_and_a_guest_only_sees_them() {
                 yours: you_own,
             }])
             .unwrap();
+            room.ai_seats = ai_seats;
         }
         view
     };
-    show(&lua, Some(&with_ai(true)));
+    show(&lua, Some(&with_ai(true, true)));
     open(&lua, None);
     let shown = texts(&lua);
     for word in [
@@ -636,12 +638,47 @@ fn the_owner_seats_and_removes_ai_players_and_a_guest_only_sees_them() {
     click(&lua, "Remove");
     assert_eq!(sent(&lua), [LobbyAction::RemoveAi { player: ai }]);
 
-    show(&lua, Some(&with_ai(false)));
+    show(&lua, Some(&with_ai(false, true)));
     call(&lua, "tick", ());
     let shown = texts(&lua);
     assert!(shown.contains("AI player, Hard"), "{shown}");
     assert!(!shown.contains("Add an AI player:"), "{shown}");
     assert!(!has_button(&lua, "Normal"));
+}
+
+#[test]
+fn an_owner_seats_no_ai_players_where_the_server_does_not() {
+    // AI players are off on a server unless its operator turns them on
+    // (`--ai-players`): its rooms' owners are offered none to seat, and
+    // still see and may remove one seated before.
+    let lua = menu();
+    let ai = PlayerId::ai_seat(&tpf3mp_proto::RoomId(tpf3mp_proto::FixedBytes([3; 16])), 0);
+    let mut view = in_room(
+        vec![
+            member(1, "Ann", true, true, true),
+            member(2, "Bob", false, false, true),
+        ],
+        true,
+    );
+    if let Some(room) = view.room.as_mut() {
+        room.ais = BoundedVec::new(vec![tpf3mp_bridge::LobbyAi {
+            player: ai,
+            name: Text::new("Rossi Transport").unwrap(),
+            difficulty: tpf3mp_proto::AiDifficulty::Hard,
+            yours: true,
+        }])
+        .unwrap();
+        room.ai_seats = false;
+    }
+    show(&lua, Some(&view));
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Rossi Transport"), "{shown}");
+    assert!(!shown.contains("Add an AI player:"), "{shown}");
+    assert!(!has_button(&lua, "Normal"));
+    click(&lua, "Remove Rossi Transport from the room");
+    click(&lua, "Remove");
+    assert_eq!(sent(&lua), [LobbyAction::RemoveAi { player: ai }]);
 }
 
 /// A room in its lobby, Ann owning it if `you_own` (else Bob), both ready,

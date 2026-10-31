@@ -33,6 +33,8 @@ serde_json.workspace = true
 tpf3mp-modscan.workspace = true
 tpf3mp-snapshot.workspace = true
 tempfile.workspace = true
+# Writes a start save listing mods (tests/launcher.rs).
+zstd.workspace = true
 
 [lints]
 workspace = true

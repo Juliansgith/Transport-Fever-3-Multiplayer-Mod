@@ -2481,8 +2481,9 @@ function lobby.content(onClose, focus, onNewGame, onPick, onModHub, commonParams
 	end
 	flush()
 	-- The owner seats AI players: a computer plays each, as a company of
-	-- its own (docs/AI_PLAYERS.md).
-	if room.you_own and #(room.ais or {}) < 7 then
+	-- its own (docs/AI_PLAYERS.md), where the server seats them (off unless
+	-- its operator turns them on: they are not yet released).
+	if room.you_own and room.ai_seats and #(room.ais or {}) < 7 then
 		local adds = { label(_("Add an AI player:"), "font-scale-body"), gap(8) }
 		for _i, d in ipairs(lobby.AI_DIFFICULTIES) do
 			adds[#adds + 1] = button(d[2], function()

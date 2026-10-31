@@ -132,6 +132,7 @@ fn launcher_config(
         content: toy_content(),
         mods: None,
         picker: None,
+        find_mods: None,
         native: None,
         installed: None,
         link: format!("tpf3mp-regional-{}-{name}", std::process::id()),

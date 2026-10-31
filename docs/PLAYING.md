@@ -390,6 +390,10 @@ What the window says:
 
 ### AI players
 
+AI players are not yet released: a server offers them only where its
+operator turned them on (OPERATIONS.md, "AI players"), and on any other the
+Multiplayer windows show no **Add an AI player**.
+
 The room's owner can seat computer players: in the room's page of the
 game's Multiplayer window before the game, or in the Multiplayer window
 during it, pick **Add an AI player** and **Easy**, **Normal** or **Hard**.

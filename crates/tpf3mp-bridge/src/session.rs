@@ -1359,6 +1359,7 @@ mod tests {
             has_password: false,
             members: Default::default(),
             competitive: false,
+            ai_seats: false,
             ais: Default::default(),
         });
         say(&agent, &ToHook::Lobby(Box::new(view.clone())));

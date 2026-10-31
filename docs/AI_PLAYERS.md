@@ -12,6 +12,13 @@ what was measured is in
 [investigation/AI_PLAYERS_2026-10-29.md](../investigation/AI_PLAYERS_2026-10-29.md);
 the work is Part 5 of [PLAN.md](PLAN.md).
 
+**Released off (1.4.0, 2026-10-31).** Release 1.4.0 carries all of this,
+but a server seats no AI players unless its operator turns them on
+(`--ai-players`, [OPERATIONS.md](OPERATIONS.md), "AI players"; protocol
+25): they are not yet good enough to play against (none of their
+passenger trains has earned yet, and their bus lines do not repay their
+loans). The Multiplayer windows offer them only where a server does.
+
 **Status (2026-10-29): seats, drivers and town bus lines built.** The
 first milestone is in: AI seats in the server and its log (protocol 24,
 log format 11), the driver and its hand-over with the memo, the mod's
@@ -419,8 +426,16 @@ or one fewer shows in a line's load and money only over the next weeks.
   station's module 93,000, a rail depot about a million. Before it builds
   anything it prices the whole line between the cheapest of its first
   station placements, and a line it cannot pay for, or with no route, it
-  never begins; its train is then the strongest engine the rest of its
-  money buys. Then it lays the whole line out, still before building
+  never begins; a cargo train is then the strongest engine the rest of its
+  money buys. A passenger train is the engine that runs three coaches at
+  their own speed for the least a year (its running, and its price over 20
+  years), strong enough to pull them up the line's 2.5 % with half again to
+  spare: run 59's AI, taking the strongest it could afford, bought an
+  80 km/h freight engine of 4.04 million and 674,000 a year for 90 km/h
+  coaches, six of them, 5.8 million in all and over a million a year to run
+  for stations reaching 24 and 10 buildings; in 1922 the br75 of 1.97
+  million and 328,000 a year runs them at 90. Then it lays the whole line
+  out, still before building
   anything. It routes the line over a 40 m grid in 16 headings, turning
   22.5° at most a step and never on two steps running, off built land and
   other tracks, for the least money: going round a hill or a pond where
@@ -479,8 +494,9 @@ or one fewer shows in a line's load and money only over the next weeks.
   the same is tried at its next place, not given up with the line. No
   station or depot is built whose verdict touches something that stands,
   as one stood across a player's station. Then the line, and
-  its train with as many wagons as the platforms take (six at most): no
-  electric engine, as its track has no catenary. A line's first station
+  its train with as many wagons as the platforms take (six at most; a
+  passenger train three coaches): no electric engine, as its track has no
+  catenary. A line's first station
   ending within 400 m of a rail depot of its own shares that depot, its
   free end joined to the depot's track (the verdict deciding), rather
   than building another for about a million. A line of 2 km or more
@@ -505,7 +521,7 @@ or one fewer shows in a line's load and money only over the next weeks.
   in the memo its next driver keeps, one given up for money is tried
   again) by
   passenger train, in turn with buses, its stations among the towns'
-  houses: since bridge version 39 the land answer marks the cells built on
+  houses: since bridge version 40 the land answer marks the cells built on
   by town houses alone, which a construction may clear for their price, as
   a player puts a station in town. Its station places run from 60 m out of
   a town's centre to 600 m, on rings 20 m apart at 64 bearings, those

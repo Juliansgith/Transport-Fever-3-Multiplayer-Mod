@@ -262,6 +262,7 @@ async fn handshake(
         server_version: shared.server_version.clone(),
         session_id,
         rules: shared.directory.offers(),
+        ai_players: shared.ai_players,
     });
     write_message(&mut send, &welcome, CONTROL_MAX_FRAME).await?;
     Ok(Admitted {
@@ -692,6 +693,9 @@ impl Client {
                 .await
             }
             Request::AddAi { difficulty } => {
+                if !self.shared.ai_players {
+                    return Err(RequestError::AiPlayersOff);
+                }
                 self.in_room(|player, reply| RoomCommand::AddAi {
                     player,
                     difficulty,

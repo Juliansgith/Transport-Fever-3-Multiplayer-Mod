@@ -3955,8 +3955,15 @@ see (sent before the click, without the type); the cost of a type (the
 replay builds at the game's cost for its proposal).
 ### AI players' questions
 
+Since bridge version 39 both rooms the agent hands the game, the main
+menu's lobby (`LobbyRoom`) and the running game's (`RoomInfo`), say whether
+its owner may seat AI players (`ai_seats`: the server seats them,
+`Welcome::ai_players`); the Multiplayer windows offer **Add an AI player**
+only where it is, and the game's Lua sees it as `room.ai_seats` and
+`status.ai_seats`.
+
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 39):
+whose game drives it, and asks that game about the world (bridge 40):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
 seat's company (its rail stations with their track ends since bridge
 version 33: where the world's track meets each, and whether any does
@@ -3994,7 +4001,7 @@ engine is electric, from `landVehicle` and `extent` as the game's
 vehicle store reads them), the land on a grid of at most 24 by 24 cells
 (since bridge version 33: each cell's height and what the octree finds
 within its half diagonal, water, a construction, a street or a track;
-since bridge version 39 whether its constructions are town houses alone,
+since bridge version 40 whether its constructions are town houses alone,
 the town buildings' own (`TOWN_BUILDING.construction`);
 16 by 16 cells read in about 7 ms on the rig's big fixture), or the
 game's verdict on an action), the session

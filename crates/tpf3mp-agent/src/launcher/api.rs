@@ -33,6 +33,8 @@ pub(crate) struct View {
     pub(crate) session: Option<String>,
     /// The rules the server offers new rooms, the default first.
     pub(crate) rules: Vec<RulesOffer>,
+    /// The server seats AI players ([`tpf3mp_proto::Welcome::ai_players`]).
+    pub(crate) ai_players: bool,
     pub(crate) in_room: bool,
     pub(crate) invite: Option<String>,
     pub(crate) error: Option<String>,
@@ -697,6 +699,8 @@ pub struct Room {
     pub competitive: bool,
     /// The room's AI players, in the order they were seated.
     pub ais: Vec<AiPlayer>,
+    /// Whether its owner may seat more: the server seats AI players.
+    pub ai_seats: bool,
 }
 
 /// An AI player of the room (docs/AI_PLAYERS.md).
@@ -854,6 +858,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
                 })
                 .collect(),
             competitive: room.competitive,
+            ai_seats: view.ai_players,
             ais: room
                 .ais
                 .iter()

@@ -580,7 +580,7 @@ function ai.land(at, cells, step)
 	local octree, terrain = api.engine.util.octree, api.engine.terrain
 	local reach = step * 0.71
 	-- Town houses' constructions: a cell built on by these alone a
-	-- construction may clear (bridge 39).
+	-- construction may clear (bridge 40).
 	local houses = {}
 	for _, b in ipairs(api.engine.getEntitiesWithComponent(CT.TOWN_BUILDING) or {}) do
 		local tb = component(b, "TOWN_BUILDING")

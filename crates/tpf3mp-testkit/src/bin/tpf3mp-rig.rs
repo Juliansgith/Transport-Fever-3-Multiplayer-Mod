@@ -279,13 +279,13 @@ async fn run(args: Args) -> Result<ExitCode> {
     let installed = (args.manual_room && args.game != "fake")
         .then(|| tpf3mp_agent::steam::find_game(Some(Path::new(&args.game))))
         .flatten();
-    let picker = args.manual_room.then(|| {
+    let find_mods = args.manual_room.then(|| {
+        tpf3mp_agent::picker::Finder::installed(installed.as_ref().map(|game| game.dir.clone()))
+    });
+    let picker = find_mods.as_ref().map(|finder| {
         tpf3mp_agent::picker::Mods::new(
             tpf3mp_proto::Text::lossy(&args.game_build),
-            tpf3mp_agent::picker::discover(
-                installed.as_ref().map(|game| game.dir.as_path()),
-                &tpf3mp_agent::steam::steam_roots(),
-            ),
+            finder.find(),
             Vec::new(),
             false,
         )
@@ -323,6 +323,7 @@ async fn run(args: Args) -> Result<ExitCode> {
                 .map_or_else(|| content.clone(), |mods| mods.manifest()),
             mods: picker.as_ref().and_then(|mods| mods.lists()),
             picker: picker.clone(),
+            find_mods: find_mods.clone(),
             native: None,
             installed: installed.clone(),
             diagnostics: None,
@@ -951,6 +952,9 @@ impl LocalServer {
         if real_game {
             config.rules = tpf3mp_server::RulesMenu::native_checked();
         }
+        // The rig seats AI players where asked (--ai): they are off on a
+        // server unless its operator turns them on.
+        config.ai_players = true;
         // Every player connects from this PC, one address; leave room for
         // a few more started by hand.
         let players = usize::from(players);

@@ -126,6 +126,10 @@ pub struct ServerConfig {
     /// Where the native mods the server offers come from: a registry read
     /// again every so often. `None` offers none.
     pub native_registry: Option<NativeRegistry>,
+    /// Whether rooms' owners may seat AI players. Off by default: AI
+    /// players are not yet released (docs/AI_PLAYERS.md); an operator turns
+    /// them on to try them.
+    pub ai_players: bool,
 }
 
 impl ServerConfig {
@@ -164,6 +168,7 @@ impl ServerConfig {
             tunnel: None,
             diagnostics: None,
             native_registry: None,
+            ai_players: false,
         }
     }
 }
@@ -225,6 +230,8 @@ pub(crate) struct Shared {
     pub(crate) tunnels: Option<Arc<Tunnels>>,
     /// Where players' diagnostics go, when the server keeps them.
     pub(crate) diagnostics: Option<Diagnostics>,
+    /// Whether rooms' owners may seat AI players ([`ServerConfig::ai_players`]).
+    pub(crate) ai_players: bool,
     /// The operator's notices, which every connection passes to its client.
     pub(crate) announcements: tokio::sync::broadcast::Sender<ChatText>,
     /// The native mods the server offers, as last read.
@@ -335,6 +342,7 @@ impl Server {
             snapshots,
             tunnels,
             diagnostics,
+            ai_players: config.ai_players,
             announcements: tokio::sync::broadcast::channel(ANNOUNCEMENTS).0,
             native: Arc::default(),
         });
