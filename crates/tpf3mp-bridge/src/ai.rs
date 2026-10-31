@@ -33,6 +33,11 @@ pub const MAX_AI_NEEDS: usize = 4;
 pub const MAX_AI_LAND: usize = 576;
 /// Most track ends an [`AiStation`] lists.
 pub const MAX_AI_ENDS: usize = 8;
+/// Most towns a [`AiTown::linked`] lists.
+pub const MAX_AI_LINKED: usize = 8;
+/// How far from one of a town's districts' centres a stop is in that town,
+/// in metres.
+pub const TOWN_REACH: f64 = 600.0;
 /// Most loans an [`AiCompany`] lists: the room allows four at once
 /// (`companies.MAX_LOANS`).
 pub const MAX_AI_LOANS: usize = 8;
@@ -200,6 +205,12 @@ pub struct AiLine {
     /// window reads it): negative where it lost money. A line younger than
     /// that, since it opened.
     pub profit: i64,
+    /// What it earned over the same months, its costs not taken off (the
+    /// journal's income, `calculateBalance` of kind 2: a line's profit is
+    /// its vehicles' maintenance, kind 0, and this together, read
+    /// 2026-10-31); none where the game did not say. A line that has run
+    /// for months and earned nothing carries no one.
+    pub income: Option<i64>,
     /// Problems the game sees on it (no path, no vehicle, ...).
     pub problems: u16,
 }
@@ -233,6 +244,14 @@ pub struct AiTown {
     /// trucks carry is wanted (an industry takes its inputs only while what
     /// it makes is carried on, as towns take what they need; 2026-10-30).
     pub needs: BoundedVec<AiNeed, MAX_AI_NEEDS>,
+    /// Other companies' passenger stops in it, on their lines: within
+    /// [`TOWN_REACH`] of one of its districts' centres. A town other
+    /// companies already serve leaves a new line few passengers (the
+    /// fixture's player's bus lines and stations took the riders of the AI's
+    /// lines in the same towns, 2026-10-31).
+    pub rivals: u16,
+    /// The towns another company's line already joins it to, each once.
+    pub linked: BoundedVec<TownId, MAX_AI_LINKED>,
 }
 
 /// A cargo a town takes: how much it was supplied and may take, as the

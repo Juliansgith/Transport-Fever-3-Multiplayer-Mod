@@ -465,6 +465,50 @@ read-only console probes:
   included, and pays back early when flush; and its bus stops wait as the
   line window's.
 
+## What its lines earn (2026-10-31)
+
+Run 43 (Hard and Normal in the fixture's 1923 world, with the rules above):
+after 13 of the game's months both AIs were below nothing again, Hard at
+-180,584 owing 26 million at 322,672 a month, Normal at -1,003,541.
+
+- Hard spent its 27 million in its first sixteen minutes on nine lines,
+  none of them a month old: six bus and truck lines, two railways and one
+  given up after its track was laid. Every one lost money.
+- Normal took a 5 million loan over 12 months, 425,750 a month, which no
+  starting line carries; it closed its only truck line, full and still
+  losing 29,569 a year (a short route), and kept one bus line.
+- Its bus lines' riders: one bus of Normal's took 95,031 a year in
+  Dinnington; three of Hard's beside it took about as much, and lost
+  41,000 where Normal's earned. Each AI line ran the 12-seat bus (202,667,
+  33,778 a year to run) a sixth full; the fixture player's town lines run
+  8-seat and 6-seat buses (122,864 and 72,662) and earn 90,000 to 200,000
+  a year with three.
+- The towns: the AIs' bus lines stood in towns the player's five-stop
+  lines and stations served already, and both AIs in one town. Their stops
+  reached as many people as the player's (59 to 82 in catchment,
+  `catchmentAreaSystem.getStationCatchables`), the riders went to the
+  player's.
+- Its passenger train earned nothing in eleven months and cost 978,785
+  (the engine alone 673,872 a year): its stations at the towns' edges
+  reached 5 and 4 people, the player's 16 to 53, fed by buses; and the
+  player's line joined the same two towns. Its meat train ran from a
+  livestock farm no one supplied (its chain's other leg found no road),
+  and earned nothing either.
+- A line's income: `calculateBalance(lines, from, to, true, 2)`, the
+  journal's income kind; kind 0 is its vehicles' maintenance, and the two
+  add up to its net exactly (97,100 = 129,223 - 32,123 for the player's
+  Alton bus line).
+
+So (bridge version 36): the company answer says what each line earned and
+the towns answer how many stops other companies run in each town and the
+towns their lines join it to. A new line runs one vehicle, the model worth
+most for its likely riders; it opens no new line while one, two or three
+(Easy, Normal, Hard) of its lines are young; it keeps four months of its
+lines' losses in hand beside its loans' payments; it starts on a loan that
+costs little a month; it closes a line that earned nothing after its first
+months; it prefers towns no one serves, never doubles another's train
+between two towns, and runs buses to its own passenger stations.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

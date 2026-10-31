@@ -21,9 +21,18 @@ pub struct Profile {
     pub pick_among: usize,
     /// How many towns it weighs at all.
     pub towns_weighed: usize,
-    /// Buses each of its lines runs at first, and at most.
+    /// Buses each of its lines runs at first, and at most: one to start,
+    /// more as it runs full. A town line's riders are what its stops reach,
+    /// however many buses run it: three of the AI's buses took what one took
+    /// in the same town, and lost money where the one earned (2026-10-31).
     pub buses_first: u8,
     pub buses_most: u8,
+    /// Its lines still too new for their money to say anything (no vehicle
+    /// through [`crate::upkeep::SETTLED`] of its life) it opens no more
+    /// beside: a player sees what a line earns before building the next.
+    /// The long run's AI opened nine lines before any had earned, all
+    /// losing, and ran into debt (2026-10-31).
+    pub young_most: usize,
     /// Stops a town line serves: at most one by each of the town's
     /// districts' centres.
     pub stops_most: usize,
@@ -67,6 +76,7 @@ impl Profile {
                 towns_weighed: 5,
                 buses_first: 1,
                 buses_most: 2,
+                young_most: 1,
                 stops_most: 2,
                 reserve_percent: 30,
                 best_models: false,
@@ -86,8 +96,9 @@ impl Profile {
                 think_every: Duration::from_secs(120),
                 pick_among: 2,
                 towns_weighed: 20,
-                buses_first: 2,
+                buses_first: 1,
                 buses_most: 4,
+                young_most: 2,
                 stops_most: 3,
                 reserve_percent: 15,
                 best_models: true,
@@ -107,8 +118,9 @@ impl Profile {
                 think_every: Duration::from_secs(30),
                 pick_among: 1,
                 towns_weighed: 160,
-                buses_first: 3,
+                buses_first: 1,
                 buses_most: 6,
+                young_most: 3,
                 stops_most: 3,
                 reserve_percent: 5,
                 best_models: true,

@@ -146,7 +146,9 @@ const GAME: &str = r#"
                 getWorld = function() return 1 end,
                 finance = { getPlayersBalance = function(e) return e == 77 and 1234567.6 or 0 end,
                     -- A line's earnings less its costs between two times.
-                    calculateBalance = function(list, from, to, maintenance)
+                    -- Of journal kind 2, what it earned alone.
+                    calculateBalance = function(list, from, to, maintenance, kind)
+                        if kind == 2 then return 21000.6 end
                         BALANCE_ASKED = { list[1], from, to, maintenance }
                         return -98159.4
                     end },
@@ -344,6 +346,11 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
     // Its year's earnings less its costs, how full it runs over its
     // sections, and the passengers waiting at its two stops.
     assert_eq!(line.profit, -98_159);
+    assert_eq!(
+        line.income,
+        Some(21_001),
+        "what it earned, its costs not off"
+    );
     assert_eq!(line.load, 25, "9 of 36");
     assert_eq!(line.waiting, 6);
     let asked: (i64, f64, f64, bool) = lua
@@ -453,6 +460,56 @@ fn towns_streets_and_models_read_as_the_ai_reads_them() {
         (models[0].price, models[0].running, models[0].lifespan),
         (52_000, 6_000, 25)
     );
+}
+
+#[test]
+fn a_town_counts_other_companies_passenger_stops_and_the_towns_their_lines_join() {
+    let lua = lua();
+    // Didcot about the origin, Ely 5 km east. Another company's bus line
+    // stops twice in Didcot, at one stop, and once in Ely; its truck line
+    // stops in Didcot too; the AI's own line (500) stops in Didcot.
+    lua.load(
+        r#"
+        api.engine.util.town.getTownDistrictCenter = function(t, use)
+            return { x = (t - 700) * 5000 + use, y = 1, z = 2 } end
+        api.engine.system.lineSystem.getLines = function() return { 500, 510, 520 } end
+        local vehicles = api.engine.system.transportVehicleSystem.getLineVehicles
+        api.engine.system.transportVehicleSystem.getLineVehicles = function(l)
+            return ({ [510] = { 610 }, [520] = { 620 } })[l] or vehicles(l) end
+        local CT = api.type.ComponentType
+        local base = api.engine.getComponent
+        local extra = {
+            [CT.LINE] = { [510] = { stops = { { stationGroup = 330 }, { stationGroup = 340 },
+                                              { stationGroup = 330 } } },
+                          [520] = { stops = { { stationGroup = 350 }, { stationGroup = 340 } } } },
+            [CT.TRANSPORT_VEHICLE] = { [610] = { config = { capacities = { 30, 0 } } },
+                                       [620] = { config = { capacities = { 0, 12 } } } },
+            [CT.STATION_GROUP] = { [330] = { stations = { 331 } }, [340] = { stations = { 341 } },
+                                   [350] = { stations = { 351 } } },
+            [CT.EDGE_OBJECT] = {
+                [331] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 100,50,0,1 } },
+                [341] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 5100,0,0,1 } },
+                [351] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -200,0,0,1 } } },
+        }
+        api.engine.getComponent = function(e, ct)
+            return (extra[ct] and extra[ct][e]) or base(e, ct)
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Towns(towns) = answer(&lua, "'Towns'") else {
+        panic!("not towns")
+    };
+    let (ely, didcot) = (&towns[0], &towns[1]);
+    assert_eq!(didcot.name.as_str(), "Didcot");
+    assert_eq!(
+        didcot.rivals, 1,
+        "its bus stop once; neither the trucks' nor the AI's own"
+    );
+    assert_eq!(ely.rivals, 1);
+    assert_eq!(didcot.linked.iter().map(|t| t.0).collect::<Vec<_>>(), [2]);
+    assert_eq!(ely.linked.iter().map(|t| t.0).collect::<Vec<_>>(), [1]);
 }
 
 #[test]

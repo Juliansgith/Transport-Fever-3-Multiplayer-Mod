@@ -253,6 +253,8 @@ mod tests {
             pos: pos(5_000.0, 0.0),
             buildings: 200,
             centres: BoundedVec::new(vec![pos(5_000.0, 0.0)]).unwrap(),
+            rivals: 0,
+            linked: BoundedVec::default(),
             needs: BoundedVec::new(
                 needs
                     .iter()

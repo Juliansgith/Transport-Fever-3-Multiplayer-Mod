@@ -3956,7 +3956,7 @@ replay builds at the game's cost for its proposal).
 ### AI players' questions
 
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 35):
+whose game drives it, and asks that game about the world (bridge 36):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
 seat's company (its rail stations with their track ends since bridge
 version 33: where the world's track meets each, and whether any does
@@ -3966,10 +3966,18 @@ the game's time, over that part's lifespan; since bridge version 35 each
 line's profit over the last twelve of the game's months (`calculateBalance`),
 how full it runs over its sections (`getLineCapacityUsages`) and what waits
 at its stops of the kinds its vehicles carry, each loan the company owes
-with what is left and its monthly payment, and the game's month), the towns (since bridge version 32 with the cargo each
+with what is left and its monthly payment, and the game's month; since
+bridge version 36 what each line earned over those months, its costs not
+taken off: `calculateBalance` of the journal's kind 2, a line's net being
+its vehicles' maintenance, kind 0, and that together, read 2026-10-31),
+the towns (since bridge version 32 with the cargo each
 needs, the least supplied first: how much it was supplied and may take,
 as its window's cargo demand reads them, and the centre of the district
-that takes it), the industries (each one's own station, what
+that takes it; since bridge version 36 how many stops other companies'
+passenger lines have within 600 m of one of its districts' centres, each
+stop once, and the towns one of their lines joins it to: a line carries
+passengers where its first vehicle has room for them), the industries
+(each one's own station, what
 each takes, and what it
 made over the last year, as the game's industry window reads them, and
 since bridge version 33 whether it stands on water, as fishing grounds

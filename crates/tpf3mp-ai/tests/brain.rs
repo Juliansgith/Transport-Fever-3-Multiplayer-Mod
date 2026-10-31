@@ -115,6 +115,9 @@ struct World {
     touches: Option<fn(&tpf3mp_proto::action::ConstructionBuild) -> u16>,
     /// Rail depot verdicts, the first so many, that touch something.
     rail_depot_touches: u32,
+    /// So many rail depots' tracks to their stations (one edge of 160 m at
+    /// most) touch something that stands.
+    rail_link_touches: u32,
     /// The loans its company owes, and the game's months: how often they
     /// fall due in play (none: never), what each line earns a year then,
     /// how far through their lives its vehicles go each month, and the
@@ -123,6 +126,9 @@ struct World {
     month_every: Option<Duration>,
     month_at: Option<Instant>,
     line_profit: Option<fn(&AiLine) -> i64>,
+    line_income: Option<fn(&AiLine) -> i64>,
+    /// The buses the game offers, where not the stand-in's two.
+    buses: Option<Vec<AiModel>>,
     wear_per_month: u16,
     lowest: i64,
     loans_taken: u32,
@@ -158,6 +164,8 @@ impl World {
                 ])
                 .unwrap(),
                 needs: BoundedVec::default(),
+                rivals: 0,
+                linked: BoundedVec::default(),
             });
         }
         Self {
@@ -200,10 +208,13 @@ impl World {
             station_quotes: Vec::new(),
             touches: None,
             rail_depot_touches: 0,
+            rail_link_touches: 0,
             owed: Vec::new(),
             month_every: None,
             month_at: None,
             line_profit: None,
+            line_income: None,
+            buses: None,
             wear_per_month: 0,
             lowest: 0,
             loans_taken: 0,
@@ -375,6 +386,9 @@ impl World {
                 connected: self.roads_join,
                 edges: if self.roads_join { 40 } else { 0 },
             }),
+            AiQuestion::Models { cargo: None, .. } if self.buses.is_some() => {
+                AiAnswer::Models(BoundedVec::new(self.buses.clone().unwrap()).unwrap())
+            }
             AiQuestion::Models { .. } => AiAnswer::Models(
                 BoundedVec::new(vec![
                     AiModel {
@@ -422,6 +436,17 @@ impl World {
                 {
                     self.rail_depot_touches -= 1;
                     verdict.collisions = verdict.collisions.max(1);
+                }
+                if let Action::BuildTrack(track) = &action
+                    && track.polyline.vertices.len() == 2
+                    && P::of(track.polyline.vertices[0].pos)
+                        .flat_distance(P::of(track.polyline.vertices[1].pos))
+                        <= 160.0
+                    && self.rail_link_touches > 0
+                {
+                    self.rail_link_touches -= 1;
+                    verdict.ok = false;
+                    verdict.messages = BoundedVec::new(vec![Text::lossy("Collision")]).unwrap();
                 }
                 if let Action::BuildConstruction(b) = &action
                     && b.file.as_str() == ROAD_DEPOT
@@ -879,6 +904,7 @@ impl World {
                     load: 0,
                     waiting: 0,
                     profit: 0,
+                    income: None,
                     problems: 0,
                 });
             }
@@ -999,6 +1025,11 @@ impl World {
                 let running = self.vehicles.iter().any(|v| v.line == Some(line.id));
                 line.profit = if running { profit(line) } else { 0 };
                 self.money += line.profit / 12;
+            }
+        }
+        if let Some(income) = self.line_income {
+            for line in &mut self.lines {
+                line.income = Some(income(line));
             }
         }
         for v in &mut self.vehicles {
@@ -1155,9 +1186,10 @@ fn a_normal_ai_founds_its_company_and_runs_buses_in_a_town() {
         world.actions[0].1,
         Action::CompanyOp(CompanyOp::Create { .. })
     ));
+    // One bus to start: more only as the line runs full.
     assert!(
-        world.lines_with_buses(2) >= 1,
-        "a line with Normal's two buses: {:?}",
+        world.lines_with_buses(1) >= 1 && world.lines_with_buses(2) == 0,
+        "a line with its one bus: {:?}",
         world.lines
     );
     let stops = world.lines[0].stops.len();
@@ -1223,7 +1255,7 @@ fn a_hard_ai_serves_town_after_town_while_its_money_lasts() {
         Instant::now(),
         Duration::from_secs(900),
     );
-    assert_eq!(world.lines_with_buses(3), 2, "both towns, three buses each");
+    assert_eq!(world.lines_with_buses(1), 2, "both towns, a bus each");
     assert!(
         matches!(&world.actions[1].1, Action::Loan(op)
             if matches!(&**op, LoanOp::Take { offer, .. } if offer.kind.as_str() == "Large")),
@@ -1484,7 +1516,7 @@ fn a_depot_whose_street_another_company_split_reads_the_streets_again() {
     );
     assert!(world.depots.iter().any(|d| d.connected), "{said:?}");
     assert!(
-        world.lines_with_buses(2) >= 1,
+        world.lines_with_buses(1) >= 1,
         "and its line runs: {said:?}"
     );
 }
@@ -1609,7 +1641,7 @@ fn it_carries_cargo_by_truck_to_a_town_that_needs_it() {
         .iter()
         .filter(|v| v.line == Some(trucks[0]))
         .collect();
-    assert_eq!(on_it.len(), 3, "Hard's count");
+    assert_eq!(on_it.len(), 1, "one truck to start");
     assert!(
         on_it
             .iter()
@@ -1679,6 +1711,9 @@ fn a_cargo_no_road_joins_is_left_and_too_far_for_easy() {
     let mut world = World::new();
     world.industries = mills();
     ely_needs_planks(&mut world, 0, 60, pos(4_050.0, 350.0));
+    // Its first line settles within a month: Easy opens one at a time.
+    world.month_every = Some(Duration::from_secs(30));
+    world.wear_per_month = 5;
     let mut easy = Brain::new(seat(), "Novak Transit", AiDifficulty::Easy, None);
     easy.carry_cargo(true);
     play(
@@ -2042,12 +2077,15 @@ fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
     road.objects = 2;
     world.streets.push(road);
     world.money = 30_000_000;
+    // Its first lines settle as the months go: Hard opens three at a time.
+    world.month_every = Some(Duration::from_secs(60));
+    world.wear_per_month = 1;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
         &mut brain,
         &mut world,
         Instant::now(),
-        Duration::from_secs(1_200),
+        Duration::from_secs(1_800),
     );
     let said = brain.take_said();
     assert!(world.crossings.is_empty(), "{said:?}");
@@ -2111,7 +2149,7 @@ fn a_running_bus_line() -> (World, Brain, Instant) {
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
     let start = Instant::now();
     play(&mut brain, &mut world, start, Duration::from_secs(600));
-    assert!(world.lines_with_buses(2) >= 1, "{:?}", brain.take_said());
+    assert!(world.lines_with_buses(1) >= 1, "{:?}", brain.take_said());
     brain.take_said();
     (world, brain, start + Duration::from_secs(600))
 }
@@ -2459,6 +2497,9 @@ fn a_second_rail_line_from_one_place_shares_the_first_ones_depot() {
     ])
     .unwrap();
     world.money = 60_000_000;
+    // Its lines settle as the months go: Hard opens three at a time.
+    world.month_every = Some(Duration::from_secs(60));
+    world.wear_per_month = 1;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
         &mut brain,
@@ -2821,4 +2862,385 @@ fn a_rail_depot_blocked_straight_out_turns_aside_on_a_curved_track() {
             .any(|l| l.starts_with("runs a train on a rail line carrying planks")),
         "{said:?}"
     );
+}
+
+/// A bus the game offers.
+fn bus(model: &str, price: i64, running: i64, capacity: u32, speed: u32) -> AiModel {
+    AiModel {
+        model: Text::new(model).unwrap(),
+        price,
+        running,
+        capacity,
+        speed,
+        lifespan: 21_915,
+        power: 0,
+        tractive: 0,
+        weight: 0,
+        length: 0,
+        electric: false,
+    }
+}
+
+#[test]
+fn a_new_town_lines_bus_is_chosen_for_its_riders_and_a_full_ones_for_its_seats() {
+    // The fixture's buses of 1923: the 12-seat one the AI bought at 203,000
+    // ran its lines a sixth full; the player's 8-seat one at 123,000 earned.
+    let mut world = World::new();
+    world.buses = Some(vec![
+        bus("vehicle/bus/aboag.mdl", 202_667, 33_778, 12, 35),
+        bus("vehicle/bus/et13.mdl", 122_864, 20_477, 8, 30),
+        bus("vehicle/bus/coach.mdl", 72_662, 12_110, 6, 20),
+    ]);
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    let start = Instant::now();
+    let now = play(&mut brain, &mut world, start, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(world.lines_with_buses(1) >= 1, "{said:?}");
+    assert!(
+        world
+            .vehicles
+            .iter()
+            .all(|v| v.model.as_str() == "vehicle/bus/et13.mdl"),
+        "{said:?}"
+    );
+    // Running full, passengers waiting: the seats count.
+    let line = world.lines[0].id;
+    world.lines[0].load = 95;
+    world.lines[0].waiting = 60;
+    play(&mut brain, &mut world, now, Duration::from_secs(300));
+    let added: Vec<&str> = world
+        .vehicles
+        .iter()
+        .filter(|v| v.line == Some(line))
+        .map(|v| v.model.as_str())
+        .collect();
+    assert_eq!(added, ["vehicle/bus/et13.mdl", "vehicle/bus/aboag.mdl"]);
+}
+
+#[test]
+fn an_ai_opens_no_more_lines_while_its_young_ones_have_not_shown_what_they_earn() {
+    let mut world = World::new();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Easy, None);
+    let start = Instant::now();
+    let now = play(&mut brain, &mut world, start, Duration::from_secs(2_400));
+    let said = brain.take_said();
+    // Easy waits on one: one line, the wait said once.
+    assert_eq!(world.lines.len(), 1, "{said:?}");
+    let waits = said
+        .iter()
+        .filter(|l| *l == "waits to see what its 1 new line(s) earn before another")
+        .count();
+    assert_eq!(waits, 1, "{said:?}");
+    // Its line through its first months: the next town.
+    for v in &mut world.vehicles {
+        v.worn = 6;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(2_400));
+    let said = brain.take_said();
+    assert_eq!(world.lines.len(), 2, "{said:?}");
+}
+
+#[test]
+fn a_line_that_earns_nothing_is_closed_after_its_first_months() {
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    world.month_every = Some(Duration::from_secs(60));
+    // Earning a little, through its first months: kept.
+    world.line_income = Some(|_| 4_000);
+    for v in &mut world.vehicles {
+        v.worn = 4;
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    assert!(world.lines.iter().any(|l| l.id == line));
+    // Earning nothing yet, riders waiting for it: on its way, kept.
+    world.line_income = Some(|_| 0);
+    world.lines[0].waiting = 12;
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    assert!(world.lines.iter().any(|l| l.id == line));
+    // Earning nothing, no one aboard or waiting: closed, not waiting for it
+    // to settle.
+    world.lines[0].waiting = 0;
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("closes ") && l.contains("which earned nothing")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_town_other_companies_serve_is_passed_over_for_one_they_do_not() {
+    // Didcot, the larger, has five stops of another company's: Ely first.
+    let mut world = World::new();
+    world.towns[0].rivals = 5;
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(300),
+    );
+    let said = brain.take_said();
+    assert!(
+        world
+            .lines
+            .first()
+            .is_some_and(|l| l.name.as_str().starts_with("Ely")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_town_pair_another_companys_line_joins_gets_no_train_of_its_own() {
+    let mut world = World::new();
+    world.money = 60_000_000;
+    world.towns[0].linked = BoundedVec::new(vec![TownId(2)]).unwrap();
+    world.towns[1].linked = BoundedVec::new(vec![TownId(1)]).unwrap();
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 0, "{said:?}");
+}
+
+#[test]
+fn a_town_by_its_passenger_station_gets_buses_to_that_station() {
+    let mut world = World::new();
+    world.money = 60_000_000;
+    world.month_every = Some(Duration::from_secs(60));
+    world.wear_per_month = 1;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(3_600),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("plans buses to its station in")),
+        "{said:?}"
+    );
+    // That town's bus line stops by the station, a walk from its trains.
+    let stations: Vec<Pos> = world
+        .stations
+        .iter()
+        .filter(|s| world.rail_stations.contains(&s.id))
+        .map(|s| s.pos)
+        .collect();
+    let near = |p: Pos| {
+        stations
+            .iter()
+            .any(|s| (f64::from(p.x - s.x) / 1000.0).hypot(f64::from(p.y - s.y) / 1000.0) <= 300.0)
+    };
+    let fed = world.lines.iter().any(|l| {
+        !world.line_modes.contains(&(l.id, 7))
+            && l.stops.iter().any(|s| {
+                world
+                    .stations
+                    .iter()
+                    .find(|st| st.id == *s)
+                    .is_some_and(|st| near(st.pos))
+            })
+    });
+    assert!(fed, "{said:?}");
+}
+
+#[test]
+fn buses_to_its_station_come_before_its_young_lines_wait_and_cargo() {
+    // Its lines never settle here: Normal waits on two young ones. A cargo
+    // to carry waits too.
+    let mut world = World::new();
+    world.money = 60_000_000;
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
+    brain.carry_cargo(true);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(3_600),
+    );
+    let said = brain.take_said();
+    let bought = said
+        .iter()
+        .filter(|l| l.starts_with("buys a train"))
+        .count();
+    assert_eq!(bought, 1, "one train, said once: {said:?}");
+    let opened = said
+        .iter()
+        .position(|l| l.starts_with("opened a rail line carrying passengers"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    let next = said[opened + 1..]
+        .iter()
+        .find(|l| l.starts_with("plans "))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert!(
+        next.starts_with("plans buses to its station in"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_rail_depot_whose_track_would_touch_what_stands_goes_elsewhere_before_anything_is_built() {
+    // Run 44: a cement railway laid, its depot built, the depot's track
+    // refused ("Collision") and the line given up, four million spent.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    world.rail_link_touches = 1;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let trial = said
+        .iter()
+        .filter(|l| l.starts_with("a rail depot's track would be refused"))
+        .count();
+    assert_eq!(trial, 1, "{said:?}");
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("its depot's track was refused")),
+        "{said:?}"
+    );
+    let depot = world
+        .depots
+        .iter()
+        .find(|d| d.file.as_str().contains("/rail/"))
+        .expect("a rail depot");
+    assert!(depot.connected, "{said:?}");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line carrying planks")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn an_ai_opens_its_first_line_only_after_the_rooms_ai_players_before_it() {
+    let mut world = World::new();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Hard, None);
+    let start = Instant::now();
+    brain.first_line_after(start + Duration::from_secs(300));
+    let now = play(&mut brain, &mut world, start, Duration::from_secs(280));
+    let said = brain.take_said();
+    assert_eq!(world.company, Some(1), "founded meanwhile: {said:?}");
+    assert!(world.lines.is_empty(), "{said:?}");
+    let waits = said
+        .iter()
+        .filter(|l| *l == "lets the room's other AI players start first")
+        .count();
+    assert_eq!(waits, 1, "{said:?}");
+    play(&mut brain, &mut world, now, Duration::from_secs(320));
+    let said = brain.take_said();
+    assert!(!world.lines.is_empty(), "{said:?}");
+}
+
+#[test]
+fn a_passenger_train_that_lost_money_is_not_followed_by_another() {
+    // Run 46: the Hard AI closed a passenger train that lost 695,803 in
+    // its first eight months, and planned another at once.
+    let mut world = World::new();
+    world.money = 60_000_000;
+    // A third large town, 6 km from the others: another pair to join.
+    let mut third = world.towns[0].clone();
+    third.id = TownId(3);
+    third.name = Text::new("Witney").unwrap();
+    let shift = |p: Pos| Pos {
+        x: p.x,
+        y: p.y + 6_000_000,
+        z: p.z,
+    };
+    third.pos = shift(third.pos);
+    third.centres = BoundedVec::new(third.centres.iter().map(|c| shift(*c)).collect()).unwrap();
+    world.towns.push(third);
+    world.month_every = Some(Duration::from_secs(30));
+    world.wear_per_month = 1;
+    world.line_profit = Some(|l| {
+        if l.name.as_str().ends_with("train") {
+            -3_000_000
+        } else {
+            200_000
+        }
+    });
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(3_600),
+    );
+    let said = brain.take_said();
+    let planned = said
+        .iter()
+        .filter(|l| l.starts_with("plans a rail line carrying passengers"))
+        .count();
+    let closed = said
+        .iter()
+        .position(|l| l.starts_with("closes ") && l.contains("train"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert!(
+        !said[closed..]
+            .iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+        "{said:?}"
+    );
+    assert!(planned >= 1, "{said:?}");
+    // Its memo keeps the loss for a next driver, read as before by one.
+    let memo = tpf3mp_ai::Memo::read(&brain.memo()).unwrap();
+    assert!(
+        memo.closed
+            .iter()
+            .any(|(_, kind, made)| *kind == 3 && *made < 0)
+    );
+}
+
+#[test]
+fn a_memo_from_before_closed_lines_were_kept_reads_on() {
+    #[derive(serde::Serialize)]
+    struct Before {
+        served: Vec<u32>,
+        given_up: Vec<u32>,
+        cargo_lines: Vec<(u32, String)>,
+        rail_lines: Vec<u32>,
+        looped: Vec<(u32, u8)>,
+    }
+    let bytes = postcard::to_allocvec(&Before {
+        served: vec![7],
+        given_up: vec![9],
+        cargo_lines: vec![(4, "::/cargos/planks/planks.cargo".into())],
+        rail_lines: vec![4],
+        looped: vec![(4, 1)],
+    })
+    .unwrap();
+    let memo = tpf3mp_ai::Memo::read(&bytes).unwrap();
+    assert_eq!((memo.served, memo.given_up), (vec![7], vec![9]));
+    assert_eq!(memo.rail_lines, [4]);
+    assert!(memo.closed.is_empty());
 }

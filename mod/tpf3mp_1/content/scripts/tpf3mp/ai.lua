@@ -321,6 +321,15 @@ function ai.company(seat, roster, registry)
 			pcall(function()
 				profit = api.engine.util.finance.calculateBalance({ l }, math.max(0, now - 12 * month), now, true)
 			end)
+			-- What it earned over them, its costs not taken off: the journal's
+			-- income, kind 2 (its profit is its vehicles' maintenance, kind 0,
+			-- and this together, read from the console 2026-10-31); nil where
+			-- the game does not say.
+			local income
+			pcall(function()
+				local v = api.engine.util.finance.calculateBalance({ l }, math.max(0, now - 12 * month), now, true, 2)
+				if type(v) == "number" then income = whole(v) end
+			end)
 			-- How full it runs: the capacity its sections use, as the line
 			-- window's capacity chart (1 at least for a line with capacity,
 			-- 0 where unknown).
@@ -353,7 +362,7 @@ function ai.company(seat, roster, registry)
 			local name = component(l, "NAME")
 			out.lines[#out.lines + 1] = {
 				id = id, name = text(name and name.name, 64), stops = stops, vehicles = fleet,
-				load = load, waiting = math.min(whole(waiting), 4294967295), profit = whole(profit),
+				load = load, waiting = math.min(whole(waiting), 4294967295), profit = whole(profit), income = income,
 				problems = math.min(problems, 65535),
 			}
 		end
@@ -401,7 +410,84 @@ function ai.company(seat, roster, registry)
 	return { Company = out }
 end
 
-function ai.towns(registry)
+-- Where a station group stands: its first station's construction, else
+-- that station's own place (a street stop).
+local function groupAt(g)
+	local group = component(g, "STATION_GROUP")
+	local first = group and group.stations and group.stations[1]
+	if not first then return nil end
+	local _, c = constructionOf(first, { "getConstructionEntityForStation",
+		"getConstructionEntityForSubconstruction" })
+	return c and origin(c) or objectAt(first)
+end
+
+-- Other companies' passenger lines in `towns` (bridge 36): each town's
+-- stops of theirs within TOWN_REACH of one of its districts' centres, each
+-- stop once, and the towns one of their lines joins it to. A line carries
+-- passengers where its first vehicle has room for them (its capacities'
+-- first entry, cargo 0). `me` is the asking company's entity: its own
+-- lines are none of these.
+ai.TOWN_REACH = 600
+ai.MAX_LINKED = 8
+local function rivalsIn(towns, me)
+	local own = {}
+	if me then
+		for _, l in ipairs(api.engine.system.lineSystem.getLinesForPlayer(me) or {}) do own[l] = true end
+	end
+	local reach2 = ai.TOWN_REACH * ai.TOWN_REACH
+	local function townOf(at)
+		for i, t in ipairs(towns) do
+			for _, c in ipairs(t.centres) do
+				local dx, dy = at.x - c.x, at.y - c.y
+				if dx * dx + dy * dy <= reach2 then return i end
+			end
+		end
+		return nil
+	end
+	local counted, at = {}, {}
+	for _, l in ipairs(api.engine.system.lineSystem.getLines() or {}) do
+		local carries = false
+		if not own[l] then
+			pcall(function()
+				local first = (api.engine.system.transportVehicleSystem.getLineVehicles(l) or {})[1]
+				local tv = first and component(first, "TRANSPORT_VEHICLE")
+				carries = tv ~= nil and (tv.config.capacities[1] or 0) > 0
+			end)
+		end
+		local line = carries and component(l, "LINE")
+		if line then
+			local on, seen = {}, {}
+			for _, s in ipairs(line.stops or {}) do
+				local g = s.stationGroup
+				if at[g] == nil then
+					local p = groupAt(g)
+					at[g] = p and townOf(p) or false
+				end
+				local i = at[g]
+				if i then
+					if not counted[g] then
+						counted[g] = true
+						towns[i].rivals = math.min(towns[i].rivals + 1, 65535)
+					end
+					if not seen[i] then
+						seen[i] = true
+						on[#on + 1] = i
+					end
+				end
+			end
+			for _, i in ipairs(on) do
+				for _, j in ipairs(on) do
+					local linked = towns[i].linked
+					local known = i == j
+					for _, id in ipairs(linked) do if id == towns[j].id then known = true end end
+					if not known and #linked < ai.MAX_LINKED then linked[#linked + 1] = towns[j].id end
+				end
+			end
+		end
+	end
+end
+
+function ai.towns(registry, seat, roster)
 	local reg = type(registry) == "function" and registry() or registry
 	local regmod = module("registry")
 	local buildings = {}
@@ -425,9 +511,12 @@ function ai.towns(registry)
 			towns[#towns + 1] = {
 				id = id, name = text(name and name.name, 48), pos = centres[1],
 				buildings = buildings[t] or 0, centres = centres, needs = ai.needs(t, centreOf, centres[1]),
+				rivals = 0, linked = {},
 			}
 		end
 	end
+	local c = roster and companyOf(roster, seat)
+	pcall(rivalsIn, towns, c and c.entity)
 	table.sort(towns, function(a, b)
 		if a.buildings ~= b.buildings then return a.buildings > b.buildings end
 		return a.id < b.id
@@ -802,7 +891,7 @@ end
 function ai.answer(ask, roster, registry)
 	local q = ask.question
 	if q == "Company" then return ai.company(ask.seat, roster, registry) end
-	if q == "Towns" then return ai.towns(registry) end
+	if q == "Towns" then return ai.towns(registry, ask.seat, roster) end
 	if type(q) == "table" and q.Streets then return ai.streets(q.Streets.at, q.Streets.radius) end
 	if type(q) == "table" and q.Models then return ai.models(q.Models.mode, q.Models.cargo) end
 	if q == "Industries" then return ai.industries(registry) end
