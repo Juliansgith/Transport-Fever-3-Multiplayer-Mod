@@ -70,6 +70,52 @@ pub const TRAIN: &str = "TRAIN";
 pub const PASSENGERS: &str = "::/cargos/passengers/passengers.cargo";
 /// The most wagons a train pulls.
 pub const WAGONS_MOST: usize = 6;
+/// The coaches a passenger train starts with, rather than as many as its
+/// platforms take: run 59's two stations reached 24 and 10 town buildings,
+/// and its train of six cost 1.76 million in coaches and 0.37 a year to run
+/// them. More riders than seats fill a line, which its upkeep sees.
+pub const PASSENGER_COACHES: usize = 3;
+/// The years a vehicle's price is spread over when weighing what it costs a
+/// year, beside its running: a bus's 20.
+pub const PRICE_YEARS: i64 = 20;
+
+/// Whether `engine` pulls `coaches` of `coach` up [`rail::MAX_GRADE`] with
+/// half again to spare: its tractive effort, in kN, against gravity's pull
+/// along the grade on the train's weight, in tonnes.
+#[allow(clippy::cast_precision_loss)]
+fn pulls(engine: &AiModel, coach: &AiModel, coaches: usize) -> bool {
+    let tonnes = f64::from(engine.weight) + coaches as f64 * f64::from(coach.weight);
+    f64::from(engine.tractive) >= 1.5 * tonnes * 9.81 * rail::MAX_GRADE
+}
+
+/// The engine for a passenger train of `coaches` of `coach`, of `engines`,
+/// within `money`: not electric (its track has no catenary), strong enough
+/// to pull them ([`pulls`]); the fastest train it makes, no faster than its
+/// coaches run, and of those the cheapest a year, its running and its price
+/// over [`PRICE_YEARS`]. Run 59's AI, taking the strongest engine it could
+/// afford, ran an 80 km/h freight engine of 4.04 million and 674,000 a year
+/// before its 90 km/h coaches, where one of 1.97 million and 328,000 a year
+/// ran them at their speed.
+#[allow(clippy::cast_possible_wrap)]
+pub fn passenger_engine<'a>(
+    engines: &'a [AiModel],
+    coach: &AiModel,
+    coaches: usize,
+    money: i64,
+) -> Option<&'a AiModel> {
+    let n = coaches as i64;
+    engines
+        .iter()
+        .filter(|m| m.power > 0 && !m.electric)
+        .filter(|m| m.price + n * coach.price <= money)
+        .filter(|m| pulls(m, coach, coaches))
+        .max_by_key(|m| {
+            (
+                m.speed.min(coach.speed),
+                -(m.running + m.price / PRICE_YEARS),
+            )
+        })
+}
 /// A rail stop's waits, in the game's seconds in millionths: as the game's
 /// line window sets a rail stop's (`line_util.tl`, `makeNewStop`).
 pub const RAIL_MAX_WAIT: i64 = 600_000_000;
@@ -1446,7 +1492,12 @@ impl Brain {
         let room = (platform - f64::from(engine.length)).max(0.0);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let fit = (room / f64::from(wagon.length.max(1))).floor() as usize;
-        let wagons = fit.clamp(1, WAGONS_MOST);
+        let most = if project.passengers {
+            PASSENGER_COACHES
+        } else {
+            WAGONS_MOST
+        };
+        let wagons = fit.clamp(1, most);
         let (origin, _) = project.depot?;
         let color = tint(&self.seat);
         let part = |m: &AiModel| ConsistPart {
@@ -1606,13 +1657,21 @@ impl Brain {
                 #[allow(clippy::cast_possible_truncation)]
                 let money = self.spendable() - project.estimate.ceil() as i64;
                 // Not electric: its track has no catenary (a C 6/8 bought
-                // for one, the game refused it the line; 2026-10-30).
-                let Some(engine) = models
-                    .into_iter()
-                    .filter(|m| m.power > 0 && !m.electric)
-                    .filter(|m| m.price + 3 * wagon.price <= money)
-                    .max_by_key(|m| (m.power, -m.price))
-                else {
+                // for one, the game refused it the line; 2026-10-30). A
+                // passenger train's engine for its coaches' speed at the
+                // least a year; a cargo train's the strongest it can afford.
+                let passenger = project
+                    .passengers
+                    .then(|| passenger_engine(&models, &wagon, PASSENGER_COACHES, money))
+                    .flatten()
+                    .cloned();
+                let Some(engine) = passenger.or_else(|| {
+                    models
+                        .into_iter()
+                        .filter(|m| m.power > 0 && !m.electric)
+                        .filter(|m| m.price + 3 * wagon.price <= money)
+                        .max_by_key(|m| (m.power, -m.price))
+                }) else {
                     self.give_up_rail("found no engine it can afford", now);
                     return None;
                 };
@@ -1774,4 +1833,114 @@ fn share_link(project: &RailProject, year: i32) -> Option<TrackBuild> {
     let origin = P::of(share.at);
     let into = (origin.y - join.y).atan2(origin.x - join.x);
     rail::depot_link(end, out, P { z: join.z, ..join }, into, year)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A model as the game's models answer gives it.
+    #[allow(clippy::too_many_arguments)]
+    fn model(
+        name: &str,
+        price: i64,
+        running: i64,
+        capacity: u32,
+        speed: u32,
+        power: u32,
+        tractive: u32,
+        weight: u32,
+        electric: bool,
+    ) -> AiModel {
+        AiModel {
+            model: Text::lossy(name),
+            price,
+            running,
+            capacity,
+            speed,
+            lifespan: 29_220,
+            power,
+            tractive,
+            weight,
+            length: 200,
+            electric,
+        }
+    }
+
+    /// The game's passenger trains of 1922 (run 59, build 40425).
+    fn trains_1922() -> (Vec<AiModel>, AiModel) {
+        let engines = vec![
+            model(
+                "atlantic_4_4_2",
+                2_307_267,
+                384_545,
+                0,
+                100,
+                700,
+                100,
+                130,
+                false,
+            ),
+            model("br75_4", 1_969_601, 328_267, 0, 90, 580, 85, 76, false),
+            model("c6_8", 5_603_166, 933_861, 0, 90, 1_650, 150, 128, true),
+            model(
+                "china_jf1",
+                4_043_232,
+                673_872,
+                0,
+                80,
+                1_150,
+                250,
+                100,
+                false,
+            ),
+            model(
+                "mogul_2_6_0",
+                1_434_299,
+                239_050,
+                0,
+                75,
+                400,
+                80,
+                122,
+                false,
+            ),
+            model(
+                "russian_class_ob",
+                1_699_182,
+                283_197,
+                0,
+                60,
+                441,
+                95,
+                52,
+                false,
+            ),
+            model("handcar", 40_199, 6_700, 3, 40, 1, 1, 1, false),
+        ];
+        let coach = model("donnerbuechse", 293_404, 61_126, 15, 90, 0, 0, 20, false);
+        (engines, coach)
+    }
+
+    #[test]
+    fn a_passenger_train_runs_its_coaches_at_their_speed_for_the_least_a_year() {
+        let (engines, coach) = trains_1922();
+        // Run 59: about 9.9 million to spend after its line, the strongest
+        // it could afford a 4 million freight engine slower than its coaches.
+        let pick = |money| passenger_engine(&engines, &coach, PASSENGER_COACHES, money);
+        let best = pick(9_900_000).unwrap();
+        assert_eq!(best.model.as_str(), "br75_4");
+        // Short of it with its coaches: the fastest it can afford.
+        let short = 1_969_601 + 3 * 293_404 - 1;
+        assert_eq!(pick(short).unwrap().model.as_str(), "mogul_2_6_0");
+        assert!(pick(1_000_000).is_none());
+        // A handcar never pulls a train; an electric engine never runs
+        // without catenary.
+        let weak: Vec<AiModel> = engines
+            .iter()
+            .filter(|m| m.model.as_str() == "handcar" || m.electric)
+            .cloned()
+            .collect();
+        assert!(passenger_engine(&weak, &coach, PASSENGER_COACHES, i64::MAX).is_none());
+    }
 }
