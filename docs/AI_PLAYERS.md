@@ -254,7 +254,11 @@ faster AI.
    when it lost more than a quarter of what it costs to run (what it
    earned less what it made); one about breaking even is kept, its first
    months before any fare weighing on its year (run 47 closed a bus line
-   that had lost 561 in eight months).
+   that had lost 561 in eight months); and one whose last three months
+   made money is kept, whatever its year (since bridge version 38 the
+   company answer says what each line made over them; run 48 closed three
+   bus lines eight months in for losses of 5,924 to 8,734, each 300,000 to
+   400,000 built).
    A line whose oldest vehicle is a twenty-fifth through its life (about
    seven of the game's months for a bus or a train's wagons, five for a
    truck) and that has earned nothing at all, no one aboard or waiting for

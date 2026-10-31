@@ -197,6 +197,7 @@ mod tests {
                         waiting: 0,
                         profit: *p,
                         income: None,
+                        recent: None,
                         problems: 0,
                     })
                     .collect(),

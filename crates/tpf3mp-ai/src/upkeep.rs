@@ -35,10 +35,13 @@ pub const CARGO_BACKLOG: u32 = 60;
 pub const CLOSE_LOSS: f64 = 0.25;
 
 /// Whether a line loses enough to be closed ([`CLOSE_LOSS`]): any loss
-/// where the game did not say what it earned.
+/// where the game did not say what it earned. A line whose last months
+/// made money is kept, whatever its year: its first months, before riders
+/// found it, weigh on its year (run 48 closed three bus lines eight months
+/// in for losses of 5,924 to 8,734, each 300,000 to 400,000 built).
 #[allow(clippy::cast_precision_loss)]
 fn losing_much(line: &AiLine) -> bool {
-    if line.profit >= 0 {
+    if line.profit >= 0 || line.recent.is_some_and(|r| r > 0) {
         return false;
     }
     let Some(income) = line.income else {

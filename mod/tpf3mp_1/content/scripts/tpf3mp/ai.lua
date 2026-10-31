@@ -330,6 +330,12 @@ function ai.company(seat, roster, registry)
 				local v = api.engine.util.finance.calculateBalance({ l }, math.max(0, now - 12 * month), now, true, 2)
 				if type(v) == "number" then income = whole(v) end
 			end)
+			-- What it made over its last three months: how it does now.
+			local recent
+			pcall(function()
+				local v = api.engine.util.finance.calculateBalance({ l }, math.max(0, now - 3 * month), now, true)
+				if type(v) == "number" then recent = whole(v) end
+			end)
 			-- How full it runs: the capacity its sections use, as the line
 			-- window's capacity chart (1 at least for a line with capacity,
 			-- 0 where unknown).
@@ -362,7 +368,7 @@ function ai.company(seat, roster, registry)
 			local name = component(l, "NAME")
 			out.lines[#out.lines + 1] = {
 				id = id, name = text(name and name.name, 64), stops = stops, vehicles = fleet,
-				load = load, waiting = math.min(whole(waiting), 4294967295), profit = whole(profit), income = income,
+				load = load, waiting = math.min(whole(waiting), 4294967295), profit = whole(profit), income = income, recent = recent,
 				problems = math.min(problems, 65535),
 			}
 		end
