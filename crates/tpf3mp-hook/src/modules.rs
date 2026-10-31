@@ -82,13 +82,13 @@ pub trait Memory {
     }
 }
 
-/// The running game's memory, read only where [`crate::image::readable`]
+/// The running game's memory, read only where [`crate::image::readable_cached`]
 /// says so.
 pub struct Process;
 
 impl Memory for Process {
     fn read(&self, address: usize, len: usize) -> Option<Vec<u8>> {
-        if address == 0 || !crate::image::readable(address, len) {
+        if address == 0 || !crate::image::readable_cached(address, len) {
             return None;
         }
         let mut bytes = vec![0u8; len];

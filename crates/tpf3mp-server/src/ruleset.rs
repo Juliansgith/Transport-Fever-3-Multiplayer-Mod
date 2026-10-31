@@ -65,6 +65,47 @@ impl Ruleset for AcceptAll {
     }
 }
 
+/// The code a room refuses an intent with whose payload is no action the
+/// room's games can read ([`GameActions`]).
+pub const MALFORMED_ACTION: u16 = u16::MAX;
+
+/// Orders every intent whose payload is an action the games can read
+/// (`tpf3mp_proto::action`: the schema version, every bound, nothing left
+/// over), as [`AcceptAll`] orders anything. A game that is handed an action
+/// it cannot read holds its world for good (fail closed), so one payload no
+/// game reads, from a broken or a hostile client, would stop every game of
+/// the room, and every game that joins later and replays it. Refused here,
+/// it is never ordered: the sender is told [`MALFORMED_ACTION`].
+///
+/// The server and the players' games must share the action schema version
+/// exactly, as they share the protocol version: a server of another schema
+/// refuses every action, so deploy it together with a release whose actions
+/// changed.
+#[derive(Debug, Default)]
+pub struct GameActions;
+
+impl Ruleset for GameActions {
+    fn validate(&self, _player: &PlayerId, payload: &Payload) -> Result<(), u16> {
+        tpf3mp_proto::action::Action::from_payload(payload)
+            .map(|_| ())
+            .map_err(|_| MALFORMED_ACTION)
+    }
+
+    fn apply(&mut self, _event: &Event) {}
+
+    fn save(&self) -> Option<Vec<u8>> {
+        Some(Vec::new())
+    }
+
+    fn restore(&mut self, state: &[u8]) -> Result<(), String> {
+        if state.is_empty() {
+            Ok(())
+        } else {
+            Err("checking actions keeps no state".into())
+        }
+    }
+}
+
 /// Rules a host can pick for a room.
 #[derive(Clone)]
 pub struct RulesChoice {
@@ -92,6 +133,19 @@ impl RulesMenu {
             description: Text::new("The game's own rules and economy, as in single player.")
                 .expect("short description"),
             factory: Arc::new(|| Box::new(AcceptAll)),
+        })
+    }
+
+    /// The game's own rules, as [`RulesMenu::native`], for rooms of real
+    /// games: every intent must be an action the games can read
+    /// ([`GameActions`]). The same name and the same (empty) saved state,
+    /// so a room recorded under either restores under the other.
+    pub fn native_checked() -> Self {
+        Self::single(RulesChoice {
+            name: RulesName::new(NATIVE).expect("short name"),
+            description: Text::new("The game's own rules and economy, as in single player.")
+                .expect("short description"),
+            factory: Arc::new(|| Box::new(GameActions)),
         })
     }
 
@@ -163,5 +217,26 @@ mod tests {
         let offers = menu.offers();
         assert_eq!(offers.len(), 2);
         assert_eq!(offers[0].name.as_str(), NATIVE);
+    }
+
+    #[test]
+    fn game_actions_take_a_readable_action_and_refuse_anything_else() {
+        let rules = GameActions;
+        let player = PlayerId(tpf3mp_proto::FixedBytes([7; 32]));
+        let readable = tpf3mp_proto::action::Action::NotificationSeen { notification: 3 }
+            .to_payload()
+            .unwrap();
+        assert_eq!(rules.validate(&player, &readable), Ok(()));
+        let mut trailing = readable.as_bytes().to_vec();
+        trailing.push(0);
+        for bad in [vec![], vec![0xff; 9], trailing] {
+            let payload = Payload::new(bad).unwrap();
+            assert_eq!(rules.validate(&player, &payload), Err(MALFORMED_ACTION));
+        }
+        // The same empty state as AcceptAll: rooms restore under either.
+        assert_eq!(rules.save(), AcceptAll.save());
+        let mut restored = GameActions;
+        assert!(restored.restore(&[]).is_ok());
+        assert!(restored.restore(&[1]).is_err());
     }
 }

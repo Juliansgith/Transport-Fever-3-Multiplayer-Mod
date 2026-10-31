@@ -33,6 +33,7 @@ use std::{
 
 use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 
+pub mod ai;
 pub mod at_menu;
 pub mod autoload;
 pub mod build_data;
@@ -43,6 +44,7 @@ pub mod crossings;
 pub mod drawing;
 pub mod edgewatch;
 pub mod emission;
+pub mod fastbitmap;
 pub mod fastindex;
 pub mod guiplayer;
 pub mod image;
@@ -56,6 +58,7 @@ pub mod log;
 pub mod lua;
 pub mod menu;
 pub mod modules;
+pub mod motion;
 pub mod native_mods;
 pub mod netread;
 pub mod network;
@@ -64,6 +67,7 @@ pub mod order;
 /// executable and run in the test process.
 #[cfg(all(test, windows, target_arch = "x86_64"))]
 pub(crate) mod original;
+pub mod pacing;
 pub mod perf;
 pub mod persons;
 mod platform;
@@ -71,6 +75,7 @@ pub mod plugins;
 pub mod previewcancel;
 pub mod previews;
 pub mod probe;
+mod ready_budget;
 pub mod roadtrace;
 pub mod savefast;
 pub mod seeds;

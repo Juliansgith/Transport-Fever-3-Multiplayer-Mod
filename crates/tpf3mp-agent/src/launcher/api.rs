@@ -33,6 +33,8 @@ pub(crate) struct View {
     pub(crate) session: Option<String>,
     /// The rules the server offers new rooms, the default first.
     pub(crate) rules: Vec<RulesOffer>,
+    /// The server seats AI players ([`tpf3mp_proto::Welcome::ai_players`]).
+    pub(crate) ai_players: bool,
     pub(crate) in_room: bool,
     pub(crate) invite: Option<String>,
     pub(crate) error: Option<String>,
@@ -133,6 +135,15 @@ pub enum Action {
     },
     Start,
     Kick {
+        player: String,
+    },
+    /// The room's owner seats an AI player: `easy`, `normal` or `hard`
+    /// (docs/AI_PLAYERS.md).
+    AddAi {
+        difficulty: String,
+    },
+    /// The room's owner removes the AI player with this id.
+    RemoveAi {
         player: String,
     },
     Chat {
@@ -686,6 +697,41 @@ pub struct Room {
     pub members: Vec<Member>,
     /// Co-op (`false`) or competitive (`true`), as its owner chose.
     pub competitive: bool,
+    /// The room's AI players, in the order they were seated.
+    pub ais: Vec<AiPlayer>,
+    /// Whether its owner may seat more: the server seats AI players.
+    pub ai_seats: bool,
+}
+
+/// An AI player of the room (docs/AI_PLAYERS.md).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AiPlayer {
+    /// Its seat's id, which [`Action::RemoveAi`] takes.
+    pub id: String,
+    pub name: String,
+    /// `easy`, `normal` or `hard`.
+    pub difficulty: String,
+    /// Whether this player's game drives it.
+    pub yours: bool,
+}
+
+/// An AI difficulty by its name in the launcher's actions.
+pub fn ai_difficulty(name: &str) -> Option<tpf3mp_proto::AiDifficulty> {
+    match name {
+        "easy" => Some(tpf3mp_proto::AiDifficulty::Easy),
+        "normal" => Some(tpf3mp_proto::AiDifficulty::Normal),
+        "hard" => Some(tpf3mp_proto::AiDifficulty::Hard),
+        _ => None,
+    }
+}
+
+/// An AI difficulty's name in the launcher's actions.
+pub fn ai_difficulty_name(difficulty: tpf3mp_proto::AiDifficulty) -> &'static str {
+    match difficulty {
+        tpf3mp_proto::AiDifficulty::Easy => "easy",
+        tpf3mp_proto::AiDifficulty::Normal => "normal",
+        tpf3mp_proto::AiDifficulty::Hard => "hard",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -812,6 +858,17 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
                 })
                 .collect(),
             competitive: room.competitive,
+            ai_seats: view.ai_players,
+            ais: room
+                .ais
+                .iter()
+                .map(|ai| AiPlayer {
+                    id: player_hex(&ai.player),
+                    name: ai.name.as_str().to_owned(),
+                    difficulty: ai_difficulty_name(ai.difficulty).to_owned(),
+                    yours: ai.driver.is_some() && ai.driver == you,
+                })
+                .collect(),
         }
     });
     let (world, bytes, total) = match status.world {

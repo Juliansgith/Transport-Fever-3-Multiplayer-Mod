@@ -28,6 +28,27 @@ fn main() {
         println!("cargo:rustc-cfg=tpf3mp_native_savefast");
     }
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("output dir"));
+    println!("cargo:rustc-check-cfg=cfg(tpf3mp_industry_schedule)");
+    let schedule = selected.directory.join("industry_schedule.rs");
+    println!("cargo:rerun-if-changed={}", schedule.display());
+    if schedule.is_file() {
+        println!("cargo:rustc-cfg=tpf3mp_industry_schedule");
+        std::fs::write(
+            output.join("industry_schedule_native.rs"),
+            format!("include!({:?});", schedule.to_str().expect("native path")),
+        )
+        .expect("write industry schedule probe data");
+    }
+    // Diagnostics use the selected bundle's identity and native thunks too.
+    // A missing probe stays unavailable; never fall back to an older build.
+    let probe_path = selected.directory.join("industry_probe.toml");
+    println!("cargo:rerun-if-changed={}", probe_path.display());
+    let probe = match std::fs::read_to_string(&probe_path) {
+        Ok(text) => format!("Some({text:?})"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "None".into(),
+        Err(error) => panic!("read selected industry probe: {error}"),
+    };
+    std::fs::write(output.join("industry_probe.rs"), probe).expect("write selected industry probe");
     std::fs::write(
         output.join("native_bundle.rs"),
         selected.rust_module().expect("native module paths"),

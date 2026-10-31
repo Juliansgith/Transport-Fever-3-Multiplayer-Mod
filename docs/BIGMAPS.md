@@ -144,14 +144,27 @@ rewrites both instructions in place, as tpf2-bigmap's `save_fast` did:
 PushCompressor …"). Each checks its bytes first and installs alone; the
 loader is untouched (`PushDecompressor` keeps reading the constant), and a
 save stays a standard zstd frame any game loads. Rooms judge lane digests,
-not save files, so games with and without it agree. Off by default;
-`TPF3MP_HOOK_SAVE_FAST=1`, `on`, `true` or `yes` opts in (case-insensitive,
-whitespace trimmed); unset or any other value keeps the game's own settings.
-hook.log says what was applied
+not save files, so games with and without it agree. **On by default**
+since 2026-10-29: unset, `1`, `on`, `true` or `yes` applies it;
+`TPF3MP_HOOK_SAVE_FAST=0`, `off`, `false` or `no` keeps the game's own
+settings, and so does any other value (case-insensitive, whitespace
+trimmed). hook.log says what was applied
 (`faster saves: zstd level 1, a 64 KiB buffer`) or that the feature is off.
-The TF3 speed-up is not measured yet. Only the Steam Windows 40408 profile
-has these verified targets. The 40420, 40423 and 40425 bundles have no save
-targets, so opting in logs that faster saves are unavailable for the build
+On Steam Windows 40425, observed periodic saves took 4.4–4.6 seconds with
+this option versus 7.2–7.4 seconds without it, with about 6.5% larger files;
+a later baseline without it on the same 150 MB world measured 6.1–7.1 s.
+Those runs used similar, not identical, worlds; this is not a controlled
+compressor-only benchmark. See the
+[performance measurements](../investigation/PERFORMANCE_EXPERIMENTS_2026-10-28.md)
+and [the 2026-10-29 audit](../investigation/PERFORMANCE_AUDIT_2026-10-29.md).
+Every player of a room saves at the same step and stands still while it
+does, so a save is the longest freeze a room has.
+The Steam Windows 40408 and 40425 profiles
+have verified targets. On 40425, the compressor is at `0x32deb0`,
+its level load at `0x32dec4` and its buffer size at `0x32e024`. Exact-build
+tests pin both sites; the level constant shared with decompression is untouched.
+The 40420 and 40423 bundles have no save
+targets, so the hook logs that faster saves are unavailable for the build
 without resolving or rewriting any site. The Preview 40418 candidate also omits them because its
 signatures have not been checked. On a supported profile, a missing or
 byte-mismatched site keeps that part of the game's original save settings.

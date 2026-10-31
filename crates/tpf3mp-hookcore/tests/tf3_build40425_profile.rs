@@ -61,9 +61,11 @@ const SHA256: &str = "e9a6190f9ca8f7f34a46dfafac0f3b897e41ea6dc6498d6f5871aed6b9
 const SIZE: u64 = 69_876_664;
 const PE_TIMESTAMP: u32 = 0x6ad9_ce10;
 
-/// All 165 profile targets, including optional targets, at their RVAs in the
+/// All 170 profile targets, including optional targets, at their RVAs in the
 /// public build 26129055 executable (image base 0x140000000).
 const TARGETS: &[(&str, u64)] = &[
+    ("save: PushCompressor level load", 0x32dec4),
+    ("save: PushCompressor buffer size", 0x32e024),
     ("GameSim::Step", 0x1593e0),
     ("CGame::Step", 0x11f400),
     // The batch interval (crates/tpf3mp-hook/src/interval.rs).
@@ -257,6 +259,9 @@ const TARGETS: &[(&str, u64)] = &[
         0xa4b60,
     ),
     ("emission::EmissionGridSystem::Update", 0xaaf890),
+    ("industry schedule", 0x1513f0),
+    ("fast-bitmap-span: BitmapRasterizable::Fill", 0x91a560),
+    ("UI::CGameUI::GameStep/CGame::Step call", 0x65f26c),
 ];
 
 #[test]
@@ -270,8 +275,8 @@ fn profile_pins_public_steam_build_40425_and_all_target_names() {
     assert_eq!(profile.build.size, Some(SIZE));
     assert_eq!(profile.build.pe_timestamp, Some(PE_TIMESTAMP));
     assert_eq!(profile.image_base, Some(0x0001_4000_0000));
-    assert_eq!(profile.targets.len(), 165);
-    assert_eq!(TARGETS.len(), 165);
+    assert_eq!(profile.targets.len(), 170);
+    assert_eq!(TARGETS.len(), 170);
     for &(name, _) in TARGETS {
         assert!(
             profile.targets.iter().any(|target| target.name == name),
@@ -467,6 +472,17 @@ fn assert_netread_data(image: &[u8], pe: &PeHeaders) {
 }
 
 fn assert_native_data(image: &[u8], pe: &PeHeaders, text: &[u8], text_rva: u64) {
+    // Both compression and decompression read this constant. Rewriting the
+    // compressor's instruction must leave the constant (and loader) alone.
+    assert_eq!(rva_bytes(image, pe, 0x37e4ad8, 4), 3u32.to_le_bytes());
+    assert_eq!(
+        rva_bytes(image, pe, 0x32dec4, 6),
+        candidate_native::savefast::LEVEL_LOAD_BYTES
+    );
+    assert_eq!(
+        rva_bytes(image, pe, 0x32e024, 6),
+        candidate_native::savefast::BUFFER_BYTES
+    );
     assert_netread_data(image, pe);
     for site in &candidate_native::guiplayer::SITES {
         let address = target_rva(site.name);
@@ -624,7 +640,7 @@ fn assert_native_data(image: &[u8], pe: &PeHeaders, text: &[u8], text_rva: u64) 
 }
 
 #[test]
-fn supplied_40425_executable_has_the_exact_identity_and_all_165_sites() {
+fn supplied_40425_executable_has_the_exact_identity_and_all_170_sites() {
     let Some(exe) = std::env::var_os(EXE_ENV).map(PathBuf::from) else {
         eprintln!("skipping executable resolution: set {EXE_ENV} to the archived 40425 executable");
         return;

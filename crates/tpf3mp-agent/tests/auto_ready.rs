@@ -83,6 +83,7 @@ fn room(phase: RoomPhase, owner: PlayerId) -> RoomView {
         members: Vec::new(),
         competitive: false,
         start: None,
+        ais: Vec::new(),
     }
 }
 
@@ -114,6 +115,7 @@ async fn server(
             server_version: Text::new("test").unwrap(),
             session_id: SessionId("AB2CD3".parse().unwrap()),
             rules: Vec::new(),
+            ai_players: false,
         });
         write_message(&mut send, &welcome, CONTROL_MAX_FRAME)
             .await

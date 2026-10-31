@@ -388,6 +388,39 @@ What the window says:
   **Quit → Return to Main Menu**, then **Multiplayer → Leave room**.
   You can join again without restarting the game or launcher.
 
+### AI players
+
+AI players are not yet released: a server offers them only where its
+operator turned them on (OPERATIONS.md, "AI players"), and on any other the
+Multiplayer windows show no **Add an AI player**.
+
+The room's owner can seat computer players: in the room's page of the
+game's Multiplayer window before the game, or in the Multiplayer window
+during it, pick **Add an AI player** and **Easy**, **Normal** or **Hard**.
+Each AI founds a company of its own under its name, borrows to start (a
+new company has no money), and builds bus lines: stops on a town's
+streets, a depot beside them, the line, and buses on it, then the next
+town while its money lasts. Players cannot join an AI's company, and what
+it owns is protected like anyone's. **Remove** stops an AI from deciding
+anything more; its company keeps running what it built.
+
+An AI has the same money, prices and rules as you, and acts no faster
+than a quick player: Easy at most every 20 seconds, Normal every 5, Hard
+every second. Harder ones weigh more towns, run more stops and buses, buy
+better buses and borrow more. One player's game drives all the AI players
+(the owner's, while it keeps up with the room); if that player leaves,
+another player's game takes over where it stopped. With nobody to drive
+them, AI players wait.
+
+So far AI players run town buses, and carry an industry's cargo to a
+town that needs it (fuel, meat, cement and the like, as the town's window
+lists under cargo demand): by truck, or by train where the two lie a
+couple of kilometres apart or more and the AI can afford a rail line,
+which it builds itself, stations, track, depot and train. Where the
+industry makes too little for want of its own inputs, the AI feeds it
+from the industries that make them, a production chain. Ships and planes
+come next (docs/AI_PLAYERS.md).
+
 ## Updates
 
 The launcher checks for a new version when it starts and every few hours,

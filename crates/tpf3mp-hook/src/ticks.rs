@@ -173,13 +173,13 @@ pub fn read_counters(game_time: usize) -> Result<Counters, &'static str> {
     if tick == 0 || update == 0 {
         return Err("the profile lacks the GameTime getters");
     }
-    if game_time == 0 || !crate::image::readable(game_time, 0x18) {
+    if game_time == 0 || !crate::image::readable_cached(game_time, 0x18) {
         return Err("no CGameTime this call");
     }
     // SAFETY: 0x18 readable bytes at `game_time`, checked above.
     let engine = unsafe { std::ptr::read_unaligned((game_time + 8) as *const usize) };
     let entity = unsafe { std::ptr::read_unaligned((game_time + 0x10) as *const usize) };
-    if engine == 0 || !crate::image::readable(entity, 4) {
+    if engine == 0 || !crate::image::readable_cached(entity, 4) {
         return Err("the CGameTime names no engine or entity");
     }
     type Getter = unsafe extern "system" fn(usize) -> u32;

@@ -115,6 +115,9 @@ impl Game for ToyGame {
             | Notice::Chat { .. }
             | Notice::Room(_)
             | Notice::Preview { .. } => {}
+            // The fake game has no world an AI could read; its agent's AI
+            // asks again and waits (docs/AI_PLAYERS.md).
+            Notice::AiAsk { .. } => {}
         }
     }
 }

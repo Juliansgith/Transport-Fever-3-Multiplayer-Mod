@@ -24,6 +24,19 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+thread_local! {
+    /// `VirtualQuery` calls this thread made, for the tests that hold the
+    /// hot paths to none. In a game the size of a running Transport Fever 3
+    /// world one costs about 50 µs (measured 2026-10-29: the GUI's
+    /// `getPlayer` took 203 µs with four of them).
+    static SYSTEM_QUERIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `VirtualQuery` calls made on this thread so far.
+pub fn system_queries() -> u64 {
+    SYSTEM_QUERIES.with(std::cell::Cell::get)
+}
+
 /// The committed, readable region `[base, end)` that holds `address`, or
 /// `None` when `address` is not readable.
 #[cfg(windows)]
@@ -31,6 +44,7 @@ fn query(address: usize) -> Option<(usize, usize)> {
     use windows_sys::Win32::System::Memory::{
         MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery,
     };
+    SYSTEM_QUERIES.with(|n| n.set(n.get() + 1));
     // SAFETY: MEMORY_BASIC_INFORMATION is plain data, zero is a valid value
     // for it, and VirtualQuery only writes into it.
     let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
@@ -422,7 +436,9 @@ pub fn readable_cached(address: usize, len: usize) -> bool {
 }
 
 /// Whether `len` bytes at `address` are committed, readable memory: a fresh
-/// question to the system every time.
+/// question to the system every time. For cold paths only (code checks at
+/// install); anything that runs per call, per frame or per update uses
+/// [`readable_cached`], which gives the same answer without a system call.
 #[cfg(windows)]
 pub fn readable(address: usize, len: usize) -> bool {
     RegionCache::<0>::new().readable_with(address, len, query)

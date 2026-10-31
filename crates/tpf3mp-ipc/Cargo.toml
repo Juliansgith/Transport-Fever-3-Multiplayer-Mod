@@ -11,9 +11,14 @@ publish.workspace = true
 [dependencies]
 thiserror.workspace = true
 
+[dev-dependencies]
+# The fine timer's test sleeps on Tokio, as the agent does (src/timer.rs).
+tokio.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Media",
     "Win32_Security",
     "Win32_System_Memory",
 ] }

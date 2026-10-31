@@ -108,16 +108,12 @@ static BROKEN: AtomicBool = AtomicBool::new(false);
 static LOG: Mutex<Option<crate::Logger>> = Mutex::new(None);
 /// The game's own speed getter, reached through its detour's trampoline.
 static SPEED_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// In the room's game: the speed row's value is recorded.
+/// Whether the driver follows the room's world.
 static IN_ROOM: AtomicBool = AtomicBool::new(false);
 /// While the game's step runs, the updates it must run (`OWN_SPEED` for the
 /// game's own speed): what the step's call of the speed getter answers.
 static UPDATES: AtomicU64 = AtomicU64::new(OWN_SPEED);
 const OWN_SPEED: u64 = u64::MAX;
-/// The game's own speed (the speed row) as the getter last read it in the
-/// room's game; `NO_SPEED` until then.
-static CHOSEN: AtomicU64 = AtomicU64::new(NO_SPEED);
-const NO_SPEED: u64 = u64::MAX;
 /// While the game's step runs: the `CGameTime` its speed call was made on,
 /// which the checkpoint line reads the counters through ([`crate::ticks`]);
 /// 0 otherwise.
@@ -137,6 +133,34 @@ fn now_ms() -> u64 {
     u64::try_from(epoch.elapsed().as_millis())
         .unwrap_or(u64::MAX)
         .max(1)
+}
+
+/// How long the game's step may be quiet, its world up, before the UI's
+/// and the GUI's frames keep the link's heartbeat ([`gui_frame`]).
+pub(crate) const QUIET_STEP_MS: u64 = 2_000;
+
+/// Whether a step that last ran at `last` (milliseconds since [`EPOCH`];
+/// 0 never) is quiet at `now`: none ran yet is not quiet, a world not up.
+fn step_quiet(last: u64, now: u64) -> bool {
+    last != 0 && now.saturating_sub(last) >= QUIET_STEP_MS
+}
+
+/// One of the game's UI or GUI frames in a world (`CGameUI::GameStep`'s
+/// call of the game's step, the mod's `guiUpdate` asking for work), which
+/// may run while the game's own pause menu stops its simulation's step:
+/// where the step has been quiet [`QUIET_STEP_MS`], the driver keeps the
+/// link's heartbeat ([`StepHandler::keep_alive`]), and nothing else. Never
+/// waits for the driver: a step holding it is no quiet step.
+pub(crate) fn gui_frame() {
+    if BROKEN.load(Ordering::Acquire) || !step_quiet(LAST_STEP.load(Ordering::Acquire), now_ms()) {
+        return;
+    }
+    let Ok(mut guard) = DRIVER.try_lock() else {
+        return;
+    };
+    if let Some(driver) = guard.as_mut() {
+        driver.keep_alive();
+    }
 }
 
 /// The room's step the last batch ended at, if one ran
@@ -281,6 +305,8 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
 pub(crate) fn menu_frame(menu: usize) {
     // The GUI thread and its menu, for the others' previews drawn.
     crate::drawing::note_menu(menu);
+    // What the renderer showed this frame (logging only).
+    crate::motion::on_frame();
     if BROKEN.load(Ordering::Acquire) {
         return;
     }
@@ -400,8 +426,8 @@ fn auto_load_frame(room_world: bool) -> Option<String> {
 type SpeedFn = unsafe extern "C" fn(usize, usize, usize, usize) -> u64;
 
 /// The speed getter's detour: it only reads. In the room's game the speed
-/// row's value is the player's request to the room (the step detour passes
-/// it on). Every caller gets the game's own answer: the UI, the camera and
+/// row is handled by explicit GUI requests. Every caller gets the game's
+/// own answer: the UI, the camera and
 /// the particles read it too, and the game asserts when they are told a
 /// speed it is not running at.
 unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> u64 {
@@ -413,12 +439,7 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
     // which keeps the game's own ABI.
     let original: SpeedFn = unsafe { std::mem::transmute::<usize, SpeedFn>(original) };
     // SAFETY: the game's own getter, called as the game called it.
-    let own = unsafe { original(this, a, b, c) };
-    if IN_ROOM.load(Ordering::Acquire) {
-        // The getter returns an int: its low 32 bits.
-        CHOSEN.store(u64::from(own as u32), Ordering::Release);
-    }
-    own
+    unsafe { original(this, a, b, c) }
 }
 
 /// Where the step's own call of the speed getter goes: the number of
@@ -537,6 +558,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
     let started = crate::perf::start();
     let traced_at = crate::steptrace::enabled().then(Instant::now);
+    let budget_started =
+        crate::interval::budget_enabled().then(|| crate::steptrace::clock_us(Instant::now()));
     STEP_GAME_NANOS.store(0, Ordering::Relaxed);
     LAST_STEP.store(now_ms(), Ordering::Release);
     // The step's speed call sets it again for this call.
@@ -552,6 +575,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     let mut selected: Option<(Updates, bool)> = None;
     // What this call answered, and why, for the step trace.
     let mut answered: Option<(Updates, bool)> = None;
+    let mut first_step = None;
     let mut why: &'static str = "own";
     let mut note: Option<String> = None;
     let mut info = crate::interval::BatchInfo::default();
@@ -571,6 +595,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
             answered = Some((batch.updates, batch.lanes));
+            first_step = batch.first_step;
             selected = Some((batch.updates, batch.room));
             let updates = match batch.updates {
                 Updates::Exactly(updates) => updates,
@@ -579,10 +604,17 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             match lua::begin_batch(&[], updates, batch.lanes, batch.dump) {
                 Ok(()) => {
                     unsafe { run_step(original, batch.updates, batch.room, this, a, b, c) };
-                    if let Some(first) = batch.first_step {
-                        log_counters(first, updates, batch.lanes);
+                    let result = lua::end_batch();
+                    if batch.room
+                        && let Some(reason) = crate::industries::fault()
+                    {
+                        Err(reason.to_owned())
+                    } else {
+                        if let Some(first) = batch.first_step {
+                            log_counters(first, updates, batch.lanes);
+                        }
+                        result
                     }
-                    lua::end_batch()
                 }
                 Err(reason) => {
                     selected = Some((Updates::Exactly(0), batch.room));
@@ -594,6 +626,12 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         why = driver.why();
         if traced_at.is_some() {
             note = driver.cadence_note();
+            if let Some(first) = first_step {
+                note = Some(format!(
+                    "first={first} {}",
+                    note.as_deref().unwrap_or_default()
+                ));
+            }
         }
         info = driver.batch_info();
         for (ticket, why) in driver.take_refused() {
@@ -605,17 +643,20 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if let Some(preview) = crate::previews::take_out(Instant::now()) {
             driver.preview(preview);
         }
+        for (id, answer) in crate::ai::take_answers() {
+            driver.ai_answer(id, answer);
+        }
         // The main menu's Multiplayer window, whose lobby the step just read.
         crate::lobby::exchange(driver.as_mut());
         IN_ROOM.store(driver.in_room(), Ordering::Release);
         lua::set_in_room(driver.in_room());
-        let chosen = CHOSEN.load(Ordering::Acquire);
-        if chosen != NO_SPEED {
+        if let Some(chosen) = lua::take_chosen_speed() {
             driver.chosen_speed(chosen);
         }
         let mut lines = driver.take_log();
         lines.extend(lua::take_log());
         lines.extend(crate::interval::take_lines());
+        lines.extend(crate::motion::take_lines());
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
@@ -653,6 +694,10 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             _ => None,
         };
         let mut record = info.record(this, count);
+        if let Some(started) = budget_started {
+            record.started_us = started;
+            record.finished_us = crate::steptrace::clock_us(Instant::now());
+        }
         record.eligible &= room && result.is_ok() && ran == Some(count);
         if room && ran.is_some_and(|ran| ran != count) {
             crate::interval::note_mismatch(count, ran.unwrap_or(0));
@@ -844,6 +889,27 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
     let even = crate::cadence::wanted(std::env::var(crate::cadence::ENV).ok().as_deref());
     driver.set_even_steps(even);
+    let short_recovery = crate::cadence::short_recovery_wanted(
+        std::env::var(crate::cadence::SHORT_RECOVERY_ENV)
+            .ok()
+            .as_deref(),
+    );
+    driver.set_short_recovery(short_recovery);
+    if short_recovery {
+        log_line(
+            "short-batch recovery: bounded extra updates before far-behind catch-up (experiment)",
+        );
+    }
+    match crate::step::batch_limit(std::env::var(crate::step::BATCH_LIMIT_ENV).ok().as_deref()) {
+        Ok(limit) => {
+            driver.set_batch_limit(limit);
+            log_line(&format!(
+                "batch limit: {limit} updates ({}; experiment)",
+                crate::step::BATCH_LIMIT_ENV
+            ));
+        }
+        Err(why) => log_line(&format!("batch limit: keeping 16 updates: {why}")),
+    }
     log_line(&if even {
         format!(
             "even steps: each call of the game's step runs the room's pace over the game's call period, keeping {} released step(s) in reserve ({}=0 runs all released, as before)",
@@ -889,6 +955,25 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                     std::mem::forget(redirect);
                     crate::interval::arm(layout);
                     driver.set_batch_interval(true);
+                    match crate::interval::batch_period(
+                        std::env::var(crate::interval::BATCH_MS_ENV).ok().as_deref(),
+                    ) {
+                        Ok(period) => {
+                            driver.set_batch_period(period);
+                            crate::interval::bound_short_recovery(period, short_recovery);
+                            if short_recovery && period < crate::interval::BASE {
+                                log_line(
+                                    "short-batch recovery: presentation trim stays at or above 0.8 (experiment)",
+                                );
+                            }
+                            log_line(&format!(
+                                "batch grouping: {} ms target ({}; one native update minimum)",
+                                period.as_millis(),
+                                crate::interval::BATCH_MS_ENV
+                            ));
+                        }
+                        Err(why) => log_line(&format!("batch grouping: keeping 200 ms: {why}")),
+                    }
                     format!(
                         "batch interval: each batch of the room's steps is shown over its updates times the room's time per step, set right after CGame::Sync ({}=0 turns it off)",
                         crate::interval::ENV
@@ -1093,6 +1178,8 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     // Guarded reads (docs/HOOKS.md, "Reading the game's memory"): the
     // handler goes in before any fix reads.
     log_line(&crate::image::guarded::configure_from_env());
+    log_line(&crate::motion::configure_from_env());
+    log_line(&crate::motion::configure_pacing_from_env());
     if let Some(line) = crate::steptrace::configure_from_env() {
         log_line(&line);
     }
@@ -1103,6 +1190,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
+    }
+    if let Some(line) = crate::industries::install_scheduler(&absolute)? {
+        log_line(&line);
     }
     match industry_probe {
         Ok(Some(mut diagnostic)) => {
@@ -1142,6 +1232,12 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         log_line(&line);
     }
     log_line(&crate::fastindex::install(&absolute));
+    log_line(&crate::fastbitmap::install(&absolute));
+    // Frame pacing's clock (crate::pacing::Clock): only with pacing wanted.
+    log_line(&crate::pacing::install_clock(
+        &absolute,
+        crate::pacing::wanted(std::env::var(crate::pacing::ENV).ok().as_deref()),
+    ));
     // The fused emission grid (crate::emission): bit-identical, on unless
     // TPF3MP_HOOK_FAST_EMISSION=0.
     log_line(&crate::emission::install(&absolute));
@@ -1275,7 +1371,6 @@ mod tests {
         UPDATES.store(OWN_SPEED, Ordering::Release);
         assert_eq!(speed(1, 2, 3, 4), 4, "outside a room, the game's own speed");
         assert_eq!(step_reads(1), 4, "for the step too");
-        assert_eq!(CHOSEN.load(Ordering::SeqCst), NO_SPEED);
         IN_ROOM.store(true, Ordering::Release);
         UPDATES.store(1, Ordering::Release);
         assert_eq!(step_reads(1), 1, "in the room's game, the driver's updates");
@@ -1284,27 +1379,16 @@ mod tests {
             4,
             "every other caller still reads the game's own speed"
         );
-        assert_eq!(
-            CHOSEN.load(Ordering::SeqCst),
-            4,
-            "the speed row's value is kept"
-        );
         SPEED.store(0, Ordering::SeqCst);
         assert_eq!(
             step_reads(1),
             1,
             "the game's own pause does not stop the room"
         );
-        assert_eq!(
-            CHOSEN.load(Ordering::SeqCst),
-            0,
-            "but it asks the room to pause"
-        );
         UPDATES.store(0, Ordering::Release);
         SPEED.store(4, Ordering::SeqCst);
         assert_eq!(step_reads(1), 0, "nor does its 4x run a withheld step");
         UPDATES.store(OWN_SPEED, Ordering::Release);
-        CHOSEN.store(NO_SPEED, Ordering::SeqCst);
         IN_ROOM.store(false, Ordering::Release);
         SPEED_ORIGINAL.store(0, Ordering::Release);
         // SAFETY: nothing runs fake_speed now.
@@ -1788,7 +1872,20 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("16".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("17".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod quiet {
+    use super::*;
+
+    #[test]
+    fn only_a_step_quiet_a_while_is_kept_alive_from_the_frames() {
+        assert!(!step_quiet(0, 10_000), "no step yet: no world up");
+        assert!(!step_quiet(9_000, 10_000), "a second ago");
+        assert!(step_quiet(8_000, 10_000), "two seconds: quiet");
+        assert!(step_quiet(1, u64::MAX));
     }
 }

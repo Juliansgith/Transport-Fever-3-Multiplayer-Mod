@@ -568,7 +568,7 @@ readers[lanes.ECONOMY] = function(api, emit, ids)
 	local offers = scriptState(api, SUBSIDY_SCRIPT)
 	local rows = offers and subsidies.rows(offers)
 	if rows then
-		text = text .. " subsidies " .. #rows .. ":" .. hashStr(subsidies.clock(offers) .. "\30" .. table.concat(rows, "\30"))
+		text = text .. " subsidies " .. #rows .. ":" .. fastHash(subsidies.clock(offers) .. "\30" .. table.concat(rows, "\30"))
 	end
 	if emit and rows then
 		emit("subsidies", nil, "subsidies:clock", subsidies.clock(offers))
@@ -634,7 +634,13 @@ readers[lanes.TOWNS] = function(api, emit)
 end
 
 readers[lanes.PEOPLE] = function(api, emit)
-	local text = tostring(#entities(api, "SIM_PERSON"))
+	-- Counted where the engine's list lies: the same count as copying it
+	-- (entities above), without a second table of every person.
+	local count = 0
+	for _ in pairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.SIM_PERSON)) do
+		count = count + 1
+	end
+	local text = tostring(count)
 	if emit then emit("people", nil, text, "count=" .. text) end
 	return text
 end

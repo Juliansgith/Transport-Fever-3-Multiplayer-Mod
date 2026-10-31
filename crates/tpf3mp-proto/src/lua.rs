@@ -168,6 +168,21 @@ pub fn action_to_lua(action: &Action) -> Result<LuaValue, LuaError> {
     action.serialize(Ser { scale: Scale::One })
 }
 
+/// Any schema value from the mod's table, by the same rules as an action
+/// (positions in metres, ids as numbers, every bound checked): what the
+/// mod answers an AI's question with (`tpf3mp_bridge::ai`).
+pub fn from_lua<T: serde::de::DeserializeOwned>(value: &LuaValue) -> Result<T, LuaError> {
+    T::deserialize(De {
+        value,
+        scale: Scale::One,
+    })
+}
+
+/// Any schema value as the mod's table, by the same rules as an action.
+pub fn to_lua<T: Serialize>(value: &T) -> Result<LuaValue, LuaError> {
+    value.serialize(Ser { scale: Scale::One })
+}
+
 // ---------- units ----------
 
 /// How many schema units one game unit is.

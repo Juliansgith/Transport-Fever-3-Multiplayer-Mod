@@ -1907,8 +1907,12 @@ impl ModelWorld {
 
     pub fn apply(&mut self, event: &Event) {
         match &event.body {
-            EventBody::PlayerJoined { player, .. } => self.state.join(*player),
-            EventBody::PlayerLeft { .. } | EventBody::Save => {}
+            // An AI player joins as a player does: its seat acts in the
+            // world as theirs (docs/AI_PLAYERS.md).
+            EventBody::PlayerJoined { player, .. } | EventBody::AiJoined { player, .. } => {
+                self.state.join(*player);
+            }
+            EventBody::PlayerLeft { .. } | EventBody::AiLeft { .. } | EventBody::Save => {}
             EventBody::Command {
                 player,
                 payload,

@@ -171,7 +171,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 16.0;
+pub const VERSION: f64 = 17.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -406,6 +406,8 @@ struct RoomStatus {
     replay: bool,
     /// What the player said, for the room.
     said: VecDeque<ChatText>,
+    /// Latest explicit GUI speed choice, consumed once by the worker.
+    chosen_speed: Option<u64>,
 }
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
@@ -445,6 +447,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         history: VecDeque::new(),
         replay: false,
         said: VecDeque::new(),
+        chosen_speed: None,
     },
     told: 0,
     menu_load: None,
@@ -722,6 +725,7 @@ pub fn request_load(name: &str) {
     shared.menu_load = None;
     shared.load = Some(None);
     shared.load_failure = None;
+    shared.room.chosen_speed = None;
 }
 
 /// Asks the game's main menu to load the save `name` of the game's own save
@@ -735,6 +739,7 @@ pub fn request_menu_load(name: &str) {
     shared.menu_load = Some(name.to_owned());
     shared.load = Some(None);
     shared.load_failure = None;
+    shared.room.chosen_speed = None;
 }
 
 /// The load the main menu is asked to start, once.
@@ -895,6 +900,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"status", native_status),
                 (b"chat", native_chat),
                 (b"say", native_say),
+                (b"chooseSpeed", native_choose_speed),
                 (b"copy", native_copy),
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
@@ -912,6 +918,9 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"drawn", native_drawn),
                 (b"drawcost", native_drawcost),
                 (b"undraw", native_undraw),
+                (b"aiAsk", native_ai_ask),
+                (b"aiSeat", native_ai_seat),
+                (b"aiAnswer", native_ai_answer),
             ] {
                 if api.touserdata.is_none() && matches!(name, b"laneRows" | b"junctionConfig") {
                     continue;
@@ -1392,6 +1401,9 @@ unsafe extern "C-unwind" fn native_replayed(l: State) -> c_int {
 
 /// `poll()`.
 unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
+    // The GUI's frame: the link kept alive while the game's own pause menu
+    // stops its step (`crate::install::gui_frame`).
+    let _ = std::panic::catch_unwind(crate::install::gui_frame);
     let Some(api) = API.get() else {
         return 0;
     };
@@ -1459,6 +1471,7 @@ unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
     crate::image::invalidate();
     let mut shared = shared();
     shared.worlds += 1;
+    shared.room.chosen_speed = None;
     // A world loaded: the room's, after a divergence.
     shared.room.diverged = None;
     // Its GUI has none of the chat so far: give it the history again.
@@ -1485,13 +1498,16 @@ pub fn notice(notice: &Notice) {
         }
         Notice::Ended(_) => {
             room.info = None;
+            room.chosen_speed = None;
             room.diverged = None;
             crate::previews::clear();
+            crate::ai::clear();
         }
         Notice::Refused { .. } => {}
         Notice::Preview { from, preview } => {
             crate::previews::heard(*from, preview.clone(), std::time::Instant::now());
         }
+        Notice::AiAsk { id, ask } => crate::ai::asked(*id, ask.clone()),
     }
 }
 
@@ -1673,6 +1689,157 @@ unsafe extern "C-unwind" fn native_previews(l: State) -> c_int {
     );
     // SAFETY: Lua calls this with its own state, on its thread.
     unsafe { push_or_nil(api, l, Some(&list)) }
+}
+
+/// `aiAsk()`: the next question an AI seat this game drives asks about the
+/// world (docs/AI_PLAYERS.md), `{ id =, seat = "<64 hex digits>", question
+/// = ... }`: `question` is `"Company"`, `"Towns"`, `{ Streets = { at =, radius
+/// = } }`, `{ Models = { mode = } }` or `{ Verdict = <action table> }`; or
+/// nothing while none waits. A question this game cannot put as a table is
+/// answered at once with why.
+unsafe extern "C-unwind" fn native_ai_ask(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    while let Some((id, ask)) = crate::ai::next() {
+        match ai_question(&ask) {
+            Ok(question) => {
+                let table = LuaValue::Table(vec![
+                    (LuaValue::string("id"), LuaValue::Number(f64::from(id))),
+                    (
+                        LuaValue::string("seat"),
+                        LuaValue::string(&crate::lobby::hex(&ask.seat)),
+                    ),
+                    (LuaValue::string("question"), question),
+                ]);
+                // SAFETY: Lua calls this with its own state, on its thread.
+                return unsafe { push_or_nil(api, l, Some(&table)) };
+            }
+            Err(why) => crate::ai::answer(id, Err(Text::lossy(&why))),
+        }
+    }
+    0
+}
+
+/// `aiSeat(kind, value)`: the room's owner, from the game's Multiplayer
+/// window, seats an AI player (`"add"`, `"easy"`, `"normal"` or `"hard"`)
+/// or removes one (`"remove"`, its id); the launcher carries it out as the
+/// main menu's lobby would. `true`, or `false` and why.
+unsafe extern "C-unwind" fn native_ai_seat(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (kind, value) = unsafe { (string_arg(api, l, 1, 16), string_arg(api, l, 2, 64)) };
+    let action = match (kind.as_deref(), value.as_deref()) {
+        (Some("add"), Some(difficulty)) => crate::lobby::parse_action(&format!(
+            r#"{{"action":"add_ai","difficulty":"{}"}}"#,
+            difficulty.escape_default()
+        )),
+        (Some("remove"), Some(id)) => crate::lobby::parse_action(&format!(
+            r#"{{"action":"remove_ai","player":"{}"}}"#,
+            id.escape_default()
+        )),
+        _ => Err("aiSeat(\"add\", difficulty) or aiSeat(\"remove\", id)".to_owned()),
+    };
+    let outcome = action.and_then(crate::lobby::queue);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// An AI's question as the table the mod reads.
+fn ai_question(ask: &tpf3mp_bridge::ai::AiAsk) -> Result<LuaValue, String> {
+    use tpf3mp_bridge::ai::AiQuestion;
+    match &ask.question {
+        AiQuestion::Verdict(payload) => {
+            let action = Action::from_payload(payload).map_err(|error| error.to_string())?;
+            let table = action_to_lua(&action).map_err(|error| error.to_string())?;
+            Ok(LuaValue::Table(vec![(LuaValue::string("Verdict"), table)]))
+        }
+        other => tpf3mp_proto::lua::to_lua(other).map_err(|error| error.to_string()),
+    }
+}
+
+/// `aiAnswer(id, ok, answer)`: the mod's answer to question `id`, a table
+/// as `tpf3mp_bridge::ai::AiAnswer` names its fields (positions in metres),
+/// or with `ok` false why it has none. `true`, or `false` and why the answer
+/// does not read; the agent hears that instead.
+unsafe extern "C-unwind" fn native_ai_answer(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let read = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as above.
+        unsafe { ai_answer_from(api, l) }
+    }))
+    .unwrap_or_else(|_| Err((None, "the hook failed reading the AI answer".into())));
+    // SAFETY: as above.
+    unsafe { (api.settop)(l, top) };
+    let outcome = match read {
+        Ok((id, answer)) => {
+            crate::ai::answer(id, answer);
+            Ok(())
+        }
+        Err((Some(id), why)) => {
+            crate::ai::answer(id, Err(Text::lossy(&why)));
+            Err(why)
+        }
+        Err((None, why)) => Err(why),
+    };
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// The answer on the stack: its id, and the answer or why there is none.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread.
+#[allow(clippy::type_complexity)]
+unsafe fn ai_answer_from(
+    api: &LuaApi,
+    l: State,
+) -> Result<(u32, Result<tpf3mp_bridge::ai::AiAnswer, Text<256>>), (Option<u32>, String)> {
+    // SAFETY: the caller's.
+    unsafe {
+        if (api.gettop)(l) < 3 || (api.type_of)(l, 1) != TNUMBER {
+            return Err((None, "aiAnswer(id, ok, answer)".into()));
+        }
+        let number = (api.tonumberx)(l, 1, std::ptr::null_mut());
+        if !(0.0..=f64::from(u32::MAX)).contains(&number) || number.fract() != 0.0 {
+            return Err((None, "an answer's id is a question's".into()));
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let id = number as u32;
+        if (api.toboolean)(l, 2) == 0 {
+            let why = string_arg(api, l, 3, 256).unwrap_or_else(|| "no answer".to_owned());
+            return Ok((id, Err(Text::lossy(&why))));
+        }
+        if (api.type_of)(l, 3) != TTABLE {
+            return Err((Some(id), "an answer is a table".into()));
+        }
+        let mut nodes = 0;
+        let tree = read(api, l, 3, 0, &mut nodes).map_err(|why| (Some(id), why))?;
+        let answer = tpf3mp_proto::lua::from_lua::<tpf3mp_bridge::ai::AiAnswer>(&tree)
+            .map_err(|error| (Some(id), format!("the answer does not read: {error}")))?;
+        // The link carries a message of at most MAX_MESSAGE: one larger
+        // would be refused there, so the agent hears why here.
+        let size = tpf3mp_bridge::encode(&tpf3mp_bridge::ToAgent::AiAnswer {
+            id,
+            answer: Ok(answer.clone()),
+        })
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX);
+        if size > tpf3mp_bridge::MAX_MESSAGE {
+            return Err((
+                Some(id),
+                format!("the answer is {size} bytes, over the link's message size"),
+            ));
+        }
+        Ok((id, Ok(answer)))
+    }
 }
 
 /// The local player, as the room's `Begin` names it.
@@ -1871,6 +2038,58 @@ pub fn take_said() -> Vec<ChatText> {
     shared().room.said.drain(..).collect()
 }
 
+/// The last explicit choice, coalesced while the worker is busy. Native
+/// getter changes (including snapshot restoration) never enter this queue.
+pub fn take_chosen_speed() -> Option<u64> {
+    shared().room.chosen_speed.take()
+}
+
+fn choose_speed(speed: Option<f64>) -> Result<(), &'static str> {
+    let speed = match speed {
+        Some(0.0) => 0,
+        Some(1.0) => 1,
+        Some(2.0) => 2,
+        Some(4.0) => 4,
+        _ => return Err("choose pause, 1x, 2x or 4x"),
+    };
+    if !in_room() {
+        return Err("not in a running room");
+    }
+    let mut s = shared();
+    if s.load.is_some() {
+        return Err("the room world is loading");
+    }
+    let room = &mut s.room;
+    let Some(info) = &room.info else {
+        return Err("room status is not ready");
+    };
+    if room.me != Some(info.owner) {
+        return Err("only the host controls speed");
+    }
+    room.chosen_speed = Some(speed);
+    Ok(())
+}
+
+/// `chooseSpeed(0|1|2|4)`: explicit user input, not a native speed sample.
+unsafe extern "C-unwind" fn native_choose_speed(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: called by Lua with its own live state and argument frame.
+    let result = choose_speed(unsafe { number_arg(api, l, 1) });
+    // SAFETY: a C function's frame has room for these two results.
+    unsafe {
+        (api.pushboolean)(l, c_int::from(result.is_ok()));
+        match result {
+            Ok(()) => 1,
+            Err(why) => {
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
 /// The room as `status()` gives it, or `None` before the room's game.
 fn room_status() -> Option<LuaValue> {
     // Before this module's lock: the lobby's is never taken under it.
@@ -1968,6 +2187,41 @@ fn room_status() -> Option<LuaValue> {
     if let Some(step) = room.diverged {
         fields.push((LuaValue::string("diverged"), LuaValue::Number(step as f64)));
     }
+    // The room's AI players (docs/AI_PLAYERS.md).
+    #[allow(clippy::cast_precision_loss)]
+    let ais = LuaValue::Table(
+        info.ais
+            .iter()
+            .enumerate()
+            .map(|(index, ai)| {
+                (
+                    LuaValue::Number((index + 1) as f64),
+                    LuaValue::Table(vec![
+                        (
+                            LuaValue::string("id"),
+                            LuaValue::string(&crate::lobby::hex(&ai.player)),
+                        ),
+                        (LuaValue::string("name"), LuaValue::string(ai.name.as_str())),
+                        (
+                            LuaValue::string("difficulty"),
+                            LuaValue::string(match ai.difficulty {
+                                tpf3mp_proto::AiDifficulty::Easy => "easy",
+                                tpf3mp_proto::AiDifficulty::Normal => "normal",
+                                tpf3mp_proto::AiDifficulty::Hard => "hard",
+                            }),
+                        ),
+                        (LuaValue::string("yours"), LuaValue::Boolean(ai.yours)),
+                    ]),
+                )
+            })
+            .collect(),
+    );
+    fields.push((LuaValue::string("ais"), ais));
+    // Whether its owner may seat more: the server seats AI players.
+    fields.push((
+        LuaValue::string("ai_seats"),
+        LuaValue::Boolean(info.ai_seats),
+    ));
     Some(LuaValue::Table(fields))
 }
 
@@ -3660,6 +3914,7 @@ pub(crate) mod tests {
             history: VecDeque::new(),
             replay: false,
             said: VecDeque::new(),
+            chosen_speed: None,
         };
     }
 
@@ -4387,7 +4642,7 @@ my_timetables";
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
             ),
-            Ok("16|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("17|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -4566,6 +4821,8 @@ my_timetables";
                 },
             ])
             .unwrap(),
+            ai_seats: false,
+            ais: BoundedVec::default(),
         }));
         notice(&Notice::Speed(Speed(200)));
         notice(&Notice::Chat {
@@ -4589,6 +4846,38 @@ my_timetables";
             Ok("Julian: the bus is late|0".into()),
             "heard once"
         );
+        // Native entry point checks authority and values, then delivers only
+        // explicit input once. Reads and snapshot lifecycle cannot fabricate it.
+        set_in_room(true);
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(4)"),
+            Ok("false|only the host controls speed".into())
+        );
+        set_me(player(1));
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(3)"),
+            Ok("false|choose pause, 1x, 2x or 4x".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(0/0)"),
+            Ok("false|choose pause, 1x, 2x or 4x".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(2)"),
+            Ok("true".into())
+        );
+        assert_eq!(take_chosen_speed(), Some(2));
+        assert_eq!(take_chosen_speed(), None);
+        lua.run("tpf3mp_native.chooseSpeed(4)").unwrap();
+        request_load("snapshot");
+        assert_eq!(take_chosen_speed(), None);
+        assert_eq!(
+            lua.run("return tpf3mp_native.chooseSpeed(4)"),
+            Ok("false|the room world is loading".into())
+        );
+        shared().load = None;
+        set_me(player(2));
+        set_in_room(false);
         // The world the room sends loads: the divergence is over, and its
         // GUI, which starts with no chat, gets what was said so far once,
         // as old lines, then what is new.

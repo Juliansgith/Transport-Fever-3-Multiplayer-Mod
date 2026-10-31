@@ -67,7 +67,7 @@ pub trait Writable: Memory {
 
 impl Writable for crate::modules::Process {
     fn write_u8(&self, address: usize, value: u8) -> bool {
-        if address == 0 || !crate::image::readable(address, 1) {
+        if address == 0 || !crate::image::readable_cached(address, 1) {
             return false;
         }
         // SAFETY: a committed byte of the tool object on the game's heap,

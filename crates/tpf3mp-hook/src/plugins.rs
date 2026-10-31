@@ -460,7 +460,7 @@ pub static SERVICES: abi::Services = abi::Services {
 
 #[allow(unsafe_code)]
 unsafe extern "C" fn service_read(address: *const c_void, out: *mut u8, len: usize) -> i32 {
-    if out.is_null() || !crate::image::readable(address as usize, len) {
+    if out.is_null() || !crate::image::readable_cached(address as usize, len) {
         return abi::error::UNREADABLE;
     }
     // SAFETY: `len` readable bytes at `address` (checked), and the plugin's

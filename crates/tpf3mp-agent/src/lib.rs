@@ -3,6 +3,7 @@
 //! link to the in-game hook builds on this (see `docs/ARCHITECTURE.md`).
 
 pub mod about;
+mod ai;
 pub mod bridge;
 pub mod content;
 pub mod diagnostics;
@@ -306,6 +307,15 @@ pub enum ClientEvent {
     Preview {
         from: PlayerId,
         preview: Option<Payload>,
+    },
+    /// The AI seats this client drives from now on, all of them; none to
+    /// stop driving (docs/AI_PLAYERS.md, "The driver").
+    AiDrive(Vec<tpf3mp_proto::AiSeat>),
+    /// The room refused an action this client sent for an AI seat.
+    AiRejected {
+        seat: PlayerId,
+        client_seq: u64,
+        reason: IntentRejection,
     },
     /// The connection ended.
     Closed(quinn::ConnectionError),
@@ -782,6 +792,36 @@ impl Client {
         self.done(Request::Kick(player)).await
     }
 
+    /// Seats an AI player in the room: its owner only (docs/AI_PLAYERS.md).
+    pub async fn add_ai(&self, difficulty: tpf3mp_proto::AiDifficulty) -> Result<(), ClientError> {
+        self.done(Request::AddAi { difficulty }).await
+    }
+
+    /// Removes an AI player from the room: its owner only.
+    pub async fn remove_ai(&self, seat: PlayerId) -> Result<(), ClientError> {
+        self.done(Request::RemoveAi(seat)).await
+    }
+
+    /// An action for an AI seat this client drives.
+    pub async fn send_ai_intent(
+        &self,
+        seat: PlayerId,
+        client_seq: u64,
+        payload: Payload,
+    ) -> Result<(), ClientError> {
+        self.send(GameMessage::AiIntent {
+            seat,
+            client_seq,
+            payload,
+        })
+        .await
+    }
+
+    /// What an AI seat this client drives keeps for its next driver.
+    pub async fn send_ai_memo(&self, seat: PlayerId, memo: Payload) -> Result<(), ClientError> {
+        self.send(GameMessage::AiMemo { seat, memo }).await
+    }
+
     /// Says something to everyone in the room.
     pub async fn chat(&self, text: ChatText) -> Result<(), ClientError> {
         self.done(Request::Chat(text)).await
@@ -1002,6 +1042,16 @@ async fn read_control(
             ServerMessage::ContentDiff(diff) => ClientEvent::ContentDiff(diff),
             ServerMessage::Notice(text) => ClientEvent::Notice(text),
             ServerMessage::RoomMods(room) => ClientEvent::RoomMods(room),
+            ServerMessage::AiDrive { seats } => ClientEvent::AiDrive(seats),
+            ServerMessage::AiRejected {
+                seat,
+                client_seq,
+                reason,
+            } => ClientEvent::AiRejected {
+                seat,
+                client_seq,
+                reason,
+            },
             ServerMessage::Preview { from, preview } => {
                 // Advisory: never a reason to stop reading the control
                 // stream, which carries the responses.

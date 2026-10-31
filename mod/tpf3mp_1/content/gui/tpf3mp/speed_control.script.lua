@@ -1,6 +1,6 @@
--- Guests' clock buttons show the room's accepted speed. Never write
--- that value into GAME_SPEED: the hook reads changes there as requests,
--- so copying a display value back would send another request to the room.
+-- Clock buttons show the room's accepted speed. Only explicit helper API
+-- calls send requests; restored GAME_SPEED and automatic native commits
+-- cannot change the room. Local writes retain the game's camera/particle behavior.
 --
 -- Uses build 40408's GameSpeedControl recipe and GameSpeedApi (the game's
 -- gui/game_bar/game_bar_widgets.tl and gui/main/game_context.d.tl). The
@@ -34,10 +34,57 @@ function data()
 		return link:status() or {} -- unknown room status grants no controls
 	end
 
+	-- The stock row and keyboard shortcuts share this API. Decorate its
+	-- user-entry functions, preserving stock layout, restrictions and hints.
+	-- Automatic helper commits and snapshot restoration do not call these
+	-- decorated entries. Weak keys let replaced world APIs be collected.
+	local wrapped = setmetatable({}, { __mode = "k" })
+	local function wrapHelper(params)
+		local node = params.gameSpeedHelper:get()
+		if not node then return end
+		local helper = node:getApi()
+		if not helper or wrapped[helper] then return end
+		wrapped[helper] = true
+		local get, set = helper.getSpeed, helper.setSpeed
+		local toggle, cycle = helper.togglePause, helper.cycleSpeed
+		local lastNonZero = 1
+		helper.getSpeed = function()
+			local status = roomNow()
+			if not status then return get() end
+			local speed = status.speed and status.speed / 100
+			if speed ~= 0 and speed ~= 1 and speed ~= 2 and speed ~= 4 then return -1 end
+			if speed > 0 then lastNonZero = speed end
+			return speed
+		end
+		helper.setSpeed = function(speed)
+			local status = roomNow()
+			if not status then return set(speed) end
+			if not isHost(status) or not helper.isEnabled() then return end
+			if speed == 0 and getFeatures().GameSpeedPause == true then return end
+			if speed ~= 0 and speed ~= 1 and speed ~= 2 and speed ~= 4 then return end
+			if link:chooseSpeed(speed) then
+				if speed > 0 then lastNonZero = speed end
+				set(speed)
+			end
+		end
+		helper.togglePause = function()
+			if not roomNow() then return toggle() end
+			local speed = helper.getSpeed()
+			if speed >= 0 then helper.setSpeed(speed == 0 and lastNonZero or 0) end
+		end
+		helper.cycleSpeed = function()
+			if not roomNow() then return cycle() end
+			local speed = helper.getSpeed()
+			if speed >= 0 then helper.setSpeed(speed == 1 and 2 or speed == 2 and 4 or 1) end
+		end
+	end
+
 	local speeds = { 0, 100, 200, 400 }
 	local icons = { "playback_pause", "playback_play", "playback_play_2", "playback_play_4" }
 	local names = { "Pause", "Speed: 1x", "Speed: 2x", "Speed: 4x" }
 	local RoomSpeed = react.RegisterRecipe("Tpf3mpRoomSpeed", function(params, userParam)
+		-- NodeRef:GetApi is invalid during render/useState initialization.
+		react.onStep(function() wrapHelper(params) end)
 		local state = engine_react_util.useStepStateTimer(function()
 			local status = roomNow()
 			return {
@@ -80,6 +127,17 @@ function data()
 	return {
 		replace = function(replacementApi)
 			if not link then return end
+			-- GameSpeedHelper automatically commits its local performance cap,
+			-- even without a button press. During catch-up that can turn 4x
+			-- into 3x/2x/1x, which the native getter reports as a host request.
+			-- The room gate already paces simulation and holds lagging peers;
+			-- keep the stock helper's supported 0/1/2/4 choices unthrottled.
+			-- Returning zero would make its onStep commit every frame.
+			local estimate = api.gui.game.getEstimatedMaximumGameSpeed
+			api.gui.game.getEstimatedMaximumGameSpeed = function(...)
+				if roomNow() ~= nil then return 4 end
+				return estimate(...)
+			end
 			local function roomFeatures(...)
 				local features = getFeatures(...)
 				local status = roomNow()
@@ -93,6 +151,7 @@ function data()
 			gameGlobals.getDisableFeatures = roomFeatures
 			replacementApi.ReplaceRecipe(original, RoomSpeed)
 			link:log("guest speed controls follow the room; only the host can change speed")
+			link:log("local speed throttling is off in rooms; the room gate controls simulation pace")
 		end,
 	}
 end

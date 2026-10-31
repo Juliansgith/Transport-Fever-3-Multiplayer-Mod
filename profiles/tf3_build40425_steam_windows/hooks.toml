@@ -1865,6 +1865,32 @@ offset = 0
 prologue = "48 89 5C 24 20 89 54 24 10 57 48 81 EC E0 00 00 00"
 required = false
 
+# Frame pacing's clock (crates/tpf3mp-hook/src/pacing.rs). UI::CGameUI::
+# GameStep's call of CGame::Step (0x11f400; the call at 0x65f26c), whose dt
+# (rdx, µs) CGame::Step adds to totalTime, the vehicles' clock. The hook
+# checks the callee's first 31 bytes, up to that add, before redirecting.
+[[target]]
+name = "UI::CGameUI::GameStep/CGame::Step call"
+signature = "4C 8D 84 24 F0 01 00 00 48 8B 8E E0 06 00 00 E8 ?? ?? ?? ?? 90 48 8B 8C 24 28 02 00 00"
+offset = 15
+prologue = "E8"
+required = false
+
+# The faster bitmap span (crates/tpf3mp-hook/src/fastbitmap.rs;
+# investigation/PERFORMANCE_AUDIT_2026-10-29.md). An anonymous
+# BitmapRasterizable's span fill (0x91a560, vtable 0x3709b70 slot 1,
+# game/urbansim/init_streets_util.cpp's rasterizer): start = y*[rcx+0x10] + x,
+# then bits [start, start+count) of the std::vector<uint32_t> at [[rcx+8]],
+# set one at a time with bts; returns false. 61% of "Connect industry" in a
+# profile. The signature is the whole function, entry to `ret`; the hook
+# fills the same bits by whole words and hands any span below bit 0 back.
+[[target]]
+name = "fast-bitmap-span: BitmapRasterizable::Fill"
+signature = "44 0F AF 41 10 4C 8B D9 44 03 C2 43 8D 04 08 44 3B C0 7D 37 49 63 C0 45 8B D1 66 0F 1F 44 00 00 49 8B 4B 08 4C 8B C0 49 C1 E8 05 48 8B 11 42 8B 0C 82 4E 8D 0C 82 48 8B D0 83 E2 1F 48 FF C0 0F AB D1 41 89 09 49 83 EA 01 75 D5 32 C0 C3"
+offset = 0
+prologue = "44 0F AF 41 10 4C 8B D9 44 03 C2 43 8D 04 08"
+required = false
+
 # The fused emission grid (crates/tpf3mp-hook/src/emission; investigation/
 # TF3_SIM_COST_2026-10-05.md §1). ecs::EmissionGridSystem::Update
 # (0xaa9230, vtable 0x1436fcab8 slot 11; Game/ecs/EmissionGridSystem.cpp):
@@ -1879,4 +1905,34 @@ name = "emission::EmissionGridSystem::Update"
 signature = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 00 01 00 00 C5 F8 29 70 B8 C5 F8 28 F3 4C 8B EA 48 8B D9 48 3B 51 40 0F 85"
 offset = 0
 prologue = "48 8B C4 48 89 58 18 48 89 50 10 48 89 48 08"
+required = false
+
+# Init's lambda_9(captures, interval_time), RVA 0x1513f0. Its captured
+# IndustryChainSpawnState is not replicated with GameState. Share one native
+# history across the two buffers so local batch timing cannot alter retries.
+[[target]]
+name = "industry schedule"
+signature = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 10 FE FF FF 48 81 EC F0 02 00 00 4C 8B F9 4C 8B 41 08 49 8B 40 18 80 B8 F8 01 00 00 00"
+offset = 0
+prologue = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57"
+required = true
+
+# Faster saves, ported from silver2127's TPF2 Big Maps via the existing
+# 40408 implementation. Exact 40425 disassembly: PushCompressor 0x32deb0,
+# sole caller 0x32cba0 (save setup). Level is read from 0x37e4ad8, shared
+# with PushDecompressor 0x32e140. Patch only this load. The buffer signature
+# includes the compressor's stream constructor call, excluding decompression.
+# Both targets verified unique with tpfre, 2026-10-28. Opt-in remains required.
+[[target]]
+name = "save: PushCompressor level load"
+signature = "8B 05 ?? ?? ?? ?? 41 89 43 10 49 8D 43 88"
+offset = 0
+prologue = "8B 05 0E 6C 4B 03"
+required = false
+
+[[target]]
+name = "save: PushCompressor buffer size"
+signature = "4C 8B CB 41 B8 80 00 00 00 48 8D 54 24 30 48 8B C8 E8 E9 B5 FE FF"
+offset = 3
+prologue = "41 B8 80 00 00 00"
 required = false

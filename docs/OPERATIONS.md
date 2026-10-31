@@ -484,6 +484,22 @@ the others play on. Their saves are larger too: a 1.4 GB world must upload
 within the 90-minute limit, so at least about 260 KB/s from the player who
 uploads it.
 
+## AI players
+
+AI players (docs/AI_PLAYERS.md) are not yet released, and a server seats
+none unless its operator turns them on:
+
+```sh
+tpf3mp-server ... --ai-players
+```
+
+(or `TPF3MP_AI_PLAYERS=true`). With it, rooms' owners may seat them, and
+the server logs a warning that they are on; without it, it says so to
+every launcher (`Welcome::ai_players`), the Multiplayer windows offer none,
+and a request to seat one is refused (`AiPlayersOff`). AI players seated
+before stay seated, and may be removed. The test rig's local server
+(`tpf3mp-rig`) turns them on.
+
 ## Native mods
 
 A server can offer its players native mods such as Big Maps
@@ -822,7 +838,16 @@ tunnel instead, through the reverse proxy.
   memory and CPU. It mounts only its certificates (read-only) and its own
   data volume.
 - The admin endpoint has no authentication. The compose file publishes it
-  on the host's loopback only.
+  on the host's loopback only. It refuses browsers even there: a request
+  with an `Origin` header, or with a `Host` that is not an IP address or
+  `localhost` (DNS rebinding), is answered `403`, so a web page the
+  operator opens cannot post a notice to every player or read the rooms
+  through a forwarded port. Call it by address (`curl
+  http://127.0.0.1:9470/...`), as `tpf3mp-ctl` and `collect-logs.sh` do.
+- Wrong invites are counted for 65,536 addresses at once. When that many
+  are counted, the oldest address not yet stopped (20 wrong invites) is
+  forgotten to count a new one; only a table of stopped addresses refuses
+  newcomers until their ten minutes end.
 - One network address holds at most 8 sessions and 4 handshakes in progress
   (`--max-sessions-per-address`, `--max-handshakes-per-address`). An IPv6
   /64 counts as one address. A household or LAN party with more players

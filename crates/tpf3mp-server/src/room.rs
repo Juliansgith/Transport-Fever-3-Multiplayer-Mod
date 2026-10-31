@@ -19,12 +19,13 @@ use tokio::{
 use tpf3mp_nativemods::{index::Setting, terms::settings_digest};
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
-    BannerId, ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
-    FixedBytes, IntentRejection, Invite, LaneDigest, LoadingStage, MemberView, NativeMod, Payload,
-    Platform, PlayerId, RequestError, Resume, RoomDeclaration, RoomId, RoomListing, RoomMods,
-    RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal, Secret, ServerMessage,
-    SnapshotId, Speed, StartSave, StartView, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
-    WorldOffer, decode_frame, encode_frame, native_term_version_is_full,
+    AiDifficulty, AiSeat, AiView, BannerId, ChatText, ContentFingerprint, ContentManifest, Event,
+    EventBody, FRAME_HEADER_LEN, FixedBytes, IntentRejection, Invite, LaneDigest, LoadingStage,
+    MAX_AI_SEATS, MemberView, NativeMod, Payload, Platform, PlayerId, RequestError, Resume,
+    RoomDeclaration, RoomId, RoomListing, RoomMods, RoomPhase, RoomSettings, RoomView, RulesName,
+    SavedWorld, Seal, Secret, ServerMessage, SnapshotId, Speed, StartSave, StartView,
+    TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer, decode_frame, encode_frame,
+    native_term_version_is_full,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -54,6 +55,17 @@ const MAX_AHEAD: Duration = Duration::from_secs(2);
 /// Intents per second a player may send, and the burst allowed on top.
 const INTENTS_PER_SECOND: u32 = 20;
 const INTENT_BURST: u32 = 40;
+/// The names AI players take, by seat (docs/AI_PLAYERS.md, "What players
+/// see"). Each founds its company under its name.
+const AI_NAMES: [&str; MAX_AI_SEATS] = [
+    "Rossi Transport",
+    "Lindqvist Lines",
+    "Okafor Freight",
+    "Moreau Rail",
+    "Tanaka Express",
+    "Kowalski Cargo",
+    "Novak Transit",
+];
 /// Chat messages a player may send per second, and the burst on top. Every
 /// message goes to every member.
 const CHATS_PER_SECOND: u32 = 1;
@@ -357,6 +369,31 @@ pub(crate) enum RoomCommand {
         player: PlayerId,
         target: PlayerId,
         reply: Reply,
+    },
+    /// The owner seats an AI player.
+    AddAi {
+        player: PlayerId,
+        difficulty: AiDifficulty,
+        reply: Reply,
+    },
+    /// The owner removes an AI player.
+    RemoveAi {
+        player: PlayerId,
+        target: PlayerId,
+        reply: Reply,
+    },
+    /// An action a member sends for an AI seat it drives.
+    AiIntent {
+        player: PlayerId,
+        seat: PlayerId,
+        client_seq: u64,
+        payload: Payload,
+    },
+    /// What an AI seat a member drives keeps for its next driver.
+    AiMemo {
+        player: PlayerId,
+        seat: PlayerId,
+        memo: Payload,
     },
     /// Whether the player is still a member; `NotInRoom` if not, for
     /// example after a kick.
@@ -830,10 +867,16 @@ struct Game {
     saves: Saves,
     /// Who sits at the table as the events say, in join order.
     seated: Vec<Seat>,
+    /// The AI players the events seated, in the order they joined.
+    ais: Vec<AiRecord>,
 }
 
 /// A player at a game's table: who, under which name, on which platform.
 type Seat = (PlayerId, Text<32>, Platform);
+
+/// An AI player as the game's events seat it: who, under which name, how
+/// well.
+pub(crate) type AiRecord = (PlayerId, Text<32>, AiDifficulty);
 
 /// A stretch of a game's turns that clients can resume on.
 struct History {
@@ -921,6 +964,40 @@ pub(crate) struct Room {
     /// The play style its owner chose; not logged, so a restored room is
     /// co-op.
     competitive: bool,
+    /// The room's AI players, in the order they were seated.
+    ais: Vec<AiState>,
+}
+
+/// An AI player's seat (docs/AI_PLAYERS.md, "Seats"): a member of the room
+/// without a connection. One member's game drives it ([`Room::choose_drivers`]).
+struct AiState {
+    player: PlayerId,
+    name: Text<32>,
+    difficulty: AiDifficulty,
+    /// Whether the game knows it: its `AiJoined` is ordered. A seat taken in
+    /// the lobby joins when the game begins.
+    joined: bool,
+    /// The member whose game it looks through, and the link it was told on.
+    driver: Option<(PlayerId, u64)>,
+    /// What it last kept with the room for its next driver; not logged.
+    memo: Option<Payload>,
+    intents: TokenBucket,
+    payload_bytes: TokenBucket,
+}
+
+impl AiState {
+    fn new(player: PlayerId, name: Text<32>, difficulty: AiDifficulty, joined: bool) -> Self {
+        Self {
+            player,
+            name,
+            difficulty,
+            joined,
+            driver: None,
+            memo: None,
+            intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
+            payload_bytes: TokenBucket::new(PAYLOAD_BYTES_PER_SECOND, PAYLOAD_BURST),
+        }
+    }
 }
 
 /// What every room of a server shares.
@@ -1059,6 +1136,7 @@ impl Room {
             start_world: None,
             closed: false,
             competitive: spec.competitive,
+            ais: Vec::new(),
             summary: Arc::new(std::sync::Mutex::new(Summary {
                 name: Text::lossy(""),
                 rules: Text::lossy(""),
@@ -1098,6 +1176,7 @@ impl Room {
         if !matches!(
             version,
             persist::FORMAT_VERSION
+                | persist::LEGACY_PRE_AI_FORMAT_VERSION
                 | persist::LEGACY_NATIVE_FORMAT_VERSION
                 | persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
         ) {
@@ -1231,6 +1310,7 @@ impl Room {
                 }
                 ruleset.apply(event);
                 seat(&mut game.seated, event);
+                seat_ai(&mut game.ais, event);
                 if let EventBody::PlayerLeft { player, kicked } = &event.body {
                     if *player == owner
                         && let Some((first, ..)) = game.seated.first()
@@ -1296,6 +1376,15 @@ impl Room {
                 loaded: None,
                 rebased: None,
                 stream_from: 0,
+            })
+            .collect();
+        // The AI players the events seated; their drivers are chosen once
+        // members' games keep up again.
+        let ais: Vec<AiState> = game
+            .ais
+            .iter()
+            .map(|(player, name, difficulty)| {
+                AiState::new(*player, name.clone(), *difficulty, true)
             })
             .collect();
         if members.is_empty() {
@@ -1374,6 +1463,7 @@ impl Room {
             start_world: None,
             closed: false,
             competitive: false,
+            ais,
             // Private after a restart: the log keeps no listing.
             summary: Arc::new(std::sync::Mutex::new(Summary {
                 name: Text::lossy(""),
@@ -1501,6 +1591,16 @@ impl Room {
                 Phase::Lobby => self.start_world.as_ref().map(StartWorld::view),
                 Phase::Running(_) => None,
             },
+            ais: self
+                .ais
+                .iter()
+                .map(|ai| AiView {
+                    player: ai.player,
+                    name: ai.name.clone(),
+                    difficulty: ai.difficulty,
+                    driver: ai.driver.map(|(member, _)| member),
+                })
+                .collect(),
         }
     }
 
@@ -1608,6 +1708,37 @@ impl Room {
                 reply,
             } => {
                 let _ = reply.send(self.kick(player, target));
+            }
+            RoomCommand::AddAi {
+                player,
+                difficulty,
+                reply,
+            } => {
+                let result = self.add_ai(player, difficulty);
+                self.answer_and_broadcast(reply, result);
+            }
+            RoomCommand::RemoveAi {
+                player,
+                target,
+                reply,
+            } => {
+                let result = self.remove_ai(player, target);
+                self.answer_and_broadcast(reply, result);
+            }
+            RoomCommand::AiIntent {
+                player,
+                seat,
+                client_seq,
+                payload,
+            } => self.ai_intent(player, seat, client_seq, payload),
+            RoomCommand::AiMemo { player, seat, memo } => {
+                if let Some(ai) = self
+                    .ais
+                    .iter_mut()
+                    .find(|ai| ai.player == seat && ai.driver.is_some_and(|(d, _)| d == player))
+                {
+                    ai.memo = Some(memo);
+                }
             }
             RoomCommand::Chat {
                 player,
@@ -1994,6 +2125,177 @@ impl Room {
         self.leave(target, true)
     }
 
+    /// The owner seats an AI player (`Request::AddAi`): at once in a running
+    /// game, when the game begins in the lobby. It takes the lowest free
+    /// seat, so an AI seated again in a seat takes over the company the
+    /// last one there left: its id is the same.
+    fn add_ai(&mut self, by: PlayerId, difficulty: AiDifficulty) -> Result<(), RequestError> {
+        if by != self.owner {
+            return Err(RequestError::NotOwner);
+        }
+        let seat = (0..MAX_AI_SEATS)
+            .find(|&n| {
+                let id = PlayerId::ai_seat(&self.id, n as u32);
+                !self.ais.iter().any(|ai| ai.player == id)
+            })
+            .ok_or(RequestError::TooManyAis)?;
+        let player = PlayerId::ai_seat(&self.id, seat as u32);
+        let name = Text::lossy(AI_NAMES[seat]);
+        let joined = matches!(self.phase, Phase::Running(_));
+        if let Phase::Running(game) = &mut self.phase {
+            game.append(
+                EventBody::AiJoined {
+                    player,
+                    name: name.clone(),
+                    difficulty,
+                },
+                self.ruleset.as_mut(),
+            );
+        }
+        info!(room = %self.id, ai = %player, difficulty = difficulty.name(), "the owner seated an AI player");
+        self.ais
+            .push(AiState::new(player, name, difficulty, joined));
+        if joined {
+            self.advance_and_seal(Instant::now());
+        }
+        self.choose_drivers();
+        Ok(())
+    }
+
+    /// The owner removes an AI player (`Request::RemoveAi`): it decides
+    /// nothing more, and its company runs on.
+    fn remove_ai(&mut self, by: PlayerId, target: PlayerId) -> Result<(), RequestError> {
+        if by != self.owner {
+            return Err(RequestError::NotOwner);
+        }
+        let index = self
+            .ais
+            .iter()
+            .position(|ai| ai.player == target)
+            .ok_or(RequestError::NoSuchPlayer)?;
+        let ai = self.ais.remove(index);
+        info!(room = %self.id, ai = %target, "the owner removed an AI player");
+        if let (true, Phase::Running(game)) = (ai.joined, &mut self.phase) {
+            game.append(EventBody::AiLeft { player: target }, self.ruleset.as_mut());
+            self.advance_and_seal(Instant::now());
+        }
+        if let Some((driver, _)) = ai.driver {
+            self.tell_driver(driver);
+        }
+        Ok(())
+    }
+
+    /// An action a member sends for an AI seat (`GameMessage::AiIntent`):
+    /// ordered as the seat's own intent when the member drives the seat, it
+    /// is within the seat's limits and the room's rules accept it, as a
+    /// player's intent is (`intent`).
+    fn ai_intent(&mut self, player: PlayerId, seat: PlayerId, client_seq: u64, payload: Payload) {
+        let now = Instant::now();
+        let Some(index) = self.members.iter().position(|m| m.player == player) else {
+            return;
+        };
+        let rejection = match &mut self.phase {
+            Phase::Lobby => Some(IntentRejection::GameNotRunning),
+            Phase::Running(game) => match self.ais.iter_mut().find(|ai| ai.player == seat) {
+                Some(ai) if ai.joined && ai.driver.is_some_and(|(d, _)| d == player) => {
+                    if !ai.intents.take(now, 1) || !ai.payload_bytes.take(now, payload.len() as u64)
+                    {
+                        Some(IntentRejection::RateLimited)
+                    } else if let Err(code) = self.ruleset.validate(&seat, &payload) {
+                        Some(IntentRejection::Refused { code })
+                    } else {
+                        game.append(
+                            EventBody::Command {
+                                player: seat,
+                                client_seq,
+                                payload,
+                                seal: None,
+                            },
+                            self.ruleset.as_mut(),
+                        );
+                        None
+                    }
+                }
+                _ => Some(IntentRejection::NotDriver),
+            },
+        };
+        match rejection {
+            Some(reason) => {
+                metrics::increment(&self.metrics.intents_refused);
+                self.push(
+                    index,
+                    ServerMessage::AiRejected {
+                        seat,
+                        client_seq,
+                        reason,
+                    },
+                );
+            }
+            None => self.advance_and_seal(now),
+        }
+    }
+
+    /// Picks the member every AI looks through (docs/AI_PLAYERS.md, "The
+    /// driver"): its driver while that member's game keeps up with the room,
+    /// else the room's owner's, else the earliest-joined member's that does;
+    /// none in the lobby, or while no game keeps up. Tells each member whose
+    /// seats changed, a member who came back on a new link included.
+    fn choose_drivers(&mut self) {
+        let keeps_up =
+            |m: &Member| m.link.is_some() && m.streaming && matches!(m.pace, Pace::Following(_));
+        let candidate = match self.phase {
+            Phase::Lobby => None,
+            Phase::Running(_) => {
+                let current = self.ais.iter().find_map(|ai| ai.driver.map(|(d, _)| d));
+                current
+                    .and_then(|d| self.members.iter().find(|m| m.player == d && keeps_up(m)))
+                    .or_else(|| {
+                        self.members
+                            .iter()
+                            .find(|m| m.player == self.owner && keeps_up(m))
+                    })
+                    .or_else(|| self.members.iter().find(|m| keeps_up(m)))
+                    .and_then(|m| m.link.as_ref().map(|link| (m.player, link.id)))
+            }
+        };
+        let mut told = Vec::new();
+        for ai in &mut self.ais {
+            let driver = if ai.joined { candidate } else { None };
+            if ai.driver != driver {
+                told.extend(ai.driver.map(|(d, _)| d));
+                told.extend(driver.map(|(d, _)| d));
+                ai.driver = driver;
+            }
+        }
+        if told.is_empty() {
+            return;
+        }
+        told.sort_unstable();
+        told.dedup();
+        for member in told {
+            self.tell_driver(member);
+        }
+        self.broadcast_view();
+    }
+
+    /// Sends `member` every AI seat it drives now, with each one's memo.
+    fn tell_driver(&mut self, member: PlayerId) {
+        let seats: Vec<AiSeat> = self
+            .ais
+            .iter()
+            .filter(|ai| ai.driver.is_some_and(|(d, _)| d == member))
+            .map(|ai| AiSeat {
+                player: ai.player,
+                name: ai.name.clone(),
+                difficulty: ai.difficulty,
+                memo: ai.memo.clone(),
+            })
+            .collect();
+        if let Some(index) = self.members.iter().position(|m| m.player == member) {
+            self.push(index, ServerMessage::AiDrive { seats });
+        }
+    }
+
     fn disconnected(&mut self, player: PlayerId, link: u64) {
         // The member's link may already be gone, dropped by the room for a
         // full or closed queue.
@@ -2227,6 +2529,18 @@ impl Room {
                 },
                 self.ruleset.as_mut(),
             );
+        }
+        // Then the AI players seated in the lobby.
+        for ai in &mut self.ais {
+            game.append(
+                EventBody::AiJoined {
+                    player: ai.player,
+                    name: ai.name.clone(),
+                    difficulty: ai.difficulty,
+                },
+                self.ruleset.as_mut(),
+            );
+            ai.joined = true;
         }
         let first = Stream {
             next_turn: game.next_turn,
@@ -2493,9 +2807,13 @@ impl Room {
                 }
             }
         };
-        if let Some(reason) = rejection {
-            metrics::increment(&self.metrics.intents_refused);
-            self.push(index, ServerMessage::IntentRejected { client_seq, reason });
+        match rejection {
+            Some(reason) => {
+                metrics::increment(&self.metrics.intents_refused);
+                self.push(index, ServerMessage::IntentRejected { client_seq, reason });
+            }
+            // Ordered now, not at the next tick.
+            None => self.advance_and_seal(now),
         }
     }
 
@@ -3374,10 +3692,21 @@ impl Room {
         self.expire_start_world(now);
         self.decide_waiting_rounds(now);
         self.demote_stalled(now);
+        self.choose_drivers();
         self.run_saves(now);
         if self.closed {
             return;
         }
+        self.advance_and_seal(now);
+    }
+
+    /// Moves the clock on to `now` and seals a turn when the frontier moved,
+    /// events wait or the speed changed: every tick, and as soon as a
+    /// player's command is ordered, so a command reaches every game without
+    /// waiting for the next tick (up to `tick`, 100 ms by default, of what
+    /// players feel on their own commands). The pacer carries fractions of
+    /// a step, so sealing between ticks changes no step's pace.
+    fn advance_and_seal(&mut self, now: Instant) {
         let Phase::Running(game) = &mut self.phase else {
             return;
         };
@@ -3781,7 +4110,26 @@ fn seat(seated: &mut Vec<Seat>, event: &Event) {
             seated.retain(|(seat, ..)| seat != player);
             seated.push((*player, name.clone(), *platform));
         }
-        EventBody::Command { .. } | EventBody::Save => {}
+        EventBody::Command { .. }
+        | EventBody::Save
+        | EventBody::AiJoined { .. }
+        | EventBody::AiLeft { .. } => {}
+    }
+}
+
+/// Keeps a game's AI players as its events seat and remove them.
+fn seat_ai(ais: &mut Vec<AiRecord>, event: &Event) {
+    match &event.body {
+        EventBody::AiJoined {
+            player,
+            name,
+            difficulty,
+        } => {
+            ais.retain(|(seat, ..)| seat != player);
+            ais.push((*player, name.clone(), *difficulty));
+        }
+        EventBody::AiLeft { player } => ais.retain(|(seat, ..)| seat != player),
+        _ => {}
     }
 }
 
@@ -3846,6 +4194,7 @@ impl Game {
             }],
             saves: Saves::default(),
             seated: Vec::new(),
+            ais: Vec::new(),
         }
     }
 
@@ -3884,6 +4233,7 @@ impl Game {
             .map(|&(id, after_turn)| History { id, after_turn })
             .collect();
         self.seated.clone_from(&base.seated);
+        self.ais.clone_from(&base.ais);
         true
     }
 
@@ -3922,6 +4272,7 @@ impl Game {
             seated: self.seated.clone(),
             banned: banned.iter().copied().collect(),
             rules,
+            ais: self.ais.clone(),
         }
     }
 
@@ -4039,6 +4390,7 @@ impl Game {
         self.next_event += 1;
         ruleset.apply(&event);
         seat(&mut self.seated, &event);
+        seat_ai(&mut self.ais, &event);
         self.pending.push(event);
     }
 
@@ -4437,6 +4789,7 @@ mod tests {
                 members: Vec::new(),
             })),
             competitive: false,
+            ais: Vec::new(),
         };
         let path = RoomLog::path_for(&dir, &id);
 
@@ -5064,6 +5417,7 @@ mod tests {
             seated: Vec::new(),
             banned: Vec::new(),
             rules: Vec::new(),
+            ais: Vec::new(),
         };
         let fresh = || Game::new(RoomSettings::DEFAULT, 1);
         assert!(fresh().rebase(&good));
@@ -5119,6 +5473,7 @@ mod tests {
             seated: vec![(player(1), Text::new("p1").unwrap(), Platform::current())],
             banned: Vec::new(),
             rules: Vec::new(),
+            ais: Vec::new(),
         };
         let start = StartRecord {
             version: persist::FORMAT_VERSION,
@@ -5222,6 +5577,69 @@ mod tests {
         assert_eq!(room.owner, player(2), "the second player took over");
         let seats: Vec<PlayerId> = room.members.iter().map(|m| m.player).collect();
         assert_eq!(seats, [player(2), player(3), player(1)]);
+        drop(room);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A restarted server keeps the AI players the events seated, and a
+    /// compacted log's base keeps them too; nobody drives them until a
+    /// member's game keeps up again.
+    #[test]
+    fn a_restored_room_keeps_its_ai_players() {
+        let dir = std::env::temp_dir().join(format!("tpf3mp-ais-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let id = RoomId(FixedBytes([8; 16]));
+        let (rossi, lindqvist) = (PlayerId::ai_seat(&id, 0), PlayerId::ai_seat(&id, 1));
+        let ai = |player: PlayerId, difficulty| EventBody::AiJoined {
+            player,
+            name: Text::new("an AI").unwrap(),
+            difficulty,
+        };
+        let mut game = Game::new(RoomSettings::DEFAULT, 1);
+        let mut rules = Recorder::default();
+        let mut frames = Vec::new();
+        game.append(joined(1), &mut rules);
+        game.append(ai(rossi, AiDifficulty::Easy), &mut rules);
+        game.append(ai(lindqvist, AiDifficulty::Hard), &mut rules);
+        frames.extend(game.seal(10).unwrap());
+        game.append(EventBody::AiLeft { player: rossi }, &mut rules);
+        frames.extend(game.seal(20).unwrap());
+        assert_eq!(
+            game.base(Vec::new(), None, &BTreeSet::new()).ais,
+            [(lindqvist, Text::new("an AI").unwrap(), AiDifficulty::Hard)],
+            "a compacted log's base keeps them"
+        );
+        let start = StartRecord {
+            version: persist::FORMAT_VERSION,
+            history: 1,
+            id,
+            name: Text::new("ais").unwrap(),
+            rules: native(),
+            manifest: None,
+            owner: player(1),
+            max_players: 8,
+            settings: RoomSettings::DEFAULT,
+            invite_tag: vec![0; 32],
+            password_tag: None,
+            members: Vec::new(),
+            base: None,
+            native_mods: Vec::new(),
+        };
+        let mut log = RoomLog::create(&dir, &start).unwrap();
+        for frame in &frames {
+            log.append(frame).unwrap();
+        }
+        drop(log);
+        let room = recover_room(&RoomLog::path_for(&dir, &id), &dir);
+        let ais: Vec<(PlayerId, AiDifficulty)> = room
+            .ais
+            .iter()
+            .map(|ai| (ai.player, ai.difficulty))
+            .collect();
+        assert_eq!(ais, [(lindqvist, AiDifficulty::Hard)]);
+        assert!(room.ais.iter().all(|ai| ai.joined && ai.driver.is_none()));
+        assert_eq!(room.owner, player(1), "an AI never owns the room");
+        assert_eq!(room.view().ais.len(), 1);
         drop(room);
         std::fs::remove_dir_all(&dir).unwrap();
     }

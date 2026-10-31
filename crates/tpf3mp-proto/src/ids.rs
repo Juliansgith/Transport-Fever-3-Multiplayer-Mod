@@ -145,9 +145,35 @@ impl fmt::Debug for LogSession {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlayerId(pub FixedBytes<32>);
 
+/// The first 16 bytes of every AI seat's player id, `tpf3mp-ai-seat::`
+/// (docs/AI_PLAYERS.md, "Seats"). An AI seat has no key: the server derives
+/// its id ([`PlayerId::ai_seat`]), and every game tells an AI by these bytes
+/// alone. A player's Ed25519 key starts with them with a chance of 2^-128,
+/// and the server refuses one that does.
+pub const AI_SEAT_PREFIX: [u8; 16] = *b"tpf3mp-ai-seat::";
+
 impl PlayerId {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0.0
+    }
+
+    /// The id of AI seat `seat` of room `room`: [`AI_SEAT_PREFIX`], then the
+    /// first 16 bytes of SHA-256 over a domain, the room and the seat.
+    pub fn ai_seat(room: &RoomId, seat: u32) -> Self {
+        let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+        context.update(b"tpf3mp-ai-seat-v1");
+        context.update(&room.0.0);
+        context.update(&seat.to_le_bytes());
+        let digest = context.finish();
+        let mut bytes = [0; 32];
+        bytes[..16].copy_from_slice(&AI_SEAT_PREFIX);
+        bytes[16..].copy_from_slice(&digest.as_ref()[..16]);
+        Self(FixedBytes(bytes))
+    }
+
+    /// Whether this is an AI seat's id ([`AI_SEAT_PREFIX`]).
+    pub fn is_ai(&self) -> bool {
+        self.0.0[..16] == AI_SEAT_PREFIX
     }
 }
 

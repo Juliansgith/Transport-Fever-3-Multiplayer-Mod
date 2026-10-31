@@ -95,6 +95,7 @@ fn whole_view(state: &State) -> LobbyView {
         )
         .unwrap_or_default(),
         competitive: room.competitive,
+        ai_seats: room.ai_seats,
         start: state.start.as_ref().map(|start| LobbyStart {
             name: Text::lossy(&start.name),
             map: Text::lossy(&start.map),
@@ -105,6 +106,21 @@ fn whole_view(state: &State) -> LobbyView {
             save: Text::lossy(&upload.save),
             percent: upload.percent.min(100),
         }),
+        ais: BoundedVec::new(
+            room.ais
+                .iter()
+                .take(tpf3mp_proto::MAX_AI_SEATS)
+                .filter_map(|ai| {
+                    Some(tpf3mp_bridge::LobbyAi {
+                        player: api::parse_player(&ai.id)?,
+                        name: Text::lossy(&ai.name),
+                        difficulty: api::ai_difficulty(&ai.difficulty)?,
+                        yours: ai.yours,
+                    })
+                })
+                .collect(),
+        )
+        .unwrap_or_default(),
     });
     LobbyView {
         banner: state.banner.as_deref().and_then(banner),
@@ -356,6 +372,12 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
         LobbyAction::Ready { ready } => Action::Ready { ready },
         LobbyAction::Start => Action::Start,
         LobbyAction::Kick { player } => Action::Kick {
+            player: api::player_hex(&player),
+        },
+        LobbyAction::AddAi { difficulty } => Action::AddAi {
+            difficulty: api::ai_difficulty_name(difficulty).to_owned(),
+        },
+        LobbyAction::RemoveAi { player } => Action::RemoveAi {
             player: api::player_hex(&player),
         },
         LobbyAction::Chat { text } => Action::Chat {
@@ -771,6 +793,8 @@ pub(crate) mod tests {
                     },
                 ],
                 competitive: false,
+                ai_seats: false,
+                ais: Vec::new(),
             }),
             chat: (0..50)
                 .map(|n| ChatLine {

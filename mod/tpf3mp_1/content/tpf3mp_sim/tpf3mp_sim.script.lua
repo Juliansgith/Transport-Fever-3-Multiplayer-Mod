@@ -1140,5 +1140,50 @@ function data()
 			end
 		end,
 	}
+	-- What this script's update and postUpdate cost in this Lua state, said
+	-- in the log every 250 room updates: the game runs every game script
+	-- inside its simulation step, so this is time every update of the room
+	-- waits for. os.clock, as wallClock above; nothing read from it reaches
+	-- the world, and an error in either function reaches the game as before.
+	do
+		local update, postUpdate = script.update, script.postUpdate
+		local cost = { n = 0, update = 0, post = 0, maxUpdate = 0, maxPost = 0 }
+		-- Every value either function returns goes back to its caller
+		-- (handleEvent calls postUpdate for its answer).
+		local function updated(t0, work, ...)
+			local t1 = wallClock()
+			if t0 and t1 and work ~= nil then
+				local ms = (t1 - t0) * 1000
+				cost.update = cost.update + ms
+				if ms > cost.maxUpdate then cost.maxUpdate = ms end
+			end
+			return work, ...
+		end
+		script.update = function(...)
+			local t0 = wallClock()
+			return updated(t0, update(...))
+		end
+		local function posted(t0, work, ...)
+			local t1 = wallClock()
+			if t0 and t1 and type(work) == "table" then
+				local ms = (t1 - t0) * 1000
+				cost.n, cost.post = cost.n + 1, cost.post + ms
+				if ms > cost.maxPost then cost.maxPost = ms end
+				if cost.n >= 250 then
+					local l = linked()
+					if l then
+						l:log(string.format("script-cost: updates=%d update mean_ms=%.3f max_ms=%.3f postUpdate mean_ms=%.3f max_ms=%.3f",
+							cost.n, cost.update / cost.n, cost.maxUpdate, cost.post / cost.n, cost.maxPost))
+					end
+					cost = { n = 0, update = 0, post = 0, maxUpdate = 0, maxPost = 0 }
+				end
+			end
+			return ...
+		end
+		script.postUpdate = function(params, state, dt, work)
+			local t0 = wallClock()
+			return posted(t0, work, postUpdate(params, state, dt, work))
+		end
+	end
 	return script
 end

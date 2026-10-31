@@ -119,6 +119,25 @@ function companies.live(roster)
 	return out
 end
 
+-- The first 16 bytes of every AI player's id, `tpf3mp-ai-seat::`, in hex
+-- (tpf3mp_proto::AI_SEAT_PREFIX; docs/AI_PLAYERS.md, "Seats"). The room's
+-- server gives AI seats their ids, and refuses a player whose key starts
+-- so: every game tells an AI by its id alone.
+companies.AI_PREFIX = "747066336d702d61692d736561743a3a"
+
+-- Whether `player` (64 hex digits) is an AI player's seat.
+function companies.isAi(player)
+	return type(player) == "string" and #player == 64 and player:sub(1, 32) == companies.AI_PREFIX
+end
+
+-- The live company an AI player founded, if any.
+local function foundedBy(roster, player)
+	for _, c in ipairs(roster.list) do
+		if not c.gone and c.founder == player then return c end
+	end
+	return nil
+end
+
 -- The company `player` plays for: the one they joined, else company 0.
 function companies.of(roster, player)
 	for _, m in ipairs(roster.members) do
@@ -831,6 +850,22 @@ local function loanOfferGroup(roster, id)
 	return nil
 end
 
+-- Starts math.random afresh for one of company `id`'s loan draws, in its
+-- offer slot `slot`, from `key`: the game's loan utility draws an offer's
+-- terms from math.random, as the cooldown is drawn. Every game makes the
+-- draw at the same step, but not always at the same point of math.random's
+-- sequence (2026-10-30, two games: a company's refreshed offer differed
+-- between them, so the loan it took applied in one game only and the
+-- room's balances diverged). Each draw from a seed of its own, the same in
+-- every game, makes the terms the same whatever drew before.
+local function seedLoanDraw(id, slot, key)
+	local h = 7
+	for _, n in ipairs({ id or 0, slot or 0, math.floor(key or 0) }) do
+		h = (h * 1000003 + n) % 2147483629
+	end
+	math.randomseed(h)
+end
+
 local function createLoan(api, kind)
 	if type(ug_require) ~= "function" or type(kind) ~= "string" then return nil end
 	local ok, util = pcall(ug_require, "::/game_mechanics/finance/loan_util.tl")
@@ -856,6 +891,7 @@ local function seedLoanOffers(roster, id, api)
 	for i, source in ipairs(real.availableLoans) do
 		local offer = copyOffer(source)
 		if offer and offer.cooldownUntil ~= nil then
+			seedLoanDraw(id, i, 0)
 			offer = createLoan(api, offer.type) or offer
 		end
 		if offer then offers[i] = offer end
@@ -920,6 +956,7 @@ function companies.refreshLoanOffers(roster, api)
 	for _, group in ipairs(type(roster) == "table" and roster.loanOffers or {}) do
 		for i, offer in ipairs(type(group) == "table" and group.availableLoans or {}) do
 			if type(offer) == "table" and type(offer.cooldownUntil) == "number" and offer.cooldownUntil < now then
+				seedLoanDraw(group.company, i, offer.cooldownUntil)
 				local fresh = createLoan(api, offer.type)
 				if not fresh then return false, "the game's loan utility cannot replace a cooled-down offer" end
 				group.availableLoans[i] = fresh
@@ -1040,9 +1077,13 @@ function companies.borrow(roster, id, terms, nextTerms, send, api)
 	if now == nil then return false, "this game does not say what time it is" end
 	local minCooldown, maxCooldown = length * 4, length * 8
 	if maxCooldown > 2147483647 then return false, "this game's loan cooldown is out of range" end
+	-- From the month's start, and drawn from the room's count of loans:
+	-- the same in every game even where one applied the loan a tick from
+	-- another.
+	seedLoanDraw(id, slot, roster.nextLoan or 1)
 	local cooldown = math.random(minCooldown, maxCooldown)
 	book(api, send, c.entity, amount, "LOAN")
-	state.availableLoans[slot] = { type = terms.type, cooldownUntil = now + cooldown }
+	state.availableLoans[slot] = { type = terms.type, cooldownUntil = math.floor(now / length) * length + cooldown }
 	roster.loans = roster.loans or {}
 	roster.nextLoan = (roster.nextLoan or 1)
 	roster.loans[#roster.loans + 1] = { id = roster.nextLoan, company = id, amount = amount, remaining = amount,
@@ -1348,6 +1389,10 @@ function companies.run(roster, player, op, send, api, seal)
 	if kind == "Create" then
 		local name = trimmed(type(body) == "table" and body.name)
 		if name == nil then return false, "a company needs a name" end
+		-- An AI keeps one company: the one it founded (D32).
+		if companies.isAi(player) and foundedBy(roster, player) then
+			return false, "an AI player keeps the one company it founded"
+		end
 		if #companies.live(roster) >= companies.MAX then
 			return false, "the room has " .. companies.MAX .. " companies already"
 		end
@@ -1366,6 +1411,12 @@ function companies.run(roster, player, op, send, api, seal)
 		local c = companies.find(roster, body)
 		if c == nil or c.gone then return false, "there is no company " .. tostring(body) end
 		if memberOf(roster, player, c.id) then return true, nil, c.id end
+		-- An AI's company is the AI's alone, and an AI plays for no other
+		-- (D32): an AI and a player would undo each other's plans.
+		if companies.isAi(c.founder) and c.founder ~= player then
+			return false, c.name .. " is an AI player's company"
+		end
+		if companies.isAi(player) then return false, "an AI player plays for the company it founds" end
 		if companies.locked(c) then
 			if not sealFor(seal, c.id) then return false, "joining " .. c.name .. " needs its password" end
 			if seal.tag ~= c.lock.tag then return false, "the password for " .. c.name .. " is not right" end

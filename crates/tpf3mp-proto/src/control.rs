@@ -85,6 +85,19 @@ pub enum ServerMessage {
     /// which mods to have before declaring theirs. `None`: the room's owner
     /// declared none, and the room only compares content.
     RoomMods(Option<Box<RoomMods>>),
+    /// The AI seats this member drives from now on, all of them: none to
+    /// stop driving (docs/AI_PLAYERS.md, "The driver"). Sent whenever that
+    /// changes.
+    AiDrive {
+        seats: Vec<AiSeat>,
+    },
+    /// The room refused an action this member sent for an AI seat it drives
+    /// ([`GameMessage::AiIntent`]), which then never happens.
+    AiRejected {
+        seat: PlayerId,
+        client_seq: u64,
+        reason: IntentRejection,
+    },
 }
 
 /// One chat message: a line of text, no longer than a short paragraph.
@@ -108,6 +121,10 @@ pub struct Welcome {
     pub session_id: SessionId,
     /// The rules this server offers rooms, the default first.
     pub rules: Vec<RulesOffer>,
+    /// Whether its rooms' owners may seat AI players
+    /// ([`Request::AddAi`]): an operator's choice, off unless they turn it
+    /// on. The Multiplayer windows offer AI players only where it is.
+    pub ai_players: bool,
 }
 
 /// The name of a set of rules a room is played by, such as `native`: the
@@ -233,6 +250,16 @@ pub enum Request {
         proposed: bool,
         page: u16,
     },
+    /// The room's owner seats an AI player (docs/AI_PLAYERS.md), in the
+    /// lobby or in a running game: at most [`MAX_AI_SEATS`]
+    /// (`TooManyAis`). It joins the game with the room's next event, or when
+    /// the game begins.
+    AddAi {
+        difficulty: AiDifficulty,
+    },
+    /// The room's owner removes an AI player: it decides nothing more, and
+    /// its company runs on as a player's does when they leave.
+    RemoveAi(PlayerId),
 }
 
 /// Bytes of the native-mods index one page carries.
@@ -520,6 +547,11 @@ pub enum RequestError {
     UnknownBanner,
     /// Members must use the same world-check algorithm and partition plan.
     ScanPlanMismatch,
+    // Last, so the earlier variants keep their tags on the wire.
+    /// The room seats [`MAX_AI_SEATS`] AI players already.
+    TooManyAis,
+    /// The server seats no AI players ([`Welcome::ai_players`]).
+    AiPlayersOff,
 }
 
 impl fmt::Display for RequestError {
@@ -550,6 +582,8 @@ impl fmt::Display for RequestError {
                 "the save the room starts from is still being uploaded; start once it is there"
             }
             Self::NotListed => "the room is private, so it is in no list",
+            Self::TooManyAis => "the room seats as many AI players as it may",
+            Self::AiPlayersOff => "this server does not seat AI players",
             Self::ScanPlanMismatch => "world-check settings differ from this room; use the same native scan mode and parts/stride, then restart the launcher and game",
             Self::UnknownBanner => "there is no such banner",
         })
@@ -626,6 +660,53 @@ pub struct RoomView {
     /// from ([`Request::StartWorld`]); `None` when the owner's game provides
     /// the world, and once the game runs.
     pub start: Option<StartView>,
+    /// The room's AI players, in the order they were added.
+    pub ais: Vec<AiView>,
+}
+
+/// How well an AI player plays (docs/AI_PLAYERS.md, "The three
+/// difficulties"): never with more money, prices or knowledge than a player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AiDifficulty {
+    Easy,
+    Normal,
+    Hard,
+}
+
+impl AiDifficulty {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Easy => "Easy",
+            Self::Normal => "Normal",
+            Self::Hard => "Hard",
+        }
+    }
+}
+
+/// The most AI players a room seats: with one player, a room's eight
+/// companies (D21).
+pub const MAX_AI_SEATS: usize = 7;
+
+/// An AI player as the room shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiView {
+    /// Its seat's id ([`PlayerId::ai_seat`]): what its actions carry.
+    pub player: PlayerId,
+    pub name: Text<32>,
+    pub difficulty: AiDifficulty,
+    /// The member whose game it looks through now, if any.
+    pub driver: Option<PlayerId>,
+}
+
+/// An AI seat as its driver is handed it ([`ServerMessage::AiDrive`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiSeat {
+    pub player: PlayerId,
+    pub name: Text<32>,
+    pub difficulty: AiDifficulty,
+    /// What the AI last kept with the server ([`GameMessage::AiMemo`]), if
+    /// anything: how its previous driver left it.
+    pub memo: Option<Payload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -734,6 +815,23 @@ pub enum GameMessage {
     /// running game and keeps, orders and logs none. Sent again every few
     /// seconds while it shows, so a receiver forgets one that stops coming.
     Preview(Option<Payload>),
+    /// An action for an AI seat this member drives
+    /// ([`ServerMessage::AiDrive`]): the room orders it as the seat's own
+    /// intent, after the same checks, or refuses it
+    /// ([`ServerMessage::AiRejected`]). `client_seq` counts the seat's
+    /// actions as this driver sends them.
+    AiIntent {
+        seat: PlayerId,
+        client_seq: u64,
+        payload: Payload,
+    },
+    /// What an AI seat this member drives wants kept for its next driver:
+    /// its plans in progress, at most a payload's size. The room keeps the
+    /// latest and hands it on with the seat; it logs none.
+    AiMemo {
+        seat: PlayerId,
+        memo: Payload,
+    },
 }
 
 /// A password a player typed for an intent: a company's, to join it or to
@@ -775,4 +873,8 @@ pub enum IntentRejection {
     Refused {
         code: u16,
     },
+    // Last, so the earlier variants keep their tags on the wire.
+    /// The sender does not drive that AI seat, or no longer: the room handed
+    /// it to another member, or the seat is gone ([`GameMessage::AiIntent`]).
+    NotDriver,
 }

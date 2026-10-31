@@ -1279,6 +1279,8 @@ mod tests {
                 })
                 .collect(),
             competitive: false,
+            ai_seats: false,
+            ais: Vec::new(),
         }
     }
 

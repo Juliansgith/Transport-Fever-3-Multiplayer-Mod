@@ -40,7 +40,7 @@ function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
 	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
-		"bridge", "modevents", "guard", "hudguard", "worldload", "junctions", "apply", "previews" }
+		"bridge", "modevents", "guard", "hudguard", "worldload", "junctions", "apply", "previews", "ai" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -273,7 +273,7 @@ function data()
 	local function followMyCompany()
 		local follow = require("tpf3mp.follow")
 		local ok, why = follow.install(api, myCompany, function(line) link:log(line .. " (the Multiplayer plugin's state)") end)
-		pcall(follow.watchLines, api, ug_require, link, "the Multiplayer plugin's state")
+		pcall(follow.watchLines, api, ug_require, link, "the Multiplayer plugin's state", true)
 		link:log(ok and "the GUI's company follows the player's"
 			or ("the GUI's company cannot follow the player's: " .. tostring(why)))
 	end
@@ -1013,6 +1013,44 @@ function data()
 			}, false, PLAYERS_WIDTH - 24, 10, true)
 			players[#players + 1] = gap(8)
 		end
+		-- The AI players (docs/AI_PLAYERS.md): the room's owner adds and
+		-- removes them here as in the main menu's lobby.
+		local owner = false
+		for _, p in ipairs(status.players or {}) do
+			if p.me and p.owner then owner = true end
+		end
+		local DIFFICULTY = { easy = "Easy", normal = "Normal", hard = "Hard" }
+		for _, ai in ipairs(status.ais or {}) do
+			local tags = { "AI", DIFFICULTY[ai.difficulty] or tostring(ai.difficulty) }
+			if ai.yours then tags[#tags + 1] = "your game drives it" end
+			local cells = {
+				label(ai.name, "font-scale-body", PLAYERS_WIDTH - 40, 16),
+				label(table.concat(tags, " · "), "font-scale-annotation", nil, 16),
+			}
+			if owner then
+				cells[#cells + 1] = builtin.Button{ meta = { class = "secondary", tooltip = "Remove " .. tostring(ai.name) },
+					content = builtin.TextView{ meta = { class = "font-scale-annotation" }, text = "Remove" },
+					onClick = function()
+						local ok, why = link:aiSeat("remove", ai.id)
+						notice = ok and ("Removing " .. tostring(ai.name) .. "...") or ("Not removed: " .. tostring(why))
+					end }
+			end
+			players[#players + 1] = box(cells, false, PLAYERS_WIDTH - 24, 10, true)
+			players[#players + 1] = gap(8)
+		end
+		-- Where the server seats them: off unless its operator turns them on.
+		if owner and status.ai_seats and #(status.ais or {}) < 7 then
+			local adds = { label("Add an AI player:", "font-scale-annotation") }
+			for _, d in ipairs({ { "easy", "Easy" }, { "normal", "Normal" }, { "hard", "Hard" } }) do
+				adds[#adds + 1] = builtin.Button{ meta = { class = "secondary", tooltip = "Seat a " .. d[2] .. " AI player" },
+					content = builtin.TextView{ meta = { class = "font-scale-annotation" }, text = d[2] },
+					onClick = function()
+						local ok, why = link:aiSeat("add", d[1])
+						notice = ok and ("Seating a " .. d[2] .. " AI player...") or ("Not seated: " .. tostring(why))
+					end }
+			end
+			players[#players + 1] = box(adds, true, PLAYERS_WIDTH - 24)
+		end
 		local companies = {}
 		companyRows(companies, status, shared, drafts)
 		if #companies == 0 then companies[1] = label("Waiting for the companies...", "font-scale-annotation") end
@@ -1199,6 +1237,18 @@ function data()
 			if link then
 				local took, why = pcall(require("tpf3mp.previews").take, link, previewProposal, drawPreview)
 				if not took then say("taking the build previews failed: " .. tostring(why)) end
+			end
+			-- The questions of the AI players this game drives
+			-- (tpf3mp/ai.lua; docs/AI_PLAYERS.md): a few a frame.
+			if link then
+				local served, why = pcall(require("tpf3mp.ai").serve, link, {
+					roster = function()
+						local state = scriptState()
+						return state and state.companies
+					end,
+					registry = registryNow,
+				})
+				if not served then say("answering the AI players failed: " .. tostring(why)) end
 			end
 			if link and guardedCmd then
 				local delivered, why = pcall(function()

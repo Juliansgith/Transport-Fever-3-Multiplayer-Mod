@@ -22,6 +22,7 @@
 //! links it into the game. [`Session`] is the hook's whole side of the
 //! link; the game-specific part of the hook only implements [`Game`].
 
+pub mod ai;
 mod gate;
 pub mod mods;
 mod session;
@@ -83,7 +84,23 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// in [`LobbyView::servers`] before a room list
 /// is fetched, so the game's invite form can ask for an explicit region.
 /// Version 29 carries the agreed world-check scan plan in [`ToHook::Begin`].
-pub const BRIDGE_VERSION: u32 = 29;
+/// 30 carries the AI players' questions and answers ([`ToHook::AiAsk`],
+/// [`ToAgent::AiAnswer`]), their seats in the room ([`RoomInfo::ais`],
+/// [`LobbyRoom::ais`]) and the lobby's [`LobbyAction::AddAi`] and
+/// [`LobbyAction::RemoveAi`] (docs/AI_PLAYERS.md). 31 the AI's truck
+/// questions: [`ai::AiQuestion::Industries`], [`ai::AiQuestion::Route`]
+/// and the cargo of [`ai::AiQuestion::Models`]. 34 how worn each of the AI
+/// company's vehicles is ([`ai::AiVehicle::worn`]). 35 each AI line's
+/// profit, load and waiting cargo as the game reads them, and each loan the
+/// AI's company owes ([`ai::AiLine::profit`], [`ai::AiCompany::owed`]). 36
+/// each AI line's income ([`ai::AiLine::income`]), and other companies'
+/// stops in each town and the towns their lines join it to
+/// ([`ai::AiTown::rivals`], [`ai::AiTown::linked`]). 37 what other
+/// companies have at each industry ([`ai::AiIndustry::carried`]). 38 what
+/// each AI line made over its last three months ([`ai::AiLine::recent`]).
+/// 39 whether the room's owner may seat AI players
+/// ([`LobbyRoom::ai_seats`], [`RoomInfo::ai_seats`]).
+pub const BRIDGE_VERSION: u32 = 39;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
@@ -167,6 +184,9 @@ pub enum ToHook {
         from: PlayerId,
         preview: Option<Payload>,
     },
+    /// A question about the world for an AI seat this game drives; the
+    /// game answers [`ToAgent::AiAnswer`] with the same `id`, in any order.
+    AiAsk { id: u32, ask: ai::AiAsk },
 }
 
 /// Most chat lines a [`LobbyView`] carries: the newest.
@@ -462,6 +482,21 @@ pub struct LobbyRoom {
     /// For the owner: the save they picked on its way to the room. Start
     /// waits for it.
     pub upload: Option<LobbyUpload>,
+    /// The room's AI players, in the order they were seated.
+    pub ais: BoundedVec<LobbyAi, { tpf3mp_proto::MAX_AI_SEATS }>,
+    /// Whether its owner may seat more: the server seats AI players
+    /// ([`tpf3mp_proto::Welcome::ai_players`]).
+    pub ai_seats: bool,
+}
+
+/// An AI player of the room, as the Multiplayer windows show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyAi {
+    pub player: PlayerId,
+    pub name: Text<32>,
+    pub difficulty: tpf3mp_proto::AiDifficulty,
+    /// Whether this player's game drives it.
+    pub yours: bool,
 }
 
 /// The save a room starts from, as its page shows it.
@@ -608,6 +643,14 @@ pub enum LobbyAction {
     },
     /// Find the installed mods again, as after installing one from Mod Hub.
     RescanMods,
+    /// The room's owner seats an AI player (docs/AI_PLAYERS.md).
+    AddAi {
+        difficulty: tpf3mp_proto::AiDifficulty,
+    },
+    /// The room's owner removes an AI player.
+    RemoveAi {
+        player: PlayerId,
+    },
 }
 
 /// One mod the room's owner picked in the game's mod selector, with what
@@ -635,6 +678,10 @@ pub struct RoomInfo {
     pub name: Text<48>,
     pub owner: PlayerId,
     pub members: BoundedVec<RoomMember, { MAX_ROOM_MEMBERS as usize }>,
+    /// The room's AI players, in the order they were seated.
+    pub ais: BoundedVec<LobbyAi, { tpf3mp_proto::MAX_AI_SEATS }>,
+    /// Whether its owner may seat more, as [`LobbyRoom::ai_seats`].
+    pub ai_seats: bool,
 }
 
 /// One member of the room.
@@ -703,6 +750,11 @@ pub enum ToAgent {
     /// action as [`ToAgent::Command`] carries one, at most
     /// `tpf3mp_proto::MAX_PREVIEW` bytes, or `None` once it shows nothing.
     Preview { preview: Option<Payload> },
+    /// The game's answer to [`ToHook::AiAsk`] `id`, or why it has none.
+    AiAnswer {
+        id: u32,
+        answer: Result<ai::AiAnswer, Text<256>>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -878,6 +930,17 @@ mod tests {
                     save: Text::new("u".repeat(MAX_SAVE_NAME)).unwrap(),
                     percent: 100,
                 }),
+                ai_seats: false,
+                ais: BoundedVec::new(vec![
+                    LobbyAi {
+                        player: PlayerId(FixedBytes([0xaa; 32])),
+                        name: Text::new("a".repeat(32)).unwrap(),
+                        difficulty: tpf3mp_proto::AiDifficulty::Normal,
+                        yours: true,
+                    };
+                    tpf3mp_proto::MAX_AI_SEATS
+                ])
+                .unwrap(),
             }),
             chat: BoundedVec::new(vec![line; MAX_LOBBY_CHAT]).unwrap(),
             rules: BoundedVec::new(vec![

@@ -491,8 +491,9 @@ mod tests {
 mod windows_tests {
     use super::*;
     use windows_sys::Win32::System::Memory::{
-        MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS,
-        PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect, VirtualQuery,
+        MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, MEMORY_BASIC_INFORMATION, PAGE_GUARD,
+        PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
+        VirtualQuery,
     };
 
     const PAGE: usize = 0x1000;
@@ -585,7 +586,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn reserved_freed_and_no_access_pages_are_refused() {
+    fn reserved_decommitted_and_no_access_pages_are_refused() {
         on();
         let pages = Pages::new(4, 2);
         assert!(probe(pages.base, 2 * PAGE));
@@ -598,10 +599,17 @@ mod windows_tests {
         assert!(probe(pages.base, 8), "the page before it is still fine");
         pages.protect(1, PAGE_READONLY);
         assert_eq!(read::<u64>(pages.base + PAGE), Some(0), "read-only reads");
-        let freed = pages.base;
-        drop(pages);
-        assert!(!probe(freed, 8), "freed");
-        assert_eq!(read::<u64>(freed), None);
+        // Keep the address reserved while freeing its committed storage.
+        // After MEM_RELEASE another test/thread may legally reuse it
+        // between probe and read, so asserting it is unreadable races.
+        // SAFETY: the two committed pages are ours; Drop releases the
+        // retained reservation after these checks.
+        assert_ne!(
+            unsafe { VirtualFree(pages.base as *mut _, 2 * PAGE, MEM_DECOMMIT) },
+            0
+        );
+        assert!(!probe(pages.base, 8), "decommitted");
+        assert_eq!(read::<u64>(pages.base), None);
     }
 
     #[test]

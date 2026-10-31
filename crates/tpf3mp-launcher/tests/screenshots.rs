@@ -400,6 +400,8 @@ fn room(phase: Phase, members: Vec<Member>) -> Room {
         has_password: false,
         members,
         competitive: false,
+        ai_seats: false,
+        ais: Vec::new(),
     }
 }
 

@@ -1039,7 +1039,19 @@ local function nodesOfNetwork(network, index)
 			local near = nodesNear(network, p, tol)
 			if near ~= nil then return near end
 		end
-		if all == nil then all = readNodes(network, index) end
+		if all == nil then
+			-- An AI player's verdicts share one whole read a while
+			-- (tpf3mp/ai.lua, `nodeCache`): the octree misses a node often
+			-- enough that a verdict read the whole network nearly every time,
+			-- holding the driving game's frame for 26 to 71 ms (2026-10-30,
+			-- two games). A node gone since only makes a verdict refuse.
+			local cache = dry and acting and acting.nodeCache
+			all = cache and cache[network] or nil
+			if all == nil then
+				all = readNodes(network, index)
+				if cache then cache[network] = all end
+			end
+		end
 		return all
 	end
 end
@@ -3502,6 +3514,34 @@ local function waypointFor(w)
 	return wp
 end
 
+-- How many transport modes a line lists, one entry each, from 0
+-- (`TransportMode`: TRAIN 7, ELECTRIC_TRAIN 8, ... up to 15).
+local LINE_MODES = 16
+
+-- How many cargo types the game has: a stop's per-cargo lists hold one entry
+-- for each, by number (`cargoTypeRep.getAll`, ids from 0).
+local function cargoCount()
+	local ok, all = pcall(function() return api.res.cargoTypeRep.getAll(true) end)
+	local n = 0
+	if ok and all then
+		for id in pairs(all) do
+			if type(id) == "number" and id + 1 > n then n = id + 1 end
+		end
+	end
+	return n
+end
+
+-- `list` with every cargo type after its last entry set to `value`, as the
+-- game's line window makes a stop's lists (line_util.tl, makeIdvector): one
+-- an action leaves short, as an AI player's that lists up to its cargo's
+-- number, is filled out (not loaded, at 100 %); one of every type, as a
+-- player's, is kept as it is.
+local function everyCargo(list, n, value)
+	local out = seq(list)
+	for i = #out + 1, n do out[i] = value end
+	return out
+end
+
 -- A LineData as the game's Line component. Each stop is at a station the
 -- acting company may use (tpf3mp/companies.lua, mayUse): no company's, its
 -- own, or another company's that keeps its stations open (DECISIONS.md, D22,
@@ -3511,6 +3551,7 @@ end
 local function lineComponent(data, ctx)
 	local line = api.type.Line.new()
 	local stops = {}
+	local cargos = cargoCount()
 	for i, s in ipairs(data.stops) do
 		local stop = api.type.Line.Stop.new()
 		local group = entityOf(ctx, "groups", s.group)
@@ -3529,8 +3570,8 @@ local function lineComponent(data, ctx)
 		stop.maxWaitingTime = s.max_wait
 		stop.maxAdditionalWaitingTime = s.max_extra_wait
 		local config = api.type.Line.StopConfig.new()
-		config.load = seq(s.rules.load)
-		config.maxLoad = seq(s.rules.max_load)
+		config.load = everyCargo(s.rules.load, cargos, false)
+		config.maxLoad = everyCargo(s.rules.max_load, cargos, 1)
 		config.forceUnload = s.rules.force_unload == true
 		config.destroyForConfigChange = s.rules.destroy_for_config_change == true
 		config.destroyForRefresh = s.rules.destroy_for_refresh == true
@@ -3541,8 +3582,18 @@ local function lineComponent(data, ctx)
 		stops[i] = stop
 	end
 	line.stops = stops
+	-- The game copies the list it is handed in order, its keys aside (build
+	-- 40425, read in the console: { [7] = true } became mode 0, and a train
+	-- line refused its trains): mode m is the list's entry m + 1, and every
+	-- mode is listed.
 	local modes = {}
-	for _, m in ipairs(data.modes) do modes[m] = true end
+	for k = 1, LINE_MODES do modes[k] = false end
+	for _, m in ipairs(data.modes) do
+		if type(m) ~= "number" or m < 0 or m >= LINE_MODES or m % 1 ~= 0 then
+			error("a line's transport mode " .. tostring(m), 0)
+		end
+		modes[m + 1] = true
+	end
 	line.vehicleInfo.transportModes = modes
 	line.customFilters = data.custom_filters == true
 	line.reservationPriority = data.reservation_priority
@@ -3988,6 +4039,16 @@ function apply.run(action, ctx)
 	local handler = HANDLERS[kind]
 	if handler == nil then
 		return false, "this version of the mod does not apply " .. tostring(kind) .. " yet"
+	end
+	-- An AI player acts for its own company only: it founds one before
+	-- anything else, and never acts for the room's first (D32).
+	local player = ctx and ctx.player
+	if companiesModule.isAi(player) then
+		local mine = ctx.roster and companiesModule.of(ctx.roster, player)
+		local founding = kind == "CompanyOp" and type(body) == "table" and next(body) == "Create"
+		if not founding and (mine == nil or mine.id == 0) then
+			return false, "an AI player founds its company before anything else"
+		end
 	end
 	local actorBefore, localBefore = "unavailable", "unavailable"
 	if kind == "CompanyOp" then

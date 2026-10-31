@@ -296,7 +296,7 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   native mods do not match its manifest's one for one (`InvalidContent`).
   An owner cannot start a game with native terms until its valid room
   declaration supplies their settings.
-  The room log's start record (format 10) keeps each native mod's full
+  The room log's start record (format 10, 11 since AI players) keeps each native mod's full
   settings beside the manifest terms, and a restored game tells new members
   the same settings. Format-9 and native-free format-8 logs remain readable through explicit legacy layouts and recover with the default rolling-v1 scan plan. Format 10 persists the agreed scan plan. Turn record layouts are unchanged, so recovered older logs can safely append turns and compact into format 10. Historical
   format-9 records with ten-digit native terms still decode, but recovery
@@ -370,9 +370,12 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
 
 ## Turns: the ordered event log
 
-A running room has a **sequencer**. Every tick (100 ms by default) it seals a
-**turn**: a sequence number, the step **frontier** `sealed_through`, the
-session speed, and the events appended since the previous turn. Each event has
+A running room has a **sequencer**. Every tick (100 ms by default), and at
+once whenever it orders a player's command, it seals a **turn**: a sequence
+number, the step **frontier** `sealed_through`, the session speed, and the
+events appended since the previous turn. A command therefore reaches every
+game without waiting for the next tick; the pacer carries fractions of a
+step, so sealing between ticks changes no step's pace. Each event has
 a room-global sequence number and an execution step.
 
 Invariants every client relies on:
@@ -463,7 +466,9 @@ at the room's pace behind a jitter buffer of its own
   than the release.
 
 What players feel on their own commands is their round trip, plus their own
-buffer, plus the wait for the next turn. It is not the room's input delay,
+buffer, plus the wait for the game's next call; the server no longer adds
+the wait for its next tick (up to 100 ms before 2026-10-29). It is not the
+room's input delay,
 and not anyone else's link: a poor connection only delays its owner. Paced
 bots over 150 ms round trips with jitter feel a median of about 220 ms,
 whether the input delay is 60 or 1000 ms.
@@ -481,7 +486,18 @@ These travel on the control stream.
   engine IDs remain local. Schema 10 payloads are refused by schema 11
   clients. The enclosing control protocol and bridge layout are unchanged.
   - The server validates it: the room is running, the sender is a member,
-    rate and size limits hold, and the ruleset accepts it.
+    rate and size limits hold, and the ruleset accepts it. The server for
+    real games (`tpf3mp-server`, and the rig with real games) offers the
+    game's own rules through `GameActions`: an intent must decode as an
+    action of the server's schema (version, every bound, nothing left over)
+    or it is refused with `IntentRejected(Refused { code: 65535 })`
+    (`MALFORMED_ACTION`) and never ordered. A game handed an action it
+    cannot read holds its world for good, so one such payload from a broken
+    or hostile client would otherwise stop every game of the room, and every
+    game that later joined and replayed it. The server and the players'
+    games must therefore share the action schema version exactly (a server
+    of another schema refuses every action): deploy the server together
+    with a release whose actions changed.
   - Accepted: the intent enters the next turn as a `Command` event. The event
     names the player and the client sequence number, so the sender can match
     it.
@@ -547,6 +563,51 @@ These travel on the control stream.
 Game messages that arrive when the sender is not in a running room are
 ignored; an intent is answered with `IntentRejected(GameNotRunning)`. Such
 messages can be in flight when a player leaves, so they are not violations.
+
+## AI players
+
+Protocol 24 seats AI players (docs/AI_PLAYERS.md, D32): companies a
+computer plays through one member's game. Protocol 25 lets a server keep
+them off: `Welcome::ai_players` says whether it seats any, and where it
+does not, `Request::AddAi` is refused `AiPlayersOff`, its room's owner's
+included. They are off unless the server's operator turns them on
+(`--ai-players`, OPERATIONS.md): they are not yet released.
+
+- **Seats.** The room's owner seats one with `Request::AddAi { difficulty }`
+  (Easy, Normal or Hard) and removes one with `Request::RemoveAi(player)`,
+  in the lobby or in a running game; others are refused `NotOwner`, and a
+  room seats at most seven (`TooManyAis`). A seat's id is
+  `PlayerId::ai_seat(room, n)`: the 16 bytes `tpf3mp-ai-seat::`, then 16 of
+  SHA-256 over the room and the seat number, which is the lowest free one.
+  So an AI seated again in a seat has the id, and so the company, the last
+  one there had. Nobody can sign in as a seat: the server refuses a
+  `Hello` whose identity key starts with those bytes, even with a good
+  proof. `RoomView::ais` lists the seats, each with its driver.
+- **Events.** `EventBody::AiJoined { player, name, difficulty }` seats an
+  AI in the game: ordered at once in a running game, after the players'
+  `PlayerJoined` when the game begins for seats taken in the lobby.
+  `EventBody::AiLeft { player }` removes it. Every game learns its AIs from
+  these, in the same order; the room log keeps them, and a compacted log's
+  base keeps the seats (log format 11; format-10 logs still read, with no
+  AI players).
+- **The driver.** The room hands every seat to one member whose game keeps
+  up with the room (streaming, and following within the pacing window):
+  the seats' driver while it keeps up, else the room's owner, else the
+  earliest-joined such member; none in the lobby. It tells the member
+  `ServerMessage::AiDrive { seats }`, all of its seats with each one's
+  memo, whenever that changes, an empty list to stop, and again on a new
+  link after a reconnect.
+- **Actions.** The driver sends `GameMessage::AiIntent { seat, client_seq,
+  payload }`. The room orders it as `EventBody::Command` with the seat as
+  `player` when the sender drives that seat, within the seat's own rate and
+  size limits and the room's rules (`GameActions` checks the action); it
+  answers a refusal with `ServerMessage::AiRejected { seat, client_seq,
+  reason }`, `NotDriver` for a sender that does not drive the seat (any
+  more). The connection meters AI actions with the driver's own intents.
+- **Memo.** `GameMessage::AiMemo { seat, memo }` (at most a payload's
+  size, two a second) is what the AI keeps for its next driver. The room
+  holds the latest in memory, hands it on with the seat, and logs none: a
+  restarted server's AI reads its world anew.
 
 ## Resuming
 
@@ -691,9 +752,13 @@ frame, and is checked against its hash before it is stored; the finished
 file is checked against the manifest's file hash. A server stores received
 chunks compressed by itself, never an uploader's frames. Requests are
 capped at 16 KiB per frame and responses at 11 MiB. A side that sends
-nothing for a minute is given up on, and every chunk must move at
-64 KiB/s for its size (at least 5 s each), so nobody holds a transfer by
-trickling.
+nothing for a minute is given up on. The fetcher gives each chunk a
+64 KiB/s budget for its uncompressed size (at least 5 s, at most a minute).
+The sender uses that budget for the whole requested chunk batch, with one
+deadline rather than renewing it for each frame. This accommodates QUIC
+backpressure while the receiver verifies and stores earlier chunks, while
+still bounding a slow reader. Chunk validation and the fetcher's protection
+against a trickling sender remain unchanged.
 
 **Persistence.** Next to each room's log, a pointer file names its current
 snapshot and where it stands. A restored room keeps offering that snapshot
@@ -799,8 +864,12 @@ one *log session*.
   - Game messages, per connection and per kind: progress reports 200 per
     second with a burst of 400 (excess ones are dropped), intents 40 per
     second with a burst of 80, build previews 5 per second with a burst of
-    10 (excess ones are dropped). Checkpoints are not limited here: the
-    room ignores reports for closed rounds.
+    10 (excess ones are dropped), checkpoint and save reports 4,000 per
+    second with a burst of 8,000 (excess ones are dropped). A game reports
+    at most 3,840 a second at the highest settings a room takes (240 steps
+    a second at 16x, a checkpoint every step) and under two at the
+    defaults; the limit keeps a flood at line rate out of the room's
+    command queue, which every member's progress and intents share.
   - Requests that change nothing, such as setting ready twice, do not send
     everyone the room again.
 - **Password guessing.** A room takes 10 wrong passwords per minute from

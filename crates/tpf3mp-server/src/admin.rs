@@ -6,7 +6,13 @@
 //! source's), and `/rooms` the rooms open now with their members (one
 //! room by its invite, or those of a player or a name), over plain HTTP.
 //! It has no authentication, so it must only listen on a private address:
-//! loopback, or a VPN interface.
+//! loopback, or a VPN interface. Browsers are kept out even there: a request
+//! with an `Origin` header (every cross-site request a page makes) is
+//! refused, and so is one whose `Host` is not an IP address or `localhost`
+//! (DNS rebinding: a page whose name points at 127.0.0.1 sends its own
+//! name). Without that, a page the operator opened could post a notice to
+//! every player, or read the rooms and players' diagnostics, through a port
+//! forwarded to the operator's PC. Scripts call it by address.
 
 use std::{sync::Arc, time::Duration};
 
@@ -70,7 +76,13 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
         .position(|window| window == b"\r\n\r\n")
         .map_or(head.len(), |at| at + 4);
     let request_line = head.split(|byte| *byte == b'\r').next().unwrap_or_default();
+    let refusal = browser_or_foreign_host(&head[..end]);
     let (status, content_type, body) = match request_line {
+        _ if refusal.is_some() => (
+            "403 Forbidden",
+            "text/plain",
+            format!("{}\n", refusal.unwrap_or_default()),
+        ),
         b"POST /announce HTTP/1.1" | b"POST /announce HTTP/1.0" => {
             match read_body(&mut stream, &head[..end], head[end..].to_vec()).await? {
                 Some(text) => match ChatText::new(text.trim()) {
@@ -307,6 +319,41 @@ fn decode(text: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Why a request with this head is refused before it is routed: it came
+/// from a browser (an `Origin` header), or it names a host that is neither
+/// an IP address nor `localhost` (DNS rebinding). `None` lets it through.
+fn browser_or_foreign_host(head: &[u8]) -> Option<&'static str> {
+    let head = String::from_utf8_lossy(head);
+    for line in head.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("origin") {
+            return Some("the admin endpoint does not answer browsers");
+        }
+        if name.eq_ignore_ascii_case("host") && !local_host(value.trim()) {
+            return Some("call the admin endpoint by its address");
+        }
+    }
+    None
+}
+
+/// An IP address (`[v6]` in brackets) or `localhost`, with or without a
+/// port.
+fn local_host(host: &str) -> bool {
+    if let Some(rest) = host.strip_prefix('[') {
+        return match rest.split_once(']') {
+            Some((v6, port)) if port.is_empty() || port.starts_with(':') => {
+                v6.parse::<std::net::Ipv6Addr>().is_ok()
+            }
+            _ => false,
+        };
+    }
+    let bare = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    bare.eq_ignore_ascii_case("localhost") || bare.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 /// The request's body as UTF-8, read to its `Content-Length`, of at most a

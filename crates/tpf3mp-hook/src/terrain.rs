@@ -1273,7 +1273,7 @@ impl Memory for GameHeap {
 #[cfg(all(windows, target_arch = "x86_64"))]
 impl Heap for GameHeap {
     fn write(&mut self, address: usize, bytes: &[u8]) -> bool {
-        if address == 0 || !crate::image::readable(address, bytes.len()) {
+        if address == 0 || !crate::image::readable_cached(address, bytes.len()) {
             return false;
         }
         // SAFETY: committed memory of the game's heap (the payload being
