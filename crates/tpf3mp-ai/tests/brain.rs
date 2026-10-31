@@ -3453,6 +3453,17 @@ fn a_chains_line_is_not_judged_while_another_of_its_chain_is_young() {
     let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
     let said = brain.take_said();
     assert!(line(&world, "goods") == Some(goods), "kept: {said:?}");
+    // Both settled as a line is, not yet as a chain is: still kept (run 49
+    // closed a fuel line its crude oil line a minute younger).
+    for v in &mut world.vehicles {
+        v.worn = 6;
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(
+        line(&world, "goods") == Some(goods),
+        "kept as a chain: {said:?}"
+    );
     // The planks line settled too: the chain judged, and closed.
     for v in &mut world.vehicles {
         v.worn = 10;
@@ -3509,6 +3520,48 @@ fn a_line_whose_last_months_pay_is_kept_whatever_its_year() {
     play(&mut brain, &mut world, now, Duration::from_secs(600));
     let said = brain.take_said();
     assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
+}
+
+#[test]
+fn a_chains_later_leg_long_enough_for_a_railway_is_checked_for_a_road_too() {
+    // Run 49: a meat railway begun with money for another railway; its
+    // grain leg, long enough for one, got neither railway nor road.
+    let mut world = World::new();
+    const GOODS: &str = "::/cargos/goods/goods.cargo";
+    const PLANKS_: &str = "::/cargos/planks/planks.cargo";
+    world.industries = vec![
+        industry("Didcot Factory", 300.0, 200.0, &[PLANKS_], &[(GOODS, 0)]),
+        industry("Wychwood Sawmill", 300.0, 4_200.0, &[], &[(PLANKS_, 150)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(GOODS).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.no_road_from = Some(pos(300.0, 4_200.0));
+    world.money = 30_000_000;
+    world.small_towns();
+    world.month_every = Some(Duration::from_secs(30));
+    world.wear_per_month = 1;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("found no road for its chain's planks from Wychwood Sawmill")),
+        "{said:?}"
+    );
+    assert!(
+        !said.iter().any(|l| l.contains("goods from Didcot Factory")),
+        "{said:?}"
+    );
 }
 
 /// A settled bus line of the AI's that earns, far from Didcot and Ely: what

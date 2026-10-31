@@ -881,17 +881,25 @@ impl Brain {
         }
     }
 
-    /// Whether another line of `line`'s chain is young, its cargo perhaps
-    /// not yet come: none of the chain is judged meanwhile.
+    /// Whether a line of `line`'s chain, itself included, has not run
+    /// [`upkeep::CHAIN_SETTLED`] of its life, its chain's cargo perhaps not
+    /// yet flowing: none of the chain is judged meanwhile. A maker makes
+    /// only once its inputs come, and what it makes is carried on after
+    /// that: run 49 closed a fuel line six months in, its crude oil line a
+    /// minute younger, its refinery not yet making fuel enough.
     pub(super) fn chain_young(&self, company: &AiCompany, line: &AiLine) -> bool {
         self.memo
             .chains
             .iter()
             .filter(|group| group.contains(&line.id.0))
             .flat_map(|group| group.iter())
-            .filter(|id| **id != line.id.0)
             .filter_map(|id| company.lines.iter().find(|l| l.id.0 == *id))
-            .any(|l| self.young(company, l))
+            .any(|l| {
+                !company
+                    .vehicles
+                    .iter()
+                    .any(|v| v.line == Some(l.id) && v.worn >= upkeep::CHAIN_SETTLED)
+            })
     }
 
     /// Where its passenger train stations stand.
@@ -1780,16 +1788,14 @@ impl Brain {
         }
     }
 
-    /// Its chain's later legs that trucks would carry (shorter than a
-    /// railway runs, or any while its money stretches to no railway) asked
-    /// of the pathfinder in turn from leg `from`, before any is built; then
-    /// its first leg.
+    /// Its chain's later legs within its trucks' reach asked of the
+    /// pathfinder in turn from leg `from`, before any is built; then its
+    /// first leg. A leg long enough for a railway is asked too: trucks carry
+    /// it where its railway is not built, and run 49 began a meat railway
+    /// whose grain leg, long enough for a railway, got neither.
     fn check_chain_roads(&mut self, from: usize, now: Instant) {
-        let rail = self.spendable() >= train::RAIL_MONEY;
-        let next = (from..self.chain.len()).find(|&i| {
-            let d = self.chain[i].distance();
-            d <= self.profile.cargo_most && (d < train::RAIL_FROM || !rail)
-        });
+        let next =
+            (from..self.chain.len()).find(|&i| self.chain[i].distance() <= self.profile.cargo_most);
         match next {
             Some(leg) => self.stage = Stage::ChainRoads { leg },
             None => self.next_leg(now),
