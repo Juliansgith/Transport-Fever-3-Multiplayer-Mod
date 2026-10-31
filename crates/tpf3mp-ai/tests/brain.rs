@@ -2457,6 +2457,13 @@ fn a_normal_ai_joins_two_large_towns_by_passenger_train() {
             .iter()
             .any(|v| v.line == Some(line.id) && v.model.as_str().contains("engine"))
     );
+    // Three coaches to start, not as many as its platforms take (run 59:
+    // six for stations reaching 24 and 10 buildings).
+    let bought = said
+        .iter()
+        .find(|l| l.starts_with("buys a train: "))
+        .expect("a train bought");
+    assert!(bought.contains(" and 3 "), "{bought}");
 }
 
 #[test]

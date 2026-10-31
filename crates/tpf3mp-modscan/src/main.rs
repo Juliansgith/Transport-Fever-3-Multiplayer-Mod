@@ -93,7 +93,10 @@ fn main() -> ExitCode {
     }
     let mut dirs: Vec<PathBuf> = args.paths.iter().flat_map(|p| mods_in(p)).collect();
     if args.installed {
-        let found = roots::installed(&roots::default_roots(args.game.as_deref(), &args.steam));
+        let (hub, found) = roots::discovered(args.game.as_deref(), &args.steam);
+        for line in hub.report(&found) {
+            eprintln!("{line}");
+        }
         dirs.extend(found.into_iter().map(|f| f.path));
     }
     if dirs.is_empty() {

@@ -244,10 +244,11 @@ pub fn split_mods(
     carried_personal: bool,
 ) -> Result<content::Split> {
     let found = if mods.is_some() {
-        tpf3mp_modscan::roots::installed(&tpf3mp_modscan::roots::default_roots(
+        tpf3mp_modscan::roots::discovered(
             installed.map(|game| game.dir.as_path()),
             &steam::steam_roots(),
-        ))
+        )
+        .1
     } else {
         Vec::new()
     };
@@ -358,11 +359,11 @@ impl LauncherArgs {
         )?;
         // Without --mods, the launcher finds the player's mods itself and
         // lets them choose their personal ones (docs/MODS.md).
-        let picker = self.mods.is_none().then(|| {
-            let found = crate::picker::discover(
-                installed.as_ref().map(|game| game.dir.as_path()),
-                &steam::steam_roots(),
-            );
+        let find_mods = self.mods.is_none().then(|| {
+            crate::picker::Finder::installed(installed.as_ref().map(|game| game.dir.clone()))
+        });
+        let picker = find_mods.as_ref().map(|finder| {
+            let found = finder.find();
             for m in &found {
                 tracing::info!("mod {} {} is {}: {}", m.id, m.version, m.class, m.reason);
             }
@@ -422,6 +423,7 @@ impl LauncherArgs {
             content: split.manifest,
             mods: split.lists,
             picker,
+            find_mods,
             native: None,
             installed,
             link: self.game_link.clone(),
