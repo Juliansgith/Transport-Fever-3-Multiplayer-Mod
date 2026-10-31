@@ -496,7 +496,15 @@ faster AI.
   the line, which would have to be crossed by bridge or tunnel sooner than
   its grade climbs (the first stations among houses, in run 53, found no
   heights for their track for the streets round them): it stands at the
-  built-up area's edge facing the line, the houses behind it in reach; its track may cross houses at about 8,000 a metre beyond
+  built-up area's edge facing the line, the houses behind it in reach,
+  its building turned to the town. A station's catchment is counted along
+  the streets from its entrance (`getStationCatchables`): once its train
+  runs, the AI builds each station a street 60 m along its building's
+  front, 30 m off its track as the fixture player's runs (34 or 38 where the
+  game finds that touching the station), its ends on the ground, joined to
+  the middle of the nearest street on that side (the next of the three
+  nearest where refused), each put to the verdict first; run 56's station so
+  joined reached 24 people, those without a street 0 to 5; its track may cross houses at about 8,000 a metre beyond
   the ground, so it keeps out of towns where it can and still leaves a
   station in town. Before, its stations stood on free ground at the towns'
   edges, reaching 4 to 27 people, and every one of its passenger trains

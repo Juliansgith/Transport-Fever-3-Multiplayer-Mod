@@ -100,8 +100,12 @@ pub const FRONT_X: [f64; 3] = [-30.0, -34.0, -38.0];
 /// How far along its front that street runs either way of its middle, in
 /// metres.
 pub const FRONT_HALF: f64 = 30.0;
-/// How far from its front it looks for a street to join, in metres.
+/// How far from its front it looks for a street to join, in metres, and
+/// how many of the nearest it tries: run 56 joined one station, its street
+/// reaching 24 people (0 to 5 before), and found the nearest street to the
+/// other refused at every place along its front.
 pub const FRONT_REACH: u32 = 300;
+pub const FRONT_STREETS: usize = 3;
 /// What a metre of track through town houses costs beyond the ground, the
 /// houses it clears: about what a road depot among houses cost beyond one
 /// on open ground (up to 800,000 for its 40 by 20 metres), over a track's

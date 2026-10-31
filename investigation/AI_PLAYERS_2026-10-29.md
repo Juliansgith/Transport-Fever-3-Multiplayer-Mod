@@ -531,6 +531,19 @@ end is not begun, and passenger trains no longer wait for 90,000 a month
 of earnings (cargo railways still do). Track may cross houses at about
 8,000 a metre beyond the ground.
 
+Run 54 put the first stations among the houses, at the built-up edge, and
+they reached 0 and 1 people: the game counts a station's catchment along
+the streets from its entrance, and no street reached the AI's station
+fronts. The fixture player's station has a street along its building,
+30 m off its track (its nodes at local x -30.3 and -29.6; neither station
+construction has street edges of its own). So the AI builds a street 60 m
+along its station's front at that offset, joined to the nearest street on
+the building's side. Run 55's were refused at every offset, their ends at
+the platforms' height off sloping ground; with the ground's height and
+the building turned to its town, run 56 joined one station, which reached
+24 people, and found the other's nearest street refused at every offset,
+hence the next nearest tried.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

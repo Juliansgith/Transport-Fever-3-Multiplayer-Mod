@@ -136,6 +136,8 @@ struct World {
     houses: bool,
     /// The streets of its own the AI built, as sent.
     roads: Vec<RoadBuild>,
+    /// So many road verdicts refused, the first first.
+    refuse_roads: u32,
     /// The buses the game offers, where not the stand-in's two.
     buses: Option<Vec<AiModel>>,
     wear_per_month: u16,
@@ -227,6 +229,7 @@ impl World {
             no_road_from: None,
             houses: false,
             roads: Vec::new(),
+            refuse_roads: 0,
             buses: None,
             wear_per_month: 0,
             lowest: 0,
@@ -487,6 +490,12 @@ impl World {
                 {
                     self.rail_depot_touches -= 1;
                     verdict.collisions = verdict.collisions.max(1);
+                }
+                if matches!(action, Action::BuildRoad(_)) && self.refuse_roads > 0 {
+                    self.refuse_roads -= 1;
+                    verdict.ok = false;
+                    verdict.messages =
+                        BoundedVec::new(vec![Text::lossy("Construction Not Possible")]).unwrap();
                 }
                 if let Action::BuildTrack(track) = &action
                     && track.polyline.vertices.len() == 2
@@ -3896,4 +3905,28 @@ fn a_passenger_station_gets_a_street_along_its_front_joined_to_the_towns() {
             .any(|l| l.starts_with("joins its station to the town's streets")),
         "{said:?}"
     );
+}
+
+#[test]
+fn a_station_whose_nearest_street_is_refused_joins_the_next() {
+    // Run 56: the nearest street to one station refused at every place
+    // along its front, the station left reaching no one.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    world.refuse_roads = 3;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let refused = said
+        .iter()
+        .filter(|l| l.starts_with("its station's street would be refused"))
+        .count();
+    assert_eq!(refused, 3, "{said:?}");
+    assert_eq!(world.roads.len(), 2, "both stations joined: {said:?}");
 }
