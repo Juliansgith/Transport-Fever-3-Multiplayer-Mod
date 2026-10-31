@@ -40,7 +40,7 @@ function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
 	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
-		"bridge", "guard", "hudguard", "worldload", "junctions", "apply", "previews", "ai" }
+		"bridge", "modevents", "guard", "hudguard", "worldload", "junctions", "apply", "previews", "ai" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -89,7 +89,11 @@ function data()
 				.. count .. " so far)" .. (why and (": " .. tostring(why)) or "")
 				.. (from and (", from the mod " .. tostring(from)) or ""))
 		end
-		notice = require("tpf3mp.guard").notice(kind)
+		-- A mod's own loop (a clock setting the time of day each second) is
+		-- refused in the log alone: the player did nothing.
+		if not require("tpf3mp.modevents").quiet(kind, from) then
+			notice = require("tpf3mp.guard").notice(kind)
+		end
 	end
 
 	local function runPending()

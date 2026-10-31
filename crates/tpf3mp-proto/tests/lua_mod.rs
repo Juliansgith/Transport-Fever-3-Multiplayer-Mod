@@ -210,6 +210,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.guard",
             "tpf3mp.hudguard",
             "tpf3mp.junctions",
+            "tpf3mp.modevents",
             "tpf3mp.previews",
             "tpf3mp.progression",
             "tpf3mp.registry",
@@ -20108,4 +20109,177 @@ fn rolling_parts_name_the_level_crossings_the_hook_reads() {
             .exec()
             .is_err()
     );
+}
+
+/// A shared mod's event to its own game script goes to the room when the
+/// room carries it (tpf3mp/modevents.lua), and every game sends the same
+/// event, with the same parameter, at the same update. One it does not
+/// carry is refused, and a mod's own clock loop is refused without a notice.
+#[test]
+fn a_shared_mods_listed_events_replay_alike_in_every_game() {
+    use tpf3mp_proto::{
+        action::Action,
+        lua::{action_from_lua, action_to_lua},
+    };
+    let source = gui();
+    source.load(FAKE_HOOK).exec().unwrap();
+    source.load(FAKE_CMD).exec().unwrap();
+    source
+        .load(
+            r#"
+        M = mount(loadPlugin()) M.step() HOOK.room = true
+        local cmd = api.cmd
+        cmd.sendCommand(cmd.makeScriptingSendEventCmd('', 'Neige', 'SetClimate', { env = 'temperate', lat = 47.25 }))
+        cmd.sendCommand(cmd.makeScriptingSendEventCmd('cayde_cant', 'cayde_cant', 'cayde_cant.toggle', { on = true }))
+        cmd.sendCommand(cmd.makeScriptingSendEventCmd('cayde_cant', 'cayde_cant', 'cayde_cant.manual',
+            { mm = 110, unit = 'mm' }))
+        -- Not carried: its delay counts in each game's own speed.
+        cmd.sendCommand(cmd.makeScriptingSendEventCmd('', 'Neige', 'ManualWeather', { clouds = 0.5 }))
+        M.step()
+        assert(#SENT == 0, 'nothing runs locally before the room replays it')
+        assert(#HOOK.commands == 3, 'only the listed events go to the room: ' .. #HOOK.commands)
+    "#,
+        )
+        .exec()
+        .unwrap();
+    let actions: Vec<mlua::Value> = source.load("return HOOK.commands").eval().unwrap();
+    let mut heard = Vec::new();
+    for _ in 0..2 {
+        let (replica, _script) = engine();
+        replica
+            .load(
+                r#"
+            EVENTS = {}
+            local original = api.cmd.sendCommand
+            api.cmd.sendCommand = function(cmd, ...)
+                if cmd.event and cmd.event.id ~= 'tpf3mp' then
+                    local e = cmd.event
+                    local codec = ug_require('tpf3mp_1::/scripts/tpf3mp/modevents.lua')
+                    EVENTS[#EVENTS + 1] = e.src .. '|' .. e.id .. '|' .. e.name .. '|' .. codec.encode(e.param)
+                end
+                return original(cmd, ...)
+            end
+            HOOK.room = true UPDATE({}, STATE, 0.2)
+        "#,
+            )
+            .exec()
+            .unwrap();
+        for captured in &actions {
+            let action = action_from_lua(&common::tree(captured)).unwrap();
+            let decoded = Action::from_payload(&action.to_payload().unwrap()).unwrap();
+            assert_eq!(decoded.kind(), "ModEvent");
+            replica
+                .globals()
+                .set(
+                    "ACTION",
+                    common::value(&replica, &action_to_lua(&decoded).unwrap()),
+                )
+                .unwrap();
+            replica
+                .load("HOOK.batch = { ACTION }; UPDATE({}, STATE, 0.2)")
+                .exec()
+                .unwrap();
+        }
+        replica
+            .load("assert(#HOOK.applied == 3, table.concat(HOOK.logged, '|')) for _, answer in ipairs(HOOK.applied) do assert(answer.ok, answer.why) end")
+            .exec()
+            .unwrap();
+        let events: Vec<String> = replica.load("return EVENTS").eval().unwrap();
+        heard.push(events);
+    }
+    assert_eq!(heard[0], heard[1], "every game hears the same events");
+    assert_eq!(
+        heard[0],
+        [
+            "|Neige|SetClimate|{s3:envs9:temperates3:latd47.25;}",
+            "cayde_cant|cayde_cant|cayde_cant.toggle|{s2:ont}",
+            "cayde_cant|cayde_cant|cayde_cant.manual|{s2:mmi110;s4:units2:mm}",
+        ]
+    );
+    source
+        .load(
+            r#"
+        local modevents = require('tpf3mp.modevents')
+        assert(modevents.quiet('makeGameSetTimeOfDayCmd', 'just_more_weather_1'))
+        assert(modevents.quiet(nil, 'just_more_weather_1'))
+        assert(not modevents.quiet('makeGameSetTimeOfDayCmd', nil))
+        assert(not modevents.quiet('makeScriptingSendEventCmd', 'just_more_weather_1'))
+    "#,
+        )
+        .exec()
+        .unwrap();
+}
+
+/// The parameter's text is the same for the same table whatever order its
+/// keys were set in, reads back exactly, and refuses what is not plain data.
+/// An entity an event names travels by the room's name for it, and a line
+/// or vehicle of another company is refused in every game.
+#[test]
+fn a_mod_events_parameter_is_plain_data_in_one_order() {
+    let lua = gui();
+    lua.load(
+        r#"
+        local m = ug_require('tpf3mp_1::/scripts/tpf3mp/modevents.lua')
+        local a = { z = 1, a = { 3, 2, 1 }, [2] = 'two', [1] = true, f = 0.1 }
+        local b = {} b.f = 0.1 b[1] = true b.a = { 3, 2, 1 } b[2] = 'two' b.z = 1
+        assert(m.encode(a) == m.encode(b), m.encode(a) .. ' ~= ' .. m.encode(b))
+        local back = m.decode(m.encode(a))
+        assert(back.f == 0.1 and back[1] == true and back[2] == 'two' and back.a[3] == 1 and back.z == 1)
+        assert(m.decode(m.encode('a:b{c}')) == 'a:b{c}')
+        assert(m.decode(m.encode(-1e300)) == -1e300)
+        assert(m.decode(m.encode(1/3)) == 1/3)
+        for _, bad in ipairs({ function() end, { [{}] = 1 }, 0/0, math.huge, 'a\nb', { x = print } }) do
+            assert(not pcall(m.encode, bad), 'encoded ' .. tostring(bad))
+        end
+        local deep = {} local t = deep for _ = 1, 10 do t.x = {} t = t.x end
+        assert(not pcall(m.encode, deep))
+        assert(not pcall(m.encode, string.rep('x', 5000)))
+        for _, bad in ipairs({ '', 'x', 's9:ab', '{i1;', 'i;', 'tt' }) do
+            assert(not pcall(m.decode, bad), 'decoded ' .. bad)
+        end
+
+        -- A line's rule by the line's canonical id and its depot's place.
+        local ctx = {
+            line = function(e) return e == 501 and 7 or nil end,
+            vehicle = function(e) return e == 601 and 9 or nil end,
+            depot = function(e)
+                if e == 701 then return { file = 'depot/train_depot.con', at = { x = 1, y = 2, z = 3 } }, 0 end
+                return nil, nil, 'no such depot'
+            end,
+        }
+        local action = m.capture(ctx, '', 'RealClockService', 'rct.setLineRule',
+            { line = 501, rule = { enabled = true, start = 21600, finish = 79200, depot = 701 } })
+        local e = action.ModEvent
+        assert(e.mod_id == 'just_more_weather_1')
+        local wire = m.decode(e.param)
+        assert(wire.line == 7 and wire.rule.depot.file == 'depot/train_depot.con' and wire.rule.depot.index == 0)
+        assert(not pcall(m.capture, ctx, '', 'RealClockService', 'rct.setLineRule', { line = 502, rule = {} }))
+        assert(not pcall(m.capture, ctx, '', 'RealClockService', 'rct.setLineRule',
+            { line = 501, rule = { depot = 702 } }))
+        assert(not pcall(m.capture, ctx, '', 'Neige', 'ManualWind', { strength = 1 }))
+        assert(not pcall(m.capture, ctx, '', 'Companies', 'spawnIndustry', {}))
+
+        -- Every game finds the line and depot in its own world.
+        local env = {
+            own = function(kind, id)
+                if kind == 'lines' and id == 7 then return 1501 end
+                error('no ' .. kind .. ' ' .. tostring(id) .. ' of the acting company', 0)
+            end,
+            depot = function(ref, index)
+                assert(ref.file == 'depot/train_depot.con' and ref.at.z == 3 and index == 0)
+                return 1701
+            end,
+        }
+        local src, id, name, param = m.resolve(env, e)
+        assert(src == '' and id == 'RealClockService' and name == 'rct.setLineRule')
+        assert(param.line == 1501 and param.rule.depot == 1701 and param.rule.start == 21600)
+        local vehicle = m.capture(ctx, '', 'RealClockService', 'rct.setVehicleMode', { vehicle = 601, mode = 'always' })
+        assert(not pcall(m.resolve, env, vehicle.ModEvent), 'another company vehicle')
+        -- An action naming another mod for a listed event is refused.
+        local forged = { mod_id = 'other_mod', src = '', id = 'Neige', name = 'SetMist', param = 't' }
+        assert(not pcall(m.resolve, env, forged))
+    "#,
+    )
+    .exec()
+    .unwrap();
 }

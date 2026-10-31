@@ -71,7 +71,7 @@ guard.CARRY = {
 	-- (capture.prospect). The company window's ranks: the growth script's
 	-- applyLevel. The subsidy window's answers: the subsidy script's
 	-- onAccept and onDecline.
-	makeScriptingSendEventCmd = function(ctx, _src, id, name, param)
+	makeScriptingSendEventCmd = function(ctx, src, id, name, param)
 		if id == "Loan" and type(param) == "table" then
 			if name == "Obtain" and type(param[1]) == "table" and type(param[2]) == "table" then
 				return { Loan = { Take = { next = param[1], offer = param[2] } } }
@@ -107,8 +107,9 @@ guard.CARRY = {
 			-- the offer by its number and kind (capture.subsidy).
 			return capture().subsidy(ctx, name, param)
 		end
-		-- Which event, for the log.
-		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)
+		-- A shared mod's event to its own game script, if it is one the
+		-- room carries (tpf3mp/modevents.lua); else which event, for the log.
+		return require("tpf3mp.modevents").capture(ctx, src, id, name, param)
 	end,
 	makeVehicleBuyCmd = by("vehicleBuy"),
 	makeVehicleReplaceCmd = by("vehicleReplace"),

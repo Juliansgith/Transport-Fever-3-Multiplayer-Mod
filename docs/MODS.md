@@ -277,6 +277,47 @@ did before is this game's alone, which the room's check finds; the resync
 loads the world anew, without them. This is also why carried mods stay
 shared unless the player asks (`--personal-game-scripts`).
 
+### Shared mods' events
+
+A shared mod's GUI half often tells its game script what the player chose
+(a setting, a toggle, a rule for a line) with
+`makeScriptingSendEventCmd(src, id, name, param)`. From the GUI that reaches
+this game's game scripts alone, at an update of its own, so the GUI's guard
+refused it, and the mod's controls did nothing in a room. The room now
+carries the events on a list, as below (DECISIONS.md, D34).
+
+`tpf3mp/modevents.lua` carries the events it lists (`modevents.ALLOW`, by
+id and name, each naming the mod whose game script hears it) as a
+`ModEvent` action (action schema 29). The GUI's guard makes the action
+(`guard.CARRY.makeScriptingSendEventCmd`, after the game's own events); the
+room orders it; every game's TPF3-MP game script sends the same event at
+the same update in its simulation state (`apply.lua`, `HANDLERS.ModEvent`),
+where every game's copy of the mod's game script hears it alike.
+
+- **Only listed events go.** An event is listed when its handler decides
+  from what every game has: the mod's own game-script state, the world and
+  the event. One whose handler, or the update after it, reads what each
+  game has its own of (each game's own speed, `GAME_SPEED.speedup`, which
+  the room's pace leaves alone) stays refused.
+- **The parameter travels as text**: plain data only (booleans, finite
+  numbers, strings without control characters, tables of them), keys in one
+  order (whole numbers from the smallest, then strings), every number
+  exactly (`%.17g`), at most 4,096 bytes and 8 levels deep
+  (`modevents.encode`, `modevents.decode`).
+- **What an event names is the room's**: a line or a vehicle by its
+  canonical id, a depot by its construction and index (`capture.depotRef`).
+  Every game finds them in its own world, a line or vehicle only among the
+  acting company's own (`ownOf`), else the action fails in every game.
+- **Every game checks the list again** (`modevents.resolve`): an action
+  naming an event the list lacks, or another mod for a listed event, is
+  refused alike everywhere.
+
+A mod's own loops that send what the room does not carry (Realistic
+Environment Pro's clock setting the time of day each second, its date at
+midnight; any command no factory made, such as `api.cmd.debug`'s) are
+refused in the hook's log without a notice in the game bar
+(`modevents.quiet`): the player did nothing.
+
 ## The room's content check
 
 The server compares content fingerprints (`tpf3mp-proto/src/content.rs`,
@@ -673,6 +714,77 @@ action failed to apply. `acceptance.lua`'s `signals` is on. Not yet a
 regression scenario: the testkit's model keeps no signals along tracks. Its rebuilds touch tracks that lines run on, as
 every signal the room places already does; PLAN.md's "never rebuilding an
 edge a line runs on" is the owner's to settle for both.
+
+### Realistic Environment Pro
+
+`just_more_weather_1` (mod.io 6415745), shared: run scripts with
+`addModifier` (it replaces the game's own `game_time.gs` weather script,
+`jmw/weather.script.lua`), world content, shaders, a game script
+(`rct/service.gs.lua`) and many GUI plugins. Read in full on 2026-10-25
+(build 40425); not yet played in a room.
+
+- **The weather is the simulation's.** Its sequence is drawn in the game
+  script's `update` (`jmw/meteo_plan.lua`, `math.random`), which the hook
+  seeds from the room's step, and kept in the game script's saved state;
+  temperature, snow, ice, cloud cover and wind follow from it. Its effects
+  (vehicles slowed, trains stopped by deep snow, the region paralysed,
+  ships held by ice, seasonal industries, wind carrying pollution) are
+  commands from that game script, which run in every game alike. Visuals
+  (shaders, snow on the ground, roofs and vehicles, sounds, the bulletin,
+  the thermometer) are each game's own and change nothing shared.
+- **Carried** (`modevents.ALLOW`): the climate (`Neige SetClimate`, which
+  the GUI sends by itself until the game script has one), the mist button
+  (`Neige SetMist`), and the service hours' rules
+  (`RealClockService rct.setLineRule`, `rct.setVehicleMode`,
+  `rct.setLife`): a line's rule and a vehicle's mode only for the acting
+  company's own.
+- **Refused:** the weather and wind sliders (`Neige ManualWeather`,
+  `ManualWind`: their delay counts in each game's own speed,
+  `weather.script.lua:380`, `:766`); the game's own `CloudCoverage` and
+  `GameTime` mode and skip events; the date editor; the clock's time of day
+  and date sync (`makeGameSetTimeOfDayCmd`, `makeGameSetDateCmd`, quietly);
+  the residents' daily rhythm and the residents kept home in deep snow
+  (`api.cmd.debug.makeSimPersonSetStateCmd`, sent from the GUI on the wall
+  clock: it cannot be made the same in every game as written).
+- **Winter costs** go to the room's first company only: the game script
+  books them to `api.engine.util.getPlayer()`, which in the simulation's
+  state is the save's own player.
+- **Settings for a room:** the room's settings reach every game
+  (`mods::settings`). Until the clock sync and per-company winter costs are
+  carried: "Time of day and weekday" and "Day length" may stay on (each
+  game's clock is only shown), "Residents' daily rhythm" Off, "Winter
+  costs" Off in a room of several companies. The weather cycle must
+  already be Dynamic in the room's save: the cycle's combo box sends the
+  game's own `CloudCoverage SetMode`, which is refused.
+
+### Real Cant Engineering
+
+`cayde_devers_1` (mod.io 6440851), shared: run scripts adding hidden track
+types (flat, canted, slower canted curves, manual cant levels), resource
+writes, a vehicle transformer that leans trains, a game script
+(`cayde_devers/sync.gs.lua`) and GUI plugins. The older Real Track Cant
+(`devers_1`, mod.io 6418700) is a separate mod it only reads (to convert its
+tracks); a room needs only `cayde_devers_1`, and should not run both. Read
+in full on 2026-10-25; not yet played in a room.
+
+- **Loads alike everywhere:** the track types, their curve speeds and the
+  train lean, from the room's mod settings.
+- **Carried** (`modevents.ALLOW`): the track menu's Cant toggle and manual
+  cant (`cayde_cant cayde_cant.toggle`, `cayde_cant.manual`); the mod keeps
+  one of each for the whole world, so they are the room's, not a player's.
+  A track drawn with Cant on is drawn with the mod's `_ccup` templates,
+  which the room's `BuildTrack` carries by name.
+- **Not working yet: the canting itself.** After a build, the mod's game
+  script decides in its GUI half (`guiUpdate`, every game) to swap track
+  templates in place, fix grades and place its drawings (`render.con`,
+  with the catenary that follows the lean), with `makeWorldBuildProposalCmd`.
+  D27's wrapper stops each (removals and constructions are not carried
+  from a script), and every game would decide them from its own GUI. Until
+  one game decides them and hands them to the room (template swaps,
+  grades, constructions and removals carried as a script's follow-up), keep
+  Cant off in a room: with it on the mod retries its stopped builds without
+  end. Tracks canted in the save before the room load the same in every
+  game.
 
 ## To measure in the game
 

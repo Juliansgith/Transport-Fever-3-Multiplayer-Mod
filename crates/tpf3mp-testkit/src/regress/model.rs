@@ -689,6 +689,8 @@ impl State {
             // Trees and rocks: the model keeps no assets.
             Action::PlantAssets(_) => Ok(()),
             Action::SetCrossingType(_) => Ok(()),
+            // A mod's event to its own game script: the model runs no mods.
+            Action::ModEvent(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }
