@@ -401,9 +401,13 @@ faster AI.
   line with no place for a depot at either is laid out between other
   sites or given up then (straight out met a player's railway at one
   station and streets at another, and a line was given up with its
-  stations and track built, 2026-10-31). No station or depot is built
-  whose verdict touches something that stands, as one stood across a
-  player's station. Then the line, and
+  stations and track built, 2026-10-31). The depot's track to its
+  station is put to the verdict with it: in run 44 a cement railway was
+  laid and its depot built before its track was refused, the line given
+  up with four million spent. A depot built whose track is refused all
+  the same is tried at its next place, not given up with the line. No
+  station or depot is built whose verdict touches something that stands,
+  as one stood across a player's station. Then the line, and
   its train with as many wagons as the platforms take (six at most): no
   electric engine, as its track has no catenary. A line's first station
   ending within 400 m of a rail depot of its own shares that depot, its

@@ -230,6 +230,14 @@ pub(super) enum RailStage {
         end: usize,
         place: usize,
     },
+    /// Then the verdict on that depot's track to the station's planned end,
+    /// before anything is built: the long run's cement railway was laid,
+    /// its depot built, and the depot's track refused, the line given up
+    /// with four million spent (run 44, 2026-10-31).
+    LinkTrial {
+        end: usize,
+        place: usize,
+    },
     /// Asking the verdict on the next piece of track.
     PieceVerdict,
     /// A piece sent: reading before the next.
@@ -533,6 +541,20 @@ impl Brain {
                 let (_, _, build) =
                     rail::depot_place(depot_end, out, place, year, 0, "Rail Depot")?;
                 self.verdict(&Action::BuildConstruction(build), now)
+            }
+            RailStage::LinkTrial { end, place } => {
+                let year = self.year();
+                let project = self.rail.as_ref()?;
+                let station = project.tries[end].first()?;
+                let other = P::of(if end == 0 {
+                    project.to.pos()
+                } else {
+                    project.from.pos
+                });
+                let (_, (depot_end, out)) = station.ends_toward(other);
+                let (join, into, _) = rail::depot_place(depot_end, out, place, year, 0, "")?;
+                let link = trial(&rail::depot_link(depot_end, out, join, into, year)?)?;
+                self.verdict(&Action::BuildTrack(link), now)
             }
             RailStage::PieceVerdict => {
                 let project = self.rail.as_ref()?;
@@ -842,6 +864,10 @@ impl Brain {
                 return None;
             }
             (RailStage::DepotTrial { end, place }, Action::BuildConstruction(_)) => {
+                self.stage = Stage::Rail(RailStage::LinkTrial { end, place });
+                return None;
+            }
+            (RailStage::LinkTrial { end, place }, Action::BuildTrack(_)) => {
                 self.rail.as_mut()?.depot_plan = Some((end, place));
                 self.stage = Stage::Rail(RailStage::StationVerdict { end: 0 });
                 return None;
@@ -917,8 +943,12 @@ impl Brain {
                 self.stage = Stage::Rail(next);
             }
             // The next place, then the other station, then other sites.
-            RailStage::DepotTrial { end, place } => {
-                self.say(format!("a rail depot placement would be refused: {why}"));
+            RailStage::DepotTrial { end, place } | RailStage::LinkTrial { end, place } => {
+                if matches!(stage, RailStage::LinkTrial { .. }) {
+                    self.say(format!("a rail depot's track would be refused: {why}"));
+                } else {
+                    self.say(format!("a rail depot placement would be refused: {why}"));
+                }
                 if place + 1 < rail::DEPOT_PLACES.len() {
                     self.stage = Stage::Rail(RailStage::DepotTrial {
                         end,
@@ -1031,8 +1061,26 @@ impl Brain {
                     });
                 self.stage = Stage::Rail(next);
             }
-            RailStage::LinkVerdict { .. } => {
-                self.give_up_rail(&format!("its depot's track was refused: {why}"), now);
+            // Its depot stands but cannot be joined: another place, as a
+            // depot refused, rather than the line, built already.
+            RailStage::LinkVerdict { end } => {
+                self.say(format!("its depot's track was refused: {why}"));
+                let further = self.rail.as_mut().is_some_and(|p| {
+                    p.depot = None;
+                    p.depot_far += 1;
+                    if p.depot_far < rail::DEPOT_PLACES.len() {
+                        return true;
+                    }
+                    p.depot_far = 0;
+                    false
+                });
+                if further {
+                    self.stage = Stage::Rail(RailStage::DepotVerdict { end });
+                } else if end == 0 {
+                    self.stage = Stage::Rail(RailStage::DepotVerdict { end: 1 });
+                } else {
+                    self.give_up_rail("found no place for a joined rail depot", now);
+                }
             }
             _ => {}
         }

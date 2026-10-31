@@ -115,6 +115,9 @@ struct World {
     touches: Option<fn(&tpf3mp_proto::action::ConstructionBuild) -> u16>,
     /// Rail depot verdicts, the first so many, that touch something.
     rail_depot_touches: u32,
+    /// So many rail depots' tracks to their stations (one edge of 160 m at
+    /// most) touch something that stands.
+    rail_link_touches: u32,
     /// The loans its company owes, and the game's months: how often they
     /// fall due in play (none: never), what each line earns a year then,
     /// how far through their lives its vehicles go each month, and the
@@ -205,6 +208,7 @@ impl World {
             station_quotes: Vec::new(),
             touches: None,
             rail_depot_touches: 0,
+            rail_link_touches: 0,
             owed: Vec::new(),
             month_every: None,
             month_at: None,
@@ -432,6 +436,17 @@ impl World {
                 {
                     self.rail_depot_touches -= 1;
                     verdict.collisions = verdict.collisions.max(1);
+                }
+                if let Action::BuildTrack(track) = &action
+                    && track.polyline.vertices.len() == 2
+                    && P::of(track.polyline.vertices[0].pos)
+                        .flat_distance(P::of(track.polyline.vertices[1].pos))
+                        <= 160.0
+                    && self.rail_link_touches > 0
+                {
+                    self.rail_link_touches -= 1;
+                    verdict.ok = false;
+                    verdict.messages = BoundedVec::new(vec![Text::lossy("Collision")]).unwrap();
                 }
                 if let Action::BuildConstruction(b) = &action
                     && b.file.as_str() == ROAD_DEPOT
@@ -3068,6 +3083,54 @@ fn buses_to_its_station_come_before_its_young_lines_wait_and_cargo() {
         .unwrap_or_else(|| panic!("{said:?}"));
     assert!(
         next.starts_with("plans buses to its station in"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_rail_depot_whose_track_would_touch_what_stands_goes_elsewhere_before_anything_is_built() {
+    // Run 44: a cement railway laid, its depot built, the depot's track
+    // refused ("Collision") and the line given up, four million spent.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    world.rail_link_touches = 1;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let trial = said
+        .iter()
+        .filter(|l| l.starts_with("a rail depot's track would be refused"))
+        .count();
+    assert_eq!(trial, 1, "{said:?}");
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("its depot's track was refused")),
+        "{said:?}"
+    );
+    let depot = world
+        .depots
+        .iter()
+        .find(|d| d.file.as_str().contains("/rail/"))
+        .expect("a rail depot");
+    assert!(depot.connected, "{said:?}");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line carrying planks")),
         "{said:?}"
     );
 }
