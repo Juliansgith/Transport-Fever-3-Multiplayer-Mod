@@ -3161,3 +3161,86 @@ fn an_ai_opens_its_first_line_only_after_the_rooms_ai_players_before_it() {
     let said = brain.take_said();
     assert!(!world.lines.is_empty(), "{said:?}");
 }
+
+#[test]
+fn a_passenger_train_that_lost_money_is_not_followed_by_another() {
+    // Run 46: the Hard AI closed a passenger train that lost 695,803 in
+    // its first eight months, and planned another at once.
+    let mut world = World::new();
+    world.money = 60_000_000;
+    // A third large town, 6 km from the others: another pair to join.
+    let mut third = world.towns[0].clone();
+    third.id = TownId(3);
+    third.name = Text::new("Witney").unwrap();
+    let shift = |p: Pos| Pos {
+        x: p.x,
+        y: p.y + 6_000_000,
+        z: p.z,
+    };
+    third.pos = shift(third.pos);
+    third.centres = BoundedVec::new(third.centres.iter().map(|c| shift(*c)).collect()).unwrap();
+    world.towns.push(third);
+    world.month_every = Some(Duration::from_secs(30));
+    world.wear_per_month = 1;
+    world.line_profit = Some(|l| {
+        if l.name.as_str().ends_with("train") {
+            -3_000_000
+        } else {
+            200_000
+        }
+    });
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(3_600),
+    );
+    let said = brain.take_said();
+    let planned = said
+        .iter()
+        .filter(|l| l.starts_with("plans a rail line carrying passengers"))
+        .count();
+    let closed = said
+        .iter()
+        .position(|l| l.starts_with("closes ") && l.contains("train"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert!(
+        !said[closed..]
+            .iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+        "{said:?}"
+    );
+    assert!(planned >= 1, "{said:?}");
+    // Its memo keeps the loss for a next driver, read as before by one.
+    let memo = tpf3mp_ai::Memo::read(&brain.memo()).unwrap();
+    assert!(
+        memo.closed
+            .iter()
+            .any(|(_, kind, made)| *kind == 3 && *made < 0)
+    );
+}
+
+#[test]
+fn a_memo_from_before_closed_lines_were_kept_reads_on() {
+    #[derive(serde::Serialize)]
+    struct Before {
+        served: Vec<u32>,
+        given_up: Vec<u32>,
+        cargo_lines: Vec<(u32, String)>,
+        rail_lines: Vec<u32>,
+        looped: Vec<(u32, u8)>,
+    }
+    let bytes = postcard::to_allocvec(&Before {
+        served: vec![7],
+        given_up: vec![9],
+        cargo_lines: vec![(4, "::/cargos/planks/planks.cargo".into())],
+        rail_lines: vec![4],
+        looped: vec![(4, 1)],
+    })
+    .unwrap();
+    let memo = tpf3mp_ai::Memo::read(&bytes).unwrap();
+    assert_eq!((memo.served, memo.given_up), (vec![7], vec![9]));
+    assert_eq!(memo.rail_lines, [4]);
+    assert!(memo.closed.is_empty());
+}

@@ -276,8 +276,12 @@ faster AI.
    payment 3, 2 or 1.25 times over (Easy, Normal, Hard); never to pay its
    loans. While its settled lines earn less than its loans take it starts
    nothing new, its upkeep selling what loses. A kind of line (buses,
-   trucks, trains) whose settled lines lose money together is passed over
-   while the other pays, and no railway is begun while its railways lose.
+   trucks, cargo trains, passenger trains) whose settled lines lose money
+   together is passed over while the other pays, and no railway is begun
+   while its railways lose; the lines it closed count, as its memo keeps
+   them (the latest 16, each one's loss over its last year), and one
+   passenger train that lost money is enough: run 46's Hard AI closed one
+   that lost 695,803 in its first eight months and planned another at once.
    It opens no new line while one, two or three of its lines (Easy,
    Normal, Hard) are too young for their money to say anything (no
    vehicle a twentieth through its life), a production chain's later legs

@@ -166,17 +166,76 @@ pub struct Memo {
     /// Its rail lines with signalled passing loops, and how many: room for
     /// a train more than its loops.
     pub looped: Vec<(u32, u8)>,
+    /// The lines it closed, the latest [`CLOSED_KEPT`]: each one's room id,
+    /// kind ([`Kind::code`]) and what it made over its last year, a loss. A
+    /// kind is judged by these as well as by its lines still running.
+    pub closed: Vec<(u32, u8, i64)>,
 }
 
-/// How many settled lines of a kind its money judges that kind by.
+/// A memo as drivers before the closed lines kept it: read on, its closed
+/// lines none.
+#[derive(Deserialize)]
+struct MemoBefore {
+    served: Vec<u32>,
+    given_up: Vec<u32>,
+    cargo_lines: Vec<(u32, String)>,
+    rail_lines: Vec<u32>,
+    looped: Vec<(u32, u8)>,
+}
+
+impl Memo {
+    /// The memo its last driver left, of this version or the one before.
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        postcard::from_bytes::<Self>(bytes).ok().or_else(|| {
+            let before = postcard::from_bytes::<MemoBefore>(bytes).ok()?;
+            Some(Self {
+                served: before.served,
+                given_up: before.given_up,
+                cargo_lines: before.cargo_lines,
+                rail_lines: before.rail_lines,
+                looped: before.looped,
+                closed: Vec::new(),
+            })
+        })
+    }
+}
+
+/// How many settled or closed lines of a kind its money judges that kind
+/// by; a passenger train, dearer than any, by one.
 pub const KIND_JUDGED: usize = 2;
+/// How many closed lines its memo keeps.
+pub const CLOSED_KEPT: usize = 16;
 
 /// The kinds of line it weighs by what they earn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Bus,
     Truck,
+    /// A cargo train.
     Rail,
+    /// A passenger train: some six million laid and bought, a million a
+    /// year to run. Run 46's lost 695,803 in its first eight months, its
+    /// stations fed by buses, and the Hard AI planned another at once.
+    Passengers,
+}
+
+impl Kind {
+    fn code(self) -> u8 {
+        match self {
+            Kind::Bus => 0,
+            Kind::Truck => 1,
+            Kind::Rail => 2,
+            Kind::Passengers => 3,
+        }
+    }
+
+    fn judged_by(self) -> usize {
+        if self == Kind::Passengers {
+            1
+        } else {
+            KIND_JUDGED
+        }
+    }
 }
 
 /// What a line serves.
@@ -454,9 +513,7 @@ impl Brain {
     /// A mind for `seat`, carrying on from `memo` when its last driver left
     /// one.
     pub fn new(seat: PlayerId, name: &str, difficulty: AiDifficulty, memo: Option<&[u8]>) -> Self {
-        let memo = memo
-            .and_then(|bytes| postcard::from_bytes::<Memo>(bytes).ok())
-            .unwrap_or_default();
+        let memo = memo.and_then(Memo::read).unwrap_or_default();
         let b = seat.as_bytes();
         let rng = u64::from_le_bytes([b[16], b[17], b[18], b[19], b[20], b[21], b[22], b[23]]) | 1;
         Self {
@@ -814,7 +871,16 @@ impl Brain {
     /// by its memo, the rest its buses.
     fn kind_of(&self, line: &AiLine) -> Kind {
         if self.memo.rail_lines.contains(&line.id.0) {
-            Kind::Rail
+            if self
+                .memo
+                .cargo_lines
+                .iter()
+                .any(|(id, cargo)| *id == line.id.0 && cargo == train::PASSENGERS)
+            {
+                Kind::Passengers
+            } else {
+                Kind::Rail
+            }
         } else if self.memo.cargo_lines.iter().any(|(id, _)| *id == line.id.0) {
             Kind::Truck
         } else {
@@ -822,15 +888,34 @@ impl Brain {
         }
     }
 
-    /// Whether lines of `kind` pay: unless at least [`KIND_JUDGED`] of them
-    /// have settled and lost money together over their last year.
+    /// Whether lines of `kind` pay: unless enough of them ([`Kind::judged_by`])
+    /// have settled or been closed and lost money together over their last
+    /// year, the closed ones as its memo keeps them.
     fn kind_pays(&self, company: &AiCompany, kind: Kind) -> bool {
-        let settled: Vec<&AiLine> = company
+        let made: Vec<i64> = company
             .lines
             .iter()
             .filter(|l| self.kind_of(l) == kind && self.settled(company, l))
+            .map(|l| l.profit)
+            .chain(
+                self.memo
+                    .closed
+                    .iter()
+                    .filter(|(_, k, _)| *k == kind.code())
+                    .map(|(_, _, made)| *made),
+            )
             .collect();
-        settled.len() < KIND_JUDGED || settled.iter().map(|l| l.profit).sum::<i64>() >= 0
+        made.len() < kind.judged_by() || made.iter().sum::<i64>() >= 0
+    }
+
+    /// Keeps what a line it closes made, for judging its kind: once, its
+    /// closing tried again or not.
+    fn remember_closed(&mut self, line: &AiLine) {
+        let kind = self.kind_of(line).code();
+        self.memo.closed.retain(|(id, ..)| *id != line.id.0);
+        self.memo.closed.push((line.id.0, kind, line.profit));
+        let over = self.memo.closed.len().saturating_sub(CLOSED_KEPT);
+        self.memo.closed.drain(..over);
     }
 
     /// The driving game's answer to its question, or why it has none.
@@ -2459,7 +2544,7 @@ fn street_changed(why: &str) -> bool {
 
 /// Whether a town by its id is one the brain serves, as its memo says.
 pub fn serves(memo: &[u8], town: TownId) -> bool {
-    postcard::from_bytes::<Memo>(memo).is_ok_and(|m| m.served.contains(&town.0))
+    Memo::read(memo).is_some_and(|m| m.served.contains(&town.0))
 }
 
 /// The road depot of its own a line's road vehicles come from: one joined

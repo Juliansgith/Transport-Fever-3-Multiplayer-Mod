@@ -376,11 +376,11 @@ impl Brain {
                 name,
                 dead,
             } => {
-                let lost = company
-                    .lines
-                    .iter()
-                    .find(|l| l.id == line)
-                    .map_or(0, |l| -l.profit);
+                let closing = company.lines.iter().find(|l| l.id == line);
+                let lost = closing.map_or(0, |l| -l.profit);
+                if let Some(closing) = closing {
+                    self.remember_closed(closing);
+                }
                 if dead {
                     self.say(format!(
                         "closes {name}, which earned nothing and cost {lost}"

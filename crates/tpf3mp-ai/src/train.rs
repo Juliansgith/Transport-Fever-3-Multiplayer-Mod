@@ -348,10 +348,16 @@ impl Brain {
         }
         // No new railway while its settled ones lose money together: the
         // long run's three each lost 0.6 to 1 million a year (2026-10-30).
+        // A passenger train after one that lost money, none.
+        let kind = if passengers {
+            super::Kind::Passengers
+        } else {
+            super::Kind::Rail
+        };
         if self
             .company
             .as_ref()
-            .is_some_and(|c| !self.kind_pays(c, super::Kind::Rail))
+            .is_some_and(|c| !self.kind_pays(c, kind))
         {
             return false;
         }
