@@ -571,7 +571,7 @@ end
 -- a construction anywhere over its ground (2026-10-30: an industry from
 -- 120 m off its origin). An edge with no street of its own is a track.
 -- A 16 by 16 grid reads in about 7 ms on the rig's big fixture.
-local LAND = { WATER = 1, BUILT = 2, STREET = 4, TRACK = 8 }
+local LAND = { WATER = 1, BUILT = 2, STREET = 4, TRACK = 8, HOUSE = 16 }
 function ai.land(at, cells, step)
 	cells, step = tonumber(cells), tonumber(step)
 	if cells == nil or cells < 1 or cells > ai.MAX_LAND then error("a land grid of " .. tostring(cells) .. " cells", 0) end
@@ -579,6 +579,13 @@ function ai.land(at, cells, step)
 	local V, CT = api.type.Vec2f.new, api.type.ComponentType
 	local octree, terrain = api.engine.util.octree, api.engine.terrain
 	local reach = step * 0.71
+	-- Town houses' constructions: a cell built on by these alone a
+	-- construction may clear (bridge 39).
+	local houses = {}
+	for _, b in ipairs(api.engine.getEntitiesWithComponent(CT.TOWN_BUILDING) or {}) do
+		local tb = component(b, "TOWN_BUILDING")
+		if tb and type(tb.construction) == "number" then houses[tb.construction] = true end
+	end
 	local heights, flags = {}, {}
 	for j = 0, cells - 1 do
 		for i = 0, cells - 1 do
@@ -587,7 +594,14 @@ function ai.land(at, cells, step)
 			heights[#heights + 1] = math.floor(terrain.getHeightAt(p) * 100 + 0.5)
 			if terrain.isOnWater(p) then f = f + LAND.WATER end
 			local built = octree.findEntitiesInCircle(p, reach, CT.CONSTRUCTION)
-			if built and #built > 0 then f = f + LAND.BUILT end
+			if built and #built > 0 then
+				f = f + LAND.BUILT
+				local only = true
+				for _, e in ipairs(built) do
+					if not houses[e] then only = false end
+				end
+				if only then f = f + LAND.HOUSE end
+			end
 			local street, track = false, false
 			for _, e in ipairs(octree.findEntitiesInCircle(p, reach, CT.BASE_EDGE) or {}) do
 				if component(e, "BASE_EDGE_STREET") then street = true else track = true end

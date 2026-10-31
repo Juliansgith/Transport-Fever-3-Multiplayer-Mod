@@ -131,6 +131,9 @@ struct World {
     line_recent: Option<fn(&AiLine) -> i64>,
     /// No road from within 100 m of here, whatever `roads_join` says.
     no_road_from: Option<Pos>,
+    /// Its towns built up: every cell within 500 m of a town's middle that
+    /// is no street a town house's.
+    houses: bool,
     /// The buses the game offers, where not the stand-in's two.
     buses: Option<Vec<AiModel>>,
     wear_per_month: u16,
@@ -220,6 +223,7 @@ impl World {
             line_income: None,
             line_recent: None,
             no_road_from: None,
+            houses: false,
             buses: None,
             wear_per_month: 0,
             lowest: 0,
@@ -231,6 +235,30 @@ impl World {
 
     /// Its towns too small for a passenger train: a test of a cargo's
     /// railway alone.
+    /// Its towns built up: town houses on every cell no street crosses
+    /// within 500 m of each town's middle, its streets 250 m apart, blocks
+    /// a station fits in among the houses.
+    fn built_up(&mut self) {
+        self.houses = true;
+        self.streets.clear();
+        for town in self.towns.clone() {
+            let (cx, cy) = (
+                f64::from(town.pos.x) / 1000.0,
+                f64::from(town.pos.y) / 1000.0,
+            );
+            for k in -2..=2 {
+                let o = f64::from(k) * 250.0;
+                for s in -5..5 {
+                    let (a, b) = (f64::from(s) * 100.0, f64::from(s + 1) * 100.0);
+                    self.streets
+                        .push(street(pos(cx + o, cy + a), pos(cx + o, cy + b)));
+                    self.streets
+                        .push(street(pos(cx + a, cy + o), pos(cx + b, cy + o)));
+                }
+            }
+        }
+    }
+
     fn small_towns(&mut self) {
         for town in &mut self.towns {
             town.buildings = 120;
@@ -328,9 +356,17 @@ impl World {
                             let o = P::of(s.pos);
                             (o.x - x).hypot(o.y - y) <= 70.0 + f64::from(*step) * 0.71
                         });
+                        let house = self.houses
+                            && !street
+                            && !built
+                            && self.towns.iter().any(|t| {
+                                let c = P::of(t.pos);
+                                (c.x - x).abs() <= 500.0 && (c.y - y).abs() <= 500.0
+                            });
                         flags.push(
                             if street { land::STREET } else { 0 }
-                                | if built { land::BUILT } else { 0 },
+                                | if built { land::BUILT } else { 0 }
+                                | if house { land::BUILT | land::HOUSE } else { 0 },
                         );
                     }
                 }
@@ -2387,6 +2423,8 @@ fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full()
 #[test]
 fn a_normal_ai_joins_two_large_towns_by_passenger_train() {
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     // Didcot and Ely, 300 and 200 buildings, 5 km apart; no cargo to carry;
@@ -2432,6 +2470,8 @@ fn two_towns_joined_by_train_are_not_joined_again_as_they_grow() {
     // As in run 40: the towns' district centres move as they grow, and
     // the pair, known by a centre's place, was planned and built again.
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -2616,11 +2656,11 @@ fn an_ai_whose_lines_lose_money_borrows_no_more_and_keeps_out_of_debt() {
             .any(|l| l.starts_with("closes ") && l.contains("Bus")),
         "{said:?}"
     );
-    // No passenger train while its lines lose money.
+    // No passenger train opened: its towns' edges reach no one.
     assert!(
         !said
             .iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+            .any(|l| l.starts_with("opened a rail line carrying passengers")),
         "{said:?}"
     );
 }
@@ -3071,6 +3111,8 @@ fn a_town_pair_another_companys_line_joins_gets_no_train_of_its_own() {
 #[test]
 fn a_town_by_its_passenger_station_gets_buses_to_that_station() {
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -3120,6 +3162,8 @@ fn buses_to_its_station_come_before_its_young_lines_wait_and_cargo() {
     // Its lines never settle here: Normal waits on two young ones. A cargo
     // to carry waits too.
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -3229,6 +3273,8 @@ fn a_passenger_train_that_lost_money_is_not_followed_by_another() {
     // Run 46: the Hard AI closed a passenger train that lost 695,803 in
     // its first eight months, and planned another at once.
     let mut world = World::new();
+    // Its towns built up: its stations reach their houses.
+    world.built_up();
     // A settled line of its own that earns: a passenger train waits on one.
     an_earning_line(&mut world);
     world.money = 60_000_000;
@@ -3624,13 +3670,15 @@ fn an_earning_line(world: &mut World) {
 }
 
 #[test]
-fn a_passenger_train_waits_until_its_settled_lines_earn() {
-    // Runs 46 to 49: each AI's first venture, on borrowed money, a passenger
-    // train that lost 0.65 to 0.86 million in eight months.
+fn a_passenger_train_waits_for_station_places_that_reach_people() {
+    // Runs 46 to 52: every AI passenger train lost money, its stations at
+    // the towns' edges reaching 4 to 27 people. Towns of streets alone, no
+    // house to reach: no line opened, its line given up before anything is
+    // built.
     let mut world = World::new();
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
-    let now = play(
+    play(
         &mut brain,
         &mut world,
         Instant::now(),
@@ -3638,40 +3686,25 @@ fn a_passenger_train_waits_until_its_settled_lines_earn() {
     );
     let said = brain.take_said();
     assert!(
-        !said
-            .iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
-        "{said:?}"
-    );
-    // Its bus lines settled, earning less than a train costs to run: still
-    // none (run 50: 2,500 a month).
-    world.month_every = Some(Duration::from_secs(30));
-    world.line_profit = Some(|_| 15_000);
-    for v in &mut world.vehicles {
-        v.worn = 10;
-    }
-    let now = play(&mut brain, &mut world, now, Duration::from_secs(1_200));
-    let said = brain.take_said();
-    assert!(
-        !said
-            .iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
-        "{said:?}"
-    );
-    // Earning what a train costs: then a train.
-    world.line_profit = Some(|_| 600_000);
-    for v in &mut world.vehicles {
-        v.worn = 10;
-    }
-    play(&mut brain, &mut world, now, Duration::from_secs(2_400));
-    let said = brain.take_said();
-    assert!(
         said.iter()
-            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+            .any(|l| l.starts_with("found no station place reaching people enough")),
         "{said:?}"
     );
+    assert_eq!(world.passenger_stations, 0, "{said:?}");
+    // Its towns built up: a line between them, its stations by their houses.
+    let mut world = World::new();
+    world.built_up();
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert_eq!(world.passenger_stations, 2, "{said:?}");
 }
-
 #[test]
 fn a_young_chains_losses_hold_nothing_back() {
     // Run 50: its oil chain's lines six months in, losing as a young chain

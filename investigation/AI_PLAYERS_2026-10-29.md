@@ -509,6 +509,28 @@ costs little a month; it closes a line that earned nothing after its first
 months; it prefers towns no one serves, never doubles another's train
 between two towns, and runs buses to its own passenger stations.
 
+## Stations among houses (2026-10-31)
+
+Every AI passenger train of runs 43 to 52 lost money: 0.65 to 0.86
+million in its first eight months, some seven million with what it cost
+to lay. Its stations stood on free ground at the towns' edges (the land
+answer marked every construction alike, a town house as an industry, and
+the route planner kept off all of them), reaching 4 to 27 people in the
+game's catchment (`catchmentAreaSystem.getStationCatchables`); the fixture
+player's reach 16 to 53, with buses feeding them, and earn 2 to 9 million
+a year.
+
+So (bridge version 39) the land answer marks the cells whose constructions
+are town houses alone (`TOWN_BUILDING.construction`): a construction may
+clear them, the game charging for them, as road depots among houses showed
+(207,000 on open ground, up to a million among houses). A passenger
+station's places now run from 60 m out of a town's centre to its edge,
+those reaching the most houses within 250 m first, its own ground left
+out; a line whose stations would reach fewer than 15 such cells at either
+end is not begun, and passenger trains no longer wait for 90,000 a month
+of earnings (cargo railways still do). Track may cross houses at about
+8,000 a metre beyond the ground.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

@@ -1980,7 +1980,6 @@ impl Brain {
         // stations at the towns' edges; run 50's Hard AI began one when its
         // settled lines made 2,500 a month.
         if self.profile.passenger_trains
-            && self.trains_carried()
             && !self.feeding
             && self.spendable() >= train::RAIL_MONEY
             && self.random().is_multiple_of(2)

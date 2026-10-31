@@ -485,10 +485,24 @@ faster AI.
   pair given up for want of a route or a station's place stays given up,
   in the memo its next driver keeps, one given up for money is tried
   again) by
-  passenger train, in turn with buses, once its settled lines make what a
-  train costs to run, 90,000 a month (never its first venture on borrowed
-  money, nor one its lines cannot carry while it finds its riders; run 50
-  began one when its settled lines made 2,500 a month: each AI's first passenger train lost
+  passenger train, in turn with buses, its stations among the towns'
+  houses: since bridge version 39 the land answer marks the cells built on
+  by town houses alone, which a construction may clear for their price, as
+  a player puts a station in town. Its station places run from 60 m out of
+  a town's centre to its edge, those reaching the most houses on foot
+  first (cells of houses within 250 m of the station, its own ground left
+  out), and a line whose stations would reach fewer than 15 at either end
+  is not begun; no street may lie within 200 m straight out of it towards
+  the line, which would have to be crossed by bridge or tunnel sooner than
+  its grade climbs (the first stations among houses, in run 53, found no
+  heights for their track for the streets round them): it stands at the
+  built-up area's edge facing the line, the houses behind it in reach; its track may cross houses at about 8,000 a metre beyond
+  the ground, so it keeps out of towns where it can and still leaves a
+  station in town. Before, its stations stood on free ground at the towns'
+  edges, reaching 4 to 27 people, and every one of its passenger trains
+  lost money (runs 46 to 52: until then a passenger train waited, as a
+  cargo railway still does, for its settled lines to make 90,000 a month;
+  run 50 began one when its settled lines made 2,500 a month: each AI's first passenger train lost
   0.65 to 0.86 million in its first eight months in runs 46 to 49, some
   seven million with what it cost to lay, its stations at the towns'
   edges): a one-track passenger station by
