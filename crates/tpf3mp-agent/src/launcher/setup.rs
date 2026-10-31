@@ -244,10 +244,11 @@ pub fn split_mods(
     carried_personal: bool,
 ) -> Result<content::Split> {
     let found = if mods.is_some() {
-        tpf3mp_modscan::roots::installed(&tpf3mp_modscan::roots::default_roots(
+        tpf3mp_modscan::roots::discovered(
             installed.map(|game| game.dir.as_path()),
             &steam::steam_roots(),
-        ))
+        )
+        .1
     } else {
         Vec::new()
     };
