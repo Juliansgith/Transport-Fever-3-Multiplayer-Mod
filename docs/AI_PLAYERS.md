@@ -278,8 +278,11 @@ faster AI.
    month in the long run of 2026-10-31). After, only when what its
    lines earn a month beyond what its loans take covers the new loan's
    payment 3, 2 or 1.25 times over (Easy, Normal, Hard); never to pay its
-   loans. While its settled lines earn less than its loans take it starts
-   nothing new, its upkeep selling what loses. A kind of line (buses,
+   loans. While its settled lines lose money together and its lines do not
+   cover its loans it starts nothing new, its upkeep selling what loses;
+   settled lines that earn, if less than its loans take, it builds on with
+   what it has beyond its cushion (run 47's Hard AI, 17 million in hand,
+   held back because no bus network of 1923 earns 322,672 a month). A kind of line (buses,
    trucks, cargo trains, passenger trains) whose settled lines lose money
    together is passed over while the other pays, and no railway is begun
    while its railways lose; the lines it closed count, as its memo keeps

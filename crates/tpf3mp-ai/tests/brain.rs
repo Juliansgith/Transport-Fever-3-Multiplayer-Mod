@@ -3266,3 +3266,30 @@ fn a_settled_line_about_breaking_even_is_kept_one_losing_much_is_closed() {
     let said = brain.take_said();
     assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
 }
+
+#[test]
+fn an_ai_whose_settled_lines_earn_less_than_its_loans_take_builds_on_with_its_cash() {
+    // Run 47: 17 million in hand, its settled lines earning, if far less
+    // than its 322,672 a month, and it held back.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = mills();
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.offers = vec![offer("Large", 27_000_000, 144, 10)];
+    world.month_every = Some(Duration::from_secs(30));
+    world.line_profit = Some(|_| 120_000);
+    world.wear_per_month = 1;
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    assert!(
+        !said.iter().any(|l| l.starts_with("holds back")),
+        "{said:?}"
+    );
+    assert!(world.lines.len() >= 3, "{said:?}");
+}

@@ -1403,12 +1403,24 @@ impl Brain {
         if let Some(out) = self.upkeep(company, now) {
             return out;
         }
-        // Nothing new while its settled lines earn less than its loans
-        // take: it waits, its upkeep selling what loses money.
-        if !books.covered() && self.settled_lines(company) >= 2 {
+        // Nothing new while its settled lines lose money together and its
+        // lines do not cover its loans: it waits, its upkeep selling what
+        // loses. Settled lines that earn, if less than its loans take, it
+        // builds on with what it has beyond its cushion: run 47's Hard AI,
+        // 17 million in hand, held back because no bus network of 1923 earns
+        // 322,672 a month, and would have paid its loan down idle. Its young
+        // lines' first months, before any fare, count for nothing here.
+        let settled_earning = company
+            .lines
+            .iter()
+            .filter(|l| self.settled(company, l))
+            .map(|l| l.profit)
+            .sum::<i64>()
+            / 12;
+        if !books.covered() && self.settled_lines(company) >= 2 && settled_earning <= 0 {
             self.say(format!(
-                "holds back: its lines earn {} a month, its loans take {}",
-                books.earning, books.owing
+                "holds back: its settled lines make {settled_earning} a month, its loans take {}",
+                books.owing
             ));
             self.chain.clear();
             self.rest(now);
