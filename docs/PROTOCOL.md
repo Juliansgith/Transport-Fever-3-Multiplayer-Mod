@@ -567,7 +567,11 @@ messages can be in flight when a player leaves, so they are not violations.
 ## AI players
 
 Protocol 24 seats AI players (docs/AI_PLAYERS.md, D32): companies a
-computer plays through one member's game.
+computer plays through one member's game. Protocol 25 lets a server keep
+them off: `Welcome::ai_players` says whether it seats any, and where it
+does not, `Request::AddAi` is refused `AiPlayersOff`, its room's owner's
+included. They are off unless the server's operator turns them on
+(`--ai-players`, OPERATIONS.md): they are not yet released.
 
 - **Seats.** The room's owner seats one with `Request::AddAi { difficulty }`
   (Easy, Normal or Hard) and removes one with `Request::RemoveAi(player)`,

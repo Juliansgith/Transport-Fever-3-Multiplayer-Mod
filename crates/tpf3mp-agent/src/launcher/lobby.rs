@@ -95,6 +95,7 @@ fn whole_view(state: &State) -> LobbyView {
         )
         .unwrap_or_default(),
         competitive: room.competitive,
+        ai_seats: room.ai_seats,
         start: state.start.as_ref().map(|start| LobbyStart {
             name: Text::lossy(&start.name),
             map: Text::lossy(&start.map),
@@ -792,6 +793,7 @@ pub(crate) mod tests {
                     },
                 ],
                 competitive: false,
+                ai_seats: false,
                 ais: Vec::new(),
             }),
             chat: (0..50)

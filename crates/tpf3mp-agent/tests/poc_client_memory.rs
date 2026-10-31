@@ -98,6 +98,7 @@ async fn a_hostile_server_cannot_fill_the_client_with_turns() {
             server_version: Text::new("hostile").unwrap(),
             session_id: SessionId("AB2CD3".parse().unwrap()),
             rules: Vec::new(),
+            ai_players: false,
         });
         write_message(&mut send, &welcome, CONTROL_MAX_FRAME)
             .await

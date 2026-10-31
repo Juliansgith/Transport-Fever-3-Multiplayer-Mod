@@ -951,6 +951,9 @@ impl LocalServer {
         if real_game {
             config.rules = tpf3mp_server::RulesMenu::native_checked();
         }
+        // The rig seats AI players where asked (--ai): they are off on a
+        // server unless its operator turns them on.
+        config.ai_players = true;
         // Every player connects from this PC, one address; leave room for
         // a few more started by hand.
         let players = usize::from(players);

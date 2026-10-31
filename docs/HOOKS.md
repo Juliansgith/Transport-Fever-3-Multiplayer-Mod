@@ -3955,6 +3955,13 @@ see (sent before the click, without the type); the cost of a type (the
 replay builds at the game's cost for its proposal).
 ### AI players' questions
 
+Since bridge version 39 both rooms the agent hands the game, the main
+menu's lobby (`LobbyRoom`) and the running game's (`RoomInfo`), say whether
+its owner may seat AI players (`ai_seats`: the server seats them,
+`Welcome::ai_players`); the Multiplayer windows offer **Add an AI player**
+only where it is, and the game's Lua sees it as `room.ai_seats` and
+`status.ai_seats`.
+
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
 whose game drives it, and asks that game about the world (bridge 38):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the

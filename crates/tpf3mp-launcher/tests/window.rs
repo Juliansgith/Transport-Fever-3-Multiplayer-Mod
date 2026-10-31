@@ -124,6 +124,7 @@ fn in_room(members: Vec<Member>, you_own: bool) -> State {
             has_password: false,
             members,
             competitive: false,
+            ai_seats: false,
             ais: Vec::new(),
         }),
         ..State::default()

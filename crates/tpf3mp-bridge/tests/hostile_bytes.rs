@@ -129,6 +129,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 },
             ])
             .unwrap(),
+            ai_seats: false,
             ais: BoundedVec::new(vec![tpf3mp_bridge::LobbyAi {
                 player: PlayerId(FixedBytes([9; 32])),
                 name: Text::new("Rossi Transport").unwrap(),
@@ -173,6 +174,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 }])
                 .unwrap(),
                 competitive: false,
+                ai_seats: false,
                 ais: BoundedVec::default(),
                 start: Some(tpf3mp_bridge::LobbyStart {
                     name: Text::new("mptest").unwrap(),

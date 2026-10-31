@@ -52,8 +52,29 @@ async fn lobby(clients: &mut [TestClient]) {
 }
 
 #[tokio::test]
-async fn the_owner_seats_ai_players_in_the_lobby_and_only_the_owner() {
+async fn a_server_seats_no_ai_players_unless_its_operator_turns_them_on() {
+    // AI players are not yet released (docs/AI_PLAYERS.md): off by
+    // default, the server says so and refuses them, even its room's owner.
     let server = RunningServer::start(|_| {}).await;
+    let mut clients = vec![server.client("ann").await, server.client("bob").await];
+    assert!(!clients[0].client.welcome().ai_players);
+    lobby(&mut clients).await;
+    let refused = clients[0].client.add_ai(AiDifficulty::Hard).await;
+    assert!(
+        matches!(
+            refused,
+            Err(ClientError::Refused(RequestError::AiPlayersOff))
+        ),
+        "{refused:?}"
+    );
+    // Turned on, it says so.
+    let on = RunningServer::start(|config| config.ai_players = true).await;
+    assert!(on.client("cat").await.client.welcome().ai_players);
+}
+
+#[tokio::test]
+async fn the_owner_seats_ai_players_in_the_lobby_and_only_the_owner() {
+    let server = RunningServer::start(|config| config.ai_players = true).await;
     let mut clients = vec![server.client("ann").await, server.client("bob").await];
     lobby(&mut clients).await;
 
@@ -109,7 +130,7 @@ async fn the_owner_seats_ai_players_in_the_lobby_and_only_the_owner() {
 
 #[tokio::test]
 async fn the_owners_game_drives_the_ais_and_their_actions_are_ordered_as_theirs() {
-    let server = RunningServer::start(|_| {}).await;
+    let server = RunningServer::start(|config| config.ai_players = true).await;
     let mut clients = vec![server.client("ann").await, server.client("bob").await];
     lobby(&mut clients).await;
     clients[0].client.add_ai(AiDifficulty::Easy).await.unwrap();
@@ -165,7 +186,7 @@ async fn the_owners_game_drives_the_ais_and_their_actions_are_ordered_as_theirs(
 
 #[tokio::test]
 async fn the_ai_and_its_memo_pass_to_another_game_when_its_driver_leaves() {
-    let server = RunningServer::start(|_| {}).await;
+    let server = RunningServer::start(|config| config.ai_players = true).await;
     let mut clients = vec![server.client("ann").await, server.client("bob").await];
     lobby(&mut clients).await;
     clients[0].client.start_game().await.unwrap();
@@ -232,7 +253,7 @@ async fn the_ai_and_its_memo_pass_to_another_game_when_its_driver_leaves() {
 
 #[tokio::test]
 async fn nobody_drives_an_ai_in_a_game_nobody_keeps_up_with() {
-    let server = RunningServer::start(|_| {}).await;
+    let server = RunningServer::start(|config| config.ai_players = true).await;
     let mut clients = vec![server.client("ann").await];
     lobby(&mut clients).await;
     clients[0].client.add_ai(AiDifficulty::Easy).await.unwrap();

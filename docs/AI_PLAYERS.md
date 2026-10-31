@@ -12,6 +12,13 @@ what was measured is in
 [investigation/AI_PLAYERS_2026-10-29.md](../investigation/AI_PLAYERS_2026-10-29.md);
 the work is Part 5 of [PLAN.md](PLAN.md).
 
+**Released off (1.4.0, 2026-10-31).** Release 1.4.0 carries all of this,
+but a server seats no AI players unless its operator turns them on
+(`--ai-players`, [OPERATIONS.md](OPERATIONS.md), "AI players"; protocol
+25): they are not yet good enough to play against (none of their
+passenger trains has earned yet, and their bus lines do not repay their
+loans). The Multiplayer windows offer them only where a server does.
+
 **Status (2026-10-29): seats, drivers and town bus lines built.** The
 first milestone is in: AI seats in the server and its log (protocol 24,
 log format 11), the driver and its hand-over with the memo, the mod's
