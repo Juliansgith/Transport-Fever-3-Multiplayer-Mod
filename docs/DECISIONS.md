@@ -1723,3 +1723,50 @@ Rejected:
 
 Touches: D21 (AI companies are their own); PLAN.md, Part 5; PROTOCOL.md
 and the bridge (new messages, versions bumped, when built).
+
+## D33 (2026-10-31, owner-approved): an old release's server drains beside the newer one and hands its games over
+
+Asked by the owner after upgrading the relay to 1.4.0 cut off a player's
+running game: "deploy 2 versions of the relay at the same time so we can
+still support existing games, but not accept new connections on the old
+version". The owner chose, in the same session, that an old game whose
+players have updated moves to the newer server rather than ending.
+
+- **Each release its own address.** A server plays only its own protocol
+  (D18), and a launcher plays only on the servers its release lists (D12),
+  so a release that changes the protocol lists a server of its own: the
+  same host, another UDP port (`TPF3MP_DEFAULT_SERVER`), its tunnel at
+  `wss://<host>/tpf3mp/<port>` (the default port 29470 keeps
+  `/tpf3mp`). Launchers of the old release keep reaching the old server.
+- **The old server drains** (`--drain`, or `POST /drain` on its admin
+  endpoint without a restart; protocol 26, `Welcome::draining`): its
+  running games go on for their own players, who may reconnect; it opens
+  no rooms and takes nobody into a room they hold no seat in
+  (`RequestError::Draining`, "update TPF3-MP"). Its lobbies end with their
+  players, as on any restart.
+- **It hands each game over** once nobody has been connected to it for a
+  while (`--handover-dir`, three minutes by default), rather than closing it
+  after the abandon timeout: its log, snapshot pointer and world snapshots
+  go to a directory the newer server reads (`--import-dir`), which restores
+  the game as at a restart. Players who updated rejoin it there with their
+  invite: both servers keep the same `invite.key`.
+- **Fail closed.** A game is handed over only once it is written whole and
+  the room has checked that nobody came back and nothing was logged while
+  it was written; else it stays and is tried again. A world that is not the
+  snapshot its manifest names is refused and the hand-over set aside,
+  unchanged. A game is never deleted while it could be handed over. The
+  newer server takes in nothing while it drains itself.
+- **The operator retires the old server** once its rooms are gone
+  (`tpf3mp_rooms 0`): `docker compose -p <its project> down`.
+
+It works from the release after the one that carries it: 1.4.0's server
+can neither drain nor hand over, and its launchers know only `:29470`.
+
+Rejected:
+
+- **One address routing by version** (a front reading each QUIC
+  connection's first packet): the version is inside TLS, and a proxy that
+  terminated it would break each player's proof, bound to its own TLS
+  session.
+- **Ending old games when their players update**: the owner chose the
+  hand-over.

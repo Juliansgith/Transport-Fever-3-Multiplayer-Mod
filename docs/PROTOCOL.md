@@ -609,6 +609,19 @@ included. They are off unless the server's operator turns them on
   holds the latest in memory, hands it on with the seat, and logs none: a
   restarted server's AI reads its world anew.
 
+## Draining
+
+Protocol 26 lets an old release's server run beside a newer one
+(DECISIONS.md, D33). A draining server says so in its `Welcome`
+(`draining`): it keeps the games running on it for their own players,
+who resume them as ever, and refuses `CreateRoom` and any `JoinRoom` by a
+player who holds no seat in that room with `Draining`. Once nobody has
+been connected to one of its games for its operator's while, it hands the
+game over to the newer server and closes it; a `JoinRoom` for it then
+answers `Draining` too, as every failed join on a draining server does, and
+the player, once updated, rejoins it on the newer server with the same
+invite and resume point, its turn log unbroken.
+
 ## Resuming
 
 A player who reconnects joins the room again with the same identity and a

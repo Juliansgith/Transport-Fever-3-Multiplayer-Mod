@@ -306,6 +306,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 },
             ],
             ai_players: false,
+            draining: false,
         }),
         ServerMessage::Reject(Reject {
             reason: RejectReason::TooManyConnections,

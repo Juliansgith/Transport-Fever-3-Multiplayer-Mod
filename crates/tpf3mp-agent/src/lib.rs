@@ -103,14 +103,16 @@ pub enum TunnelChoice {
 }
 
 impl TunnelChoice {
-    /// The route to a server at `host`.
-    pub fn route(&self, host: &str) -> Result<Route, TunnelError> {
+    /// The route to a server at `host`, its UDP on `port`.
+    pub fn route(&self, host: &str, port: u16) -> Result<Route, TunnelError> {
         Ok(match self {
             // A host no URL can name gets no fallback, rather than no route.
-            Self::Default => TunnelUrl::default_for(host).map_or(Route::Udp, Route::UdpOrTunnel),
+            Self::Default => {
+                TunnelUrl::default_for(host, port).map_or(Route::Udp, Route::UdpOrTunnel)
+            }
             Self::Url(url) => Route::UdpOrTunnel(url.clone()),
             Self::Only(Some(url)) => Route::Tunnel(url.clone()),
-            Self::Only(None) => Route::Tunnel(TunnelUrl::default_for(host)?),
+            Self::Only(None) => Route::Tunnel(TunnelUrl::default_for(host, port)?),
             Self::Off => Route::Udp,
         })
     }

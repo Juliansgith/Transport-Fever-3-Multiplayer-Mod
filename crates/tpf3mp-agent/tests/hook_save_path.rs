@@ -89,6 +89,7 @@ async fn a_save_outside_the_saves_directory_is_refused() {
             session_id: SessionId("AB2CD3".parse().unwrap()),
             rules: Vec::new(),
             ai_players: false,
+            draining: false,
         });
         write_message(&mut send, &welcome, CONTROL_MAX_FRAME)
             .await

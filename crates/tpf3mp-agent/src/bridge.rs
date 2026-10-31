@@ -2859,6 +2859,7 @@ mod tests {
                     session_id: SessionId("AB2CD3".parse().unwrap()),
                     rules: Vec::new(),
                     ai_players: false,
+                    draining: false,
                 }),
                 CONTROL_MAX_FRAME,
             )

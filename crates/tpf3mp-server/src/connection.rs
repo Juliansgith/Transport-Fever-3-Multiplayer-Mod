@@ -263,6 +263,7 @@ async fn handshake(
         session_id,
         rules: shared.directory.offers(),
         ai_players: shared.ai_players,
+        draining: shared.drain.draining(),
     });
     write_message(&mut send, &welcome, CONTROL_MAX_FRAME).await?;
     Ok(Admitted {
@@ -582,6 +583,9 @@ impl Client {
                 if self.still_in_room().await {
                     return Err(RequestError::AlreadyInRoom);
                 }
+                if self.shared.drain.draining() {
+                    return Err(RequestError::Draining);
+                }
                 let share = self
                     .shared
                     .admission
@@ -605,6 +609,11 @@ impl Client {
                 let joined = self.join(join).await;
                 if joined == Err(RequestError::BadInvite) {
                     admission.wrong_invite(self.origin, std::time::Instant::now());
+                    // A draining server's game may be on the newer one now:
+                    // every failed join there says so, alike.
+                    if self.shared.drain.draining() {
+                        return Err(RequestError::Draining);
+                    }
                 }
                 joined.map(Response::RoomJoined)
             }

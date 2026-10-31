@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::{
     admission::RoomShare,
-    metrics,
+    drain, metrics,
     room::{
         NewMember, ROOM_QUEUE, Room, RoomEnv, RoomHandle, RoomSecrets, RoomSpec, SharedSummary,
     },
@@ -209,6 +209,66 @@ impl Directory {
             }
         }
         restored
+    }
+
+    /// Takes in the games an older server handed over in `dir` (`drain.rs`,
+    /// D33): each restored as at a restart, holding its snapshots. A
+    /// hand-over that cannot be taken in is set aside, unchanged, and its
+    /// log, if it reached the data directory, as a broken one. Not while
+    /// this server drains itself. Blocking: it ingests their worlds.
+    pub(crate) fn take_in_handovers(self: &Arc<Self>, dir: &Path) -> usize {
+        if self.env.drain.draining() {
+            return 0;
+        }
+        let Some(data_dir) = &self.env.data_dir else {
+            return 0;
+        };
+        let mut taken = 0;
+        for from in drain::ready(dir) {
+            let log = match drain::take_in(&from, data_dir, self.env.snapshots.as_deref()) {
+                Ok(log) => log,
+                Err(error) => {
+                    warn!(path = %from.display(), %error, "cannot take in a handed-over game; setting it aside");
+                    drain::set_aside(&from);
+                    continue;
+                }
+            };
+            match Room::recover(&log, self.key.clone(), &self.rules, self.env.clone()) {
+                Ok(Some(room)) if self.find_by_id(&room.id()) => {
+                    warn!(room = %room.id(), "a handed-over game is running here already; setting its log aside");
+                    set_aside(&log);
+                }
+                Ok(Some(room)) => {
+                    info!(room = %room.id(), "took in a game an older server handed over");
+                    if let Some(snapshots) = &self.env.snapshots {
+                        for id in room.held_snapshots() {
+                            snapshots.hold(id);
+                        }
+                    }
+                    self.register(room);
+                    metrics::increment(&self.env.metrics.games_taken_in);
+                    taken += 1;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(path = %log.display(), %error, "cannot restore a handed-over game; keeping its log aside");
+                    set_aside(&log);
+                }
+            }
+            if let Err(error) = fs::remove_dir_all(&from) {
+                warn!(path = %from.display(), %error, "cannot remove a hand-over taken in");
+            }
+        }
+        taken
+    }
+
+    /// Whether a room of this id is open here.
+    fn find_by_id(&self, id: &RoomId) -> bool {
+        self.rooms
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .by_id
+            .contains_key(id)
     }
 
     /// The rules hosts pick from.

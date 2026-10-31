@@ -50,6 +50,11 @@ pub const PROTOCOL: &str = "tpf3mp-quic-1";
 /// The path a server serves tunnels at unless told otherwise, and where
 /// clients look for one.
 pub const DEFAULT_PATH: &str = "/tpf3mp";
+/// The UDP port a server listens on by default. Its tunnel is at
+/// [`DEFAULT_PATH`]; a server on another port, such as a newer release's
+/// beside an older one on one host (DECISIONS.md, D33), has its tunnel at
+/// `/tpf3mp/<port>`.
+pub const DEFAULT_PORT: u16 = 29470;
 /// Largest datagram a tunnel carries, well above any QUIC packet.
 pub const MAX_DATAGRAM: usize = 2048;
 /// A tunnel that carries no datagram for this long is closed. Pings and
@@ -72,14 +77,20 @@ pub struct TunnelUrl {
 }
 
 impl TunnelUrl {
-    /// The tunnel a server at `host` serves by default:
-    /// `wss://<host>/tpf3mp` on port 443.
-    pub fn default_for(host: &str) -> Result<Self, TunnelError> {
+    /// The tunnel a server at `host`, its UDP on `port`, serves by
+    /// default: `wss://<host>/tpf3mp` on port 443 for [`DEFAULT_PORT`],
+    /// `wss://<host>/tpf3mp/<port>` for another.
+    pub fn default_for(host: &str, port: u16) -> Result<Self, TunnelError> {
         let host = host.trim_start_matches('[').trim_end_matches(']');
-        if host.contains(':') {
-            format!("wss://[{host}]{DEFAULT_PATH}").parse()
+        let path = if port == DEFAULT_PORT {
+            DEFAULT_PATH.to_owned()
         } else {
-            format!("wss://{host}{DEFAULT_PATH}").parse()
+            format!("{DEFAULT_PATH}/{port}")
+        };
+        if host.contains(':') {
+            format!("wss://[{host}]{path}").parse()
+        } else {
+            format!("wss://{host}{path}").parse()
         }
     }
 
@@ -324,11 +335,19 @@ mod tests {
 
     #[test]
     fn a_servers_default_tunnel_is_wss_on_its_host() {
-        let url = TunnelUrl::default_for("play.example.net").unwrap();
+        let url = TunnelUrl::default_for("play.example.net", DEFAULT_PORT).unwrap();
         assert_eq!(url.to_string(), "wss://play.example.net/tpf3mp");
-        let url = TunnelUrl::default_for("[2001:db8::1]").unwrap();
+        let url = TunnelUrl::default_for("[2001:db8::1]", DEFAULT_PORT).unwrap();
         assert_eq!((url.host(), url.port()), ("2001:db8::1", 443));
         assert_eq!(url.to_string(), "wss://[2001:db8::1]/tpf3mp");
+    }
+
+    #[test]
+    fn a_server_on_another_port_has_its_tunnel_at_its_own_path() {
+        // Two releases' servers on one host (D33): each its tunnel.
+        let url = TunnelUrl::default_for("play.example.net", 29426).unwrap();
+        assert_eq!(url.to_string(), "wss://play.example.net/tpf3mp/29426");
+        assert_eq!(url.port(), 443);
     }
 
     #[test]

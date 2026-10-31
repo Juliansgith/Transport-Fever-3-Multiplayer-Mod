@@ -169,6 +169,8 @@ jobs:
           # Its own project, whatever the folder: never the `deploy` project
           # of another service on the host (docs/OPERATIONS.md).
           test "$(docker compose config --format json | jq -r .name)" = tpf3mp
+          # Shared by every release's project on a host, made once there.
+          docker volume create tpf3mp-handover
           docker compose up -d --no-build
           for attempt in $(seq 1 20); do
             curl -sf http://127.0.0.1:9470/healthz && break
@@ -197,6 +199,7 @@ jobs:
           refused cat /etc/passwd
           refused 'status;' id
           refused status now
+          refused drain now
           refused logs --since '$(id)'
           refused logs --since 5x
           refused logs --tail -1

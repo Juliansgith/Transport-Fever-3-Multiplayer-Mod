@@ -6,6 +6,7 @@ mod admission;
 mod connection;
 mod diagnostics;
 mod directory;
+mod drain;
 mod limit;
 mod metrics;
 mod native_index;
@@ -31,12 +32,14 @@ use tpf3mp_proto::{ChatText, Text};
 /// the oldest.
 const ANNOUNCEMENTS: usize = 16;
 
+use crate::drain::Drain;
 pub use crate::{
     admin::serve_admin,
     diagnostics::{
         DiagnosticsConfig, Entry as DiagnosticsEntry, READ_LIMIT as DIAGNOSTICS_READ_LIMIT,
         SESSION_QUOTA, SessionOf as DiagnosticsSession, Summary as DiagnosticsSummary,
     },
+    drain::HandoverConfig,
     native_index::NativeRegistry,
     ruleset::{
         AcceptAll, GameActions, MALFORMED_ACTION, NATIVE, RulesChoice, RulesMenu, Ruleset,
@@ -130,6 +133,17 @@ pub struct ServerConfig {
     /// players are not yet released (docs/AI_PLAYERS.md); an operator turns
     /// them on to try them.
     pub ai_players: bool,
+    /// Whether the server starts draining: a newer release's server runs
+    /// beside it, and it keeps only its running games (DECISIONS.md, D33).
+    /// The admin endpoint's `POST /drain` starts it while running.
+    pub draining: bool,
+    /// Where, while draining, it hands over each running game nobody has
+    /// been connected to for so long, for the newer server to take in.
+    /// `None` keeps every game here until it is over.
+    pub handover: Option<HandoverConfig>,
+    /// Where it takes in the games an older server hands over, while it
+    /// does not drain itself. `None` takes in none.
+    pub import_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -169,6 +183,9 @@ impl ServerConfig {
             diagnostics: None,
             native_registry: None,
             ai_players: false,
+            draining: false,
+            handover: None,
+            import_dir: None,
         }
     }
 }
@@ -196,6 +213,10 @@ impl fmt::Debug for ServerConfig {
             .field("compact_log_at", &self.compact_log_at)
             .field("tunnel", &self.tunnel)
             .field("native_registry", &self.native_registry)
+            .field("ai_players", &self.ai_players)
+            .field("draining", &self.draining)
+            .field("handover", &self.handover)
+            .field("import_dir", &self.import_dir)
             .finish_non_exhaustive()
     }
 }
@@ -232,6 +253,8 @@ pub(crate) struct Shared {
     pub(crate) diagnostics: Option<Diagnostics>,
     /// Whether rooms' owners may seat AI players ([`ServerConfig::ai_players`]).
     pub(crate) ai_players: bool,
+    /// Whether it drains, and where its games go ([`ServerConfig::draining`]).
+    pub(crate) drain: Arc<Drain>,
     /// The operator's notices, which every connection passes to its client.
     pub(crate) announcements: tokio::sync::broadcast::Sender<ChatText>,
     /// The native mods the server offers, as last read.
@@ -258,6 +281,8 @@ pub struct Server {
     tunnel: Option<(Listener, usize)>,
     /// Read once the server runs.
     native_registry: Option<NativeRegistry>,
+    /// Where it takes in games an older server hands over.
+    import_dir: Option<PathBuf>,
 }
 
 impl Server {
@@ -290,6 +315,7 @@ impl Server {
             Arc::new(quinn::TokioRuntime),
         )?;
         let metrics = Arc::new(Metrics::default());
+        let drain = Arc::new(Drain::new(config.draining, config.handover.clone()));
         let directory = Arc::new(Directory::new(DirectoryConfig {
             secret: config.secret,
             max_rooms: config.max_rooms,
@@ -305,6 +331,7 @@ impl Server {
                 },
                 snapshots: snapshots.clone(),
                 compact_log_at: config.compact_log_at,
+                drain: Arc::clone(&drain),
             },
         }));
         let diagnostics = match config.diagnostics {
@@ -343,6 +370,7 @@ impl Server {
             tunnels,
             diagnostics,
             ai_players: config.ai_players,
+            drain,
             announcements: tokio::sync::broadcast::channel(ANNOUNCEMENTS).0,
             native: Arc::default(),
         });
@@ -353,6 +381,7 @@ impl Server {
             connections: Arc::new(()),
             tunnel: listener.map(|listener| (listener, capacity)),
             native_registry: config.native_registry,
+            import_dir: config.import_dir,
         })
     }
 
@@ -402,6 +431,21 @@ impl Server {
                 }
             })
         });
+        // Games an older server hands over, taken in as they arrive.
+        let importer = self.import_dir.take().map(|dir| {
+            tracing::info!(dir = %dir.display(), "taking in the games an older server hands over");
+            let directory = Arc::clone(&self.shared.directory);
+            tokio::spawn(async move {
+                let mut every = tokio::time::interval(drain::TAKE_IN_EVERY);
+                loop {
+                    every.tick().await;
+                    let directory = Arc::clone(&directory);
+                    let dir = dir.clone();
+                    let _ = tokio::task::spawn_blocking(move || directory.take_in_handovers(&dir))
+                        .await;
+                }
+            })
+        });
         let mut shutdown = std::pin::pin!(shutdown);
         loop {
             tokio::select! {
@@ -416,6 +460,9 @@ impl Server {
             .close(close::SHUTTING_DOWN, b"server shutting down");
         if let Some(collector) = collector {
             collector.abort();
+        }
+        if let Some(importer) = importer {
+            importer.abort();
         }
         self.endpoint.wait_idle().await;
         // Only now: the connections' closes have gone out through them.
@@ -495,6 +542,20 @@ impl ServerStats {
 
     /// Tells everyone connected `text`, such as a restart coming. Returns
     /// how many connections were told.
+    /// Starts draining (`POST /drain`): whether it had not already.
+    pub fn start_draining(&self) -> bool {
+        let started = self.shared.drain.start();
+        if started {
+            tracing::warn!("draining: keeping only the running games, opening none");
+        }
+        started
+    }
+
+    /// Whether the server drains.
+    pub fn draining(&self) -> bool {
+        self.shared.drain.draining()
+    }
+
     pub fn announce(&self, text: ChatText) -> usize {
         tracing::info!(%text, "announcing to everyone connected");
         self.shared.announcements.send(text).unwrap_or(0)
@@ -542,6 +603,7 @@ impl ServerStats {
             sessions: self.sessions(),
             rooms: self.rooms(),
             tunnels: self.tunnels(),
+            draining: usize::from(self.draining()),
         })
     }
 
