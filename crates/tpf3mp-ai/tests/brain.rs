@@ -3691,3 +3691,63 @@ fn a_young_chains_losses_hold_nothing_back() {
         "{said:?}"
     );
 }
+
+#[test]
+fn a_chain_none_of_whose_lines_carries_anything_is_closed_before_its_year() {
+    // Run 51: a fuel railway and the crude oil trucks feeding its refinery
+    // earned nothing for months, the railway losing 495,000.
+    let mut world = World::new();
+    const GOODS: &str = "::/cargos/goods/goods.cargo";
+    const PLANKS_: &str = "::/cargos/planks/planks.cargo";
+    world.industries = vec![
+        industry("Didcot Factory", 300.0, 200.0, &[PLANKS_], &[(GOODS, 0)]),
+        industry("Witney Sawmill", -300.0, -900.0, &[], &[(PLANKS_, 150)]),
+    ];
+    world.towns[1].needs = BoundedVec::new(vec![AiNeed {
+        cargo: Text::new(GOODS).unwrap(),
+        supply: 0,
+        limit: 80,
+        at: pos(5_320.0, -280.0),
+    }])
+    .unwrap();
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let now = play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let line = |world: &World, name: &str| {
+        world
+            .lines
+            .iter()
+            .find(|l| l.name.as_str().contains(name))
+            .map(|l| l.id)
+    };
+    assert!(line(&world, "goods").is_some(), "{said:?}");
+    // Past its first months, short of a chain's year: one line earning, the
+    // chain kept.
+    world.month_every = Some(Duration::from_secs(60));
+    world.line_profit = Some(|_| -20_000);
+    world.line_income = Some(|l| {
+        if l.name.as_str().contains("planks") {
+            3_000
+        } else {
+            0
+        }
+    });
+    for v in &mut world.vehicles {
+        v.worn = 6;
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(line(&world, "goods").is_some(), "kept: {said:?}");
+    // Neither earning, nothing aboard or waiting: closed.
+    world.line_income = Some(|_| 0);
+    play(&mut brain, &mut world, now, Duration::from_secs(1_200));
+    let said = brain.take_said();
+    assert!(line(&world, "goods").is_none(), "{said:?}");
+    assert!(line(&world, "planks").is_none(), "{said:?}");
+}

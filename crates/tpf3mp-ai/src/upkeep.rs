@@ -286,8 +286,9 @@ impl Brain {
             let Some(oldest) = vehicles.iter().max_by_key(|v| v.worn) else {
                 continue;
             };
-            // A chain's line waits on its chain's young lines' cargo.
-            if self.chain_young(company, line) {
+            // A chain's line waits on its chain's young lines' cargo, unless
+            // none of its chain carries anything.
+            if self.chain_young(company, line) && !self.chain_dead(company, line) {
                 continue;
             }
             if oldest.worn < DEAD_AFTER

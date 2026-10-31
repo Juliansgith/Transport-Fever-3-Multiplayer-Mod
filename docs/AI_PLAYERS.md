@@ -193,7 +193,11 @@ faster AI.
      from or closed until every line of its chain has run a tenth of its
      life (twice a line's twentieth), its cargo first made, then carried
      on; till then its lines count as settled nowhere, holding nothing
-     back with their first months' losses: run 48 closed a fuel line six months in, eight minutes
+     back with their first months' losses. A chain none of whose lines
+     carries anything (each past its first months, earning nothing, nothing
+     aboard or waiting) is closed without waiting for its year (run 51's fuel
+     railway and its crude oil trucks earned nothing for months, the railway
+     losing 495,000): run 48 closed a fuel line six months in, eight minutes
      after the crude oil line feeding its refinery opened. It takes chains in turn with single lines,
      with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their
