@@ -911,6 +911,36 @@ impl Brain {
             })
     }
 
+    /// Whether every line of `line`'s chain, itself included, carries no
+    /// one: each through [`upkeep::DEAD_AFTER`] of its life, earning
+    /// nothing, nothing aboard or waiting for it. Such a chain waits for
+    /// nothing: run 51's fuel railway and the crude oil trucks feeding its
+    /// refinery earned nothing for months, the railway losing 495,000, the
+    /// chain's year not yet up.
+    pub(super) fn chain_dead(&self, company: &AiCompany, line: &AiLine) -> bool {
+        let lines: Vec<&AiLine> = self
+            .memo
+            .chains
+            .iter()
+            .filter(|group| group.contains(&line.id.0))
+            .flat_map(|group| group.iter())
+            .filter_map(|id| company.lines.iter().find(|l| l.id.0 == *id))
+            .collect();
+        !lines.is_empty()
+            && lines.iter().all(|l| {
+                let oldest = company
+                    .vehicles
+                    .iter()
+                    .filter(|v| v.line == Some(l.id))
+                    .map(|v| v.worn)
+                    .max();
+                oldest.is_some_and(|w| w >= upkeep::DEAD_AFTER)
+                    && l.income.is_some_and(|i| i <= 0)
+                    && l.load == 0
+                    && l.waiting == 0
+            })
+    }
+
     /// Where its passenger train stations stand.
     fn passenger_stations(&self, company: &AiCompany) -> Vec<P> {
         company
