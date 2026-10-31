@@ -2564,6 +2564,9 @@ fn an_ai_whose_lines_lose_money_borrows_no_more_and_keeps_out_of_debt() {
     }
     assert_eq!(world.loans_taken, 1, "only its first loan: {said:?}");
     assert!(world.lowest >= 0, "never below zero: {}", world.lowest);
+    // Holding back said once a spell, not at every look.
+    let held = said.iter().filter(|l| l.starts_with("holds back")).count();
+    assert!(held <= 3, "{held}: {said:?}");
     // Its lines that lost money over their year closed, its railway too.
     assert!(
         said.iter()

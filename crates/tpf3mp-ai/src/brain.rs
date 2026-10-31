@@ -482,6 +482,8 @@ pub struct Brain {
     /// How many young lines it last said it waits on: said once, not at
     /// every look.
     young_said: usize,
+    /// It said it holds back, and has not built since: said once.
+    held_said: bool,
     /// Its look found a passenger station of its own with no bus line by
     /// it: the towns' answer is for buses to it.
     feeding: bool,
@@ -539,6 +541,7 @@ impl Brain {
             no_rail: Vec::new(),
             next_cargo: false,
             young_said: 0,
+            held_said: false,
             feeding: false,
             unfed_left: Vec::new(),
             first_line_at: None,
@@ -1418,14 +1421,17 @@ impl Brain {
             .sum::<i64>()
             / 12;
         if !books.covered() && self.settled_lines(company) >= 2 && settled_earning <= 0 {
-            self.say(format!(
-                "holds back: its settled lines make {settled_earning} a month, its loans take {}",
-                books.owing
-            ));
+            if !std::mem::replace(&mut self.held_said, true) {
+                self.say(format!(
+                    "holds back: its settled lines make {settled_earning} a month, its loans take {}",
+                    books.owing
+                ));
+            }
             self.chain.clear();
             self.rest(now);
             return None;
         }
+        self.held_said = false;
         // Its chain's next leg, before anything new.
         if !self.chain.is_empty() {
             self.next_leg(now);
