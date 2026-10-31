@@ -396,6 +396,11 @@ enum Stage {
     SurveyIndustries,
     /// Asking whether its next pick of cargo route is joined by road.
     Route,
+    /// Asking whether its planned chain's later leg `leg`, one trucks must
+    /// carry, is joined by road, before any of the chain is built: run 43's
+    /// and run 48's meat railways, from a farm that makes meat only of
+    /// grain, ran empty when the grain leg found no road after them.
+    ChainRoads { leg: usize },
     /// Reading the streets by a centre of the project's town.
     Streets,
     /// Asking the verdict on the next stop.
@@ -711,6 +716,14 @@ impl Brain {
                 };
                 self.ask(question, now)
             }
+            Stage::ChainRoads { leg } => {
+                let leg = self.chain.get(leg)?;
+                let question = AiQuestion::Route {
+                    from: leg.from.pos,
+                    to: leg.to.pos(),
+                };
+                self.ask(question, now)
+            }
             Stage::Streets => {
                 let project = self.project.as_ref()?;
                 let at = project.centres.first().copied()?;
@@ -974,6 +987,10 @@ impl Brain {
                 None
             }
             (AiQuestion::Route { .. }, AiAnswer::Route(route)) => {
+                if let Stage::ChainRoads { leg } = self.stage {
+                    self.on_chain_road(&route, leg, now);
+                    return None;
+                }
                 self.on_route(&route, now);
                 None
             }
@@ -1591,7 +1608,7 @@ impl Brain {
                 first.to.name()
             ));
             self.chain = legs.into_iter().collect();
-            self.next_leg(now);
+            self.check_chain_roads(1, now);
             return;
         }
         // Trains first: with money enough for a rail line, among the
@@ -1688,6 +1705,43 @@ impl Brain {
         if let Some(project) = self.project.as_mut() {
             project.stops = stops;
         }
+    }
+
+    /// Its chain's later legs that trucks would carry (shorter than a
+    /// railway runs, or any while its money stretches to no railway) asked
+    /// of the pathfinder in turn from leg `from`, before any is built; then
+    /// its first leg.
+    fn check_chain_roads(&mut self, from: usize, now: Instant) {
+        let rail = self.spendable() >= train::RAIL_MONEY;
+        let next = (from..self.chain.len()).find(|&i| {
+            let d = self.chain[i].distance();
+            d <= self.profile.cargo_most && (d < train::RAIL_FROM || !rail)
+        });
+        match next {
+            Some(leg) => self.stage = Stage::ChainRoads { leg },
+            None => self.next_leg(now),
+        }
+    }
+
+    /// The pathfinder's answer for a chain's later leg: on to the next, or
+    /// the chain given up before any of it is built, that leg left out of
+    /// its chains a long while (so is every chain that needs it).
+    fn on_chain_road(&mut self, route: &AiRoute, leg: usize, now: Instant) {
+        if route.connected {
+            self.check_chain_roads(leg + 1, now);
+            return;
+        }
+        if let Some(l) = self.chain.get(leg) {
+            self.given_up
+                .push((route_key(l.from.pos, l.cargo.as_str()), now + DEAD_LEG_FOR));
+            self.say(format!(
+                "found no road for its chain's {} from {}; built none of it",
+                cargo_name(l.cargo.as_str()),
+                l.from.name.as_str()
+            ));
+        }
+        self.chain.clear();
+        self.stage = Stage::Survey;
     }
 
     /// Starts its chain's next leg: by train where it is far enough and its

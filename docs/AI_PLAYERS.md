@@ -181,8 +181,13 @@ faster AI.
      factory, its goods to a town), each leg after the one out of the
      industry it feeds, no industry twice, eight legs at most. Each leg by
      train where it runs 1.8 km or more and its money allows, else by
-     truck. A leg that fails ends its chain; one no road joins is left out
-     of its chains for an hour. It takes chains in turn with single lines,
+     truck. Before any of a chain is built it asks the pathfinder whether
+     each later leg trucks would carry (shorter than a railway runs, or any
+     while its money stretches to no railway) is joined by road, and builds
+     none of it if one is not: runs 43 and 48 built a meat railway from a
+     farm that makes meat only of grain, and it ran empty when the grain
+     leg found no road after it. A leg that fails ends its chain; one no
+     road joins is left out of its chains for an hour. It takes chains in turn with single lines,
      with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their
      sizes, distance and how they are reached already). *Built so far
