@@ -344,7 +344,7 @@ impl Brain {
     }
 
     fn start_rail_of(&mut self, leg: Leg, passengers: bool, key: u32) -> bool {
-        if self.spendable() < RAIL_MONEY {
+        if self.spendable() < RAIL_MONEY || !self.trains_carried() {
             return false;
         }
         // No new railway while its settled ones lose money together: the
