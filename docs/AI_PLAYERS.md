@@ -192,7 +192,8 @@ faster AI.
      chain's lines (the latest 16 chains), and no line of a chain is sold
      from or closed until every line of its chain has run a tenth of its
      life (twice a line's twentieth), its cargo first made, then carried
-     on: run 48 closed a fuel line six months in, eight minutes
+     on; till then its lines count as settled nowhere, holding nothing
+     back with their first months' losses: run 48 closed a fuel line six months in, eight minutes
      after the crude oil line feeding its refinery opened. It takes chains in turn with single lines,
      with at least 1.5 million to spend;
    - passengers, within a town (its districts) and between towns (their
@@ -475,8 +476,10 @@ faster AI.
   pair given up for want of a route or a station's place stays given up,
   in the memo its next driver keeps, one given up for money is tried
   again) by
-  passenger train, in turn with buses, once its settled lines earn (never
-  its first venture on borrowed money: each AI's first passenger train lost
+  passenger train, in turn with buses, once its settled lines make what a
+  train costs to run, 90,000 a month (never its first venture on borrowed
+  money, nor one its lines cannot carry while it finds its riders; run 50
+  began one when its settled lines made 2,500 a month: each AI's first passenger train lost
   0.65 to 0.86 million in its first eight months in runs 46 to 49, some
   seven million with what it cost to lay, its stations at the towns'
   edges): a one-track passenger station by

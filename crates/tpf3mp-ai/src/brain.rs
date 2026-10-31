@@ -116,6 +116,10 @@ pub const CHAIN_MONEY: i64 = 1_500_000;
 /// three-stop town lines carried at a time (6 of 36 seats, 5 of 12; the
 /// long run of 2026-10-31).
 pub const TOWN_RIDERS: u32 = 8;
+/// What its settled lines must make a month before it begins a passenger
+/// train: about what one costs to run, its engine and coaches (the long
+/// runs' China JF1, 673,872 a year, and six coaches at 61,126).
+pub const TRAIN_EARNING: i64 = 90_000;
 /// How near a town's centre a passenger station of its own must stand for
 /// a bus line in that town to run to it, in metres.
 pub const FEEDER_REACH: f64 = 1_200.0;
@@ -862,13 +866,18 @@ impl Brain {
             .count()
     }
 
+    /// A chain's line settles with its chain ([`Brain::chain_young`]): its
+    /// first months' losses, its cargo not yet flowing, say nothing yet, and
+    /// run 50's Hard AI held back for its young oil chain's.
     fn settled(&self, company: &AiCompany, line: &AiLine) -> bool {
         let mut on = company
             .vehicles
             .iter()
             .filter(|v| v.line == Some(line.id))
             .peekable();
-        on.peek().is_some() && on.all(|v| v.worn >= upkeep::SETTLED)
+        on.peek().is_some()
+            && on.all(|v| v.worn >= upkeep::SETTLED)
+            && !self.chain_young(company, line)
     }
 
     /// Keeps a line it opened among the lines of the chain it builds, if it
@@ -1920,14 +1929,17 @@ impl Brain {
         self.chain_group = None;
         // A passenger train between two large towns, its money and
         // difficulty allowing, in turn with buses, once its settled lines
-        // earn: never its first venture on borrowed money. Each AI's first
-        // passenger train lost 0.65 to 0.86 million in its first eight
-        // months in every long run (runs 46 to 49), some seven million with
-        // what it cost to lay, its stations at the towns' edges.
+        // earn what a train costs to run ([`TRAIN_EARNING`]): never its
+        // first venture on borrowed money, nor one its lines cannot carry
+        // while it finds its riders. Each AI's first passenger train lost
+        // 0.65 to 0.86 million in its first eight months in every long run
+        // (runs 46 to 50), some seven million with what it cost to lay, its
+        // stations at the towns' edges; run 50's Hard AI began one when its
+        // settled lines made 2,500 a month.
         let earns = self
             .company
             .as_ref()
-            .is_some_and(|c| self.settled_earning(c) > 0);
+            .is_some_and(|c| self.settled_earning(c) >= TRAIN_EARNING);
         if self.profile.passenger_trains
             && earns
             && !self.feeding
