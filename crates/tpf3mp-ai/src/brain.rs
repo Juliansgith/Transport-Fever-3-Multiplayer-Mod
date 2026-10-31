@@ -840,6 +840,18 @@ impl Brain {
         money - (money.max(0) * self.profile.reserve_percent / 100).max(cushion)
     }
 
+    /// What its settled lines make a month together, their year's profit
+    /// over twelve.
+    fn settled_earning(&self, company: &AiCompany) -> i64 {
+        company
+            .lines
+            .iter()
+            .filter(|l| self.settled(company, l))
+            .map(|l| l.profit)
+            .sum::<i64>()
+            / 12
+    }
+
     /// Its lines settled long enough for their money to say something:
     /// every vehicle on them through [`upkeep::SETTLED`] of its life.
     fn settled_lines(&self, company: &AiCompany) -> usize {
@@ -1500,13 +1512,7 @@ impl Brain {
         // 17 million in hand, held back because no bus network of 1923 earns
         // 322,672 a month, and would have paid its loan down idle. Its young
         // lines' first months, before any fare, count for nothing here.
-        let settled_earning = company
-            .lines
-            .iter()
-            .filter(|l| self.settled(company, l))
-            .map(|l| l.profit)
-            .sum::<i64>()
-            / 12;
+        let settled_earning = self.settled_earning(company);
         if !books.covered() && self.settled_lines(company) >= 2 && settled_earning <= 0 {
             if !std::mem::replace(&mut self.held_said, true) {
                 self.say(format!(
@@ -1913,8 +1919,17 @@ impl Brain {
         // A new project from a look at the world: no chain's.
         self.chain_group = None;
         // A passenger train between two large towns, its money and
-        // difficulty allowing, in turn with buses.
+        // difficulty allowing, in turn with buses, once its settled lines
+        // earn: never its first venture on borrowed money. Each AI's first
+        // passenger train lost 0.65 to 0.86 million in its first eight
+        // months in every long run (runs 46 to 49), some seven million with
+        // what it cost to lay, its stations at the towns' edges.
+        let earns = self
+            .company
+            .as_ref()
+            .is_some_and(|c| self.settled_earning(c) > 0);
         if self.profile.passenger_trains
+            && earns
             && !self.feeding
             && self.spendable() >= train::RAIL_MONEY
             && self.random().is_multiple_of(2)

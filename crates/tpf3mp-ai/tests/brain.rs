@@ -2371,6 +2371,8 @@ fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full()
 #[test]
 fn a_normal_ai_joins_two_large_towns_by_passenger_train() {
     let mut world = World::new();
+    // A settled line of its own that earns: a passenger train waits on one.
+    an_earning_line(&mut world);
     // Didcot and Ely, 300 and 200 buildings, 5 km apart; no cargo to carry;
     // money for a rail line.
     world.money = 30_000_000;
@@ -2414,6 +2416,8 @@ fn two_towns_joined_by_train_are_not_joined_again_as_they_grow() {
     // As in run 40: the towns' district centres move as they grow, and
     // the pair, known by a centre's place, was planned and built again.
     let mut world = World::new();
+    // A settled line of its own that earns: a passenger train waits on one.
+    an_earning_line(&mut world);
     world.money = 60_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Normal, None);
     let start = Instant::now();
@@ -2592,9 +2596,11 @@ fn an_ai_whose_lines_lose_money_borrows_no_more_and_keeps_out_of_debt() {
             .any(|l| l.starts_with("closes ") && l.contains("Bus")),
         "{said:?}"
     );
+    // No passenger train while its lines lose money.
     assert!(
-        said.iter()
-            .any(|l| l.starts_with("closes ") && l.contains("train")),
+        !said
+            .iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers")),
         "{said:?}"
     );
 }
@@ -3020,6 +3026,8 @@ fn a_town_other_companies_serve_is_passed_over_for_one_they_do_not() {
 #[test]
 fn a_town_pair_another_companys_line_joins_gets_no_train_of_its_own() {
     let mut world = World::new();
+    // A settled line of its own that earns: a passenger train waits on one.
+    an_earning_line(&mut world);
     world.money = 60_000_000;
     world.towns[0].linked = BoundedVec::new(vec![TownId(2)]).unwrap();
     world.towns[1].linked = BoundedVec::new(vec![TownId(1)]).unwrap();
@@ -3037,6 +3045,8 @@ fn a_town_pair_another_companys_line_joins_gets_no_train_of_its_own() {
 #[test]
 fn a_town_by_its_passenger_station_gets_buses_to_that_station() {
     let mut world = World::new();
+    // A settled line of its own that earns: a passenger train waits on one.
+    an_earning_line(&mut world);
     world.money = 60_000_000;
     world.month_every = Some(Duration::from_secs(60));
     world.wear_per_month = 1;
@@ -3084,6 +3094,8 @@ fn buses_to_its_station_come_before_its_young_lines_wait_and_cargo() {
     // Its lines never settle here: Normal waits on two young ones. A cargo
     // to carry waits too.
     let mut world = World::new();
+    // A settled line of its own that earns: a passenger train waits on one.
+    an_earning_line(&mut world);
     world.money = 60_000_000;
     world.industries = mills();
     ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
@@ -3189,6 +3201,8 @@ fn a_passenger_train_that_lost_money_is_not_followed_by_another() {
     // Run 46: the Hard AI closed a passenger train that lost 695,803 in
     // its first eight months, and planned another at once.
     let mut world = World::new();
+    // A settled line of its own that earns: a passenger train waits on one.
+    an_earning_line(&mut world);
     world.money = 60_000_000;
     // A third large town, 6 km from the others: another pair to join.
     let mut third = world.towns[0].clone();
@@ -3546,6 +3560,72 @@ fn a_chains_later_leg_long_enough_for_a_railway_is_checked_for_a_road_too() {
     );
     assert!(
         !said.iter().any(|l| l.contains("goods from Didcot Factory")),
+        "{said:?}"
+    );
+}
+
+/// A settled bus line of the AI's that earns, far from Didcot and Ely: what
+/// a passenger train waits on.
+fn an_earning_line(world: &mut World) {
+    world.stations.push(AiStation {
+        id: StationId(9001),
+        pos: pos(40_000.0, 40_000.0),
+        terminals: 2,
+        waiting: 0,
+        ends: BoundedVec::default(),
+    });
+    world.lines.push(AiLine {
+        id: LineId(9000),
+        name: Text::new("Far Bus").unwrap(),
+        stops: BoundedVec::new(vec![StationId(9001), StationId(9001)]).unwrap(),
+        vehicles: BoundedVec::new(vec![VehicleId(9002)]).unwrap(),
+        load: 50,
+        waiting: 0,
+        profit: 1_200_000,
+        income: Some(2_000_000),
+        recent: Some(300_000),
+        problems: 0,
+    });
+    world.vehicles.push(AiVehicle {
+        id: VehicleId(9002),
+        line: Some(LineId(9000)),
+        model: Text::new("vehicle/bus/good.mdl").unwrap(),
+        worn: 10,
+        idle: false,
+    });
+}
+
+#[test]
+fn a_passenger_train_waits_until_its_settled_lines_earn() {
+    // Runs 46 to 49: each AI's first venture, on borrowed money, a passenger
+    // train that lost 0.65 to 0.86 million in eight months.
+    let mut world = World::new();
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let now = play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers")),
+        "{said:?}"
+    );
+    // Its bus lines settled and earning: then a train.
+    world.month_every = Some(Duration::from_secs(30));
+    world.line_profit = Some(|_| 600_000);
+    for v in &mut world.vehicles {
+        v.worn = 10;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(2_400));
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("plans a rail line carrying passengers")),
         "{said:?}"
     );
 }

@@ -475,7 +475,11 @@ faster AI.
   pair given up for want of a route or a station's place stays given up,
   in the memo its next driver keeps, one given up for money is tried
   again) by
-  passenger train, in turn with buses: a one-track passenger station by
+  passenger train, in turn with buses, once its settled lines earn (never
+  its first venture on borrowed money: each AI's first passenger train lost
+  0.65 to 0.86 million in its first eight months in runs 46 to 49, some
+  seven million with what it cost to lay, its stations at the towns'
+  edges): a one-track passenger station by
   each (passenger platforms in its first row, its track in its second,
   the era's station building; sites out to 600 m from the centre, at the
   town's edge), laid out, put to trial and built as a cargo line is, its
