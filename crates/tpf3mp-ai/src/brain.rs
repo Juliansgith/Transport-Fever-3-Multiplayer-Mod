@@ -41,6 +41,7 @@ use crate::{
 
 #[path = "train.rs"]
 mod train;
+pub use train::passenger_key;
 #[path = "upkeep.rs"]
 mod upkeep;
 
@@ -74,6 +75,9 @@ pub const DEPOT_STREETS: usize = 8;
 /// cost from 207,000 on open ground to over a million among houses
 /// (2026-10-30, investigation/AI_PLAYERS_2026-10-29.md, "Depots").
 pub const DEPOT_PRICED: usize = 6;
+/// How many truck station placements it prices before it builds the
+/// cheapest, as its depot's.
+pub const STATION_PRICED: usize = 6;
 /// How far around a town it reads the streets for its depot, at most, in
 /// metres, and around the industry a truck line loads at.
 pub const DEPOT_SEARCH: u32 = 700;
@@ -289,6 +293,9 @@ struct Project {
     /// A cargo's truck station placements still to try, in the district
     /// that takes it: index into its site's streets, and side.
     station_tries: Vec<(usize, f64)>,
+    /// Truck station placements the game would build, priced, as its
+    /// depot's ([`Priced`]).
+    station_priced: Vec<Priced>,
     line: Option<LineId>,
 }
 
@@ -621,14 +628,22 @@ impl Brain {
                 let street = self.project.as_ref()?.sites.get(site)?.get(choice)?.clone();
                 self.verdict(&Action::PlaceStop(place::stop(&street, year)), now)
             }
-            Stage::StationVerdict { site } => match self.next_station(site) {
-                Some(build) => self.verdict(&Action::BuildConstruction(build), now),
-                None => {
-                    self.say("found no place for a truck station".into());
-                    self.give_up_project(now);
-                    None
+            // Priced as its depot is: the best of several goes up.
+            Stage::StationVerdict { site } => {
+                let priced = self.project.as_ref().map_or(0, |p| p.station_priced.len());
+                if priced >= STATION_PRICED {
+                    return self.build_station(site, now);
                 }
-            },
+                match self.next_station(site) {
+                    Some(build) => self.verdict(&Action::BuildConstruction(build), now),
+                    None if priced > 0 => self.build_station(site, now),
+                    None => {
+                        self.say("found no place for a truck station".into());
+                        self.give_up_project(now);
+                        None
+                    }
+                }
+            }
             Stage::DepotStreets => {
                 let (at, radius) = self.depot_search()?;
                 self.ask(AiQuestion::Streets { at, radius }, now)
@@ -790,8 +805,14 @@ impl Brain {
                 // being refused (2026-10-30): the AI lays none such.
                 let collides = matches!(action, Action::BuildTrack(_))
                     && verdict.messages.iter().any(|m| m.as_str() == COLLISION);
+                // A construction touching what stands (another's station, a
+                // street, a track) the game builds all the same, over it:
+                // an AI rail depot stood across a player's station
+                // (2026-10-30). The count leaves out the build's own parts.
+                let touches =
+                    matches!(action, Action::BuildConstruction(_)) && verdict.collisions > 0;
                 let spendable = self.spendable().max(0);
-                if verdict.ok && !collides && verdict.cost <= spendable {
+                if verdict.ok && !collides && !touches && verdict.cost <= spendable {
                     if let Stage::Rail(stage) = self.stage.clone() {
                         return self.rail_good_verdict(stage, &action, verdict.cost, now);
                     }
@@ -809,6 +830,8 @@ impl Brain {
                             .to_owned()
                     } else if collides {
                         COLLISION.to_owned()
+                    } else if touches {
+                        format!("touches {} things that stand", verdict.collisions)
                     } else {
                         format!(
                             "too dear: {} over the {spendable} it may spend",
@@ -989,6 +1012,7 @@ impl Brain {
                         // Not built: the next street, not this one's other side.
                         if let Some(project) = self.project.as_mut() {
                             project.station_tries.retain(|(i, _)| *i != street);
+                            project.station_priced.retain(|p| p.street != street);
                         }
                         self.stage = Stage::StationVerdict { site };
                     }
@@ -1464,6 +1488,7 @@ impl Brain {
             depot_priced: Vec::new(),
             depot_reads: 0,
             station_tries: Vec::new(),
+            station_priced: Vec::new(),
             line: None,
         });
         self.stage = Stage::Streets;
@@ -1477,7 +1502,9 @@ impl Brain {
     fn passenger_pair(&mut self, towns: &[AiTown]) -> Option<(AiTown, AiTown)> {
         let taken = |a: &AiTown, b: &AiTown| {
             let k = train::passenger_key(a.id, b.id);
-            self.memo.served.contains(&k) || self.given_up.iter().any(|(id, _)| *id == k)
+            self.memo.served.contains(&k)
+                || self.memo.given_up.contains(&k)
+                || self.given_up.iter().any(|(id, _)| *id == k)
         };
         let big: Vec<&AiTown> = towns
             .iter()
@@ -1627,6 +1654,7 @@ impl Brain {
         if site < project.sites.len() && project.serves.cargo().is_some() {
             let streets = project.sites.get(site).map_or(0, Vec::len);
             project.station_tries = (0..streets).flat_map(|i| [(i, 1.0), (i, -1.0)]).collect();
+            project.station_priced.clear();
             self.stage = Stage::StationVerdict { site };
             return;
         }
@@ -1773,6 +1801,39 @@ impl Brain {
         self.stage = Stage::DepotVerdict;
     }
 
+    /// Builds the best truck station placement priced for site site, the
+    /// cheapest: a station clears the houses in its way, and eight in
+    /// Hunstanton's middle cost 580,000 to 2.6 million (2026-10-30).
+    fn build_station(&mut self, site: usize, now: Instant) -> Option<Out> {
+        let project = self.project.as_ref()?;
+        let (best, priced) = project
+            .station_priced
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| (p.touches, p.cost))
+            .map(|(i, p)| (i, p.clone()))?;
+        let count = project.station_priced.len();
+        let out = self.act(&Action::BuildConstruction(priced.build.clone()), now);
+        if out.is_some() {
+            if let Some(project) = self.project.as_mut() {
+                project.station_priced.remove(best);
+            }
+            self.say(format!(
+                "builds its truck station for {}, the best of {count} placements priced",
+                priced.cost
+            ));
+            self.stage = Stage::StationBuilt {
+                site,
+                at: priced.build.transform.origin,
+                street: priced.street,
+                tries: 0,
+            };
+        } else {
+            self.wake = Some(now + SETTLE);
+        }
+        out
+    }
+
     /// Builds the best depot placement priced: clear of what stands, then
     /// the cheapest.
     fn build_depot(&mut self, now: Instant) -> Option<Out> {
@@ -1884,25 +1945,19 @@ impl Brain {
                 }
                 out
             }
-            (Stage::StationVerdict { site }, Action::BuildConstruction(build)) => {
-                let at = build.transform.origin;
-                let out = self.act(action, now);
-                if out.is_some() {
-                    let street = self
-                        .project
-                        .as_mut()
-                        .filter(|p| !p.station_tries.is_empty())
-                        .map_or(usize::MAX, |p| p.station_tries.remove(0).0);
-                    self.stage = Stage::StationBuilt {
-                        site,
-                        at,
+            // Priced, not yet built ([`Brain::build_station`]).
+            (Stage::StationVerdict { .. }, Action::BuildConstruction(build)) => {
+                let project = self.project.as_mut()?;
+                if !project.station_tries.is_empty() {
+                    let (street, _) = project.station_tries.remove(0);
+                    project.station_priced.push(Priced {
+                        cost: verdict.cost,
+                        touches: verdict.collisions,
                         street,
-                        tries: 0,
-                    };
-                } else {
-                    self.wake = Some(now + SETTLE);
+                        build: build.clone(),
+                    });
                 }
-                out
+                None
             }
             // Priced, not yet built: the best of several goes up
             // ([`Brain::build_depot`]).

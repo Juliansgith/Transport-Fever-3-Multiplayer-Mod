@@ -267,7 +267,12 @@ faster AI.
   The game says "Collision" of every depot, its own street's new halves
   counted, and builds it; the verdict's count leaves those out. Refused
   because its street changed under it (no edge left to split), it reads
-  the streets again, twice at most (investigation, "Depots"). *Built so
+  the streets again, twice at most (investigation, "Depots"). A truck
+  station is priced the same way among the district's nearest streets,
+  the cheapest of up to six built. No construction is built whose verdict
+  touches something that stands (another company's station, a street, a
+  track): the game says "Collision" of it but builds it over that, as an
+  AI rail depot once stood across a player's station. *Built so
   far:* a town's bus line, and a cargo's truck line from an industry that
   made it over the last year to the nearest town that needs more of it
   (the town window's cargo demand: supplied at least 10 a year short of
@@ -348,7 +353,18 @@ faster AI.
   each put to the verdict again (one through something in its way,
   "Collision", is refused though the game would build it); it keeps its
   prices in line with the game's by the verdicts' own costs. Then a rail
-  depot beyond the first station, joined to its outer end, the line, and
+  depot beyond the first station, joined to its outer end: straight out
+  30, 90 or 150 m, else turned 30 degrees aside at 100 m or 45 degrees at
+  150 m, either way, its track to the station one edge curving from the
+  station's heading to the depot's; then the same beyond the other
+  station. Its depot's places are put to the verdict with its track's
+  pieces, before anything is built, at the stations' planned sites: a
+  line with no place for a depot at either is laid out between other
+  sites or given up then (straight out met a player's railway at one
+  station and streets at another, and a line was given up with its
+  stations and track built, 2026-10-31). No station or depot is built
+  whose verdict touches something that stands, as one stood across a
+  player's station. Then the line, and
   its train with as many wagons as the platforms take (six at most): no
   electric engine, as its track has no catenary. A line's first station
   ending within 400 m of a rail depot of its own shares that depot, its
@@ -370,7 +386,10 @@ faster AI.
   offers it, with as many of its cargo's roomiest wagons as the platforms
   take. Normal and Hard also join two large towns (150 buildings or more
   each, 3 to 10 km apart, the most people for the fewest kilometres, a
-  pair it has not joined or given up on, known by the two towns' ids) by
+  pair it has not joined or given up on, known by the two towns' ids; a
+  pair given up for want of a route or a station's place stays given up,
+  in the memo its next driver keeps, one given up for money is tried
+  again) by
   passenger train, in turn with buses: a one-track passenger station by
   each (passenger platforms in its first row, its track in its second,
   the era's station building; sites out to 600 m from the centre, at the
