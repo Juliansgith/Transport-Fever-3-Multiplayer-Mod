@@ -1507,6 +1507,81 @@ pub struct ModEvent {
     pub param: Text<MAX_MOD_EVENT_PARAM>,
 }
 
+/// Most operations in one [`ScriptUpkeep`].
+pub const MAX_UPKEEP_OPS: usize = 64;
+/// The longest parameter text of a construction a script builds, in bytes.
+pub const MAX_SCRIPT_PARAMS: usize = 16 * 1024;
+/// The longest identity a script's construction is found by, in bytes.
+pub const MAX_SCRIPT_IDENTITY: usize = 2048;
+
+/// What a shared mod's game script keeps up by itself after builds
+/// (`tpf3mp/upkeep.lua`): Real Cant Engineering's track templates, grades
+/// and drawings. One game of the room decides them and hands them on as
+/// this; every game makes each operation alike from its own world, by
+/// places and names, as the mod's own code would. Appended under schema
+/// version 29.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptUpkeep {
+    /// The mod whose upkeep it is, by its `modId`.
+    pub mod_id: Text<64>,
+    pub ops: BoundedVec<UpkeepOp, MAX_UPKEEP_OPS>,
+}
+
+impl ScriptUpkeep {
+    /// Refuses an upkeep of no operation, and a removal of no edge.
+    pub fn validate(&self) -> Result<(), ActionError> {
+        if self.ops.is_empty() {
+            return Err(ActionError::Upkeep("no operation"));
+        }
+        for op in self.ops.iter() {
+            if let UpkeepOp::RemoveEdges { edges } = op
+                && edges.is_empty()
+            {
+                return Err(ActionError::Upkeep("a removal of no edge"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One operation of a [`ScriptUpkeep`]. Every edge is a track found by its
+/// nodes' places ([`EdgeEnds`]); every construction by its file, its place
+/// and its identity, the text of one of its parameters the mod names it by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpkeepOp {
+    /// The track rebuilt in place with another template
+    /// (`api.engine.util.proposal.replaceSegment`).
+    Retype { edge: EdgeEnds, template: ResName },
+    /// The track rebuilt with these tangents, in millimetres.
+    Regrade {
+        edge: EdgeEnds,
+        tangent0: Pos,
+        tangent1: Pos,
+    },
+    /// Tracks removed (`makeSegmentsRemoveProposal`).
+    RemoveEdges {
+        edges: BoundedVec<EdgeEnds, MAX_EDGES>,
+    },
+    /// A construction built for free, the acting company's, its parameters
+    /// as `tpf3mp/modevents.lua` writes plain data; `locked`: the bulldozer
+    /// cannot pick it.
+    Build {
+        file: ResName,
+        transform: Transform,
+        name: ObjectName,
+        params: Text<MAX_SCRIPT_PARAMS>,
+        identity: Text<MAX_SCRIPT_IDENTITY>,
+        locked: bool,
+    },
+    /// The construction of this file within a metre of `at` whose identity
+    /// is this one, removed.
+    Demolish {
+        file: ResName,
+        at: Pos,
+        identity: Text<MAX_SCRIPT_IDENTITY>,
+    },
+}
+
 /// A level crossing's type, chosen in the crossing's window (the native
 /// `RailroadCrossingComp`, whose build maps the crossing to the type: docs/
 /// HOOKS.md, "Level crossing types"). Appended under schema version 27.
@@ -1624,6 +1699,10 @@ pub enum Action {
     /// A shared mod's event to its own game script ([`ModEvent`]). Appended
     /// under schema version 29: the variants before it keep their bytes.
     ModEvent(ModEvent),
+    /// What a shared mod's game script keeps up after builds
+    /// ([`ScriptUpkeep`]). Appended under schema version 29, after
+    /// `ModEvent`.
+    ScriptUpkeep(ScriptUpkeep),
 }
 
 #[derive(Debug, Error)]
@@ -1666,6 +1745,9 @@ pub enum ActionError {
     /// no type.
     #[error("invalid level crossing: {0}")]
     Crossing(&'static str),
+    /// A [`ScriptUpkeep`] that does nothing or removes no edge.
+    #[error("invalid script upkeep: {0}")]
+    Upkeep(&'static str),
 }
 
 impl Action {
@@ -1702,6 +1784,7 @@ impl Action {
             Action::PlantAssets(_) => "PlantAssets",
             Action::SetCrossingType(_) => "SetCrossingType",
             Action::ModEvent(_) => "ModEvent",
+            Action::ScriptUpkeep(_) => "ScriptUpkeep",
         }
     }
 
@@ -1766,6 +1849,7 @@ impl Action {
                 };
             }
             Self::SetCrossingType(crossing) => return crossing.validate(),
+            Self::ScriptUpkeep(upkeep) => return upkeep.validate(),
             _ => return Ok(()),
         };
         for (i, change) in changes.iter().enumerate() {
