@@ -19,15 +19,111 @@
 //! without which the hook does nothing. [`steam_running`] tells whether the
 //! game can start at all: the launcher, like TPF2MP's, starts it only while
 //! Steam runs.
+//!
+//! On Windows the game must be the build this release's hook runs in
+//! ([`check_build`]): the hook refuses any other and the game would start
+//! with its plain menu, no Multiplayer entry and no word why. A game Steam
+//! could not update yet (Steam offline, 2026-11-01) is told to update; one
+//! newer than this release, that TPF3-MP needs updating.
 
 #[cfg(all(unix, not(target_os = "macos")))]
 use std::process::Command;
 use std::{
+    fs::File,
+    io::{self, Read},
     path::{Path, PathBuf},
     time::Duration,
 };
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+/// A Transport Fever 3 build a profile knows: its build number, and its
+/// executable's SHA-256 and size (`profiles/<build>/hooks.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameBuild {
+    pub number: u32,
+    pub sha256: &'static str,
+    pub size: u64,
+}
+
+/// The builds this release knows, and the one its hook runs in
+/// (`profiles/native-build.txt`), as `build.rs` read them.
+pub mod builds {
+    use super::GameBuild;
+    include!(concat!(env!("OUT_DIR"), "/builds.rs"));
+}
+
+/// What the game at an executable is, against this release's hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildCheck {
+    /// The build the hook runs in.
+    Supported,
+    /// An earlier build a profile knows: Steam updates it.
+    Older(u32),
+    /// A build no profile here knows: a newer one, most likely.
+    Unknown,
+}
+
+/// What the game at `exe` is ([`BuildCheck`]): its size against each known
+/// build's first, and its SHA-256 only where one matches, so another build
+/// costs one look at the file and this one a read of it (70 MB).
+pub fn check_build(exe: &Path) -> io::Result<BuildCheck> {
+    check_against(exe, builds::KNOWN, &builds::SUPPORTED)
+}
+
+/// [`check_build`] against these builds.
+pub fn check_against(
+    exe: &Path,
+    known: &[GameBuild],
+    supported: &GameBuild,
+) -> io::Result<BuildCheck> {
+    let size = std::fs::metadata(exe)?.len();
+    if !known.iter().any(|build| build.size == size) {
+        return Ok(BuildCheck::Unknown);
+    }
+    let sha256 = file_sha256(exe)?;
+    Ok(
+        match known
+            .iter()
+            .find(|build| build.size == size && build.sha256 == sha256)
+        {
+            Some(build) if build == supported => BuildCheck::Supported,
+            Some(build) if build.number < supported.number => BuildCheck::Older(build.number),
+            _ => BuildCheck::Unknown,
+        },
+    )
+}
+
+/// A file's SHA-256, in lower-case hexadecimal.
+fn file_sha256(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+/// Whether `exe` is the game's own executable, which [`start`] checks;
+/// another (a test's stand-in, the rig's fake game) it starts unchecked.
+fn is_game_exe(exe: &Path) -> bool {
+    exe.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("TransportFever3.exe")
+                || name.eq_ignore_ascii_case("Transport Fever 3.exe")
+        })
+}
 
 #[cfg(windows)]
 mod windows;
@@ -150,6 +246,18 @@ pub enum LaunchError {
     NoSteam,
     #[error("starting the game with the hook is not possible on this system yet")]
     Unsupported,
+    #[error(
+        "this Transport Fever 3 is build {found}, older than the build {needs} TPF3-MP {} runs in: update the game in Steam (Steam must be online to update it), then start it again",
+        env!("CARGO_PKG_VERSION")
+    )]
+    OlderGame { found: u32, needs: u32 },
+    #[error(
+        "this Transport Fever 3 is a build TPF3-MP {} does not know: it runs in build {needs}. If Steam has an update for the game, install it; if the game is newer, update TPF3-MP (restart the launcher)",
+        env!("CARGO_PKG_VERSION")
+    )]
+    UnknownGame { needs: u32 },
+    #[error("cannot read the game's executable to check its build: {0}")]
+    BuildUnread(std::io::Error),
 }
 
 /// Starts `launch.exe` with the hook in it.
@@ -160,8 +268,23 @@ pub fn start(launch: &Launch) -> Result<Started, LaunchError> {
     if !launch.hook.is_file() {
         return Err(LaunchError::NoHook(launch.hook.clone()));
     }
+    // The hook runs only in its own build: another is never started with
+    // it, but told what to update.
+    if cfg!(windows) && is_game_exe(&launch.exe) {
+        refuse_other_build(check_build(&launch.exe).map_err(LaunchError::BuildUnread)?)?;
+    }
     let env = environment(launch);
     start_on_this_system(launch, &env)
+}
+
+/// Refuses a game that is not the build the hook runs in.
+fn refuse_other_build(check: BuildCheck) -> Result<(), LaunchError> {
+    let needs = builds::SUPPORTED.number;
+    match check {
+        BuildCheck::Supported => Ok(()),
+        BuildCheck::Older(found) => Err(LaunchError::OlderGame { found, needs }),
+        BuildCheck::Unknown => Err(LaunchError::UnknownGame { needs }),
+    }
 }
 
 /// Whether Steam's client is running: `Some(false)` only when the programs
@@ -353,6 +476,118 @@ fn is_helper(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in build: its number, its executable's bytes and identity.
+    fn build(dir: &Path, number: u32, bytes: &[u8]) -> (PathBuf, GameBuild) {
+        let path = dir.join(format!("{number}.exe"));
+        std::fs::write(&path, bytes).unwrap();
+        let sha256 = Box::leak(file_sha256(&path).unwrap().into_boxed_str());
+        let size = bytes.len() as u64;
+        (
+            path,
+            GameBuild {
+                number,
+                sha256,
+                size,
+            },
+        )
+    }
+
+    #[test]
+    fn a_game_is_its_supported_build_an_older_one_or_one_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old_exe, old) = build(dir.path(), 40423, b"the game as it was");
+        // The same size as the build before, as 40425 has 40423's.
+        let (new_exe, new) = build(dir.path(), 40425, b"the game as it is!");
+        assert_eq!(old.size, new.size);
+        let known = [old, new];
+        let check = |exe: &Path| check_against(exe, &known, &new).unwrap();
+        assert_eq!(check(&new_exe), BuildCheck::Supported);
+        // Steam offline could not update it (2026-11-01): told to update.
+        assert_eq!(check(&old_exe), BuildCheck::Older(40423));
+        // Its size, other bytes; or another size: no build known here.
+        let (other, _) = build(dir.path(), 1, b"the game, patched!");
+        assert_eq!(check(&other), BuildCheck::Unknown);
+        let (newer, _) = build(dir.path(), 2, b"a newer game, longer");
+        assert_eq!(check(&newer), BuildCheck::Unknown);
+        assert!(check_against(&dir.path().join("none.exe"), &known, &new).is_err());
+    }
+
+    #[test]
+    fn the_known_builds_are_the_profiles_and_the_supported_one_among_them() {
+        assert!(builds::KNOWN.contains(&builds::SUPPORTED));
+        assert!(
+            builds::KNOWN
+                .windows(2)
+                .all(|pair| pair[0].number < pair[1].number)
+        );
+        let selected = include_str!("../../../profiles/native-build.txt").trim();
+        assert_eq!(
+            selected,
+            format!("tf3_build{}_steam_windows", builds::SUPPORTED.number)
+        );
+        assert!(builds::KNOWN.iter().all(|build| build.sha256.len() == 64));
+    }
+
+    #[test]
+    fn only_the_games_own_executable_is_checked() {
+        // Built with the platform's separator: a backslash is one only on
+        // Windows, where the launcher checks the game it starts.
+        assert!(is_game_exe(&Path::new("Steam").join("TransportFever3.exe")));
+        assert!(is_game_exe(Path::new("transportfever3.EXE")));
+        assert!(!is_game_exe(Path::new("tpf3mp-fakegame.exe")));
+    }
+
+    #[test]
+    fn another_build_is_told_what_to_update() {
+        let needs = builds::SUPPORTED.number;
+        assert!(refuse_other_build(BuildCheck::Supported).is_ok());
+        let older = refuse_other_build(BuildCheck::Older(40423))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            older.contains("build 40423") && older.contains("update the game in Steam"),
+            "{older}"
+        );
+        assert!(older.contains(&format!("build {needs}")), "{older}");
+        let unknown = refuse_other_build(BuildCheck::Unknown)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unknown.contains("update TPF3-MP") && unknown.contains(&format!("build {needs}")),
+            "{unknown}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_game_of_another_build_is_never_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("TransportFever3.exe");
+        std::fs::write(&exe, b"not this release's game").unwrap();
+        let hook = dir.path().join(HOOK_FILE);
+        std::fs::write(&hook, b"").unwrap();
+        let launch = Launch {
+            exe,
+            args: Vec::new(),
+            hook,
+            env: Vec::new(),
+            ready_wait: Duration::from_secs(1),
+        };
+        assert!(matches!(
+            start(&launch),
+            Err(LaunchError::UnknownGame { .. })
+        ));
+    }
+
+    /// The installed game, where `TPF3MP_GAME_EXE` names it: the build this
+    /// release runs in.
+    #[test]
+    #[ignore = "needs the installed game"]
+    fn the_installed_game_is_the_supported_build() {
+        let exe = std::env::var_os("TPF3MP_GAME_EXE").expect("TPF3MP_GAME_EXE");
+        assert_eq!(check_build(Path::new(&exe)).unwrap(), BuildCheck::Supported);
+    }
 
     #[test]
     fn a_running_program_is_named_by_its_file() {
