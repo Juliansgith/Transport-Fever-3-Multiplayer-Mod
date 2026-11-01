@@ -531,7 +531,9 @@ mod tests {
 
     #[test]
     fn only_the_games_own_executable_is_checked() {
-        assert!(is_game_exe(Path::new(r"C:\Steam\TransportFever3.exe")));
+        // Built with the platform's separator: a backslash is one only on
+        // Windows, where the launcher checks the game it starts.
+        assert!(is_game_exe(&Path::new("Steam").join("TransportFever3.exe")));
         assert!(is_game_exe(Path::new("transportfever3.EXE")));
         assert!(!is_game_exe(Path::new("tpf3mp-fakegame.exe")));
     }
