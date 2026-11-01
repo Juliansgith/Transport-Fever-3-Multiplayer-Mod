@@ -748,6 +748,16 @@ in its build. **Lobby in this window instead** in the launcher does
 everything the button's window does, with the game started from the
 launcher as before.
 
+**"this Transport Fever 3 is build …, older than the build … TPF3-MP runs
+in"** when you start the game: Steam has not updated the game yet, often
+because Steam is in offline mode. Put Steam online, let it update
+Transport Fever 3, and start it from the launcher again. **"a build
+TPF3-MP does not know"**: the game is newer than your TPF3-MP; restart the
+launcher to update it, or wait for the TPF3-MP release for that build.
+The launcher checks the game before starting it, and starts no build its
+hook does not run in: such a game came up with its plain menu, no
+Multiplayer button and no word why, in TPF3-MP 1.4.0 and earlier.
+
 ### Diagnostics
 
 While you are connected, the launcher sends the lines of its logs to the
