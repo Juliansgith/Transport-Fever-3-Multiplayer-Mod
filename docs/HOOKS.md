@@ -787,14 +787,32 @@ call of the speed getter, as TPF2MP's speed hook
   nothing in the room's game but the display, until the room follows them.
   Nothing may send the debug step command during a room: its pending count
   would add updates to a call.
+- **The game's own speed follows the room's**, in every game. The display
+  needs it: the frame (`UI::CGameUI::vf52`, 40425 `0x65ecd0`) calls
+  `GetSpeed` at `0x65f74b` and passes `speed > 0` (`test eax,eax; setg
+  r9b`) as `AudioManager::Begin`'s (`0x2bca880`) last argument, and while it
+  is false the audio manager plays only the emitters marked to play while
+  paused. Left at a save's paused 0 while the room ran, every player's
+  locomotives were silent (log session 9Q8NAY, 2026-11-02). The rail
+  vehicles' sounds also read it: their transformator hands it to the sound
+  scripts as `RailVehicleScriptingInfo.gameSpeedUp` (the stock
+  `soundset_default.script.tl` lowers the clacks at 2x and 4x), and the
+  chuffs (`0x9b3be0`) are spaced by it, an `idiv` by it at `0x9b3c86`. So
+  each frame the speed row compares the world's `GAME_SPEED.speedup` with
+  the room's accepted speed and, when they differ, sends the game's own
+  `makeGameSetSpeedCmd` (`guard.PASS`, to this game alone), again after 30
+  frames if the game has not taken it. It is never a request: the room
+  hears a speed only through `chooseSpeed`. Where a mission forbids
+  pausing, a paused room leaves it, as the stock helper would put a 0 back.
 - **The speed row follows the room.** The Lua replacement
   `gui/tpf3mp/speed_control.script.lua` highlights the accepted room speed
   for both host and guests, including pause. Guests see disabled buttons
   and keyboard shortcuts. Hosts retain the stock recipe, mission/mod
   restrictions and keyboard hints. The shared helper API's `getSpeed`
   reads room status; `setSpeed`, `cycleSpeed` and `togglePause` submit
-  explicit choices, then retain the stock local command for native camera
-  and particle behavior. Outside a room the original API is used.
+  explicit choices only: the game's own speed follows once the room
+  accepts one (above), so it never runs ahead of the room's. Outside a
+  room the original API is used.
 - **Only explicit input asks for a speed.** Lua contract **17** adds
   `chooseSpeed(0|1|2|4)`. The hook rejects unknown values, guests and loads,
   coalesces pending input to the latest choice, and sends it through the
@@ -803,7 +821,8 @@ call of the speed getter, as TPF2MP's speed hook
   world; load/room lifecycle clears stale choices. No network protocol
   change is needed. A native getter change alone never sends a request:
   restoring a 4x snapshot into a 2x room must leave that room at 2x.
-  Merely refreshing the UI never writes the native speed or requests one.
+  Merely refreshing the UI never requests a speed; it writes the game's own
+  speed only to follow the room's.
 
 Measured in TF3 build 40408 on release day (the rig with one player,
 `app.startGame()` from the console, the game's speed set with
@@ -1703,8 +1722,9 @@ reference of its own to either. Once linked, the GUI wraps every
 `sendCommand`. While the room's game runs (`tpf3mp_native.room()`):
 
 - a command of a kind in `guard.PASS` is sent, its arguments untouched. So
-  far that is the speed row's `makeGameSetSpeedCmd`, which the step gate
-  reads as the player's request to the room;
+  far that is `makeGameSetSpeedCmd`, with which the speed row keeps the
+  game's own speed at the room's (it asks the room through `chooseSpeed`
+  alone);
 - a command `guard.CARRY` makes an action of goes to the room instead
   (`tpf3mp_native.command`), which orders it for every game, this one
   included ("Actions in the game"). Its callback hears what became of it
@@ -5192,7 +5212,9 @@ the guests none. The simulation does not read that speed in the room's
 game: `GameSim::Step` asks it through `CGameTime::GetSpeed`, which the step
 gate redirects, and the other readers are `CGame::Sync`, the UI, the
 camera, the rail vehicles' sounds and their transformators. So it changes
-no lane; it does leave the host's saved `GameSpeed` unlike the guests'.
+no lane. It did leave the host's saved `GameSpeed` unlike the guests'; now
+every game's follows the room's ("The game's own speed follows the
+room's"), and the frame's audio needs it above 0 to play world sounds.
 
 Build 40425's `GameSpeedHelper` also commits speed changes automatically
 when `getEstimatedMaximumGameSpeed()` falls below its chosen speed. During

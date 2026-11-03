@@ -7,6 +7,20 @@ local widgets = ug_require("::/gui/game_bar/game_bar_widgets.tl")
 local estimatedMaximum = 2
 api.gui.game = api.gui.game or {}
 api.gui.game.getEstimatedMaximumGameSpeed = function() return estimatedMaximum end
+-- The world's GAME_SPEED (the game's own speed) and this game's own
+-- commands, which the speed row writes it with.
+local own, applies, sent = { speedup = 0 }, true, {}
+api.engine = { util = { getWorld = function() return 1 end },
+	getComponent = function(entity, kind)
+		assert(entity == 1 and kind == "GAME_SPEED")
+		return own
+	end }
+api.type.ComponentType = { GAME_SPEED = "GAME_SPEED" }
+api.cmd = { makeGameSetSpeedCmd = function(speed) return { speed = speed } end,
+	sendCommand = function(command)
+		sent[#sent + 1] = command.speed
+		if applies then own.speedup = command.speed end
+	end }
 for _, view in ipairs({ "ImageView", "ToggleButtonGroup" }) do
 	builtin[view] = function(params) return { view = view, params = params } end
 end
@@ -42,9 +56,13 @@ data().replace({ ReplaceRecipe = function(old, new)
 	recipe = new
 end })
 local row = mount(recipe, params)
-inCallback = true
-row.step()
-inCallback = false
+-- A frame of the game: the row's onStep runs, where GetApi may.
+local function frame()
+	inCallback = true
+	row.step()
+	inCallback = false
+end
+frame()
 local function control()
 	for _, view in ipairs(views(row.render())) do
 		if view.view == "ToggleButtonGroup" then return view.params end
@@ -96,11 +114,52 @@ for index, speed in ipairs({ 0, 100, 200, 400 }) do
 	end
 	c.onValueChange(3) -- stale/synthetic activation cannot request a speed either
 	shortcut(2)
-	assert(#requests == 0 and localSpeed == 4, "display never feeds a speed back into the game")
+	assert(#requests == 0 and localSpeed == 4, "a guest's clicks and shortcuts never reach the stock helper")
 end
 assert(globals.getDisableFeatures().GameSpeedControl == true)
 assert(globals.getDisableFeatures().OtherFeature == true and features.GameSpeedControl == nil,
 	"the game's original feature table is not modified")
+
+-- The game's own speed follows the room's, in a guest's game too, and
+-- nothing is asked of the room. A save loaded paused (0) in a room running
+-- at 1x left the game's audio paused: every locomotive was silent.
+assert(#sent == 0, "nothing is written before a frame")
+HOOK.status.speed = 100
+frame()
+assert(#sent == 1 and sent[1] == 1 and own.speedup == 1, "a paused own speed follows the running room")
+frame()
+assert(#sent == 1, "once it follows, nothing more is sent")
+HOOK.status.speed = 400
+frame()
+assert(#sent == 2 and sent[2] == 4 and own.speedup == 4)
+HOOK.status.speed = 0
+frame()
+assert(#sent == 3 and sent[3] == 0 and own.speedup == 0, "a paused room pauses the game's own speed")
+assert(not HOOK.speeds, "following the room is never a request to it")
+assert(#requests == 0, "nor a call of the stock helper's setSpeed")
+-- A command the game has not taken yet is sent again after a while only.
+applies, HOOK.status.speed = false, 200
+frame()
+assert(#sent == 4 and sent[4] == 2)
+for _ = 1, 29 do frame() end
+assert(#sent == 4, "not sent every frame")
+frame()
+assert(#sent == 5 and sent[5] == 2, "sent again")
+applies, own.speedup = true, 2
+frame()
+assert(#sent == 5)
+-- Where a mission forbids pausing, a paused room leaves the own speed.
+features.GameSpeedPause, HOOK.status.speed = true, 0
+frame()
+assert(#sent == 5 and own.speedup == 2)
+features.GameSpeedPause = nil
+-- An unknown room speed, or none, is not followed.
+HOOK.status.speed = 150
+frame()
+HOOK.status.speed = nil
+frame()
+assert(#sent == 5 and own.speedup == 2)
+HOOK.status.speed = 0
 
 -- Ownership changes without recreating the recipe.
 HOOK.status.players[1].owner = false
@@ -117,16 +176,20 @@ assert(helper.getSpeed() == 4)
 requests = {}
 assert(globals.getDisableFeatures() == features)
 helper.setSpeed(1)
-assert(#requests == 1 and requests[1] == 1)
+assert(HOOK.speeds[#HOOK.speeds] == 1 and #requests == 0,
+	"the host's click asks the room; the game's own speed waits for its answer")
 shortcut(0)
-assert(#requests == 2 and requests[2] == 0)
+assert(HOOK.speeds[#HOOK.speeds] == 0 and #requests == 0)
+own.speedup, sent = 0, {}
+frame()
+assert(#sent == 1 and sent[1] == 4, "the host's own speed follows the room's accepted 4x")
 
 -- The host's stock controls retain the original mission/mod restrictions.
 features.GameSpeedPause = true
 assert(globals.getDisableFeatures().GameSpeedPause == true)
 features.GameSpeedControl = true
 shortcut(2)
-assert(#requests == 2)
+assert(#requests == 0)
 local before = #HOOK.speeds
 helper.setSpeed(2)
 assert(#HOOK.speeds == before, "button respects mission restrictions")
@@ -138,7 +201,7 @@ HOOK.status.players[2].owner = false
 local c = control()
 assert(not c.meta.enabled, "a former host now gets the guest display")
 shortcut(4)
-assert(#requests == 2)
+assert(#requests == 0)
 HOOK.status.players = {}
 assert(not control().meta.enabled and globals.getDisableFeatures().GameSpeedControl == true)
 
