@@ -12,10 +12,11 @@ what was measured is in
 [investigation/AI_PLAYERS_2026-10-29.md](../investigation/AI_PLAYERS_2026-10-29.md);
 the work is Part 5 of [PLAN.md](PLAN.md).
 
-**Released off (1.4.0, 2026-10-31).** Release 1.4.0 carries all of this,
-but a server seats no AI players unless its operator turns them on
-(`--ai-players`, [OPERATIONS.md](OPERATIONS.md), "AI players"; protocol
-25): they are not yet good enough to play against (none of their
+**Released off (1.4.0, 2026-10-31; 1.5.0).** Releases 1.4.0 and 1.5.0
+carry all of this (1.5.0 adds the passenger stations among houses and the
+trains sized for their lines), but a server seats no AI players unless its
+operator turns them on (`--ai-players`, [OPERATIONS.md](OPERATIONS.md), "AI
+players"; protocol 25 on): they are not yet good enough to play against (none of their
 passenger trains has earned yet, and their bus lines do not repay their
 loans). The Multiplayer windows offer them only where a server does.
 
