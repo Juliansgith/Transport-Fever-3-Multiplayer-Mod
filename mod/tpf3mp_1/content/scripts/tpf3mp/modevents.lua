@@ -238,6 +238,10 @@ modevents.ALLOW = {
 	cayde_cant = {
 		["cayde_cant.toggle"] = { mod = "cayde_devers_1", spec = plain() },
 		["cayde_cant.manual"] = { mod = "cayde_devers_1", spec = plain() },
+		-- The manual cant of new segments, by their ends' places (gkey);
+		-- sent from its game script's GUI half, by the room's deciding game
+		-- (tpf3mp/upkeep.lua).
+		["cayde_cant.override"] = { mod = "cayde_devers_1", spec = plain() },
 	},
 }
 
