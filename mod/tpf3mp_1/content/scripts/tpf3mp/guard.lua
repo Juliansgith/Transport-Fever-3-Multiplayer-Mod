@@ -46,10 +46,11 @@ local unpackArgs = table.unpack or unpack
 
 -- The kinds sent as they are in the room's game, and why.
 guard.PASS = {
-	-- The speed row. In the room's game the step gate runs the room's pace
-	-- whatever the game's own speed says, and reads that speed as the
-	-- player's request to the room (docs/HOOKS.md, "The step gate in the
-	-- game").
+	-- The game's own speed. In the room's game the step gate runs the
+	-- room's pace whatever it says; the speed row writes it to follow the
+	-- room's (sounds, camera and particles read it) and asks the room for
+	-- a speed through chooseSpeed alone (docs/HOOKS.md, "The step gate in
+	-- the game").
 	makeGameSetSpeedCmd = true,
 }
 

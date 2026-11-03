@@ -459,7 +459,8 @@ protected folder such as Program Files.
   it. Guests' speed buttons highlight the room's accepted speed,
   including pause. Their buttons and speed shortcuts are disabled;
   their tooltip and the Multiplayer window say **Host controls speed**.
-  You can build while the room is paused. Everyone receives the ordered
+  Each game's own speed follows the room's, so vehicle sounds, the camera
+  and smoke run as the room does. You can build while the room is paused. Everyone receives the ordered
   build and its normal construction costs without advancing game time or
   moving vehicles. Editing and demolition follow the same room ordering.
   Outside a multiplayer game the normal controls return.
@@ -757,6 +758,15 @@ launcher to update it, or wait for the TPF3-MP release for that build.
 The launcher checks the game before starting it, and starts no build its
 hook does not run in: such a game came up with its plain menu, no
 Multiplayer button and no word why, in TPF3-MP 1.4.0 and earlier.
+
+**Locomotives silent in a multiplayer game?** In TPF3-MP 1.4.0 and
+earlier a game whose world was saved while paused kept its own speed at
+pause in the room, and the game plays vehicle sounds only while its own
+speed is not paused, even though the room's trains run. Newer versions
+keep every player's game at the room's speed. With 1.4.0, the room's
+owner clicks the speed the room already runs at (1x) once, which brings
+the owner's sounds back; the guests leave and join again after the
+room's next save.
 
 ### Diagnostics
 

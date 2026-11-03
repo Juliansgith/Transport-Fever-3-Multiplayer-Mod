@@ -1,6 +1,13 @@
 -- Clock buttons show the room's accepted speed. Only explicit helper API
 -- calls send requests; restored GAME_SPEED and automatic native commits
--- cannot change the room. Local writes retain the game's camera/particle behavior.
+-- cannot change the room.
+--
+-- Every game's own speed (GAME_SPEED.speedup) follows the room's accepted
+-- speed, written locally and never asked of the room. The room's pace runs
+-- the simulation whatever it says, but the game's frame plays world sounds
+-- only while it is above 0 (UI::CGameUI's frame passes GetSpeed() > 0 to
+-- AudioManager::Begin, build 40425), and the camera and particles read it
+-- too: left at a save's paused 0, every locomotive stayed silent.
 --
 -- Uses build 40408's GameSpeedControl recipe and GameSpeedApi (the game's
 -- gui/game_bar/game_bar_widgets.tl and gui/main/game_context.d.tl). The
@@ -62,10 +69,9 @@ function data()
 			if not isHost(status) or not helper.isEnabled() then return end
 			if speed == 0 and getFeatures().GameSpeedPause == true then return end
 			if speed ~= 0 and speed ~= 1 and speed ~= 2 and speed ~= 4 then return end
-			if link:chooseSpeed(speed) then
-				if speed > 0 then lastNonZero = speed end
-				set(speed)
-			end
+			-- Only the request: the game's own speed follows once the room
+			-- accepts it (followRoom), so it never runs ahead of the room.
+			if link:chooseSpeed(speed) and speed > 0 then lastNonZero = speed end
 		end
 		helper.togglePause = function()
 			if not roomNow() then return toggle() end
@@ -79,12 +85,53 @@ function data()
 		end
 	end
 
+	-- The game's own speed follows the room's, each frame, with the game's
+	-- own local command (guard.PASS sends it as it is, to this game alone).
+	-- Sent again after RESEND_FRAMES if the speed has not followed yet.
+	local RESEND_FRAMES = 30
+	local sent, waited = nil, 0
+	local function ownSpeed()
+		local ok, speed = pcall(function()
+			return api.engine.getComponent(api.engine.util.getWorld(),
+				api.type.ComponentType.GAME_SPEED).speedup
+		end)
+		if ok and type(speed) == "number" then return speed end
+	end
+	local function followRoom()
+		local status = roomNow()
+		local speed = status and type(status.speed) == "number" and status.speed / 100
+		if speed ~= 0 and speed ~= 1 and speed ~= 2 and speed ~= 4 then return end
+		-- Where a mission forbids pausing, the stock helper puts a 0 back to
+		-- its last speed itself: following a paused room there would only
+		-- take turns with it.
+		if speed == 0 and getFeatures().GameSpeedPause == true then return end
+		local own = ownSpeed()
+		if own == nil or own == speed then
+			sent = nil
+			return
+		end
+		waited = waited + 1
+		if sent == speed and waited < RESEND_FRAMES then return end
+		local ok, why = pcall(function()
+			api.cmd.sendCommand(api.cmd.makeGameSetSpeedCmd(speed))
+		end)
+		if sent ~= speed then
+			link:log(ok and ("the game's own speed " .. tostring(own) .. " follows the room's "
+				.. speed .. "x (sounds, camera and particles read it)")
+				or ("the game's own speed cannot follow the room's: " .. tostring(why)))
+		end
+		sent, waited = speed, 0
+	end
+
 	local speeds = { 0, 100, 200, 400 }
 	local icons = { "playback_pause", "playback_play", "playback_play_2", "playback_play_4" }
 	local names = { "Pause", "Speed: 1x", "Speed: 2x", "Speed: 4x" }
 	local RoomSpeed = react.RegisterRecipe("Tpf3mpRoomSpeed", function(params, userParam)
 		-- NodeRef:GetApi is invalid during render/useState initialization.
-		react.onStep(function() wrapHelper(params) end)
+		react.onStep(function()
+			wrapHelper(params)
+			followRoom()
+		end)
 		local state = engine_react_util.useStepStateTimer(function()
 			local status = roomNow()
 			return {
