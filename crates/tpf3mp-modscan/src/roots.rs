@@ -475,7 +475,7 @@ fn storage_setting(file: &Path) -> Setting {
             Setting::Missing
         };
     };
-    let Ok(serde_json::Value::Object(settings)) = serde_json::from_str(&text) else {
+    let Ok(serde_json::Value::Object(settings)) = crate::json(&text) else {
         return Setting::Unreadable;
     };
     match settings
@@ -634,7 +634,7 @@ const MODIO_INSTALLED: u64 = 1;
 /// text, by mod.io number; a mod not installed, or whose entry does not
 /// read, has none.
 pub fn modio_files(state: &str) -> HashMap<u64, Option<u64>> {
-    let Ok(index) = serde_json::from_str::<serde_json::Value>(state) else {
+    let Ok(index) = crate::json(state) else {
         return HashMap::new();
     };
     let mut out = HashMap::new();
@@ -688,7 +688,7 @@ pub fn installed(roots: &[Root]) -> Vec<Found> {
                 .unwrap_or_default();
             let manifest = fs::read_to_string(path.join("mod.json"))
                 .ok()
-                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+                .and_then(|text| crate::json(&text).ok());
             let id = manifest
                 .as_ref()
                 .and_then(|v| v.get("modId").and_then(|id| id.as_str()).map(str::to_owned))
@@ -1049,6 +1049,69 @@ mod tests {
             storage_setting(&dir.path().join("none.json")),
             Setting::Missing
         );
+    }
+
+    /// The 2026-11-08 report: a room's Curved Railway Station was
+    /// "missing" for its owner, who had it installed. Its update (revision
+    /// 2) wrote a `mod.json` that starts with a UTF-8 byte order mark,
+    /// which the game reads; the scan took it for no JSON and found the mod
+    /// by its folder's number instead of its `modId`. Each mod.io file read
+    /// here is read past one too.
+    #[test]
+    fn json_files_that_start_with_a_byte_order_mark_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("AppData/Local");
+        let storage = dir.path().join("Public/mod.io");
+        // Its fields as in the download, with its id and revision.
+        write(
+            &storage.join("10640/mods/6457934/mod.json"),
+            "\u{feff}{\n    \"dependencies\": null,\n    \"incompatibilities\": null,\n    \
+             \"modId\": \"mod_hugedragonyk_uep3_b06b_curved_railway_station_1\",\n    \
+             \"params\": null,\n    \"postRunScript\": {\n        \"fileName\": \"\"\n    },\n    \
+             \"preRunScript\": {\n        \"fileName\": \"\"\n    },\n    \"revision\": 2,\n    \
+             \"runScript\": {\n        \"fileName\": \"\"\n    }\n}",
+        );
+        write(
+            &storage.join("10640/metadata/state.json"),
+            "\u{feff}{\"Mods\": [{\"ID\": 6457934, \"State\": 1, \"Profile\": {\"modfile\": {\"id\": 8446991}}}], \"version\": 1}",
+        );
+        write(
+            &local.join("mod.io/globalsettings.json"),
+            &format!(
+                "\u{feff}{{\"RootLocalStoragePath\": {}}}",
+                json_path(&storage)
+            ),
+        );
+        assert_eq!(
+            storage_setting(&local.join("mod.io/globalsettings.json")),
+            Setting::Names(storage.clone())
+        );
+
+        let found = installed(&roots(
+            None,
+            &[],
+            &[HubRoot {
+                source: HubSource::Settings,
+                storage,
+            }],
+        ));
+        let station = find(
+            &found,
+            "mod_hugedragonyk_uep3_b06b_curved_railway_station_1",
+        )
+        .expect("found by its modId");
+        assert_eq!(station.folder, "6457934");
+        assert_eq!(station.revision, Some(2));
+        assert_eq!(
+            station.hub,
+            Some(HubFile {
+                mod_id: 6457934,
+                file: Some(8446991)
+            })
+        );
+        // Only a leading mark is read past: one anywhere else is no JSON.
+        assert!(crate::json("{\"modId\": \"a\"}\u{feff}").is_err());
+        assert!(crate::json("\u{feff}").is_err());
     }
 
     /// The game's log names each Mod Hub mod's folder as it loads it: the
