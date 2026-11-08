@@ -40,6 +40,16 @@ const GROUPED: usize = 3;
 /// Version control folders at a mod's top, skipped.
 const VCS_DIRS: &[&str] = &[".git", ".hg", ".svn"];
 
+/// The JSON in `text`, a `mod.json` or one of mod.io's files, read past a
+/// leading UTF-8 byte order mark. The game reads a `mod.json` that starts
+/// with one: the Mod Hub's Curved Railway Station (`6457934`, revision 2,
+/// file 8446991, 2026-11-08) does, and once read as "does not parse" it was
+/// found by its folder's number, so a room asking for its `modId` called it
+/// missing.
+pub(crate) fn json(text: &str) -> serde_json::Result<serde_json::Value> {
+    serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(text))
+}
+
 /// Whether the players of a room may differ in a mod.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -376,7 +386,7 @@ pub fn scan(dir: &Path) -> Report {
     let mut revision = None;
 
     match fs::read_to_string(dir.join("mod.json")) {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(text) => match json(&text) {
             Ok(manifest) => {
                 if let Some(named) = manifest.get("modId").and_then(|v| v.as_str()) {
                     id = named.to_owned();
