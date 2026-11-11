@@ -722,6 +722,36 @@ list one. All four stations were built six modules long; both trains had
 six wagons, since no engine of 1922 hauls twelve loaded up 2.5 % by the
 AI's rule (a br75: 85 kN against 89).
 
+Run 75, with the catchment check and long trains let climb slowly: the
+Hard AI, its oil railway reckoned too dear this time and a second too,
+laid the Leighton-Linslade stone railway out three times, the first two
+over its money at the game's prices, and built the third for 9.66
+million (reckoned at up to 5.54) with a mogul and five wagons, all its
+money bought: 1.65 million in its first year. It could pay for the line;
+nothing asked whether 3.6 million a year in fares was worth it. The
+Normal AI laid its Saffron Walden railway out for five minutes, pieces
+of it refused for touching the other AI's new track, a year of the game.
+Since then a railway must be reckoned to bring its whole price back in
+three years, and is laid out between three pairs of places, four rounds
+each, not six and eight.
+
+Run 76, with those, two and a half years in:
+
+| | built | its train | fares, last 12 months | money |
+|---|---|---|---|---|
+| Hard | oil railway, 8.4 km, 6.70 million (reckoned up to 8.91) | a mogul and 12 tank wagons, 120 a load | 3.73 million (one load of 3.73 million, a second aboard) | -1.68 million |
+| Normal | stone railway, 4.4 km, 4.49 million (reckoned up to 4.95) | a br75 and 6 wagons | 3.50 million (three loads of 1.17 million) | -0.03 million |
+
+Each is about level with its loan's 3.6 million a year, where runs 61 to
+72 had every AI falling by millions a year. The Normal AI gave up two
+railways as not worth their price and one as too dear in under two
+minutes. Still open: a mogul with twelve loaded wagons takes about a
+year a round, where six behind it took 900 s (the engine is chosen by
+its top speed, not by what it pulls); the Hard AI closed three bus lines
+between towns in their first year for losses of 14,000 to 21,000 (since
+then a line is given three rounds before it is closed for losing
+money); and neither company is yet ahead of its loan.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by
