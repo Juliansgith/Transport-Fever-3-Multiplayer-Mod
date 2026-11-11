@@ -249,6 +249,21 @@ pub struct Memo {
     /// closed a fuel line six months in, eight minutes after the crude oil
     /// line feeding its refinery opened.
     pub chains: Vec<Vec<u32>>,
+    /// Its rail lines with long stations, for trains of
+    /// [`crate::train::WAGONS_LONG`] wagons: a train more on one is as long.
+    pub long: Vec<u32>,
+}
+
+/// A memo as drivers before the long stations kept it.
+#[derive(Deserialize)]
+struct MemoChains {
+    served: Vec<u32>,
+    given_up: Vec<u32>,
+    cargo_lines: Vec<(u32, String)>,
+    rail_lines: Vec<u32>,
+    looped: Vec<(u32, u8)>,
+    closed: Vec<(u32, u8, i64)>,
+    chains: Vec<Vec<u32>>,
 }
 
 /// A memo as drivers before the chains kept it.
@@ -279,6 +294,18 @@ impl Memo {
         if let Ok(memo) = postcard::from_bytes::<Self>(bytes) {
             return Some(memo);
         }
+        if let Ok(m) = postcard::from_bytes::<MemoChains>(bytes) {
+            return Some(Self {
+                served: m.served,
+                given_up: m.given_up,
+                cargo_lines: m.cargo_lines,
+                rail_lines: m.rail_lines,
+                looped: m.looped,
+                closed: m.closed,
+                chains: m.chains,
+                long: Vec::new(),
+            });
+        }
         if let Ok(m) = postcard::from_bytes::<MemoClosed>(bytes) {
             return Some(Self {
                 served: m.served,
@@ -288,6 +315,7 @@ impl Memo {
                 looped: m.looped,
                 closed: m.closed,
                 chains: Vec::new(),
+                long: Vec::new(),
             });
         }
         let m = postcard::from_bytes::<MemoBefore>(bytes).ok()?;
@@ -299,9 +327,38 @@ impl Memo {
             looped: m.looped,
             closed: Vec::new(),
             chains: Vec::new(),
+            long: Vec::new(),
         })
     }
 }
+
+/// A new line's vehicles still to come: each leaves its share of a round
+/// after the one before, so they run spread along it, while the AI looks to
+/// its next line. Run 68's Normal AI, waiting on each of a truck line's four
+/// before anything else, planned nothing for a year of the game, six
+/// million in hand and its loan taking 300,000 a month.
+#[derive(Debug, Clone)]
+struct Owed {
+    line: LineId,
+    /// The vehicles the line is to have.
+    fleet: usize,
+    /// The game's seconds between two of them.
+    apart: f64,
+    /// When its next one is due.
+    at: Instant,
+}
+
+/// How long after money ran short an owed vehicle is tried again.
+const OWED_RETRY: Duration = Duration::from_secs(60);
+
+/// The money, to spend, with which a look at its cargo's railways comes
+/// before a bus line: what a line of some six kilometres, long stations and
+/// a train of twelve came to in runs 68 and 69, its reserves counted.
+const RAIL_FIRST_MONEY: i64 = 10_000_000;
+
+/// How much of a road line's reckoned cost it must have in hand to begin
+/// it: its stops and depot cost what the game says, not what it reckoned.
+const CAPITAL_MARGIN: f64 = 1.5;
 
 /// How many production chains its memo keeps.
 pub const CHAINS_KEPT: usize = 16;
@@ -618,6 +675,10 @@ pub struct Brain {
     seen_truck: Option<econ::Runs>,
     /// The line it adds a vehicle to outside a project.
     topping: Option<(LineId, AiDepot)>,
+    /// Its new lines' vehicles still to come ([`Owed`]).
+    owed: Vec<Owed>,
+    /// The line it last said it waits for a vehicle's money for.
+    bus_wait_said: Option<LineId>,
     /// When its upkeep last gave each line a vehicle or took one
     /// ([`upkeep::TUNE_LOOKS`]).
     tuned: Vec<(LineId, Instant)>,
@@ -642,6 +703,9 @@ pub struct Brain {
     /// Whether its next project carries cargo (it takes turns), and
     /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
+    /// Its last turn was its cargo's: a look at a railway its money would
+    /// carry comes first only every other turn.
+    rail_looked: bool,
     /// How many young lines it last said it waits on: said once, not at
     /// every look.
     young_said: usize,
@@ -705,6 +769,8 @@ impl Brain {
             rail_fares: 0.0,
             weighed_said: String::new(),
             topping: None,
+            owed: Vec::new(),
+            bus_wait_said: None,
             tuned: Vec::new(),
             routes: Vec::new(),
             needing: Vec::new(),
@@ -714,6 +780,7 @@ impl Brain {
             leg_now: None,
             no_rail: Vec::new(),
             next_cargo: false,
+            rail_looked: false,
             young_said: 0,
             chain_group: None,
             held_said: false,
@@ -997,7 +1064,39 @@ impl Brain {
             .company
             .as_ref()
             .map_or(0, |c| money::Books::of(c).cushion());
-        money - (money.max(0) * self.profile.reserve_percent / 100).max(cushion)
+        let free = money - (money.max(0) * self.profile.reserve_percent / 100).max(cushion);
+        // Buying a vehicle for a line, the money laid by for those its new
+        // lines still wait for is its to spend; for anything else it is not.
+        if self.topping.is_some() {
+            free
+        } else {
+            free - self.committed()
+        }
+    }
+
+    /// What the vehicles its new lines still wait for cost ([`Owed`]).
+    #[allow(clippy::cast_possible_truncation)]
+    fn committed(&self) -> i64 {
+        let Some(company) = &self.company else {
+            return 0;
+        };
+        self.owed
+            .iter()
+            .map(|o| {
+                let has = company
+                    .lines
+                    .iter()
+                    .find(|l| l.id == o.line)
+                    .map_or(o.fleet, |l| l.vehicles.len());
+                let cargo = self.memo.cargo_lines.iter().any(|(id, _)| *id == o.line.0);
+                let runs = if cargo {
+                    self.seen_truck.unwrap_or(TRUCK_RECKONED)
+                } else {
+                    self.seen_bus.unwrap_or(BUS_RECKONED)
+                };
+                o.fleet.saturating_sub(has) as i64 * runs.price as i64
+            })
+            .sum()
     }
 
     /// Whether its settled lines make what a train costs to run
@@ -1737,10 +1836,30 @@ impl Brain {
                 .filter(|v| v.line == Some(line.id))
                 .all(|v| v.worn < upkeep::SETTLED)
         };
+        // A vehicle a new line still waits for, its time come.
+        self.owed.retain(|o| {
+            company
+                .lines
+                .iter()
+                .any(|l| l.id == o.line && l.vehicles.len() < o.fleet)
+        });
+        let due = self
+            .owed
+            .iter()
+            .find(|o| o.at <= now)
+            .and_then(|o| company.lines.iter().find(|l| l.id == o.line));
+        if let Some(line) = due
+            && let Some(depot) = road_depot(company, line)
+        {
+            self.topping = Some((line.id, depot));
+            self.stage = Stage::Models;
+            return None;
+        }
         let short = company
             .lines
             .iter()
             .filter(|l| !self.memo.rail_lines.contains(&l.id.0))
+            .filter(|l| !self.owed.iter().any(|o| o.line == l.id))
             .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first) && new(l));
         if let Some(line) = short
             && let Some(depot) = road_depot(company, line)
@@ -1829,6 +1948,17 @@ impl Brain {
         }
         let mut cargo = self.next_cargo && self.carries_cargo;
         self.next_cargo = !self.next_cargo;
+        // Money for a railway whole in hand: a look at what a train could
+        // carry before a bus line takes a tenth of it, every other turn.
+        // Run 69: both AIs opened a bus line first and then found a stone
+        // railway reckoned at five million a year in fares too dear by less
+        // than that line had cost.
+        if !cargo && self.carries_cargo && !self.rail_looked && self.spendable() >= RAIL_FIRST_MONEY
+        {
+            cargo = true;
+            self.next_cargo = false;
+        }
+        self.rail_looked = cargo;
         let (buses, trucks) = (
             self.kind_pays(company, Kind::Bus),
             self.kind_pays(company, Kind::Truck),
@@ -2526,7 +2656,9 @@ impl Brain {
             let lines: Vec<_> = self
                 .intercity(&towns)
                 .into_iter()
-                .filter(|(e, ..)| e.capital <= spendable as f64)
+                // Half as much again in hand: run 68 opened a line its
+                // stops left it no bus for.
+                .filter(|(e, ..)| e.capital * CAPITAL_MARGIN <= spendable as f64)
                 .take(self.profile.pick_among.max(1))
                 .collect();
             if !lines.is_empty() {
@@ -3293,12 +3425,22 @@ impl Brain {
         let model = self.model.clone()?;
         let depot = self.depot_now()?;
         if model.price > self.spendable() {
-            self.say("waits for money for a bus".into());
+            let line = self.line_now();
+            if line != self.bus_wait_said {
+                self.bus_wait_said = line;
+                self.say("waits for money for a bus".into());
+            }
+            for owed in &mut self.owed {
+                if Some(owed.line) == line {
+                    owed.at = now + OWED_RETRY;
+                }
+            }
             self.project = None;
             self.topping = None;
             self.rest(now);
             return None;
         }
+        self.bus_wait_said = None;
         let before: Vec<VehicleId> = self
             .company
             .as_ref()
@@ -3337,21 +3479,30 @@ impl Brain {
             .iter()
             .filter(|v| v.line == Some(line))
             .count();
-        let fleet = self
-            .project
-            .as_ref()
-            .map_or(usize::from(self.profile.buses_first), |p| p.fleet);
+        let owed = self.owed.iter().position(|o| o.line == line);
+        #[allow(clippy::cast_precision_loss)]
+        let (fleet, apart) = match (&self.project, owed) {
+            (Some(p), _) => (p.fleet, p.round / p.fleet.max(1) as f64),
+            (None, Some(i)) => (self.owed[i].fleet, self.owed[i].apart),
+            (None, None) => (usize::from(self.profile.buses_first), 0.0),
+        };
+        if let Some(i) = owed {
+            self.owed.remove(i);
+        }
         if running < fleet {
-            // The next leaves its share of a round after this one.
-            #[allow(clippy::cast_precision_loss)]
-            let apart = self.project.as_ref().map_or(0.0, |p| p.round) / fleet as f64;
-            if apart >= 1.0 {
-                let faster = f64::from(self.speed.max(100)) / 100.0;
-                self.stage = Stage::Models;
-                self.wake = Some(now + Duration::from_secs_f64((apart / faster).min(300.0)));
-                return None;
+            if apart < 1.0 {
+                return self.buy(now);
             }
-            return self.buy(now);
+            // The next leaves its share of a round after this one: owed,
+            // while it looks to its next line.
+            let faster = f64::from(self.speed.max(100)) / 100.0;
+            let wait = Duration::from_secs_f64((apart / faster).min(300.0));
+            self.owed.push(Owed {
+                line,
+                fleet,
+                apart,
+                at: now + wait,
+            });
         }
         if let Some(project) = self.project.take() {
             let id = project.serves.key();
@@ -3364,8 +3515,13 @@ impl Brain {
                 "bus(es)"
             };
             self.say(format!(
-                "runs {running} {vehicles} on {}",
-                project.serves.describe()
+                "runs {running} {vehicles} on {}{}",
+                project.serves.describe(),
+                if running < fleet {
+                    format!(", {} more to follow", fleet - running)
+                } else {
+                    String::new()
+                }
             ));
         }
         self.topping = None;

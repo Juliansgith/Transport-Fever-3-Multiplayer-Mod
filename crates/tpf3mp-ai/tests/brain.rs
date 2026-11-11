@@ -1766,6 +1766,18 @@ fn it_carries_cargo_by_truck_to_a_town_that_needs_it() {
             .any(|l| l == "opened a truck line carrying planks from Witney Sawmill to Ely"),
         "{said:?}"
     );
+    // Its trucks leave a share of a round apart, and it looks to its next
+    // line meanwhile: run 68, a year of the game waiting on four trucks.
+    let first = said
+        .iter()
+        .position(|l| l.contains("runs 1 truck(s)") && l.ends_with("3 more to follow"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert!(
+        said[first..].iter().any(|l| l.starts_with("weighs")
+            || l.starts_with("plans")
+            || l.starts_with("found no")),
+        "{said:?}"
+    );
     // No town takes grain or stone: never planned, the livestock farm that
     // takes grain notwithstanding.
     assert!(
@@ -1937,6 +1949,44 @@ fn a_cargo_too_far_for_trucks_goes_by_train() {
     );
     // Not trucks as well.
     assert!(!world.line_modes.iter().any(|(_, m)| *m == 4));
+}
+
+#[test]
+fn money_for_a_railway_whole_looks_to_a_train_before_a_bus_line() {
+    // Run 69: a bus line first left a stone railway reckoned at five
+    // million a year in fares too dear by less than the bus line cost.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 240)],
+    )];
+    ely_needs_planks(&mut world, 0, 200, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let first = said
+        .iter()
+        .find(|l| l.starts_with("plans "))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert_eq!(
+        first, "plans a rail line carrying planks from Witney Sawmill to Ely",
+        "{said:?}"
+    );
+    // Then its buses, in turn.
+    assert!(
+        said.iter().any(|l| l.starts_with("plans a bus line")),
+        "{said:?}"
+    );
 }
 
 #[test]

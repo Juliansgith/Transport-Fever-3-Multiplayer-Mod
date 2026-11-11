@@ -200,8 +200,33 @@ It opens the line reckoned to bring most for its money
 (`Estimate::worth`), with the vehicles its load needs, four at most to
 start, each leaving its depot a share of a round after the last (three
 bought at once ran one behind the other, run 63); the rest come as it
-runs full. A line must be reckoned to make 50,000 a year and earn itself
-back in three years.
+runs full. It waits for none of them: the line is open with its first,
+the others are owed to it, their price laid by, and bought as their turns
+come while it looks to its next line (run 68's Normal AI, waiting on a
+truck line's four before anything else, planned nothing for a year of the
+game with six million in hand, its loan taking 300,000 a month). A line
+must be reckoned to make 50,000 a year and earn itself back in three and
+a half years, and a road line is begun only with half as much again as
+its reckoned cost in hand (run 68's Hard AI opened a line its stops left
+it no bus for).
+
+**Cargo goes where it pays, to whoever takes it.** What a producer makes
+that no one carries away yet goes to the town short of it, or the works
+with room to make more of it, that the AI's trucks are reckoned to earn
+most carrying it to; by train, to the one its fares come to most at
+(units a year times metres times 3.8), 1.8 to 9 km off. A works counts
+only while something it makes is carried on, by anyone, or by a line of
+the AI's own loading at its station: a works takes what it is brought
+only then, however little it sends on (the fixture player's cement plant
+takes 434 stone a year and sends on 48 cement; run 67's oil railway to a
+refinery no one carried from ran empty, nothing waiting at its well). A
+line into such a works is judged with the line that carries on from it.
+A single line reckoned to pay comes before a chain, whose first leg
+carries nothing until its feeders run. With money for a railway whole in
+hand (10 million to spend) it looks at what a train could carry before
+a bus line, every other turn: in run 69 both AIs opened a bus line first
+and then found a stone railway reckoned at five million a year in fares
+too dear by less than that bus line had cost.
 
 **What its lines then earn takes rounds to show.** A fare is paid where
 a rider gets off, and a round between two towns takes most of a year.
@@ -480,7 +505,11 @@ or one fewer shows in a line's load and money only over the next weeks.
   trains come first then. It reads the land around both ends (the
   driver's game answers a grid at a time: heights, water, built land,
   streets and tracks), puts a one-track cargo station of three modules by
-  each, its building towards the industry or the district within its
+  each (six, for a train of up to twelve wagons, where the line has more
+  to carry each round than six wagons hold, and both ends have room for
+  one: run 68's stone train of six carried 126 a year of the 243 its
+  quarry made, 1.4 million a load, on a line that had cost eight), its
+  building towards the industry or the district within its
   catchment's 150 m, on free ground the land shows, its track's end
   towards the other station. It plans by what the game charges, as a
   player reads the build tool's price (`crates/tpf3mp-ai/src/costs.rs`,
@@ -491,8 +520,13 @@ or one fewer shows in a line's load and money only over the next weeks.
   station's module 93,000, a rail depot about a million. Before it builds
   anything it prices the whole line between the cheapest of its first
   station placements, and a line it cannot pay for, or with no route, it
-  never begins; a cargo train is then the strongest engine the rest of its
-  money buys. A passenger train is the engine that runs three coaches at
+  never begins: it must have half as much again as the line is reckoned
+  to cost in hand, and 2.5 million for its train (run 67's line, reckoned
+  at 3.3 million, left 350,000 of 13 million with its train bought). A
+  cargo train's engine is then the one its train is reckoned to make most
+  a year with, its price over 20 years counted, of those that haul its
+  wagons loaded up the line's steepest, not the strongest its money buys.
+  A passenger train is the engine that runs three coaches at
   their own speed for the least a year (its running, and its price over 20
   years), strong enough to pull them up the line's 2.5 % with half again to
   spare: run 59's AI, taking the strongest it could afford, bought an
@@ -510,7 +544,9 @@ or one fewer shows in a line's load and money only over the next weeks.
   headings run on through every node, asks the game for the streets it
   crosses, and chooses every node's height for the least cost of the
   whole line, within a 2.5 % grade where it can and never steeper than
-  4 % (a plant on a hill above its town): an embankment or a cutting, a
+  4 % (a plant on a hill above its town; 6 %, then 7.5 %, where a line
+  must clear a street too soon for 4 %, as run 66's 8.9 km line found no
+  heights at all): an embankment or a cutting, a
   bridge where the ground falls away (over water always; the game builds
   one half a metre up), a tunnel where it rises at least 9 m over it, as
   the prices say. Where it meets a street it may cross on the ground it
@@ -559,15 +595,15 @@ or one fewer shows in a line's load and money only over the next weeks.
   the same is tried at its next place, not given up with the line. No
   station or depot is built whose verdict touches something that stands,
   as one stood across a player's station. Then the line, and
-  its train with as many wagons as the platforms take (six at most; a
-  passenger train three coaches): no electric engine, as its track has no
+  its train with as many wagons as the platforms take (six at most,
+  twelve at long stations; a passenger train three coaches): no electric engine, as its track has no
   catenary. A line's first station
   ending within 400 m of a rail depot of its own shares that depot, its
   free end joined to the depot's track (the verdict deciding), rather
   than building another for about a million. A line of 2 km or more
   gets a passing loop for every 2.5 km of it, spaced along it, once its
   depot is joined: each a second track 5 m beside about 300 m of
-  straight line on the ground,
+  straight line on the ground (400 m for a train of twelve),
   crossing no street, on whichever side the land is free, leaving and
   rejoining the line at two of its nodes as switches; then two one-way
   signals (the path signal of its year), each put to the verdict: one on

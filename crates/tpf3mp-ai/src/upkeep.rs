@@ -773,11 +773,16 @@ impl Brain {
             self.rest(now);
             return None;
         };
-        let platform = 3.0 * rail::MODULE * 10.0;
+        // As long as its first: by its stations' platforms.
+        let (modules, most) = if self.memo.long.contains(&line.0) {
+            (6.0, train::WAGONS_LONG)
+        } else {
+            (3.0, train::WAGONS_MOST)
+        };
+        let platform = modules * rail::MODULE * 10.0;
         let room = (platform - f64::from(engine.length)).max(0.0);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let wagons =
-            ((room / f64::from(wagon.length.max(1))).floor() as usize).clamp(1, train::WAGONS_MOST);
+        let wagons = ((room / f64::from(wagon.length.max(1))).floor() as usize).clamp(1, most);
         let color = tint(&self.seat);
         let part = |m: &AiModel| ConsistPart {
             model: m.model.clone(),
