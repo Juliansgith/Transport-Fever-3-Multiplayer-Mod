@@ -1161,6 +1161,7 @@ fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]
         .unwrap(),
         water: false,
         carried: 0,
+        shipped: 0,
     }
 }
 

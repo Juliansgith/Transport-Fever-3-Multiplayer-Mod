@@ -60,7 +60,20 @@ pub struct Runs {
     pub rail: bool,
 }
 
+/// The longest a road vehicle may take one way, in the game's seconds:
+/// cargo not delivered within 2,250 s of being made is lost (every cargo's
+/// `timeToDeliverInSeconds`), and it waits at its station first: half of
+/// that. A truck of 1922, 25 km/h, would take 2,290 s over the 7.9 km run
+/// 66's AI chose for one.
+pub const WAY_MOST: f64 = 1_100.0;
+
 impl Runs {
+    /// How long it takes one way over `distance`, driving, in seconds.
+    pub fn way(&self, distance: f64) -> f64 {
+        let pace = if self.rail { RAIL_PACE } else { ROAD_PACE };
+        distance.max(1.0) / (self.speed * pace / 3.6).max(0.5)
+    }
+
     /// The rounds of a line `distance` long it makes in a year.
     pub fn rounds(&self, distance: f64) -> f64 {
         let (pace, stops) = if self.rail {

@@ -104,7 +104,8 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// people and where they work and shop ([`ai::AiTown::residents`],
 /// [`ai::AiTown::usage`], [`ai::AiTown::travel`]), how long a vehicle
 /// takes round each AI line and how long ago each was bought
-/// ([`ai::AiLine::round`], [`ai::AiVehicle::age`]).
+/// ([`ai::AiLine::round`], [`ai::AiVehicle::age`]), and what is carried
+/// away from each industry already ([`ai::AiIndustry::shipped`]).
 pub const BRIDGE_VERSION: u32 = 41;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;

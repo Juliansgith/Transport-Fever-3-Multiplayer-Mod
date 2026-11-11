@@ -84,6 +84,13 @@ pub const DEPOT_TRIES: usize = DEPOT_PLACES.len() + DEPOT_LINE_PLACES.len();
 /// (8.5 % and 55 m to build), for early locomotives and a line's speed.
 pub const MAX_GRADE: f64 = 0.025;
 pub const STEEPEST: f64 = 0.04;
+/// The grades a line may climb at where none within [`STEEPEST`] meets
+/// what it must cross, tried in turn: a street cleared by a bridge 7.5 m
+/// up and a level crossing 150 m on leave no heights at 4 %, and a line of
+/// 8.9 km found none between any of its station places (run 66). Each
+/// metre beyond [`MAX_GRADE`] still costs [`STEEP`], so the line is steep
+/// only where it must be; the simple track builds to 8.5 %.
+pub const STEEPER: [f64; 2] = [0.06, 0.075];
 pub const MIN_RADIUS: f64 = 180.0;
 /// What a metre climbed or fallen beyond [`MAX_GRADE`] costs: dear enough
 /// that a line keeps to its grade unless it cannot, for a steep line slows
@@ -1468,6 +1475,24 @@ fn kinds(hold: Hold, z: f64) -> &'static [Kind] {
     clippy::cast_precision_loss
 )]
 pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> Option<Vec<Node>> {
+    std::iter::once(STEEPEST)
+        .chain(STEEPER)
+        .find_map(|steepest| profile_within(land, prices, nodes, holds, steepest))
+}
+
+/// [`profile`] with no grade steeper than `steepest`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn profile_within(
+    land: &Land,
+    prices: &Prices,
+    nodes: &[Node],
+    holds: &[Hold],
+    steepest: f64,
+) -> Option<Vec<Node>> {
     let n = nodes.len();
     if n < 2 || holds.len() != n {
         return None;
@@ -1521,7 +1546,7 @@ pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> 
     }
     for k in 1..n {
         let len = lengths[k - 1];
-        let reach = (STEEPEST * len / LEVEL).ceil() as usize;
+        let reach = (steepest * len / LEVEL).ceil() as usize;
         for i in 0..count {
             if !allowed(k, i) {
                 continue;
@@ -1535,7 +1560,7 @@ pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> 
                 }
                 let z0 = height(k - 1, j);
                 // Held heights lie off the levels by up to half of one.
-                if (z1 - z0).abs() > STEEPEST * len + LEVEL / 2.0 {
+                if (z1 - z0).abs() > steepest * len + LEVEL / 2.0 {
                     continue;
                 }
                 // A level crossing lies level: the game refuses one on a
@@ -3221,6 +3246,54 @@ mod tests {
             let d = w[0].at.flat_distance(w[1].at);
             (w[1].at.z - w[0].at.z).abs() <= STEEPEST * d + LEVEL
         }));
+    }
+
+    #[test]
+    fn a_line_that_must_clear_a_street_too_soon_for_its_grade_climbs_steeper() {
+        // Flat land; a street it may not cross on the level 120 m out of
+        // one station and 120 m short of the other: a bridge 7.5 m up needs
+        // 6.25 %, where the line keeps to 4 % wherever it can.
+        let (a, b) = (p(0.0, 0.0), p(240.0, 0.0));
+        let land = flat(a, b, |_, _| false);
+        let nodes = [
+            Node::on(a, 0.0),
+            Node::on(p(60.0, 0.0), 0.0),
+            Node::on(p(120.0, 0.0), 0.0),
+            Node::on(p(180.0, 0.0), 0.0),
+            Node::on(b, 0.0),
+        ];
+        let holds = [
+            Hold::At(10.0),
+            Hold::Free,
+            Hold::Clear(10.0),
+            Hold::Free,
+            Hold::At(10.0),
+        ];
+        assert!(
+            profile_within(&land, &PRICES, &nodes, &holds, STEEPEST).is_none(),
+            "no heights within 4 %"
+        );
+        let planned = profile(&land, &PRICES, &nodes, &holds).expect("heights at a steeper grade");
+        assert!(planned[2].at.z >= 10.0 + OVER - 1e-9, "{}", planned[2].at.z);
+        let steepest = planned
+            .windows(2)
+            .map(|w| (w[1].at.z - w[0].at.z).abs() / w[0].at.flat_distance(w[1].at))
+            .fold(0.0, f64::max);
+        // Held heights lie off the levels by up to half of one.
+        assert!(
+            steepest <= STEEPER[1] + LEVEL / 2.0 / 60.0 + 1e-9,
+            "{steepest}"
+        );
+        // A line with room keeps to its grade as before.
+        let easy = [
+            Hold::At(10.0),
+            Hold::Free,
+            Hold::Free,
+            Hold::Free,
+            Hold::At(10.0),
+        ];
+        let level = profile(&land, &PRICES, &nodes, &easy).unwrap();
+        assert!((level[2].at.z - 10.0).abs() < LEVEL);
     }
 
     #[test]

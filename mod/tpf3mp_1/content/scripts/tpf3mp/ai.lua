@@ -940,8 +940,13 @@ function ai.industries(registry, seat, roster)
 			local at = origin(c)
 			local wet = false
 			pcall(function() wet = api.engine.terrain.isOnWater(api.type.Vec2f.new(at.x, at.y)) == true end)
+			-- What was carried away from it over the last year, by anyone.
+			local shipped = 0
+			pcall(function()
+				shipped = math.max(0, math.min(whole(stock.getCargoShippedPerYear(industry.stockList) or 0), 4294967295))
+			end)
 			out[#out + 1] = { name = text(ok and name or "", 48), pos = pos(at), station = station,
-				terminals = terminals, inputs = inputs, outputs = outputs, water = wet, carried = 0 }
+				terminals = terminals, inputs = inputs, outputs = outputs, water = wet, carried = 0, shipped = shipped }
 			places[#places + 1] = { out = out[#out], at = at, group = ownGroup }
 		end)
 	end

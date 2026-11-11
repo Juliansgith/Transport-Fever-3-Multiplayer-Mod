@@ -244,6 +244,7 @@ mod tests {
             .unwrap(),
             water: false,
             carried: 0,
+            shipped: 0,
         }
     }
 

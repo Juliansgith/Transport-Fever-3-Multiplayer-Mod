@@ -404,6 +404,7 @@ impl Brain {
             outputs: BoundedVec::default(),
             water: false,
             carried: 0,
+            shipped: 0,
         };
         let to = Taker::Town {
             town: b.clone(),

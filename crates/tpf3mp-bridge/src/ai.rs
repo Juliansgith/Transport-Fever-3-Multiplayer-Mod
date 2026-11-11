@@ -336,6 +336,11 @@ pub struct AiIndustry {
     /// line little: run 47's two AIs each built a cement railway from one
     /// plant, and each lost 0.7 to 0.8 million in its first year.
     pub carried: u16,
+    /// What was carried away from it over the last year, all it makes
+    /// together, by anyone (`getCargoShippedPerYear`): what it makes less
+    /// this is free for a new line. The fixture's largest farm makes 602
+    /// grain a year, 483 of it carried by its player's train.
+    pub shipped: u32,
 }
 
 /// One cargo an industry makes.
