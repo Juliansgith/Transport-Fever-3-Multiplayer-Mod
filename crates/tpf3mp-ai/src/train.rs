@@ -46,6 +46,10 @@ const STATION_MODULES: i32 = 3;
 /// built, and what a train costs: both kept in hand before a line is begun.
 const LINE_OVERRUN: f64 = 1.5;
 const TRAIN_RESERVE: f64 = 2_500_000.0;
+/// What a line is likely to cost over what it was reckoned at, for its
+/// train's choosing: run 73's took 1.17 times its reckoning, its loan's
+/// payments over the building counted in.
+const TRAIN_OVERRUN: f64 = 1.25;
 
 /// The most pairs of station placements a line is laid out between before
 /// it builds anything.
@@ -1854,7 +1858,11 @@ impl Brain {
         } else {
             project.wagons_most
         };
-        let wagons = fit.clamp(1, most);
+        // And as many as its money buys behind its engine: its line may
+        // have cost more than its train was chosen by.
+        let afford = usize::try_from((self.money() - engine.price).max(0) / wagon.price.max(1))
+            .unwrap_or(usize::MAX);
+        let wagons = fit.min(afford).clamp(1, most);
         let (origin, _) = project.depot?;
         let color = tint(&self.seat);
         let part = |m: &AiModel| ConsistPart {
@@ -2028,8 +2036,14 @@ impl Brain {
                     .clone();
                 // What the line will cost before its train: its money must
                 // leave the train.
+                // By what its line is likely to cost, not the most it may
+                // ([`TRAIN_OVERRUN`]): run 73's oil railway, reckoned at up
+                // to 8.9 million, took 7.4, and its train, chosen by the
+                // 8.9, was a mogul and six tank wagons before stations
+                // built for twelve.
                 #[allow(clippy::cast_possible_truncation)]
-                let money = self.spendable() - project.estimate.ceil() as i64;
+                let money = self.spendable()
+                    - (project.estimate / LINE_OVERRUN * TRAIN_OVERRUN).ceil() as i64;
                 // Not electric: its track has no catenary (a C 6/8 bought
                 // for one, the game refused it the line; 2026-10-30). A
                 // passenger train's engine for its coaches' speed at the

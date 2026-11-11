@@ -635,6 +635,64 @@ bus lines between the two towns whose people travel most between them
 for the money, carries a cargo to the town that pays most for it, and
 opens a line with the vehicles its load needs.
 
+## A loan's clock: runs 67 to 72 (2026-11-11)
+
+One game, a Hard and a Normal AI, the big fixture, 4x (a year of the game
+in six minutes), each AI on the room's loan of 13 million over 48 months
+at 5 %: 299,381 a month, 3.6 million a year, whatever its lines earn.
+
+- **A works takes what it is brought only while something it makes is
+  carried on.** Run 67's oil railway to a refinery no one carried from
+  ran empty, nothing waiting at its well; the fixture player's cement
+  plant takes 434 stone a year and sends on 48 cement. Raw producers
+  report what they make with nothing shipped.
+- **The first AI railway that pays** (run 68): stone from Saffron Walden
+  Quarry to Chesterfield Cement Plant, 5.9 km, a mogul and six bulk
+  wagons, 60 a load: 1,410,540 a delivery, a round of 693 s, 2.82
+  million a year against 0.43 to run. It carried 126 of the 243 a year
+  its quarry makes: a train of twelve carries nearly all of it. Its line
+  was reckoned at 4.55 million and, with its train, took about 8.3 of
+  its 13: 40 of its edges bridges, 6 tunnels.
+- **What the rest earn.** Bus lines between Hunstanton and its
+  neighbours, three to five buses each: 590,000 to 730,000 a year by
+  their last quarter (Dinnington St John's, Bradley Stoke); a bus on a
+  lesser pair 230,000 to 390,000; a town's own line 10,000 to 50,000. A
+  truck of 1922 (10 units, 25 km/h): its road from quarry to cement plant
+  2,829 m by the map and 4,565 m by the pathfinder's edges, driven empty
+  in 748 s, a round 2,000 s by the game's own frequency; one truck had
+  not unloaded once in a year and a half. Everything that pays makes 40
+  to 60 in 100 of what it cost a year: a company that puts all 13
+  million to work at once earns some 6 million a year against 3.6 to pay
+  back; one that waits pays its loan back with the loan.
+- **Where the time went.** After opening a road line the AI sent its
+  vehicles out a share of a round apart and did nothing else meanwhile:
+  the Normal AI, six million in hand, planned nothing for a year of the
+  game while four trucks left their depot (run 68). The second AI seat
+  waited three minutes for the first to start: half a year, 1.8 million
+  of payments (run 72). Six young lines made the Normal AI wait with 4.5
+  million in hand; a year on, its loan had taken all of it (run 70).
+- **Where the money went.** A bus line opened first left a stone railway
+  reckoned at five million a year in fares too dear by less than the bus
+  line had cost (runs 69, 70). The Hard AI's first railway of run 70,
+  oil over 8.4 km, missed its budget by 130,000; the second was too dear
+  a bus line later. Both AIs opened a bus line between the same two
+  towns in the same seconds and shared its riders (run 70). Every AI
+  found "no route" for the oil railway: its search opened its 200,000
+  states over rough land before it arrived.
+
+What changed for it: stations of six modules and trains of up to twelve
+wagons where a round has more to carry than six hold (the station tool
+lays an even count from -2 to 3, `modular_station.script.lua`); a new
+line's later vehicles owed in the background, their price laid by; the
+railway looked at before a bus line while the loan is whole, up to
+three; a short train where the long one alone is too dear; the young
+lines' wait dropped while three million sit idle on a loan; the minds
+one game drives telling each other what they build; truck lines reckoned
+over their road (bridge 42); a second, keener route search; seats twenty
+seconds apart. In run 72 the Hard AI then built the stone railway first
+(its oil railway found no route, the keener search not yet in), and its
+train took 2.82 million in its first year.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by
