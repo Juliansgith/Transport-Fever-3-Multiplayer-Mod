@@ -249,7 +249,13 @@ game itself would charge: with its stations, depot and train more than
 it has, the line is laid out between other station places or not built
 (run 73's Normal AI reckoned a line at up to 5.5 million between its
 first station places, laid it out between others through 2.6 km of
-tunnel, paid 11.2 million and had nothing left for its train). A cargo
+tunnel, paid 11.2 million and had nothing left for its train). Money
+enough is no reason either: what the line and its train cost, as first
+reckoned and again at the game's prices, must come back in its fares
+within three years, 85 in 100 of them kept over its train's running
+(run 75's Hard AI, two layouts too dear, laid a stone railway reckoned
+at 3.6 million a year through a hill for 9.7 million, with money left
+for a train of five wagons). A cargo
 railway of its own left without a train gets one once it has two
 million to spend. It says what each railway took of its money against
 its reckoning. A station it builds by an industry must reach it, as the

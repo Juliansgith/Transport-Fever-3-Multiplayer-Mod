@@ -53,6 +53,11 @@ const TRAIN_OVERRUN: f64 = 1.25;
 /// What a track is likely to cost over the game's own prices for its
 /// pieces before anything is built: its joins, and what changes meanwhile.
 const TRIAL_OVERRUN: f64 = 1.1;
+/// The years within which a railway's fares must bring back what it and
+/// its train cost, and the share of its fares it keeps over its train's
+/// running (run 68's stone train: 2.82 million a year for 0.43).
+const RAIL_PAYBACK: f64 = 3.0;
+const FARES_KEPT: f64 = 0.85;
 
 /// The most pairs of station placements a line is laid out between before
 /// it builds anything.
@@ -753,7 +758,24 @@ impl Brain {
                                 }
                             }
                         }
+                        // What it is likely to cost with its train must come
+                        // back in fares within [`RAIL_PAYBACK`] years.
+                        let fares = project.fares;
+                        let unworthy = |cost: f64| {
+                            fares > 0.0
+                                && cost / LINE_OVERRUN * TRAIN_OVERRUN + TRAIN_RESERVE
+                                    > fares * FARES_KEPT * RAIL_PAYBACK
+                        };
                         match reckoned {
+                            Ok(cost) if unworthy(cost) => {
+                                self.give_up_rail(
+                                    &format!(
+                                        "found its rail line, up to {cost:.0}, not worth {fares:.0} a year in fares"
+                                    ),
+                                    now,
+                                );
+                                None
+                            }
                             Ok(cost) if cost + TRAIN_RESERVE < money => {
                                 project.estimate = cost;
                                 project.money_before = self.company.as_ref().map(|c| c.money);
@@ -1233,6 +1255,20 @@ impl Brain {
                         "found its track {track} at the game's prices, {whole:.0} with its stations, depot and train: more than it has"
                     ));
                     self.or_other_sites(false, "found its track too dear", now);
+                    return None;
+                }
+                // Or more than its fares bring back in [`RAIL_PAYBACK`]
+                // years: money enough is no reason. Run 75's Hard AI, two
+                // layouts too dear, laid a stone railway reckoned at 3.6
+                // million a year through a hill for 9.7 million, and had
+                // money left for a train of five wagons.
+                let worth = project.fares * FARES_KEPT * RAIL_PAYBACK;
+                if project.fares > 0.0 && whole > worth {
+                    let fares = project.fares;
+                    self.say(format!(
+                        "found its line {whole:.0} at the game's prices with its train, for {fares:.0} a year in fares: not worth it"
+                    ));
+                    self.or_other_sites(false, "found its line not worth its price", now);
                     return None;
                 }
                 self.stage = Stage::Rail(RailStage::DepotTrial { end: 0, place: 0 });

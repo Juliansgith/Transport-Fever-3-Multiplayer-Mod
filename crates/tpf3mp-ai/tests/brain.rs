@@ -1946,9 +1946,9 @@ fn a_cargo_too_far_for_trucks_goes_by_train() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
@@ -2313,9 +2313,9 @@ fn a_rail_line_crosses_a_country_road_on_the_level() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // A country road from north to south between the sawmill and Ely.
     let road = street(pos(3_500.0, -2_000.0), pos(3_500.0, 2_000.0));
     world.streets.push(road.clone());
@@ -2362,9 +2362,9 @@ fn a_track_dearer_at_the_games_prices_than_its_money_is_never_begun() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     // The game asks five million for each piece of its track.
     world.track_cost = Some(5_000_000);
@@ -2439,6 +2439,44 @@ fn a_station_that_reaches_no_industry_ends_its_line_before_its_track() {
 }
 
 #[test]
+fn a_railway_that_would_not_earn_its_price_back_is_not_built_whatever_its_money() {
+    // Run 75: two layouts too dear, the Hard AI laid a stone railway
+    // reckoned at 3.6 million a year through a hill for 9.7 million.
+    let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
+    world.small_towns();
+    // 60 planks a year over 3.7 km: 850,000 in fares, for a line and train
+    // of some five million.
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("found its rail line, up to ")
+                && l.contains(", not worth ")
+                && l.contains(" a year in fares")),
+        "{said:?}"
+    );
+    assert!(world.rail_stations.is_empty(), "{said:?}");
+    assert_eq!(world.track_laid, 0.0);
+}
+
+#[test]
 fn a_railway_left_without_a_train_gets_one() {
     // Run 73: its line dearer than reckoned, the Normal AI had no money for
     // its train, gave the line up and left it idle.
@@ -2450,9 +2488,9 @@ fn a_railway_left_without_a_train_gets_one() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     let start = Instant::now();
@@ -2498,9 +2536,9 @@ fn a_rail_line_it_cannot_pay_for_is_never_begun() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // A gorge 70 m deep and 1.6 km wide between them: the line across it
     // and a train cost more than the AI has.
     world.ground = Some(|x, _| {
@@ -2540,9 +2578,9 @@ fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // A road with stops on it from edge to edge between them: no level
     // crossing may be laid on it.
     let mut road = street(pos(3_500.0, -20_000.0), pos(3_500.0, 20_000.0));
@@ -2586,9 +2624,9 @@ fn a_line_whose_track_would_be_refused_builds_no_station() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // The game refuses any track by the sawmill.
     world.refuse_track_near = Some(pos(1_800.0, 900.0));
     world.money = 30_000_000;
@@ -2776,9 +2814,9 @@ fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full()
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     let start = Instant::now();
@@ -2927,9 +2965,9 @@ fn a_longer_line_gets_two_loops_and_runs_up_to_three_trains() {
         -1_200.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 60_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     let start = Instant::now();
@@ -2974,19 +3012,19 @@ fn a_second_rail_line_from_one_place_shares_the_first_ones_depot() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120), (GOODS, 90)],
+        &[(PLANKS, 400), (GOODS, 400)],
     )];
     world.towns[1].needs = BoundedVec::new(vec![
         AiNeed {
             cargo: Text::new(PLANKS).unwrap(),
             supply: 0,
-            limit: 60,
+            limit: 300,
             at: pos(5_320.0, -280.0),
         },
         AiNeed {
             cargo: Text::new(GOODS).unwrap(),
             supply: 0,
-            limit: 60,
+            limit: 300,
             at: pos(5_320.0, -280.0),
         },
     ])
@@ -3215,9 +3253,9 @@ fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.touches = Some(|b| {
         let near = P::of(b.transform.origin).flat_distance(P::of(pos(1_800.0, 900.0))) < 700.0;
@@ -3280,9 +3318,9 @@ fn a_rail_depot_touching_what_stands_at_first_goes_further_out_at_that_end() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.rail_depot_touches = 1;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
@@ -3338,9 +3376,9 @@ fn a_rail_depot_blocked_straight_out_turns_aside_on_a_curved_track() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.rail_depot_touches = 3;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
@@ -3683,9 +3721,9 @@ fn a_rail_depot_whose_track_would_touch_what_stands_goes_elsewhere_before_anythi
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.rail_link_touches = 1;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
@@ -4303,9 +4341,11 @@ fn a_cargo_railway_waits_until_its_settled_lines_earn_what_a_train_costs() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    // 135 a year over 3.7 km: 1.9 million in fares, worth a railway of
+    // its price and short of what begins one unproven.
+    ely_needs_planks(&mut world, 0, 135, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     let now = play(
