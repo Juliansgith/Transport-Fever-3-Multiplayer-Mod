@@ -618,7 +618,9 @@ or one fewer shows in a line's load and money only over the next weeks.
   verdict, still before building anything, its joins as new nodes; a
   piece the game would refuse it routes round and lays the line out
   again, and a line it cannot lay out between one pair of placements it
-  lays out between others, up to six pairs, before giving up with
+  lays out between others, up to three pairs, each routed round refused
+  pieces four times (six pairs and eight until run 75's Normal AI laid
+  one line out for five minutes, a year of a 4x game), before giving up with
   nothing built. Only then does it build its stations and, if they stand
   where it planned them, lay the track as planned, a piece at a time,
   each put to the verdict again (one through something in its way,

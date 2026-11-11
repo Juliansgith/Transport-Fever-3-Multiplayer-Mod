@@ -60,8 +60,11 @@ const RAIL_PAYBACK: f64 = 3.0;
 const FARES_KEPT: f64 = 0.85;
 
 /// The most pairs of station placements a line is laid out between before
-/// it builds anything.
-const SITE_PAIRS: u32 = 6;
+/// it builds anything: three, each routed round refused pieces
+/// [`REPLANS`] times, some fifteen layouts of five seconds each. With six
+/// pairs and eight rounds run 75's Normal AI laid a line out for five
+/// minutes, a year of a 4x game and 3.6 million of its loan's payments.
+const SITE_PAIRS: u32 = 3;
 /// The most places kept for each of a passenger line's stations, those
 /// reaching the most people on foot: a refused station tries the next, and
 /// a town's dense search ([`rail::PASSENGER_BEARINGS`]) finds hundreds.
@@ -85,7 +88,7 @@ fn passenger_rings() -> Vec<f64> {
         .collect()
 }
 /// How many times a line is routed round pieces the game refused.
-pub const REPLANS: u32 = 8;
+pub const REPLANS: u32 = 4;
 /// Around a refused piece's middle the land is taken as built on, in
 /// metres.
 pub const REFUSED_REACH: f64 = 70.0;
