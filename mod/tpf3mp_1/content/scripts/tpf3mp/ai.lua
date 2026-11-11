@@ -272,12 +272,21 @@ function ai.company(seat, roster, registry)
 			local at = first and (holder and origin(holder) or objectAt(first))
 			if id and at then
 				local terminals = 0
+				-- What cargo its catchment reaches: the industries (and
+				-- other takers) the game lists for each of its stations.
+				local reach
 				for _, s in ipairs(group.stations or {}) do
 					local station = component(s, "STATION")
 					terminals = terminals + #((station and station.terminals) or {})
+					pcall(function()
+						local caught = api.engine.system.catchmentAreaSystem.getStationCatchables(s, true)
+						local n = 0
+						for _ in pairs(caught or {}) do n = n + 1 end
+						reach = (reach or 0) + n
+					end)
 				end
 				out.stations[#out.stations + 1] = { id = id, pos = pos(at), terminals = terminals, waiting = 0,
-					ends = holder and trackEnds(holder) or {} }
+					ends = holder and trackEnds(holder) or {}, reach = reach and whole(math.min(reach, 65535)) }
 			end
 		end
 	end

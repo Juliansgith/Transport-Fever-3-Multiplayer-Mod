@@ -708,6 +708,20 @@ layout's pieces are added up at the game's own verdicts before anything
 is built, a train is chosen by the line's likely cost and sized to the
 money at its purchase, and a railway without a train gets one later.
 
+Run 74, with those: the Hard AI's oil railway took 6.75 million and its
+train, a br75 and six tank wagons, 3.73 million in fares in its first
+year and a half (two loads), its company at -0.78 million and about
+level with its loan. The Normal AI's stone railway, held to the game's
+prices ("found its track 5,108,558 at the game's prices, 11,085,099 with
+its stations, depot and train: more than it has"), was laid out between
+other station places for 7.26 million, ran a year and was closed having
+earned nothing: its quarry's station stood 250 m from the quarry and
+`getStationCatchables(station, true)` lists nothing for it, where the
+cement plant's at 200 m and the oil well's and refinery's at 250 m each
+list one. All four stations were built six modules long; both trains had
+six wagons, since no engine of 1922 hauls twelve loaded up 2.5 % by the
+AI's rule (a br75: 85 kN against 89).
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

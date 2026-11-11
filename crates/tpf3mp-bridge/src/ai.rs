@@ -176,6 +176,11 @@ pub struct AiStation {
     /// A rail station's track ends: where its construction's tracks meet
     /// the world, and whether nothing meets them yet.
     pub ends: BoundedVec<AiEnd, MAX_AI_ENDS>,
+    /// How many industries and other cargo takers stand in its catchment
+    /// (`getStationCatchables` for cargo); none where the game did not
+    /// say. A station 250 m from a quarry reached none, and its train
+    /// loaded nothing for a year (run 74).
+    pub reach: Option<u16>,
 }
 
 /// A station track's end.

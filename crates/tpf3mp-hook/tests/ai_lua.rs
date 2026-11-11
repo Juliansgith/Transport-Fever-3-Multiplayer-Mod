@@ -188,6 +188,10 @@ const GAME: &str = r#"
                 },
             },
             system = {
+                -- Station 301 has an industry in its cargo catchment; the
+                -- street stop's reaches none.
+                catchmentAreaSystem = { getStationCatchables = function(s, cargo)
+                    return cargo and s == 301 and { [1001] = true } or {} end },
                 lineSystem = { getLinesForPlayer = function(e) return e == 77 and { 500 } or {} end },
                 -- Ely was supplied 3.5 goods of the 40.2 it may take.
                 townBuildingSystem = { getCargoSupplyAndLimit = function(t)
@@ -314,6 +318,11 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
         "metres to mm"
     );
     assert_eq!(station.terminals, 2);
+    assert_eq!(
+        (station.reach, stop.reach),
+        (Some(1), Some(0)),
+        "what stands in each one's cargo catchment"
+    );
     assert_eq!(company.depots.len(), 1);
     let depot = &company.depots[0];
     assert_eq!(

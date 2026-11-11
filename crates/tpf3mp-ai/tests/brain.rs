@@ -116,6 +116,9 @@ struct World {
     station_cost: Option<fn(Pos) -> i64>,
     /// What the game charges for a piece of track (none: 10,000).
     track_cost: Option<i64>,
+    /// How many industries a rail station it builds reaches (none: not
+    /// said).
+    rail_reach: Option<u16>,
     station_quotes: Vec<(Pos, i64)>,
     touches: Option<fn(&tpf3mp_proto::action::ConstructionBuild) -> u16>,
     /// Rail depot verdicts, the first so many, that touch something.
@@ -226,6 +229,7 @@ impl World {
             depot_quotes: Vec::new(),
             station_cost: None,
             track_cost: None,
+            rail_reach: None,
             station_quotes: Vec::new(),
             touches: None,
             rail_depot_touches: 0,
@@ -709,6 +713,7 @@ impl World {
                     terminals: 2,
                     waiting: 0,
                     ends: BoundedVec::default(),
+                    reach: None,
                 });
                 if let Some(s) = self
                     .streets
@@ -730,6 +735,7 @@ impl World {
                     terminals: 1,
                     waiting: 0,
                     ends: BoundedVec::default(),
+                    reach: None,
                 });
                 self.money -= 60_000;
             }
@@ -791,6 +797,7 @@ impl World {
                             .collect(),
                     )
                     .unwrap(),
+                    reach: self.rail_reach,
                 });
                 self.money -= 230_000;
             }
@@ -1544,6 +1551,7 @@ fn stops_a_project_left_behind_do_not_make_their_town_served_and_are_taken_up() 
         terminals: 2,
         waiting: 0,
         ends: BoundedVec::default(),
+        reach: None,
     });
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
@@ -2376,6 +2384,58 @@ fn a_track_dearer_at_the_games_prices_than_its_money_is_never_begun() {
     // Nothing of it built: no rail station, no track.
     assert!(world.rail_stations.is_empty(), "{said:?}");
     assert_eq!(world.track_laid, 0.0);
+}
+
+#[test]
+fn a_station_that_reaches_no_industry_ends_its_line_before_its_track() {
+    // Run 74: a station 250 m from its quarry reached nothing, its train
+    // loaded nothing, and a railway of 7.3 million was closed in a year.
+    let mut world = World::new();
+    an_earning_line(&mut world);
+    world.small_towns();
+    world.industries = vec![
+        industry("Witney Quarry", 1_800.0, 900.0, &[], &[(GRAIN, 240)]),
+        works("Ely Works", 5_320.0, -280.0, GRAIN, PLANKS, 20, 400),
+    ];
+    world.money = 30_000_000;
+    world.rail_reach = Some(0);
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("built a station that reaches no industry")),
+        "{said:?}"
+    );
+    assert_eq!(world.track_laid, 0.0, "{said:?}");
+    // One that reaches its industry: the line.
+    let mut world = World::new();
+    an_earning_line(&mut world);
+    world.small_towns();
+    world.industries = vec![
+        industry("Witney Quarry", 1_800.0, 900.0, &[], &[(GRAIN, 240)]),
+        works("Ely Works", 5_320.0, -280.0, GRAIN, PLANKS, 20, 400),
+    ];
+    world.money = 30_000_000;
+    world.rail_reach = Some(1);
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line")),
+        "{said:?}"
+    );
 }
 
 #[test]
@@ -4060,6 +4120,7 @@ fn an_earning_line(world: &mut World) {
         terminals: 2,
         waiting: 0,
         ends: BoundedVec::default(),
+        reach: None,
     });
     world.lines.push(AiLine {
         id: LineId(9000),

@@ -171,12 +171,21 @@ fn long_train(a_round: f64, capacity: u32) -> bool {
 /// Whether `engine` hauls `wagons` of `wagon` loaded up
 /// [`rail::MAX_GRADE`]: its tractive effort, in kN, against gravity's pull
 /// along the grade on the train's weight, a tonne counted for each unit a
-/// wagon carries. A weaker engine climbs slowly; it does not stall.
+/// wagon carries. A weaker engine climbs slowly; it does not stall: a
+/// train longer than [`WAGONS_MOST`] is let climb at half that grade's
+/// pull, since twice the load is worth more than its slow hills. No
+/// engine of 1922 within an AI's money hauled twelve loaded wagons up
+/// 2.5 %, and runs 73 and 74 ran six behind stations built for twelve.
 #[allow(clippy::cast_precision_loss)]
 fn hauls(engine: &AiModel, wagon: &AiModel, wagons: usize) -> bool {
     let tonnes = f64::from(engine.weight)
         + wagons as f64 * (f64::from(wagon.weight) + f64::from(wagon.capacity));
-    f64::from(engine.tractive) >= tonnes * 9.81 * rail::MAX_GRADE
+    let grade = if wagons > WAGONS_MOST {
+        rail::MAX_GRADE / 2.0
+    } else {
+        rail::MAX_GRADE
+    };
+    f64::from(engine.tractive) >= tonnes * 9.81 * grade
 }
 
 /// The engine for a cargo train of `wagons` of `wagon` over `distance`
@@ -1488,6 +1497,14 @@ impl Brain {
                     .stations
                     .iter()
                     .find(|s| P::of(s.pos).flat_distance(station.origin) <= 5.0);
+                // By an industry, it must reach it: the game lists what
+                // stands in a station's catchment. Before any track.
+                let by_industry =
+                    !project.passengers && (end == 0 || matches!(project.to, Taker::Industry(_)));
+                if by_industry && found.is_some_and(|s| s.reach == Some(0)) {
+                    self.give_up_rail("built a station that reaches no industry", now);
+                    return None;
+                }
                 match found {
                     Some(s) => {
                         let other = P::of(if end == 0 {
@@ -2432,6 +2449,27 @@ mod tests {
         // Nothing reckoned: a short train.
         assert!(!long_train(a_round(0.0, 5_900.0), 10));
         assert!(!long_train(each, 0));
+    }
+
+    #[test]
+    fn an_engine_of_1922_pulls_twelve_wagons_slowly_up_its_hills() {
+        let (engines, _) = trains_1922();
+        let wagon = model("bulk_2_ok", 70_000, 11_700, 10, 80, 0, 0, 14, false);
+        let br75 = engines
+            .iter()
+            .find(|m| m.model.as_str() == "br75_4")
+            .unwrap();
+        // Six loaded up 2.5 %: 220 t, 54 kN of its 85.
+        assert!(hauls(br75, &wagon, WAGONS_MOST));
+        // Twelve: 364 t, 89 kN up 2.5 %, more than it has; let climb at
+        // half that, it hauls them.
+        assert!(hauls(br75, &wagon, WAGONS_LONG));
+        // And is the engine a long train of them is given.
+        let pick = freight_engine(&engines, &wagon, WAGONS_LONG, 4_000_000, 300.0, 8_000.0);
+        assert!(pick.is_some());
+        // Not an engine with no pull to speak of.
+        let weak = model("shunter", 300_000, 50_000, 0, 60, 200, 20, 30, false);
+        assert!(!hauls(&weak, &wagon, WAGONS_LONG));
     }
 
     #[test]

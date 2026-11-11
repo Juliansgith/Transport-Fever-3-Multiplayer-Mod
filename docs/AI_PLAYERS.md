@@ -252,7 +252,14 @@ first station places, laid it out between others through 2.6 km of
 tunnel, paid 11.2 million and had nothing left for its train). A cargo
 railway of its own left without a train gets one once it has two
 million to spend. It says what each railway took of its money against
-its reckoning.
+its reckoning. A station it builds by an industry must reach it, as the
+game lists what stands in a station's catchment (bridge version 43),
+before any track is laid: run 74's Normal AI built a quarry's station
+250 m off, its train loaded nothing, and a railway of 7.3 million was
+closed after a year. A train of more than six wagons may take an engine
+that pulls it up half the line's grade, slowly: no engine of 1922
+within its money hauled twelve loaded wagons up 2.5 %, and runs 73 and
+74 ran six before stations built for twelve.
 
 **Money on a loan is put to work.** A loan is paid back each month
 whatever its lines earn (13 million over four years takes 300,000 a
