@@ -398,6 +398,19 @@ impl Brain {
             }
             Task::Add { line } => {
                 let depot = road_depot(company, &line)?;
+                // Not said, nor tried, without a vehicle's price in hand:
+                // run 70's AI, out of money, said it of two lines every
+                // nine seconds.
+                let cargo = self.memo.cargo_lines.iter().any(|(id, _)| *id == line.id.0);
+                let price = if cargo {
+                    self.seen_truck.map(|t| t.price)
+                } else {
+                    self.seen_bus.map(|b| b.price)
+                };
+                #[allow(clippy::cast_precision_loss)]
+                if price.is_some_and(|p| p > self.spendable() as f64) {
+                    return None;
+                }
                 self.say(format!(
                     "adds a vehicle to {}, running full",
                     line.name.as_str()

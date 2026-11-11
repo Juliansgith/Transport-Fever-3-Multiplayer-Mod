@@ -75,6 +75,8 @@ struct World {
     /// trucks can drive between them, and each line's transport mode.
     industries: Vec<AiIndustry>,
     roads_join: bool,
+    /// How long the road the pathfinder finds is, in metres (0: not said).
+    road_length: u32,
     line_modes: Vec<(LineId, u16)>,
     /// The truck stations built.
     truck_stations: Vec<StationId>,
@@ -201,6 +203,7 @@ impl World {
             drop_depots: 0,
             industries: Vec::new(),
             roads_join: true,
+            road_length: 0,
             line_modes: Vec::new(),
             truck_stations: Vec::new(),
             rail_stations: Vec::new(),
@@ -442,6 +445,7 @@ impl World {
                 AiAnswer::Route(AiRoute {
                     connected: joined,
                     edges: if joined { 40 } else { 0 },
+                    length: if joined { self.road_length } else { 0 },
                 })
             }
             AiQuestion::Models { cargo: None, .. } if self.buses.is_some() => {
@@ -1990,6 +1994,84 @@ fn money_for_a_railway_whole_looks_to_a_train_before_a_bus_line() {
 }
 
 #[test]
+fn a_long_train_too_dear_is_a_short_one_where_its_money_stretches_to_that() {
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 480)],
+    )];
+    ely_needs_planks(&mut world, 0, 400, pos(5_320.0, -280.0));
+    // Money for the line with short stations and a train of six, not for
+    // long ones and twelve.
+    world.money = 7_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "plans a train of up to 12 wagons: 142 to carry a round"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l == "its money short of long stations, plans a train of 6 wagons"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l
+                == "buys a train: vehicle/train/engine.mdl and 6 vehicle/train/planks_wagon.mdl"),
+        "{said:?}"
+    );
+    // With money for it: long stations, and twelve.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 480)],
+    )];
+    ely_needs_planks(&mut world, 0, 400, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l
+                == "buys a train: vehicle/train/engine.mdl and 12 vehicle/train/planks_wagon.mdl"),
+        "{said:?}"
+    );
+    let long = world
+        .actions
+        .iter()
+        .filter(|(_, a)| match a {
+            Action::BuildConstruction(b) => b.params.iter().any(|p| {
+                p.key.as_str() == "length" && p.value == tpf3mp_proto::action::ParamValue::Int(4)
+            }),
+            _ => false,
+        })
+        .count();
+    assert_eq!(long, 2, "two stations of six modules: {said:?}");
+}
+
+#[test]
 fn a_starved_maker_is_carried_to_the_town_then_fed_its_inputs() {
     let mut world = World::new();
     // A mill in Didcot that makes no food for want of grain, a farm in
@@ -3155,6 +3237,36 @@ fn an_ai_opens_no_more_lines_while_its_young_ones_have_not_shown_what_they_earn(
 }
 
 #[test]
+fn money_idle_on_a_loan_is_put_to_work_its_young_lines_notwithstanding() {
+    // Run 70: six lines young, the Normal AI waited with four and a half
+    // million in hand, and a year on its loan had taken all of it.
+    let mut world = World::new();
+    world.money = 8_000_000;
+    let terms = loan("Large", 8_000_000);
+    world.loans = 1;
+    world.owed.push(AiLoan {
+        payment: tpf3mp_ai::money::payment(&terms, MONTH).unwrap(),
+        remaining: terms.amount,
+        months_left: 48,
+        terms,
+    });
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Easy, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    // Easy waits on one young line; not with this money on a loan.
+    assert!(world.lines.len() >= 2, "{said:?}");
+    assert!(
+        !said.iter().any(|l| l.starts_with("waits to see what its")),
+        "{said:?}"
+    );
+}
+
+#[test]
 fn a_line_that_earns_nothing_is_closed_after_its_first_months() {
     let (mut world, mut brain, now) = a_running_bus_line();
     let line = world.lines[0].id;
@@ -4191,6 +4303,57 @@ fn travel(world: &mut World, from: usize, to: usize, people: u32) {
 }
 
 #[test]
+fn what_another_ai_player_is_building_is_left_to_it() {
+    // Run 70: two AIs one game drove looked in the same seconds, and each
+    // opened a bus line between Hunstanton and Dinnington St John's.
+    let towns = |world: &mut World| {
+        travel(world, 0, 1, 80);
+        travel(world, 1, 0, 60);
+        world.money = 3_000_000;
+    };
+    // The first plans the line between the two towns, and says so.
+    let mut world = World::new();
+    towns(&mut world);
+    let mut first = Brain::new(seat(), "Rossi Transport", AiDifficulty::Normal, None);
+    let start = Instant::now();
+    let mut now = start;
+    while first.claims().is_empty() {
+        now = play(&mut first, &mut world, now, STEP);
+        assert!(now < start + Duration::from_secs(600), "no plan");
+    }
+    let claimed = first.claims();
+    assert!(
+        first
+            .take_said()
+            .iter()
+            .any(|l| l.starts_with("plans a bus line between Didcot and Ely")),
+    );
+    // The second, told of it at every look, plans something else.
+    let mut world = World::new();
+    towns(&mut world);
+    let mut second = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Normal, None);
+    let mut now = start;
+    while now < start + Duration::from_secs(600) {
+        second.avoid(&claimed, now);
+        now = play(&mut second, &mut world, now, STEP);
+    }
+    let said = second.take_said();
+    assert!(
+        !said.iter().any(|l| l.contains("between Didcot and Ely")),
+        "{said:?}"
+    );
+    assert!(said.iter().any(|l| l.starts_with("plans ")), "{said:?}");
+    // Told no more, it takes the line up once the claim has run out.
+    play(&mut second, &mut world, now, Duration::from_secs(900));
+    let said = second.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("plans a bus line between Didcot and Ely")),
+        "{said:?}"
+    );
+}
+
+#[test]
 fn two_towns_whose_people_travel_between_them_get_a_bus_line_through_both() {
     let mut world = World::new();
     // Didcot and Ely, 5 km apart: 140 of their people work and shop in
@@ -4390,6 +4553,41 @@ fn a_raw_material_goes_to_the_works_that_pays_most_for_carrying_it() {
         .find(|l| l.name.as_str() == "Witney Farm grain")
         .unwrap_or_else(|| panic!("{said:?}"));
     assert_eq!(Some(line.stops[1]), world.industries[2].station, "{said:?}");
+}
+
+#[test]
+fn a_road_far_longer_than_the_straight_line_is_no_truck_line() {
+    // Run 70: stone trucks over 4.6 km of road for a fare paid over 2.8 km
+    // took a year and a half over their first load.
+    let cargo_world = |road: u32| {
+        let mut world = World::new();
+        world.industries = mills();
+        ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+        world.road_length = road;
+        world
+    };
+    let said_of = |mut world: World| {
+        let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+        play(
+            &mut brain,
+            &mut world,
+            Instant::now(),
+            Duration::from_secs(1_800),
+        );
+        (brain.take_said(), world)
+    };
+    // 5.6 km between them: by a road of 6 km, a truck line.
+    let (said, world) = said_of(cargo_world(6_000));
+    assert!(world.line_modes.iter().any(|(_, m)| *m == 4), "{said:?}");
+    // By a road of 30 km, none: its trucks would make a quarter of the
+    // rounds.
+    let (said, world) = said_of(cargo_world(30_000));
+    assert!(!world.line_modes.iter().any(|(_, m)| *m == 4), "{said:?}");
+    assert!(
+        said.iter().any(|l| l
+            == "found the road from Witney Sawmill to Ely 30000 m long, too far for what its trucks would earn"),
+        "{said:?}"
+    );
 }
 
 #[test]

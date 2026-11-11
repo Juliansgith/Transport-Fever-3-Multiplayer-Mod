@@ -106,7 +106,7 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// takes round each AI line and how long ago each was bought
 /// ([`ai::AiLine::round`], [`ai::AiVehicle::age`]), and what is carried
 /// away from each industry already ([`ai::AiIndustry::shipped`]).
-pub const BRIDGE_VERSION: u32 = 41;
+pub const BRIDGE_VERSION: u32 = 42;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told

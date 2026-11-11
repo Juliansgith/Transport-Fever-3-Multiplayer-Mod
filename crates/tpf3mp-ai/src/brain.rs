@@ -355,6 +355,17 @@ const OWED_RETRY: Duration = Duration::from_secs(60);
 /// before a bus line: what a line of some six kilometres, long stations and
 /// a train of twelve came to in runs 68 and 69, its reserves counted.
 const RAIL_FIRST_MONEY: i64 = 10_000_000;
+/// Money to spend beyond which, on a loan, it does not wait on its young
+/// lines before another: ten months of a 13 million loan's payments.
+const IDLE_MONEY: i64 = 3_000_000;
+
+/// How long it leaves alone what another AI player was last building: until
+/// the game shows that line as it shows any other company's.
+const CLAIMED_FOR: Duration = Duration::from_secs(120);
+
+/// How many such looks it takes, one railway given up after another,
+/// before its buses get their turn.
+const RAIL_LOOKS: u8 = 3;
 
 /// How much of a road line's reckoned cost it must have in hand to begin
 /// it: its stops and depot cost what the game says, not what it reckoned.
@@ -703,9 +714,9 @@ pub struct Brain {
     /// Whether its next project carries cargo (it takes turns), and
     /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
-    /// Its last turn was its cargo's: a look at a railway its money would
-    /// carry comes first only every other turn.
-    rail_looked: bool,
+    /// How many railways it runs, and the looks at another, its money
+    /// whole, it has taken since that changed ([`RAIL_LOOKS`]).
+    rail_looks: (usize, u8),
     /// How many young lines it last said it waits on: said once, not at
     /// every look.
     young_said: usize,
@@ -780,7 +791,7 @@ impl Brain {
             leg_now: None,
             no_rail: Vec::new(),
             next_cargo: false,
-            rail_looked: false,
+            rail_looks: (0, 0),
             young_said: 0,
             chain_group: None,
             held_said: false,
@@ -815,6 +826,33 @@ impl Brain {
     /// and 45, 2026-10-31). Started apart, the later sees the earlier's line.
     pub fn first_line_after(&mut self, until: Instant) {
         self.first_line_at = Some(until);
+    }
+
+    /// What it is building now, by its keys: a town, a pair of towns, a
+    /// cargo from its industry. The AI players one game drives tell each
+    /// other ([`Brain::avoid`]), and none plans what another builds: the
+    /// game shows a line only once it stands, and in run 70 two AIs,
+    /// looking in the same seconds, each opened a bus line between the
+    /// same two towns and halved its riders.
+    pub fn claims(&self) -> Vec<u32> {
+        self.project
+            .as_ref()
+            .map(|p| p.serves.key())
+            .into_iter()
+            .chain(self.rail.as_ref().map(|r| r.key))
+            .collect()
+    }
+
+    /// Leaves what other AI players are building (`keys`, their
+    /// [`Brain::claims`]) alone for [`CLAIMED_FOR`] from `now`.
+    pub fn avoid(&mut self, keys: &[u32], now: Instant) {
+        let until = now + CLAIMED_FOR;
+        for key in keys {
+            match self.given_up.iter_mut().find(|(id, _)| id == key) {
+                Some(entry) => entry.1 = entry.1.max(until),
+                None => self.given_up.push((*key, until)),
+            }
+        }
     }
 
     /// Whether it plans truck lines for cargo as well as town buses (on by
@@ -1927,7 +1965,12 @@ impl Brain {
             .count();
         let proven = self.settled_lines(company) >= PROVEN_LINES && settled_earning > 0;
         let young_most = self.profile.young_most * if proven { 2 } else { 1 };
-        if young >= young_most && !feeding {
+        // Not with money idle on a loan: its payments take what it does
+        // not put to work. Run 70's Normal AI, six lines young, waited with
+        // four and a half million in hand, and a year on its loan had
+        // taken all of it.
+        let idle = books.owing > 0 && self.spendable() >= IDLE_MONEY;
+        if young >= young_most && !feeding && !idle {
             if young != self.young_said {
                 self.young_said = young;
                 self.say(format!(
@@ -1948,17 +1991,31 @@ impl Brain {
         }
         let mut cargo = self.next_cargo && self.carries_cargo;
         self.next_cargo = !self.next_cargo;
-        // Money for a railway whole in hand: a look at what a train could
-        // carry before a bus line takes a tenth of it, every other turn.
-        // Run 69: both AIs opened a bus line first and then found a stone
-        // railway reckoned at five million a year in fares too dear by less
-        // than that line had cost.
-        if !cargo && self.carries_cargo && !self.rail_looked && self.spendable() >= RAIL_FIRST_MONEY
-        {
-            cargo = true;
-            self.next_cargo = false;
+        // Money for a railway whole in hand: looks at what a train could
+        // carry before a bus line takes a tenth of it, [`RAIL_LOOKS`] of
+        // them since its last railway opened. Run 69: both AIs opened a bus
+        // line first and then found a stone railway reckoned at five
+        // million a year in fares too dear by less than that line had cost;
+        // in run 70, looking once, the Hard AI found the first too dear
+        // and the second, a bus line later, as well.
+        let railways = company
+            .lines
+            .iter()
+            .filter(|l| self.memo.rail_lines.contains(&l.id.0))
+            .count();
+        if railways != self.rail_looks.0 {
+            self.rail_looks = (railways, 0);
         }
-        self.rail_looked = cargo;
+        if self.carries_cargo
+            && self.rail_looks.1 < RAIL_LOOKS
+            && self.spendable() >= RAIL_FIRST_MONEY
+        {
+            if !cargo {
+                self.next_cargo = false;
+            }
+            cargo = true;
+            self.rail_looks.1 += 1;
+        }
         let (buses, trucks) = (
             self.kind_pays(company, Kind::Bus),
             self.kind_pays(company, Kind::Truck),
@@ -2362,7 +2419,36 @@ impl Brain {
                 )
             }
         };
-        let estimate = self.truck_line(f64::from(units), distance);
+        // By the road its trucks would drive, where the pathfinder says
+        // how long it is: a line reckoned to pay over the straight line may
+        // not over a road half as long again. Run 70's stone trucks, 2.8 km
+        // from quarry to cement plant by the map and 4.6 km by road, took a
+        // year and a half over their first load.
+        let road = f64::from(route.length);
+        let estimate = econ::cargo_by_road(
+            f64::from(units),
+            distance,
+            road,
+            self.seen_truck.unwrap_or(TRUCK_RECKONED),
+            u32::from(self.profile.buses_most),
+            TRUCK_STATION_BUILT + DEPOT_BUILT,
+        );
+        if self.chain.is_empty()
+            && road > distance
+            && (estimate.profit() < LINE_PROFIT_LEAST
+                || estimate.payback().is_none_or(|years| years > PAYBACK_MOST))
+        {
+            self.given_up
+                .push((route_key(from.pos, cargo.as_str()), now + GIVE_UP_FOR));
+            self.say(format!(
+                "found the road from {} to {} {road:.0} m long, too far for what its trucks would earn",
+                from.name.as_str(),
+                to.name()
+            ));
+            self.stage = Stage::Survey;
+            self.rest(now);
+            return;
+        }
         let fleet = (estimate.vehicles as usize)
             .clamp(usize::from(self.profile.buses_first), FLEET_FIRST_MOST);
         if self.chain.is_empty() && self.chain_group.is_none() {
@@ -2375,7 +2461,11 @@ impl Brain {
             estimate.profit(),
             estimate.vehicles
         ));
-        let round = econ::YEAR / self.seen_truck.unwrap_or(TRUCK_RECKONED).rounds(distance);
+        let round = econ::YEAR
+            / self
+                .seen_truck
+                .unwrap_or(TRUCK_RECKONED)
+                .rounds(distance.max(road * econ::ROAD_DRIVEN));
         self.start(serves, centres);
         if let Some(project) = self.project.as_mut() {
             project.stops = stops;

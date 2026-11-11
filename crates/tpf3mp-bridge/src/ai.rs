@@ -361,6 +361,10 @@ pub struct AiRoute {
     pub connected: bool,
     /// The edges of the path the game found; 0 for none.
     pub edges: u32,
+    /// How long that path is, in metres, by its edges' own lengths; 0
+    /// where the game did not say. A road between two places may run half
+    /// as far again as the straight line a fare pays for.
+    pub length: u32,
 }
 
 /// A street edge.

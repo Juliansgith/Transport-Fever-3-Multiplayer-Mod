@@ -221,12 +221,34 @@ only then, however little it sends on (the fixture player's cement plant
 takes 434 stone a year and sends on 48 cement; run 67's oil railway to a
 refinery no one carried from ran empty, nothing waiting at its well). A
 line into such a works is judged with the line that carries on from it.
+A truck line is reckoned over the road its trucks would drive: since
+bridge version 42 the pathfinder's answer says how long the road it
+found is, and a line that would not pay over that is left (run 70's
+stone trucks, 2.8 km from quarry to cement plant by the map and 4.6 km
+by road, took a year and a half over their first load).
 A single line reckoned to pay comes before a chain, whose first leg
 carries nothing until its feeders run. With money for a railway whole in
 hand (10 million to spend) it looks at what a train could carry before
 a bus line, every other turn: in run 69 both AIs opened a bus line first
 and then found a stone railway reckoned at five million a year in fares
-too dear by less than that bus line had cost.
+too dear by less than that bus line had cost. It looks at up to three
+railways running, one given up after another, before its buses' turn
+(run 70's first was too dear by 130,000 of its 13 million), and where a
+train of twelve and its long stations alone are too dear it builds for
+six.
+
+**Money on a loan is put to work.** A loan is paid back each month
+whatever its lines earn (13 million over four years takes 300,000 a
+month), so what it does not build on goes back to the lender: with
+three million to spend it does not wait on its young lines before
+another. Run 70's Normal AI, six lines young, waited with four and a
+half million in hand; a year on its loan had taken all of it.
+
+**The AI players one game drives tell each other what they are
+building** (a town, a pair of towns, a cargo from its industry), and
+none plans what another builds: the game shows a line only once it
+stands, and in run 70 two AIs looking in the same seconds each opened a
+bus line between the same two towns.
 
 **What its lines then earn takes rounds to show.** A fare is paid where
 a rider gets off, and a round between two towns takes most of a year.

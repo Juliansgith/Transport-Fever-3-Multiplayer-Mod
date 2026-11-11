@@ -42,8 +42,14 @@ const GAME: &str = r#"
     local CT = { CONSTRUCTION = 1, STATION_GROUP = 2, STATION = 3, BASE_NODE = 4, LINE = 5, NAME = 6,
         TRANSPORT_VEHICLE = 7, TOWN_BUILDING = 8, TOWN = 9, BASE_EDGE = 10, BASE_EDGE_STREET = 11,
         PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15, INDUSTRY = 16,
-        GAME_TIME = 17 }
+        GAME_TIME = 17, TRANSPORT_NETWORK = 18 }
     local COMP = {
+        -- Two streets as the pathfinder names their edges: 310.4 and
+        -- 95.5 m, and 120.25 m.
+        [CT.TRANSPORT_NETWORK] = {
+            [90] = { edges = { { geometry = { length = 310.4 } }, { geometry = { length = 95.5 } } } },
+            [91] = { edges = { { geometry = { length = 120.25 } } } },
+        },
         [CT.CONSTRUCTION] = {
             [300] = { fileName = "stations/street/small_stops/small_new_twosided.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 100.5,200.25,10,1 }, stations = { 301 }, depots = {} },
@@ -167,7 +173,11 @@ const GAME: &str = r#"
                 pathfinding = { findPathNodeToNode = function(a, b, modes)
                     -- A path only between street nodes.
                     for _, n in ipairs(a) do if n.entity == 80 then return {} end end
-                    if ROAD_JOINS and a[1].entity ~= b[1].entity and modes[1] == 4 then return { 1, 2, 3 } end
+                    -- Each item an edge of a network and its direction.
+                    if ROAD_JOINS and a[1].entity ~= b[1].entity and modes[1] == 4 then
+                        return { { { entity = 90, index = 0 }, true }, { { entity = 90, index = 1 }, true },
+                            { { entity = 91, index = 0 }, false } }
+                    end
                     return {} end },
                 getEntityName = function(e) return ({ [1000] = "Hunstanton Crop Farm",
                     [1010] = "Clun Livestock Farm" })[e] end,
@@ -697,11 +707,12 @@ fn industries_routes_and_trucks_by_cargo_read_as_the_ai_reads_them() {
         panic!("not a route")
     };
     assert!(joined.connected && joined.edges == 3);
+    assert_eq!(joined.length, 526, "its edges' lengths together, in metres");
     lua.load("ROAD_JOINS = false").exec().unwrap();
     let AiAnswer::Route(apart) = answer(&lua, route) else {
         panic!("not a route")
     };
-    assert!(!apart.connected && apart.edges == 0);
+    assert!(!apart.connected && apart.edges == 0 && apart.length == 0);
 
     // Trucks for grain: those whose load takes a class of grain's.
     let AiAnswer::Models(trucks) = answer(

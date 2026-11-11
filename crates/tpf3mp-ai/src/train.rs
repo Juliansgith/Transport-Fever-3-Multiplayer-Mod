@@ -691,9 +691,40 @@ impl Brain {
                         // train bought.
                         // A long train costs its wagons more.
                         #[allow(clippy::cast_precision_loss)]
-                        let longer = project.wagons_most.saturating_sub(WAGONS_MOST) as f64
+                        let mut longer = project.wagons_most.saturating_sub(WAGONS_MOST) as f64
                             * project.wagons.iter().map(|w| w.price).max().unwrap_or(0) as f64;
-                        match estimate(project).map(|cost| cost * LINE_OVERRUN) {
+                        let mut reckoned = estimate(project).map(|cost| cost * LINE_OVERRUN);
+                        // Too dear with long stations and a train of twelve:
+                        // with short ones, where its money stretches to
+                        // those. Run 70's Hard AI gave up an oil railway
+                        // reckoned at seven million a year in fares for
+                        // 130,000 of its 13 million.
+                        if project.wagons_most > WAGONS_MOST
+                            && reckoned.is_ok_and(|cost| cost + TRAIN_RESERVE + longer >= money)
+                        {
+                            let short = [
+                                rail::sites(&project.land, from, at, near, passengers),
+                                rail::sites(&project.land, at, from, rings, passengers),
+                            ];
+                            if short.iter().all(|s| !s.is_empty()) {
+                                let long = std::mem::replace(&mut project.tries, short);
+                                let was = (project.modules, project.wagons_most);
+                                project.modules = STATION_MODULES;
+                                project.wagons_most = WAGONS_MOST;
+                                let cost = estimate(project).map(|cost| cost * LINE_OVERRUN);
+                                if cost.is_ok_and(|cost| cost + TRAIN_RESERVE < money) {
+                                    longer = 0.0;
+                                    reckoned = cost;
+                                    self.said.push(format!(
+                                        "its money short of long stations, plans a train of {WAGONS_MOST} wagons"
+                                    ));
+                                } else {
+                                    project.tries = long;
+                                    (project.modules, project.wagons_most) = was;
+                                }
+                            }
+                        }
+                        match reckoned {
                             Ok(cost) if cost + TRAIN_RESERVE + longer < money => {
                                 project.estimate = cost;
                                 self.say(format!(

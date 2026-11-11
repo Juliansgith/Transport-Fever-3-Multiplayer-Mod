@@ -4013,7 +4013,9 @@ do; since bridge version 37 what other companies have at it: their
 stations held by a construction within 300 m, and their cargo lines that
 stop at its own station), the streets near a place (each edge's ends, its curve's middle,
 template, owner, objects and structure), whether trucks can drive
-between two places (the game's pathfinder), the vehicle models of a
+between two places (the game's pathfinder; since bridge version 42 with
+how long the road it found is, the lengths of its edges together, each
+path item naming an edge of a `TRANSPORT_NETWORK`), the vehicle models of a
 transport mode (of a cargo: those whose loads take one of its classes,
 with their capacity for it; since bridge version 33 a land vehicle's
 engine power, tractive effort, empty weight, length and whether its

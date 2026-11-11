@@ -60,6 +60,13 @@ pub struct Runs {
     pub rail: bool,
 }
 
+/// A metre of road as its trucks drive it, in metres of straight line as
+/// [`ROAD_PACE`] reckons one: a truck of 1922 (25 km/h) drove 4,565 m of
+/// road empty in 748 s, nine tenths of its speed, and the game reckoned its
+/// round at 2,000 s, so loaded about half (run 70; over the 2,829 m
+/// straight between its ends [`ROAD_PACE`] reckons 1,760 s).
+pub const ROAD_DRIVEN: f64 = 0.78;
+
 /// The longest a road vehicle may take one way, in the game's seconds:
 /// cargo not delivered within 2,250 s of being made is lost (every cargo's
 /// `timeToDeliverInSeconds`), and it waits at its station first: half of
@@ -126,7 +133,39 @@ impl Estimate {
 /// back, by vehicles like `runs`, at most `vehicles_most` of them; `built`
 /// is what its stations and depot cost.
 pub fn cargo(units: f64, distance: f64, runs: Runs, vehicles_most: u32, built: f64) -> Estimate {
-    one_way(units, distance, runs, vehicles_most, built, CARGO_FARE, 1.0)
+    one_way(
+        units,
+        distance,
+        distance,
+        runs,
+        vehicles_most,
+        built,
+        CARGO_FARE,
+        1.0,
+    )
+}
+
+/// A truck line as [`cargo`], its trucks driving a road `road` metres long
+/// for a fare paid over `distance`: a round takes what the road is long,
+/// loaded one way and empty back ([`ROAD_DRIVEN`]).
+pub fn cargo_by_road(
+    units: f64,
+    distance: f64,
+    road: f64,
+    runs: Runs,
+    vehicles_most: u32,
+    built: f64,
+) -> Estimate {
+    one_way(
+        units,
+        distance,
+        distance.max(road * ROAD_DRIVEN),
+        runs,
+        vehicles_most,
+        built,
+        CARGO_FARE,
+        1.0,
+    )
 }
 
 /// A passenger line between two towns: `people` of them work or shop in
@@ -146,6 +185,7 @@ pub fn passengers(
     one_way(
         rides / 2.0,
         distance,
+        distance,
         runs,
         vehicles_most,
         built,
@@ -154,9 +194,13 @@ pub fn passengers(
     )
 }
 
+/// `distance` is what a fare is paid over; `timed`, the straight line a
+/// round of it takes as long as.
+#[allow(clippy::too_many_arguments)]
 fn one_way(
     units: f64,
     distance: f64,
+    timed: f64,
     runs: Runs,
     vehicles_most: u32,
     built: f64,
@@ -164,7 +208,7 @@ fn one_way(
     ways: f64,
 ) -> Estimate {
     let units = units.max(0.0);
-    let a_vehicle = (runs.capacity * runs.rounds(distance)).max(0.001);
+    let a_vehicle = (runs.capacity * runs.rounds(timed)).max(0.001);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let wanted = (units / a_vehicle).ceil().max(1.0) as u32;
     let vehicles = wanted.min(vehicles_most.max(1));
@@ -215,6 +259,34 @@ impl Learned {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_truck_line_is_reckoned_over_the_road_its_trucks_drive() {
+        // Run 70: 274 stone a year, 2,829 m by the map and 4,565 m by road,
+        // a truck of ten at 25 km/h for 137,696 and 22,949 a year.
+        let truck = Runs {
+            capacity: 10.0,
+            speed: 25.0,
+            price: 137_696.0,
+            running: 22_949.0,
+            rail: false,
+        };
+        let straight = cargo(274.0, 2_829.0, truck, 12, 600_000.0);
+        let by_road = cargo_by_road(274.0, 2_829.0, 4_565.0, truck, 12, 600_000.0);
+        // The same fare a unit, fewer rounds: less carried by as many.
+        assert_eq!(by_road.vehicles, 12);
+        assert!(by_road.carried < straight.carried * 0.85, "{by_road:?}");
+        assert!(by_road.profit() < straight.profit() * 0.8, "{by_road:?}");
+        // A road no longer than the straight line changes nothing.
+        assert_eq!(
+            cargo_by_road(274.0, 2_829.0, 2_829.0, truck, 12, 600_000.0),
+            straight
+        );
+        assert_eq!(
+            cargo_by_road(274.0, 2_829.0, 0.0, truck, 12, 600_000.0),
+            straight
+        );
+    }
 
     const TRUCK: Runs = Runs {
         capacity: 12.0,

@@ -975,12 +975,26 @@ function ai.route(from, to)
 		return some
 	end
 	local a, b = near(from), near(to)
-	local edges = 0
+	local edges, length = 0, 0
 	if #a > 0 and #b > 0 then
 		local path = api.engine.util.pathfinding.findPathNodeToNode(a, b, { api.type.enum.TransportMode.TRUCK })
 		edges = #(path or {})
+		-- Its length: each item names an edge of a transport network
+		-- ({ EdgeId, forward }), whose geometry says how long it is.
+		local networks = {}
+		for i = 1, edges do
+			pcall(function()
+				local id = path[i][1]
+				local network = networks[id.entity]
+				if network == nil then
+					network = api.engine.getComponent(id.entity, api.type.ComponentType.TRANSPORT_NETWORK) or false
+					networks[id.entity] = network
+				end
+				if network then length = length + network.edges[id.index + 1].geometry.length end
+			end)
+		end
 	end
-	return { Route = { connected = edges > 0, edges = whole(edges) } }
+	return { Route = { connected = edges > 0, edges = whole(edges), length = whole(length) } }
 end
 
 -- The game's verdict on `action`, built as `seat`'s company would.
