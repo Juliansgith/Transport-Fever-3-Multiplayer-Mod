@@ -514,6 +514,47 @@ fn a_town_counts_other_companies_passenger_stops_and_the_towns_their_lines_join(
 }
 
 #[test]
+fn a_town_says_how_many_live_in_it_and_where_they_work_and_shop() {
+    let lua = lua();
+    // Ely (701) holds 365 people, 79 in 100 of them riding lines; of its
+    // people 19 shop and 32 work in Didcot (700), 15 and 29 of them by a
+    // line. Five of Didcot's work in Ely, by car.
+    lua.load(
+        r#"
+        api.engine.system.townBuildingSystem.getLandUsePersonCapacities = function(t)
+            return t == 701 and { 365, 184, 173 } or { 61, 72, 64 } end
+        api.engine.util.town.getTownLineUsage = function(t) return t == 701 and 0.79 or 0 end
+        api.engine.util.town.getSourceToDestinationCount = function(t, isTown, select)
+            assert(isTown[700] and isTown[701], "every town is asked for")
+            if t == 701 then
+                return select == 1
+                    and { [701] = { count = 32, linesUseCount = 8 }, [700] = { count = 19, linesUseCount = 15 } }
+                    or { [701] = { count = 37, linesUseCount = 2 }, [700] = { count = 32, linesUseCount = 29 } }
+            end
+            return select == 2 and { [701] = { count = 5, linesUseCount = 0 } } or {}
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Towns(towns) = answer(&lua, "'Towns'") else {
+        panic!("not towns")
+    };
+    let (ely, didcot) = (&towns[0], &towns[1]);
+    assert_eq!((ely.residents, ely.usage), (365, 79));
+    assert_eq!((didcot.residents, didcot.usage), (61, 0));
+    // Its own town is no destination a line between towns carries to.
+    let to = |t: &tpf3mp_bridge::ai::AiTown| -> Vec<(u32, u32, u32)> {
+        t.travel
+            .iter()
+            .map(|t| (t.to.0, t.people, t.riding))
+            .collect()
+    };
+    assert_eq!(to(ely), [(didcot.id.0, 51, 44)]);
+    assert_eq!(to(didcot), [(ely.id.0, 5, 0)]);
+}
+
+#[test]
 fn an_industry_counts_what_other_companies_have_at_it() {
     let lua = lua();
     // By the farm, another company's truck station (a construction), and

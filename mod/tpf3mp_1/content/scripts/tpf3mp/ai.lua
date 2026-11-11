@@ -365,11 +365,21 @@ function ai.company(seat, roster, registry)
 					end
 				end
 			end)
+			-- How long a vehicle takes round it: its vehicles over the
+			-- frequency the game reckons for it (vehicles a second).
+			local round = 0
+			pcall(function()
+				local frequency = api.engine.util.line.getMaxFrequency(l)
+				local running = #(vehicles.getLineVehicles(l) or {})
+				if type(frequency) == "number" and frequency > 0 and running > 0 then
+					round = math.max(0, math.min(whole(running / frequency), 4294967295))
+				end
+			end)
 			local name = component(l, "NAME")
 			out.lines[#out.lines + 1] = {
 				id = id, name = text(name and name.name, 64), stops = stops, vehicles = fleet,
 				load = load, waiting = math.min(whole(waiting), 4294967295), profit = whole(profit), income = income, recent = recent,
-				problems = math.min(problems, 65535),
+				problems = math.min(problems, 65535), round = round,
 			}
 		end
 	end
@@ -386,7 +396,7 @@ function ai.company(seat, roster, registry)
 		-- How far through its life it is, in percent, as the vehicle window
 		-- reckons it (`vehicle_util.getAge`): its oldest part's purchase
 		-- against the game's time, over that part's lifespan.
-		local worn = 0
+		local worn, age = 0, 0
 		pcall(function()
 			local now = component(api.engine.util.getWorld(), "GAME_TIME").gameTime
 			local first, span
@@ -399,8 +409,13 @@ function ai.company(seat, roster, registry)
 			if first and span and span > 0 then
 				worn = math.min(math.max(math.floor((now - first) / span * 100 + 0.5), 0), 65535)
 			end
+			-- How many of the game's months ago it was bought.
+			if first then
+				age = math.min(math.max(math.floor((now - first) / api.util.getDefaultMonthDuration()), 0), 65535)
+			end
 		end)
-		out.vehicles[#out.vehicles + 1] = { id = vid, line = line, model = text(model, 128), worn = worn, idle = line == nil }
+		out.vehicles[#out.vehicles + 1] = { id = vid, line = line, model = text(model, 128), worn = worn, idle = line == nil,
+			age = age }
 	end
 	for _, l in ipairs(lines) do
 		local lid = reg and regmod.id(reg, "lines", l)
@@ -493,6 +508,41 @@ local function rivalsIn(towns, me)
 	end
 end
 
+-- Where `town`'s people work and shop in other towns (bridge 41): the town
+-- window's destinations (gui/entity_window/town/town.tl), shops (1) and
+-- workplaces (2) summed for each town, and those of them who go by a line;
+-- the towns most go to first, MAX_TRAVEL of them. `isTown` marks every
+-- town's entity; `idOf` gives a town's id in the room.
+ai.MAX_TRAVEL = 8
+local function travelOf(town, isTown, idOf)
+	local sums = {}
+	for select = 1, 2 do
+		local ok, counts = pcall(api.engine.util.town.getSourceToDestinationCount, town, isTown, select)
+		if ok and type(counts) == "table" then
+			for to, count in pairs(counts) do
+				if to ~= town and isTown[to] and idOf[to] then
+					local sum = sums[to] or { to = idOf[to], people = 0, riding = 0 }
+					sum.people = sum.people + whole(count.count or 0)
+					sum.riding = sum.riding + whole(count.linesUseCount or 0)
+					sums[to] = sum
+				end
+			end
+		end
+	end
+	local travel = {}
+	for _, sum in pairs(sums) do
+		if sum.people > 0 then
+			sum.riding = math.min(sum.riding, sum.people)
+			travel[#travel + 1] = sum
+		end
+	end
+	table.sort(travel, function(a, b)
+		if a.people ~= b.people then return a.people > b.people end
+		return a.to < b.to
+	end)
+	return each(travel, ai.MAX_TRAVEL)
+end
+
 function ai.towns(registry, seat, roster)
 	local reg = type(registry) == "function" and registry() or registry
 	local regmod = module("registry")
@@ -502,8 +552,14 @@ function ai.towns(registry, seat, roster)
 		if tb and tb.town then buildings[tb.town] = (buildings[tb.town] or 0) + 1 end
 	end
 	local towns = {}
-	for _, t in ipairs(api.engine.getEntitiesWithComponent(api.type.ComponentType.TOWN) or {}) do
-		local id = reg and regmod.id(reg, "towns", t)
+	local entities = api.engine.getEntitiesWithComponent(api.type.ComponentType.TOWN) or {}
+	local isTown, idOf = {}, {}
+	for _, t in ipairs(entities) do
+		isTown[t] = true
+		idOf[t] = reg and regmod.id(reg, "towns", t) or nil
+	end
+	for _, t in ipairs(entities) do
+		local id = idOf[t]
 		local name = component(t, "NAME")
 		local centres, centreOf = {}, {}
 		for landUse = 0, 2 do
@@ -517,8 +573,16 @@ function ai.towns(registry, seat, roster)
 			towns[#towns + 1] = {
 				id = id, name = text(name and name.name, 48), pos = centres[1],
 				buildings = buildings[t] or 0, centres = centres, needs = ai.needs(t, centreOf, centres[1]),
-				rivals = 0, linked = {},
+				rivals = 0, linked = {}, residents = 0, usage = 0, travel = {},
 			}
+			local town = towns[#towns]
+			pcall(function()
+				town.residents = whole(api.engine.system.townBuildingSystem.getLandUsePersonCapacities(t)[1] or 0)
+			end)
+			pcall(function()
+				town.usage = math.max(0, math.min(100, whole((api.engine.util.town.getTownLineUsage(t) or 0) * 100)))
+			end)
+			pcall(function() town.travel = travelOf(t, isTown, idOf) end)
 		end
 	end
 	local c = roster and companyOf(roster, seat)

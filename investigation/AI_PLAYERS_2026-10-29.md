@@ -571,6 +571,70 @@ place reaching 19 into one reaching 4. With 64 bearings on rings 20 m apart
 every one of the eight town pairs finds 3 to 37 places reaching enough at
 each end, the best reaching 10 to 28 cells, under every half-cell shift.
 
+## What the game pays, and for whom (2026-11-11)
+
+Through 1.5.0 no AI covered its loans: its bus lines took 20,000 to 60,000
+a year, its passenger trains nothing, where the fixture's player takes 45
+million. The cause was in what it chose, not how it built. Read from the
+game's own data files and from one game on the big fixture (build 40425,
+`bubujujuoct10`, May 1922, read-only console probes):
+
+- **The fare** (`base/content/economy.zip`, `economy/cargo_income.script`
+  and `cargotype.script`): what a vehicle unloads pays its income factor
+  times the difficulty's factor times the distance from where it loaded,
+  in a straight line through space, plus eight times any climb. Every
+  cargo's factor is 3.8 a metre (`constantFn`: 4, falling a quarter of the
+  way to 3.2); a passenger's 3.609 a metre (`passengersFn`), times a half
+  plus the vehicle's `priceFactor`. Speed and time are no part of it. The
+  difficulty's factor was 1 for both
+  (`api.res.getBaseConfig().economy.cargoIncomeScript.params`).
+- **So a line earns its units a year times its length.** The AI carried
+  each cargo to the *nearest* town that needs it, ran buses inside towns,
+  and began railways at 1.8 km: the least any of them could pay. The
+  player's lines, a year: a passenger train through five towns 12.2
+  million (three trains of 114 seats, 7.3 km end to end), one through
+  three 6.7 million; cargo trains of 150 to 168 units over 2.2 to 2.4 km,
+  5.3 to 7.5 million each; a town's bus line 120,000 to 370,000; one truck
+  of 12 over 1.4 km 188,000 (2.9 loads a year: a round of some 490 s, 360
+  of them driving at 8 m/s).
+- **A year is short.** 1,461,000 ms of the game's clock, 24 minutes at 1x:
+  a bus at 40 km/h drives 16 km in it. A vehicle's year is its capacity
+  times the rounds it makes times the line's length times the fare.
+- **Who travels where** is the town window's destinations table:
+  `api.engine.util.town.getSourceToDestinationCount(town, { entity = isTown
+  }, 1 | 2)` gives, for shops (1) and workplaces (2), how many of the
+  town's people go to each destination and how many of those by a line
+  (`gui/entity_window/town/town.tl`). A person has a home, a shop and a
+  workplace (`SIM_PERSON.destinations`) and a mode to each (0 on foot, 1
+  by car, 2 by a line). Of the fixture's 5,706 people's 11,412 shops and
+  workplaces, 5,587 are in another town: 1,707 by a line, 3,869 by car.
+  People of towns no line serves already work and shop in their
+  neighbours (Hunstanton: 133 of its 254 shops elsewhere).
+- **What they pay**: the player's passenger trains took 19.0 million a
+  year for 1,731 such people riding, 8.29 million of them times the
+  metres between their towns' centres: 2.29 a person and metre a year,
+  some 0.63 fares each.
+- **A joined town grows, and its people turn to the towns it is joined
+  to.** The player's six joined towns hold 197 to 420 people in their
+  houses, the others 30 to 120; 66 to 79 in 100 of their people ride
+  lines (`getTownLineUsage`), and Basingstoke's 365 have 343 shops and
+  workplaces in the other five, by line. The most people travelling
+  between two towns no line joins: 297 (Dinnington St John's and
+  Hunstanton, 1.9 km), then 115, 103, 95; 25 pairs of 46 or more.
+- **An industry grows as it is carried from**: every half year it may go
+  up a level, never when what it makes times the share of it shipped
+  rates under a quarter, always from three quarters
+  (`game_mechanics/industries/industries.script.tl`).
+
+So the AI reckons what a line would bring before it builds it
+(`crates/tpf3mp-ai/src/econ.rs`): the units or the people there are,
+times how far, at the game's fares, less what its vehicles cost to run,
+for what it costs to open; a vehicle's rounds by the player's truck
+above. It reads each town's people and destinations (bridge 41), opens
+bus lines between the two towns whose people travel most between them
+for the money, carries a cargo to the town that pays most for it, and
+opens a line with the vehicles its load needs.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

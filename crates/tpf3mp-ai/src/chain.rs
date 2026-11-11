@@ -256,6 +256,9 @@ mod tests {
             centres: BoundedVec::new(vec![pos(5_000.0, 0.0)]).unwrap(),
             rivals: 0,
             linked: BoundedVec::default(),
+            residents: 0,
+            usage: 0,
+            travel: BoundedVec::default(),
             needs: BoundedVec::new(
                 needs
                     .iter()

@@ -165,6 +165,58 @@ what the answers cost its frames: by kind of question, how many, the mean
 and the slowest, and its slowest frame of them (`ai: answers in 60 s:
 ...`).
 
+## What a line earns
+
+The AI reckons what a line would bring before it builds it, as a player
+does from the town window and an industry's output
+(`crates/tpf3mp-ai/src/econ.rs`; investigation, "What the game pays, and
+for whom"):
+
+- **The game pays by the metre carried.** What a vehicle unloads pays for
+  the straight line from where it loaded: 3.8 a metre for a unit of any
+  cargo, about 3.6 for a passenger, whatever the speed. A line earns its
+  units a year times its length, so the nearest taker pays least. Through
+  1.5.0 the AI carried each cargo to the nearest town and ran buses inside
+  towns; none of its companies covered its loans.
+- **A vehicle's year** is what it carries times the rounds it makes: a
+  year is 24 minutes of play at 1x, and a road vehicle averages some
+  seven tenths of its top speed over the straight line and stands two
+  minutes a round at its stops (the fixture player's trucks,
+  2026-11-11); a train 85 in 100 of its speed. It reads the year's bus
+  and truck before its first survey and reckons with those: a bus of
+  1922 goes 28 km/h, and takes eight minutes between two towns 1.9 km
+  apart.
+- **Who would ride** it reads where a player does: since bridge version
+  41 the towns answer says how many people each town's houses hold, what
+  share of them ride lines, and how many of them work and shop in each
+  other town, and how many of those by a line already
+  (`getSourceToDestinationCount`, the town window's destinations). Each
+  such person not riding yet is worth some 2.3 a metre between the towns a
+  year, as the fixture player's trains took.
+- **What it costs**: its vehicles' prices and running, its stops, and a
+  depot where it has none by.
+
+It opens the line reckoned to bring most for its money
+(`Estimate::worth`), with the vehicles its load needs, four at most to
+start, each leaving its depot a share of a round after the last (three
+bought at once ran one behind the other, run 63); the rest come as it
+runs full. A line must be reckoned to make 50,000 a year and earn itself
+back in three years.
+
+**What its lines then earn takes rounds to show.** A fare is paid where
+a rider gets off, and a round between two towns takes most of a year.
+Since bridge version 41 the company answer says how long a vehicle takes
+round each line (the game's frequency for it) and how long ago each
+vehicle was bought: a line is judged by its load and money only once its
+oldest vehicle has had time for three rounds, and one that earned
+nothing is closed as carrying no one only after two. In run 63 (one
+game, a Hard and a Normal AI, the big fixture, 4x) the Hard AI closed
+two lines between towns seven months in, a bus of each 792 and 669 s one
+way from its first fare; the same two lines, opened by the Normal AI
+after it, ran four fifths full a year on, and the room's lines between
+Hunstanton and its neighbours took 315,000 to 414,000 a year each with
+four or five buses, against 78,000 to 122,000 to run.
+
 ## How the AI plays
 
 Four layers, each run on the game's calendar so a faster room makes a
@@ -224,7 +276,13 @@ or one fewer shows in a line's load and money only over the next weeks.
      another company's line joins already: in the long run of 2026-10-31
      the fixture's player's buses and trains took the riders of the AI's
      lines in the same towns, and the AI's train between two towns the
-     player's line joined carried no one. A town within 1.2 km of one of
+     player's line joined carried no one. *Since 2026-11-11:* a bus line
+     between two towns comes before a town's own buses, the two whose
+     people travel most between them for the money ("What a line
+     earns"): 700 m to its difficulty's reach apart, its stops by one or
+     two of each town's districts' centres, each town's together, its
+     depot by the larger; a railway between two towns is begun only where
+     their people's fares would come to 1.5 million a year. A town within 1.2 km of one of
      its own passenger stations comes before any other, its bus line's
      first stop by that station: riders off its trains walk to the bus,
      as the fixture's player runs buses to a station. Such a bus line,
@@ -290,7 +348,7 @@ or one fewer shows in a line's load and money only over the next weeks.
    bridge version 36 the company answer says what each line earned,
    `calculateBalance` of the journal's income; investigation, "What its
    lines earn").
-   A new line runs one vehicle; more come as it runs full: three of the
+   A town's own line runs one vehicle; more come as it runs full: three of the
    AI's buses in one town took what one took, and lost money where the
    one earned. A town line's bus is the model worth most for the eight
    riders such a line carries at a time, seats beyond them counting for
@@ -313,9 +371,12 @@ or one fewer shows in a line's load and money only over the next weeks.
    loans' payments in hand beyond its difficulty's reserve before it spends,
    and four months of what its lines lose where they lose money together.
    It borrows to start out (a founded company has no money) what its first
-   lines need at the least interest: of the offers paid back over two years
-   or more, the one at the lowest rate that lends 5 million or more, the
-   smallest of equals, else the lowest rate of any; never a loan paid back
+   lines need: of the offers paid back over two years or more that lend 5
+   to 15 million, the one that takes least a month for what it lends (a
+   line between two towns takes a year to show what it earns, and a loan
+   paid back over many years leaves it room); else the one at the lowest
+   rate that lends 5 million or more, the smallest of equals, else the
+   lowest rate of any; never a loan paid back
    within the year, whose payment no new line carries (5 million over 12
    months took 425,750 a month in the long run of 2026-10-31). A loan can
    only be paid back whole, and what it does not build on it pays interest
@@ -388,7 +449,10 @@ or one fewer shows in a line's load and money only over the next weeks.
   made it over the last year to the nearest town that needs more of it
   (the town window's cargo demand: supplied at least 10 a year short of
   what it may take), within the difficulty's reach and joined by road
-  already (`findPathNodeToNode` for trucks). It loads at the industry's
+  already (`findPathNodeToNode` for trucks): of the towns that need it,
+  the one its trucks are reckoned to earn most carrying to, not the
+  nearest, with as many trucks as what the industry makes and the town
+  may take needs, four at most to start. It loads at the industry's
   own station, as players' truck lines do (build 40425: every industry
   has one, its terminals alike, each for cargo and passengers), and
   unloads at a one-platform truck station of its own within 140 m of the

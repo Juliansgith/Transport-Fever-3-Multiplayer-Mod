@@ -114,6 +114,9 @@ pub fn offer_to_take(
 /// What its first lines need, at least: bus and truck lines of half a
 /// million or so each, its railways waiting on its lines' earnings.
 pub const START_NEED: i64 = 5_000_000;
+/// The most it starts on where an offer within it lends what it needs:
+/// what it does not build on in its first years it pays interest on.
+pub const START_MOST: i64 = 15_000_000;
 /// The fewest of the game's months a loan to start with is paid back over:
 /// one paid back within the year takes so much a month no new line carries
 /// it (the long run's 5 million over 12 months, 425,750 a month).
@@ -142,7 +145,22 @@ fn start_loan(company: &AiCompany) -> Option<LoanTerms> {
         list.min_by_key(|o| (o.percentage, o.amount))
             .map(|o| (*o).clone())
     };
-    cheapest(&mut long.iter().filter(|o| o.amount >= START_NEED))
+    // Of those that lend what it needs and no more than it can put to
+    // work, the one that takes least a month for what it lends: its first
+    // lines earn little, and a loan paid back over many years leaves them
+    // room (a line between two towns takes a year to show what it earns).
+    #[allow(clippy::cast_precision_loss)]
+    let lightest = long
+        .iter()
+        .filter(|o| (START_NEED..=START_MOST).contains(&o.amount))
+        .filter_map(|o| {
+            let pays = payment(o, company.month)?;
+            Some((pays as f64 / o.amount as f64, *o))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.amount.cmp(&b.1.amount)))
+        .map(|(_, o)| o.clone());
+    lightest
+        .or_else(|| cheapest(&mut long.iter().filter(|o| o.amount >= START_NEED)))
         .or_else(|| cheapest(&mut long.iter()))
 }
 
@@ -204,6 +222,7 @@ mod tests {
                         income: None,
                         recent: None,
                         problems: 0,
+                        round: 0,
                     })
                     .collect(),
             )

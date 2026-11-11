@@ -305,6 +305,7 @@ impl Brain {
                 || line.income.is_none_or(|i| i > 0)
                 || line.load > 0
                 || line.waiting > 0
+                || !Brain::seasoned(company, line, super::ROUNDS_DEAD)
             {
                 continue;
             }

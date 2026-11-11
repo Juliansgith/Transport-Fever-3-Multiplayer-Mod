@@ -14,6 +14,7 @@
 # running until the games quit (quit.ps1).
 #
 #   room.ps1 [-Players 2 (1 for one game alone, e.g. measuring)] [-Run name] [-Fixture tpf3mp_fixture3] [-NoInstall]
+#            [-Ai hard,normal (AI players the host seats and its game drives; docs/AI_PLAYERS.md)]
 #
 # Refuses while any Transport Fever 3, tpf3mp-rig or tpf3mp-server runs:
 # they may be someone else's test. Existing processes are never stopped.
@@ -30,6 +31,7 @@ param(
   [ValidatePattern('^(50|100|200|250)(,(50|100|200|250))*$')][string]$BatchPeriods,
   [ValidatePattern('^(4|5|8|16)(,(4|5|8|16))*$')][string]$BatchLimits,
   [ValidatePattern('^[01](,[01])*$')][string]$ReadyBudgets,
+  [ValidatePattern('^(easy|normal|hard)(,(easy|normal|hard))*$')][string]$Ai,
   [switch]$NoZoom,
   [switch]$ManualRoom,
   [switch]$NoInstall
@@ -73,6 +75,11 @@ if ($ManualRoom) { $rigArgs += '--manual-room' }
 if ($BatchPeriods) { $rigArgs += @('--batch-periods', $BatchPeriods) }
 if ($BatchLimits) { $rigArgs += @('--batch-limits', $BatchLimits) }
 if ($ReadyBudgets) { $rigArgs += @('--ready-budgets', $ReadyBudgets) }
+if ($Ai) {
+  $rigArgs += @('--ai', $Ai)
+  # What the AI players plan and say goes to rig.out at this level.
+  if (-not $env:RUST_LOG) { $env:RUST_LOG = 'info' }
+}
 $proc = Start-Process -FilePath $rig -ArgumentList $rigArgs -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput "$runDir\rig.out" -RedirectStandardError "$runDir\rig.err"
 Set-Content "$runDir\rig.pid" $proc.Id

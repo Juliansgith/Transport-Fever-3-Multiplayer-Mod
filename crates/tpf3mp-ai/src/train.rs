@@ -420,7 +420,10 @@ impl Brain {
     fn start_rail_of(&mut self, leg: Leg, passengers: bool, key: u32) -> bool {
         // A cargo railway waits on its lines' earnings; a passenger one on
         // stations that reach people enough (the Land stage).
-        if self.spendable() < RAIL_MONEY || (!passengers && !self.trains_carried()) {
+        // One whose fares are reckoned to carry a train
+        // ([`super::CARGO_TRAIN_FARES_LEAST`]) waits on neither.
+        let carried = self.trains_carried() || self.rail_fares >= super::CARGO_TRAIN_FARES_LEAST;
+        if self.spendable() < RAIL_MONEY || (!passengers && !carried) {
             return false;
         }
         // No new railway while its settled ones lose money together: the
