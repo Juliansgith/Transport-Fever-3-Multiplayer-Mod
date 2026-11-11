@@ -2005,9 +2005,18 @@ fn a_long_train_too_dear_is_a_short_one_where_its_money_stretches_to_that() {
         &[(PLANKS, 480)],
     )];
     ely_needs_planks(&mut world, 0, 400, pos(5_320.0, -280.0));
-    // Money for the line with short stations and a train of six, not for
-    // long ones and twelve.
-    world.money = 7_000_000;
+    // A valley between them, bridged: a line of some millions.
+    world.ground = Some(|x, _| {
+        if (x - 3_400.0).abs() < 500.0 {
+            -8.0
+        } else {
+            10.0
+        }
+    });
+    // Money for the line with short stations and a train of six (about
+    // 3.0 million reckoned, and 2.5 for its train), not for long ones and
+    // twelve (3.85).
+    world.money = 6_500_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
         &mut brain,
@@ -2043,6 +2052,13 @@ fn a_long_train_too_dear_is_a_short_one_where_its_money_stretches_to_that() {
         &[(PLANKS, 480)],
     )];
     ely_needs_planks(&mut world, 0, 400, pos(5_320.0, -280.0));
+    world.ground = Some(|x, _| {
+        if (x - 3_400.0).abs() < 500.0 {
+            -8.0
+        } else {
+            10.0
+        }
+    });
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
@@ -2056,6 +2072,13 @@ fn a_long_train_too_dear_is_a_short_one_where_its_money_stretches_to_that() {
         said.iter()
             .any(|l| l
                 == "buys a train: vehicle/train/engine.mdl and 12 vehicle/train/planks_wagon.mdl"),
+        "{said:?}"
+    );
+    // What its line took of its money is said against its reckoning.
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("its line took ")
+                && l.contains(" of its money, reckoned at up to ")),
         "{said:?}"
     );
     let long = world

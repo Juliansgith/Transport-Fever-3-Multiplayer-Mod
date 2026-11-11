@@ -247,6 +247,9 @@ pub(super) struct RailProject {
     /// Its stations' track modules, and the most wagons its train has.
     pub modules: i32,
     pub wagons_most: usize,
+    /// Its money when it reckoned the line and began: what the line then
+    /// cost shows against it once it opens.
+    pub money_before: Option<i64>,
     /// The route being laid out: its nodes on the ground, the street runs
     /// it crosses still to ask the game about, and the streets named.
     pub aligned: Vec<Node>,
@@ -558,6 +561,7 @@ impl Brain {
             fares: self.rail_fares,
             modules: STATION_MODULES,
             wagons_most: WAGONS_MOST,
+            money_before: None,
             aligned: Vec::new(),
             runs: Vec::new(),
             streets: Vec::new(),
@@ -689,10 +693,9 @@ impl Brain {
                         // misses, and a train's price: run 67's line, reckoned
                         // at 3.3 million, left 350,000 of 13 million with its
                         // train bought.
-                        // A long train costs its wagons more.
-                        #[allow(clippy::cast_precision_loss)]
-                        let mut longer = project.wagons_most.saturating_sub(WAGONS_MOST) as f64
-                            * project.wagons.iter().map(|w| w.price).max().unwrap_or(0) as f64;
+                        // Its train's reserve covers twelve wagons behind
+                        // one of its year's cheaper engines (1922: a mogul
+                        // and twelve, about two million).
                         let mut reckoned = estimate(project).map(|cost| cost * LINE_OVERRUN);
                         // Too dear with long stations and a train of twelve:
                         // with short ones, where its money stretches to
@@ -700,7 +703,7 @@ impl Brain {
                         // reckoned at seven million a year in fares for
                         // 130,000 of its 13 million.
                         if project.wagons_most > WAGONS_MOST
-                            && reckoned.is_ok_and(|cost| cost + TRAIN_RESERVE + longer >= money)
+                            && reckoned.is_ok_and(|cost| cost + TRAIN_RESERVE >= money)
                         {
                             let short = [
                                 rail::sites(&project.land, from, at, near, passengers),
@@ -713,7 +716,6 @@ impl Brain {
                                 project.wagons_most = WAGONS_MOST;
                                 let cost = estimate(project).map(|cost| cost * LINE_OVERRUN);
                                 if cost.is_ok_and(|cost| cost + TRAIN_RESERVE < money) {
-                                    longer = 0.0;
                                     reckoned = cost;
                                     self.said.push(format!(
                                         "its money short of long stations, plans a train of {WAGONS_MOST} wagons"
@@ -725,8 +727,9 @@ impl Brain {
                             }
                         }
                         match reckoned {
-                            Ok(cost) if cost + TRAIN_RESERVE + longer < money => {
+                            Ok(cost) if cost + TRAIN_RESERVE < money => {
                                 project.estimate = cost;
+                                project.money_before = self.company.as_ref().map(|c| c.money);
                                 self.say(format!(
                                     "reckons its rail line costs up to {cost:.0} before its train"
                                 ));
@@ -1674,8 +1677,18 @@ impl Brain {
                     if !self.memo.rail_lines.contains(&line.id.0) {
                         self.memo.rail_lines.push(line.id.0);
                     }
+                    let spent = project
+                        .money_before
+                        .map(|before| (before - company.money, project.estimate));
                     self.chain_line(line.id.0);
                     self.say(format!("opened {described}"));
+                    // For its reckoning's keeping: what its money fell by,
+                    // its loans' payments over the building among it.
+                    if let Some((spent, reckoned)) = spent {
+                        self.say(format!(
+                            "its line took {spent} of its money, reckoned at up to {reckoned:.0}"
+                        ));
+                    }
                     self.stage = Stage::Rail(RailStage::Buying);
                 } else if tries >= CONFIRM_TRIES {
                     self.give_up_rail("its line did not open", now);
@@ -2028,10 +2041,20 @@ impl Brain {
                     .cloned();
                 let distance = P::of(project.from.pos).flat_distance(P::of(project.to.pos()));
                 let units = project.fares / (distance.max(1.0) * econ::CARGO_FARE);
-                let Some(engine) = passenger.or_else(|| {
-                    freight_engine(&models, &wagon, project.wagons_most, money, units, distance)
-                        .cloned()
-                }) else {
+                let mut wagons_most = project.wagons_most;
+                let freight = |wagons| {
+                    freight_engine(&models, &wagon, wagons, money, units, distance).cloned()
+                };
+                // No engine its money buys hauls twelve: one that hauls six.
+                let engine = passenger.or_else(|| freight(wagons_most)).or_else(|| {
+                    (wagons_most > WAGONS_MOST && !project.passengers)
+                        .then(|| {
+                            wagons_most = WAGONS_MOST;
+                            freight(WAGONS_MOST)
+                        })
+                        .flatten()
+                });
+                let Some(engine) = engine else {
                     self.give_up_rail("found no engine it can afford", now);
                     return None;
                 };
@@ -2041,6 +2064,7 @@ impl Brain {
                     self.year() < costs::TRESTLE_UNTIL && engine.speed <= costs::TRESTLE_SPEED;
                 let project = self.rail.as_mut()?;
                 project.prices.trestle = trestle;
+                project.wagons_most = wagons_most;
                 project.train = Some((engine, wagon));
                 // Its whole line laid out before it builds anything.
                 let (at, heading) = project.end(0)?;

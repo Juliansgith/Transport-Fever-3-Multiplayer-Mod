@@ -28,8 +28,12 @@ const MEMO_EVERY: Duration = Duration::from_secs(30);
 /// the room's world a moment ago and still be replaying turns.
 const SETTLE_IN: Duration = Duration::from_secs(5);
 /// How far apart the room's AI seats open their first lines, in the order
-/// the room lists them: about how long one takes to plan and build.
-const FIRST_LINES_APART: Duration = Duration::from_secs(180);
+/// the room lists them: time for the one before to choose, and say what
+/// it builds (`Brain::claims`), so the next takes something else. Three
+/// minutes, about how long one takes to plan and build, cost the second AI
+/// of run 72 half a year of a 4x game and 1.8 million of its loan's
+/// payments before its first line.
+const FIRST_LINES_APART: Duration = Duration::from_secs(20);
 /// How often the minds' thread looks at them while nothing comes in.
 const LOOK_EVERY: Duration = Duration::from_millis(10);
 

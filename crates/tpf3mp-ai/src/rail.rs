@@ -1109,7 +1109,14 @@ pub const SEARCH_MOST: usize = 200_000;
 /// `from` to the one [`LEAD`] short of `to`. It turns 22.5° at most a
 /// step, never on two steps running, each turn costing a little, and keeps
 /// off built land and other tracks.
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+///
+/// A long line over rough land opens more states than [`SEARCH_MOST`]
+/// before it arrives: its estimate, flat track all the way, is far under
+/// what earth and bridges cost, and the search spreads wide. It is then
+/// searched again [`GREEDY`] times as keen on getting nearer, three times
+/// as long: a dearer line than the cheapest, where there was none. Every
+/// AI of runs 67 to 72 found "no route" for an 8.4 km oil railway reckoned
+/// at seven million a year in fares.
 pub fn route(
     land: &Land,
     prices: &Prices,
@@ -1117,6 +1124,33 @@ pub fn route(
     from_heading: f64,
     to: P,
     to_heading: f64,
+) -> Option<Vec<(f64, f64)>> {
+    let search = |keen: f64, most: usize| {
+        route_keen(land, prices, from, from_heading, to, to_heading, keen, most)
+    };
+    search(1.0, SEARCH_MOST).or_else(|| search(GREEDY, 3 * SEARCH_MOST))
+}
+
+/// How much more than flat track a metre still to go counts in a route's
+/// second search.
+pub const GREEDY: f64 = 3.0;
+
+/// [`route`]'s search, a metre still to go counted `keen` times flat
+/// track's price, opening `most` states at most.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments
+)]
+fn route_keen(
+    land: &Land,
+    prices: &Prices,
+    from: P,
+    from_heading: f64,
+    to: P,
+    to_heading: f64,
+    keen: f64,
+    most: usize,
 ) -> Option<Vec<(f64, f64)>> {
     let flat = prices.ground(0.0);
     let (fx, fy) = unit(from_heading);
@@ -1131,10 +1165,11 @@ pub fn route(
         d: nearest_move(from_heading),
         turned: true,
     };
-    // No metre costs less than flat track: the estimate never overshoots.
+    // No metre costs less than flat track: at `keen` 1 the estimate never
+    // overshoots.
     let h = |i: usize, j: usize| {
         let (x, y) = land.centre(i, j);
-        flat * (x - goal_x).hypot(y - goal_y)
+        keen * flat * (x - goal_x).hypot(y - goal_y)
     };
     let mut open = BinaryHeap::new();
     let mut best: HashMap<State, f64> = HashMap::new();
@@ -1163,7 +1198,7 @@ pub fn route(
             return Some(cells);
         }
         opened += 1;
-        if opened > SEARCH_MOST {
+        if opened > most {
             return None;
         }
         let here = land.centre(state.i, state.j);
@@ -2751,6 +2786,38 @@ mod tests {
         }
         land.read.iter_mut().for_each(|r| *r = true);
         land
+    }
+
+    #[test]
+    fn a_long_line_over_rough_land_is_found_by_a_keener_search() {
+        // Hills and hollows 40 m high and deep every few hundred metres,
+        // 11 km across: the cheapest way opens more states than a search
+        // may.
+        let (a, b) = (p(0.0, 0.0), p(11_000.0, 2_000.0));
+        let mut land = Land::around(a, b);
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                land.z[j * land.w + i] = 40.0 * (x / 260.0).sin() * (y / 310.0).cos();
+            }
+        }
+        land.read.iter_mut().for_each(|r| *r = true);
+        let prices = Prices::default();
+        let exact = route_keen(&land, &prices, a, 0.0, b, 0.0, 1.0, SEARCH_MOST);
+        assert!(
+            exact.is_none(),
+            "the cheapest way, within the search's most"
+        );
+        let found = route(&land, &prices, a, 0.0, b, 0.0).expect("a way all the same");
+        let (first, last) = (found[0], found[found.len() - 1]);
+        assert!((first.0 - a.x).hypot(first.1 - a.y) <= 2.0 * LEAD);
+        assert!((last.0 - b.x).hypot(last.1 - b.y) <= 2.0 * LEAD);
+        // A short line is searched once, as before: the cheapest.
+        let near = p(2_000.0, 500.0);
+        assert_eq!(
+            route(&land, &prices, a, 0.0, near, 0.0),
+            route_keen(&land, &prices, a, 0.0, near, 0.0, 1.0, SEARCH_MOST)
+        );
     }
 
     #[test]
