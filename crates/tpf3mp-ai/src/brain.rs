@@ -34,7 +34,7 @@ use tpf3mp_proto::{
 
 use crate::{
     chain::{self, Leg, Taker},
-    money,
+    econ, money,
     place::{self, P},
     profile::Profile,
 };
@@ -131,6 +131,72 @@ pub const FEEDER_REACH: f64 = 1_200.0;
 pub const PASSENGER_TOWN: u32 = 150;
 pub const PASSENGER_FROM: f64 = 3_000.0;
 pub const PASSENGER_MOST: f64 = 10_000.0;
+/// The share of two towns' people who travel between them that a new bus
+/// line is reckoned to win: the fixture player's trains carry four in five
+/// of those between the towns they join; a bus of 1922 is no faster than
+/// their cars. Run 63's four buses between Hunstanton and Dinnington St
+/// John's (297 such people) ran half full to four fifths, some 75 fares a
+/// year where all of them would ride 188.
+pub const BUS_SHARE: f64 = 0.4;
+/// The least a line must be reckoned to make a year to be opened for what
+/// it earns, and the most years it may take to earn itself back.
+pub const LINE_PROFIT_LEAST: f64 = 50_000.0;
+pub const PAYBACK_MOST: f64 = 3.5;
+/// The share of two towns' people who travel between them that a railway
+/// between them is reckoned to win, and the least their fares must come to
+/// a year for one to be begun: a passenger train costs some six million
+/// laid and bought and a third of a million a year to run before its
+/// coaches, and every one of the AI's lost money while its towns' people
+/// were not counted (runs 43 to 59).
+pub const TRAIN_SHARE: f64 = 0.8;
+pub const TRAIN_FARES_LEAST: f64 = 1_500_000.0;
+/// The least a cargo's fares by train must be reckoned to come to a year
+/// for its railway to be begun before the AI's settled lines earn what a
+/// train costs ([`TRAIN_EARNING`]): what it makes and a town may take,
+/// times how far, at the game's fare. A train costs some 0.9 million a
+/// year to run and five to lay and buy; the fixture player's cargo trains
+/// take 5 to 7 million a year.
+pub const CARGO_TRAIN_FARES_LEAST: f64 = 2_000_000.0;
+/// The furthest a cargo railway's ends may lie apart.
+pub const CARGO_TRAIN_MOST: f64 = 9_000.0;
+/// The rounds of its line a vehicle must have had time for before the line
+/// is judged by its load and money, and before one that earned nothing is
+/// closed as carrying no one: a fare is paid where a rider gets off, and a
+/// round between two towns takes most of a year (run 63: 792 s one way
+/// between Hunstanton and Penzance, where a line's first seven months
+/// without a fare had closed it; its buses then ran four fifths full).
+pub const ROUNDS_JUDGED: f64 = 3.0;
+pub const ROUNDS_DEAD: f64 = 2.0;
+/// The nearest two towns a bus line joins may lie: nearer, their people
+/// walk, and a fare pays by the metre.
+pub const INTERCITY_FROM: f64 = 700.0;
+/// What a bus line's stops, and a road depot, are reckoned to cost before
+/// the game prices them: a depot stood 207,000 on open ground and up to a
+/// million among houses in the fixture.
+pub const STOPS_BUILT: f64 = 60_000.0;
+pub const DEPOT_BUILT: f64 = 250_000.0;
+/// A truck station's reckoned cost, as a depot's.
+pub const TRUCK_STATION_BUILT: f64 = 350_000.0;
+/// The vehicles a line opens with at most, whatever it is reckoned to
+/// need: the rest come as it runs full ([`upkeep`]), what it reckoned
+/// being a reckoning.
+pub const FLEET_FIRST_MOST: usize = 4;
+/// A bus and a truck as it reckons with them where it has read no year's
+/// models (it reads them before its first survey): 1922's.
+pub const BUS_RECKONED: econ::Runs = econ::Runs {
+    capacity: 12.0,
+    speed: 28.0,
+    price: 202_667.0,
+    running: 33_778.0,
+    rail: false,
+};
+pub const TRUCK_RECKONED: econ::Runs = econ::Runs {
+    capacity: 10.0,
+    speed: 40.0,
+    price: 100_000.0,
+    running: 17_000.0,
+    rail: false,
+};
 /// What the game's verdict says of a build through something in its way.
 pub const COLLISION: &str = "Collision";
 /// How long a road vehicle waits at a stop at most, and for more to load,
@@ -183,6 +249,21 @@ pub struct Memo {
     /// closed a fuel line six months in, eight minutes after the crude oil
     /// line feeding its refinery opened.
     pub chains: Vec<Vec<u32>>,
+    /// Its rail lines with long stations, for trains of
+    /// [`crate::train::WAGONS_LONG`] wagons: a train more on one is as long.
+    pub long: Vec<u32>,
+}
+
+/// A memo as drivers before the long stations kept it.
+#[derive(Deserialize)]
+struct MemoChains {
+    served: Vec<u32>,
+    given_up: Vec<u32>,
+    cargo_lines: Vec<(u32, String)>,
+    rail_lines: Vec<u32>,
+    looped: Vec<(u32, u8)>,
+    closed: Vec<(u32, u8, i64)>,
+    chains: Vec<Vec<u32>>,
 }
 
 /// A memo as drivers before the chains kept it.
@@ -213,6 +294,18 @@ impl Memo {
         if let Ok(memo) = postcard::from_bytes::<Self>(bytes) {
             return Some(memo);
         }
+        if let Ok(m) = postcard::from_bytes::<MemoChains>(bytes) {
+            return Some(Self {
+                served: m.served,
+                given_up: m.given_up,
+                cargo_lines: m.cargo_lines,
+                rail_lines: m.rail_lines,
+                looped: m.looped,
+                closed: m.closed,
+                chains: m.chains,
+                long: Vec::new(),
+            });
+        }
         if let Ok(m) = postcard::from_bytes::<MemoClosed>(bytes) {
             return Some(Self {
                 served: m.served,
@@ -222,6 +315,7 @@ impl Memo {
                 looped: m.looped,
                 closed: m.closed,
                 chains: Vec::new(),
+                long: Vec::new(),
             });
         }
         let m = postcard::from_bytes::<MemoBefore>(bytes).ok()?;
@@ -233,9 +327,49 @@ impl Memo {
             looped: m.looped,
             closed: Vec::new(),
             chains: Vec::new(),
+            long: Vec::new(),
         })
     }
 }
+
+/// A new line's vehicles still to come: each leaves its share of a round
+/// after the one before, so they run spread along it, while the AI looks to
+/// its next line. Run 68's Normal AI, waiting on each of a truck line's four
+/// before anything else, planned nothing for a year of the game, six
+/// million in hand and its loan taking 300,000 a month.
+#[derive(Debug, Clone)]
+struct Owed {
+    line: LineId,
+    /// The vehicles the line is to have.
+    fleet: usize,
+    /// The game's seconds between two of them.
+    apart: f64,
+    /// When its next one is due.
+    at: Instant,
+}
+
+/// How long after money ran short an owed vehicle is tried again.
+const OWED_RETRY: Duration = Duration::from_secs(60);
+
+/// The money, to spend, with which a look at its cargo's railways comes
+/// before a bus line: what a line of some six kilometres, long stations and
+/// a train of twelve came to in runs 68 and 69, its reserves counted.
+const RAIL_FIRST_MONEY: i64 = 10_000_000;
+/// Money to spend beyond which, on a loan, it does not wait on its young
+/// lines before another: ten months of a 13 million loan's payments.
+const IDLE_MONEY: i64 = 3_000_000;
+
+/// How long it leaves alone what another AI player was last building: until
+/// the game shows that line as it shows any other company's.
+const CLAIMED_FOR: Duration = Duration::from_secs(120);
+
+/// How many such looks it takes, one railway given up after another,
+/// before its buses get their turn.
+const RAIL_LOOKS: u8 = 3;
+
+/// How much of a road line's reckoned cost it must have in hand to begin
+/// it: its stops and depot cost what the game says, not what it reckoned.
+const CAPITAL_MARGIN: f64 = 1.5;
 
 /// How many production chains its memo keeps.
 pub const CHAINS_KEPT: usize = 16;
@@ -284,6 +418,9 @@ impl Kind {
 enum Serves {
     /// A town's districts, by bus.
     Town(AiTown),
+    /// Two towns, by bus: the people of each who work and shop in the other
+    /// ([`AiTown::travel`]), its stops by the districts' centres of both.
+    Towns(Box<(AiTown, AiTown)>),
     /// A cargo from the industry that makes it to its taker, by truck: a
     /// town that needs it (unloading by the centre of the district that
     /// takes it, its project's second centre), or an industry that makes
@@ -316,6 +453,25 @@ fn route_key(from: Pos, cargo: &str) -> u32 {
     h | 0x8000_0000
 }
 
+/// The key a bus line between two towns goes by: the pair of their ids,
+/// either way round, with the top bit set, apart from a passenger
+/// railway's between them ([`passenger_key`]), which may follow it.
+fn bus_pair_key(a: TownId, b: TownId) -> u32 {
+    let (low, high) = if a.0 <= b.0 { (a.0, b.0) } else { (b.0, a.0) };
+    // FNV-1a: the same in every driver's agent.
+    let mut h: u32 = 0x811c_9dc5;
+    for byte in low
+        .to_le_bytes()
+        .into_iter()
+        .chain(high.to_le_bytes())
+        .chain(*b"buses")
+    {
+        h ^= u32::from(byte);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h | 0x8000_0000
+}
+
 /// A cargo's short name: its file's stem (`::/cargos/grain/grain.cargo`
 /// is `grain`).
 fn cargo_name(cargo: &str) -> &str {
@@ -330,6 +486,7 @@ impl Serves {
     fn key(&self) -> u32 {
         match self {
             Self::Town(town) => town.id.0,
+            Self::Towns(pair) => bus_pair_key(pair.0.id, pair.1.id),
             Self::Cargo { cargo, from, .. } => route_key(from.pos, cargo.as_str()),
         }
     }
@@ -339,6 +496,11 @@ impl Serves {
     fn describe(&self) -> String {
         match self {
             Self::Town(town) => format!("a bus line in {}", town.name.as_str()),
+            Self::Towns(pair) => format!(
+                "a bus line between {} and {}",
+                pair.0.name.as_str(),
+                pair.1.name.as_str()
+            ),
             Self::Cargo {
                 cargo, from, to, ..
             } => format!(
@@ -354,13 +516,14 @@ impl Serves {
     fn pos(&self) -> Pos {
         match self {
             Self::Town(town) => town.pos,
+            Self::Towns(pair) => pair.0.pos,
             Self::Cargo { from, .. } => from.pos,
         }
     }
 
     fn cargo(&self) -> Option<&ResName> {
         match self {
-            Self::Town(_) => None,
+            Self::Town(_) | Self::Towns(_) => None,
             Self::Cargo { cargo, .. } => Some(cargo),
         }
     }
@@ -369,7 +532,7 @@ impl Serves {
     /// a stop must stand (none: anywhere it asked).
     fn search(&self) -> (u32, Option<f64>) {
         match self {
-            Self::Town(_) => (STOP_SEARCH, None),
+            Self::Town(_) | Self::Towns(_) => (STOP_SEARCH, None),
             Self::Cargo { .. } => (CARGO_SEARCH, Some(CARGO_REACH)),
         }
     }
@@ -404,6 +567,15 @@ struct Project {
     /// depot's ([`Priced`]).
     station_priced: Vec<Priced>,
     line: Option<LineId>,
+    /// The vehicles it opens with: what it is reckoned to need, within
+    /// [`FLEET_FIRST_MOST`], its difficulty's first count at least.
+    fleet: usize,
+    /// How long a vehicle is reckoned to take round the line, in the
+    /// game's seconds (0: not reckoned): its vehicles leave the depot that
+    /// long apart, shared out, as a player sends them. Three buses bought
+    /// at once ran one behind the other and carried what one would (run
+    /// 63).
+    round: f64,
 }
 
 /// A depot placement the game would build: its cost, what it touches that
@@ -508,8 +680,16 @@ pub struct Brain {
     project: Option<Project>,
     /// The bus it buys this year, once read.
     model: Option<AiModel>,
+    /// The bus and the truck it last chose of a year's models: what it
+    /// reckons a line's earnings with ([`econ`]).
+    seen_bus: Option<econ::Runs>,
+    seen_truck: Option<econ::Runs>,
     /// The line it adds a vehicle to outside a project.
     topping: Option<(LineId, AiDepot)>,
+    /// Its new lines' vehicles still to come ([`Owed`]).
+    owed: Vec<Owed>,
+    /// The line it last said it waits for a vehicle's money for.
+    bus_wait_said: Option<LineId>,
     /// When its upkeep last gave each line a vehicle or took one
     /// ([`upkeep::TUNE_LOOKS`]).
     tuned: Vec<(LineId, Instant)>,
@@ -522,6 +702,9 @@ pub struct Brain {
     /// The game's track prices over the AI's own ([`crate::costs`]), read
     /// off the verdicts on its track.
     rail_scale: f64,
+    /// What the cargo railway it begins now is reckoned to take a year in
+    /// fares (0: not reckoned), for [`train`]'s gate.
+    rail_fares: f64,
     /// The legs of a production chain still to build, in order; the leg
     /// it is building by train now; legs it tries by truck alone, by their
     /// route keys, their train refused.
@@ -531,9 +714,14 @@ pub struct Brain {
     /// Whether its next project carries cargo (it takes turns), and
     /// whether it carries cargo at all ([`Brain::carry_cargo`]).
     next_cargo: bool,
+    /// How many railways it runs, and the looks at another, its money
+    /// whole, it has taken since that changed ([`RAIL_LOOKS`]).
+    rail_looks: (usize, u8),
     /// How many young lines it last said it waits on: said once, not at
     /// every look.
     young_said: usize,
+    /// What it last said it weighed of cargo: said once while the same.
+    weighed_said: String,
     /// The chain of its memo's [`Memo::chains`] the lines it opens now
     /// belong to, while it builds one.
     chain_group: Option<usize>,
@@ -587,7 +775,13 @@ impl Brain {
             company: None,
             project: None,
             model: None,
+            seen_bus: None,
+            seen_truck: None,
+            rail_fares: 0.0,
+            weighed_said: String::new(),
             topping: None,
+            owed: Vec::new(),
+            bus_wait_said: None,
             tuned: Vec::new(),
             routes: Vec::new(),
             needing: Vec::new(),
@@ -597,6 +791,7 @@ impl Brain {
             leg_now: None,
             no_rail: Vec::new(),
             next_cargo: false,
+            rail_looks: (0, 0),
             young_said: 0,
             chain_group: None,
             held_said: false,
@@ -631,6 +826,33 @@ impl Brain {
     /// and 45, 2026-10-31). Started apart, the later sees the earlier's line.
     pub fn first_line_after(&mut self, until: Instant) {
         self.first_line_at = Some(until);
+    }
+
+    /// What it is building now, by its keys: a town, a pair of towns, a
+    /// cargo from its industry. The AI players one game drives tell each
+    /// other ([`Brain::avoid`]), and none plans what another builds: the
+    /// game shows a line only once it stands, and in run 70 two AIs,
+    /// looking in the same seconds, each opened a bus line between the
+    /// same two towns and halved its riders.
+    pub fn claims(&self) -> Vec<u32> {
+        self.project
+            .as_ref()
+            .map(|p| p.serves.key())
+            .into_iter()
+            .chain(self.rail.as_ref().map(|r| r.key))
+            .collect()
+    }
+
+    /// Leaves what other AI players are building (`keys`, their
+    /// [`Brain::claims`]) alone for [`CLAIMED_FOR`] from `now`.
+    pub fn avoid(&mut self, keys: &[u32], now: Instant) {
+        let until = now + CLAIMED_FOR;
+        for key in keys {
+            match self.given_up.iter_mut().find(|(id, _)| id == key) {
+                Some(entry) => entry.1 = entry.1.max(until),
+                None => self.given_up.push((*key, until)),
+            }
+        }
     }
 
     /// Whether it plans truck lines for cargo as well as town buses (on by
@@ -765,6 +987,26 @@ impl Brain {
             | Stage::LineMade { .. }
             | Stage::Bought { .. }
             | Stage::Assigned { .. } => self.ask(AiQuestion::Company, now),
+            // Its first survey reads the year's bus and truck first: what a
+            // line would earn is reckoned with them ([`econ`]).
+            Stage::Survey | Stage::SurveyNeeds if self.seen_bus.is_none() => self.ask(
+                AiQuestion::Models {
+                    mode: Text::lossy(BUS),
+                    cargo: None,
+                },
+                now,
+            ),
+            Stage::Survey | Stage::SurveyNeeds
+                if self.seen_truck.is_none() && self.carries_cargo =>
+            {
+                self.ask(
+                    AiQuestion::Models {
+                        mode: Text::lossy(TRUCK),
+                        cargo: None,
+                    },
+                    now,
+                )
+            }
             Stage::Survey => self.ask(AiQuestion::Towns, now),
             Stage::SurveyNeeds => self.ask(AiQuestion::Towns, now),
             Stage::SurveyIndustries => self.ask(AiQuestion::Industries, now),
@@ -860,7 +1102,39 @@ impl Brain {
             .company
             .as_ref()
             .map_or(0, |c| money::Books::of(c).cushion());
-        money - (money.max(0) * self.profile.reserve_percent / 100).max(cushion)
+        let free = money - (money.max(0) * self.profile.reserve_percent / 100).max(cushion);
+        // Buying a vehicle for a line, the money laid by for those its new
+        // lines still wait for is its to spend; for anything else it is not.
+        if self.topping.is_some() {
+            free
+        } else {
+            free - self.committed()
+        }
+    }
+
+    /// What the vehicles its new lines still wait for cost ([`Owed`]).
+    #[allow(clippy::cast_possible_truncation)]
+    fn committed(&self) -> i64 {
+        let Some(company) = &self.company else {
+            return 0;
+        };
+        self.owed
+            .iter()
+            .map(|o| {
+                let has = company
+                    .lines
+                    .iter()
+                    .find(|l| l.id == o.line)
+                    .map_or(o.fleet, |l| l.vehicles.len());
+                let cargo = self.memo.cargo_lines.iter().any(|(id, _)| *id == o.line.0);
+                let runs = if cargo {
+                    self.seen_truck.unwrap_or(TRUCK_RECKONED)
+                } else {
+                    self.seen_bus.unwrap_or(BUS_RECKONED)
+                };
+                o.fleet.saturating_sub(has) as i64 * runs.price as i64
+            })
+            .sum()
     }
 
     /// Whether its settled lines make what a train costs to run
@@ -909,6 +1183,21 @@ impl Brain {
         on.peek().is_some()
             && on.all(|v| v.worn >= upkeep::SETTLED)
             && !self.chain_young(company, line)
+            && Self::seasoned(company, line, ROUNDS_JUDGED)
+    }
+
+    /// Whether a line has run long enough for `rounds` of it: its oldest
+    /// vehicle's age against the round the game reckons for it
+    /// ([`AiLine::round`]); a line of no known round has.
+    pub(super) fn seasoned(company: &AiCompany, line: &AiLine, rounds: f64) -> bool {
+        let age = company
+            .vehicles
+            .iter()
+            .filter(|v| v.line == Some(line.id))
+            .map(|v| v.age)
+            .max()
+            .unwrap_or(0);
+        line.round == 0 || f64::from(age) * econ::YEAR / 12.0 >= rounds * f64::from(line.round)
     }
 
     /// Keeps a line it opened among the lines of the chain it builds, if it
@@ -1022,15 +1311,20 @@ impl Brain {
         })
     }
 
-    /// A line too young for its money to say anything yet: it runs, and none
-    /// of its vehicles is through [`upkeep::SETTLED`] of its life.
+    /// A line too young for its money to say anything yet: it runs, none
+    /// of its vehicles is through [`upkeep::SETTLED`] of its life, and its
+    /// last months have made nothing yet. One whose last months paid has
+    /// said what it earns: a player who sees a new line pay opens the next,
+    /// and a line's year is 24 minutes of play.
     fn young(&self, company: &AiCompany, line: &AiLine) -> bool {
         let mut on = company
             .vehicles
             .iter()
             .filter(|v| v.line == Some(line.id))
             .peekable();
-        on.peek().is_some() && on.all(|v| v.worn < upkeep::SETTLED)
+        on.peek().is_some()
+            && on.all(|v| v.worn < upkeep::SETTLED)
+            && line.recent.is_none_or(|made| made <= 0)
     }
 
     /// What kind of line it is to the brain: its rail lines and cargo lines
@@ -1534,6 +1828,17 @@ impl Brain {
                 self.profile.borrow_cover,
             )
         {
+            self.say(format!(
+                "takes a loan of {} over {} months at {:.1} % a year, {} a month",
+                offer.amount,
+                if company.month == 0 {
+                    0
+                } else {
+                    offer.duration / i64::from(company.month)
+                },
+                offer.percentage as f64 / 10_000.0,
+                money::payment(&offer, company.month).unwrap_or(0)
+            ));
             let action = Action::Loan(Box::new(LoanOp::Take {
                 next: offer.clone(),
                 offer,
@@ -1569,10 +1874,30 @@ impl Brain {
                 .filter(|v| v.line == Some(line.id))
                 .all(|v| v.worn < upkeep::SETTLED)
         };
+        // A vehicle a new line still waits for, its time come.
+        self.owed.retain(|o| {
+            company
+                .lines
+                .iter()
+                .any(|l| l.id == o.line && l.vehicles.len() < o.fleet)
+        });
+        let due = self
+            .owed
+            .iter()
+            .find(|o| o.at <= now)
+            .and_then(|o| company.lines.iter().find(|l| l.id == o.line));
+        if let Some(line) = due
+            && let Some(depot) = road_depot(company, line)
+        {
+            self.topping = Some((line.id, depot));
+            self.stage = Stage::Models;
+            return None;
+        }
         let short = company
             .lines
             .iter()
             .filter(|l| !self.memo.rail_lines.contains(&l.id.0))
+            .filter(|l| !self.owed.iter().any(|o| o.line == l.id))
             .find(|l| l.vehicles.len() < usize::from(self.profile.buses_first) && new(l));
         if let Some(line) = short
             && let Some(depot) = road_depot(company, line)
@@ -1640,7 +1965,12 @@ impl Brain {
             .count();
         let proven = self.settled_lines(company) >= PROVEN_LINES && settled_earning > 0;
         let young_most = self.profile.young_most * if proven { 2 } else { 1 };
-        if young >= young_most && !feeding {
+        // Not with money idle on a loan: its payments take what it does
+        // not put to work. Run 70's Normal AI, six lines young, waited with
+        // four and a half million in hand, and a year on its loan had
+        // taken all of it.
+        let idle = books.owing > 0 && self.spendable() >= IDLE_MONEY;
+        if young >= young_most && !feeding && !idle {
             if young != self.young_said {
                 self.young_said = young;
                 self.say(format!(
@@ -1661,6 +1991,31 @@ impl Brain {
         }
         let mut cargo = self.next_cargo && self.carries_cargo;
         self.next_cargo = !self.next_cargo;
+        // Money for a railway whole in hand: looks at what a train could
+        // carry before a bus line takes a tenth of it, [`RAIL_LOOKS`] of
+        // them since its last railway opened. Run 69: both AIs opened a bus
+        // line first and then found a stone railway reckoned at five
+        // million a year in fares too dear by less than that line had cost;
+        // in run 70, looking once, the Hard AI found the first too dear
+        // and the second, a bus line later, as well.
+        let railways = company
+            .lines
+            .iter()
+            .filter(|l| self.memo.rail_lines.contains(&l.id.0))
+            .count();
+        if railways != self.rail_looks.0 {
+            self.rail_looks = (railways, 0);
+        }
+        if self.carries_cargo
+            && self.rail_looks.1 < RAIL_LOOKS
+            && self.spendable() >= RAIL_FIRST_MONEY
+        {
+            if !cargo {
+                self.next_cargo = false;
+            }
+            cargo = true;
+            self.rail_looks.1 += 1;
+        }
         let (buses, trucks) = (
             self.kind_pays(company, Kind::Bus),
             self.kind_pays(company, Kind::Truck),
@@ -1678,6 +2033,54 @@ impl Brain {
         None
     }
 
+    /// Its own line that carries on what `works` makes, loading at the
+    /// works' own station: with it the works takes what it is brought.
+    fn outlet_of(&self, works: &AiIndustry) -> Option<LineId> {
+        let station = works.station?;
+        self.company
+            .as_ref()?
+            .lines
+            .iter()
+            .find(|l| l.stops.first() == Some(&station))
+            .map(|l| l.id)
+    }
+
+    /// A line into `to` belongs with the chain of the outlet it carries
+    /// for, if that is one of its own: judged with it, not before the
+    /// works' cargo flows.
+    fn join_outlets_chain(&mut self, to: &Taker) {
+        let Taker::Industry(works) = to else {
+            return;
+        };
+        if let Some(outlet) = self.outlet_of(works) {
+            let group = self
+                .memo
+                .chains
+                .iter()
+                .position(|g| g.contains(&outlet.0))
+                .unwrap_or_else(|| {
+                    self.memo.chains.push(vec![outlet.0]);
+                    let over = self.memo.chains.len().saturating_sub(CHAINS_KEPT);
+                    self.memo.chains.drain(..over);
+                    self.memo.chains.len() - 1
+                });
+            self.chain_group = Some(group);
+        }
+    }
+
+    /// What a truck line carrying `units` a year `distance` metres is
+    /// reckoned to bring ([`econ::cargo`]), with the truck it last chose, a
+    /// truck station and a depot built for it.
+    fn truck_line(&self, units: f64, distance: f64) -> econ::Estimate {
+        econ::cargo(
+            units,
+            distance,
+            self.seen_truck.unwrap_or(TRUCK_RECKONED),
+            u32::from(self.profile.buses_most),
+            TRUCK_STATION_BUILT + DEPOT_BUILT,
+        )
+    }
+
     /// The industries: a cargo to carry, from an industry that made it over
     /// the last year to the nearest town that needs more of it, within its
     /// difficulty's reach, not carried yet; the best few put to the
@@ -1691,6 +2094,9 @@ impl Brain {
         self.chain_group = None;
         let towns = std::mem::take(&mut self.needing);
         let mut picks: Vec<(f64, CargoRoute)> = Vec::new();
+        // The same cargos by train: each to the town its fares would come
+        // to most at, which may lie beyond its trucks' reach.
+        let mut by_train: Vec<(f64, CargoRoute)> = Vec::new();
         for from in &industries {
             // It loads at the industry's own station, on land, where no other
             // company carries from already (its stations by it, its lines at
@@ -1699,42 +2105,150 @@ impl Brain {
             if from.station.is_none() || from.water || from.carried > 0 {
                 continue;
             }
-            for output in from.outputs.iter().filter(|o| o.per_year >= CARGO_LEAST) {
+            // What of each cargo is free: what it makes less its share of
+            // what is carried away already.
+            let made: u32 = from.outputs.iter().map(|o| o.per_year).sum();
+            let free = |per_year: u32| {
+                let taken = u64::from(from.shipped) * u64::from(per_year) / u64::from(made.max(1));
+                per_year.saturating_sub(u32::try_from(taken).unwrap_or(u32::MAX))
+            };
+            for output in from
+                .outputs
+                .iter()
+                .filter(|o| free(o.per_year) >= CARGO_LEAST)
+            {
+                let output = &tpf3mp_bridge::ai::AiOutput {
+                    per_year: free(output.per_year),
+                    ..output.clone()
+                };
                 let key = route_key(from.pos, output.cargo.as_str());
                 if self.memo.served.contains(&key) || self.given_up.iter().any(|(id, _)| *id == key)
                 {
                     continue;
                 }
-                let nearest = towns
+                // Who would take it, and how much a year: the towns that
+                // need it, each what it is short of; and the industries
+                // that make something of it and have an outlet, each what
+                // its works can turn over that it does not make yet. The
+                // fixture player's
+                // largest cargo lines carry stone to a cement plant and
+                // grain to a livestock farm, 434 and 483 a year, of whose
+                // cement and meat a fifth is carried on (2026-11-11).
+                let takers: Vec<(Taker, u32)> = towns
                     .iter()
                     .filter_map(|town| {
                         let need = town.needs.iter().find(|n| n.cargo == output.cargo)?;
                         let short = need.limit.saturating_sub(need.supply);
-                        (short >= NEED_LEAST).then_some((town, need.at, short))
+                        (short >= NEED_LEAST).then(|| {
+                            (
+                                Taker::Town {
+                                    town: town.clone(),
+                                    at: need.at,
+                                },
+                                short,
+                            )
+                        })
                     })
-                    .map(|(town, at, short)| {
-                        (P::of(from.pos).flat_distance(P::of(at)), town, at, short)
-                    })
+                    .chain(industries.iter().filter_map(|works| {
+                        // A works takes what it is brought only while
+                        // something it makes is carried on, however little:
+                        // run 67's oil train to a refinery no one carried
+                        // from ran empty, nothing waiting at its well.
+                        let takes = works.inputs.contains(&output.cargo)
+                            && works.station.is_some()
+                            && !works.water
+                            && works.pos != from.pos
+                            && (works.shipped > 0 || self.outlet_of(works).is_some());
+                        let room: u32 = works
+                            .outputs
+                            .iter()
+                            .map(|o| o.most.saturating_sub(o.per_year))
+                            .sum();
+                        (takes && room >= NEED_LEAST)
+                            .then(|| (Taker::Industry(works.clone()), room))
+                    }))
+                    .collect();
+                // By truck, the one its trucks would earn most carrying to,
+                // for the money ([`econ::cargo`]): the nearest pays least, a
+                // unit paying by the metre carried. By train, the one its
+                // fares would come to most at.
+                let reach = |taker: &Taker| P::of(from.pos).flat_distance(P::of(taker.pos()));
+                let truck = self.seen_truck.unwrap_or(TRUCK_RECKONED);
+                let best = takers
+                    .iter()
+                    .map(|(taker, room)| (reach(taker), taker, *room))
                     .filter(|(d, ..)| *d >= CARGO_NEAREST && *d <= self.profile.cargo_most)
-                    .min_by(|a, b| a.0.total_cmp(&b.0));
-                if let Some((d, to, at, short)) = nearest {
-                    // More cargo wanted and made, fewer kilometres.
-                    let score = f64::from(output.per_year.min(short)) / (1.0 + d / 1000.0);
+                    // Not so far its cargo is lost on the way.
+                    .filter(|(d, ..)| truck.way(*d) <= econ::WAY_MOST)
+                    .map(|(d, taker, room)| {
+                        let estimate = self.truck_line(f64::from(output.per_year.min(room)), d);
+                        (estimate, taker)
+                    })
+                    .filter(|(e, _)| {
+                        e.profit() >= LINE_PROFIT_LEAST
+                            && e.payback().is_some_and(|years| years <= PAYBACK_MOST)
+                    })
+                    .map(|(e, taker)| (e.worth(), taker))
+                    .max_by(|a, b| a.0.total_cmp(&b.0));
+                let furthest = takers
+                    .iter()
+                    .map(|(taker, room)| {
+                        let d = reach(taker);
+                        let fares = f64::from(output.per_year.min(*room)) * d * econ::CARGO_FARE;
+                        (fares, d, taker)
+                    })
+                    .filter(|(_, d, _)| (train::RAIL_FROM..=CARGO_TRAIN_MOST).contains(d))
+                    .max_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((fares, _, to)) = furthest {
+                    by_train.push((
+                        fares,
+                        CargoRoute {
+                            cargo: output.cargo.clone(),
+                            from: from.clone(),
+                            to: to.clone(),
+                        },
+                    ));
+                }
+                if let Some((score, to)) = best {
                     picks.push((
                         score,
                         CargoRoute {
                             cargo: output.cargo.clone(),
                             from: from.clone(),
-                            to: Taker::Town {
-                                town: to.clone(),
-                                at,
-                            },
+                            to: to.clone(),
                         },
                     ));
                 }
             }
         }
         picks.sort_by(|a, b| b.0.total_cmp(&a.0));
+        by_train.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // What it weighed, for its driver's log: the best of each.
+        let named = |route: &CargoRoute| {
+            format!(
+                "{} from {} to {} ({:.0} m)",
+                cargo_name(route.cargo.as_str()),
+                route.from.name.as_str(),
+                route.to.name(),
+                route.distance()
+            )
+        };
+        let weighed = format!(
+            "weighs {} cargo line(s) by truck{} and {} by train{}",
+            picks.len(),
+            picks
+                .first()
+                .map_or(String::new(), |(_, r)| format!(", the best {}", named(r))),
+            by_train.len(),
+            by_train.first().map_or(String::new(), |(fares, r)| format!(
+                ", the best {} for {fares:.0} a year in fares",
+                named(r)
+            )),
+        );
+        if weighed != self.weighed_said {
+            self.say(weighed.clone());
+            self.weighed_said = weighed;
+        }
         // A production chain where a town's need has a maker that makes too
         // little of it, in turn with single lines while its money allows
         // one: the chain's legs in order, the first now.
@@ -1756,10 +2270,17 @@ impl Brain {
             },
             skip,
         );
-        if !found.is_empty()
-            && self.spendable() >= CHAIN_MONEY
-            && (picks.is_empty() || self.random().is_multiple_of(2))
-        {
+        // A chain where no single line is worth opening: a line it has
+        // reckoned to pay comes before one whose first leg carries nothing
+        // until its feeders run (run 65: both AIs spent their cargo turns
+        // on a meat chain no road joined, with idle works by quarries and
+        // oil wells all over the map).
+        let single = !picks.is_empty()
+            || (self.spendable() >= train::RAIL_MONEY
+                && by_train
+                    .iter()
+                    .any(|(fares, _)| *fares >= CARGO_TRAIN_FARES_LEAST));
+        if !found.is_empty() && self.spendable() >= CHAIN_MONEY && !single {
             let among = self.profile.pick_among.min(found.len()).max(1);
             #[allow(clippy::cast_possible_truncation)]
             let pick = (self.random() % among as u64) as usize;
@@ -1779,20 +2300,23 @@ impl Brain {
             self.check_chain_roads(1, now);
             return;
         }
-        // Trains first: with money enough for a rail line, among the
-        // cargos far enough for one.
+        // Trains first: with money enough for a rail line, the cargo
+        // whose fares by train are reckoned to come to most, among its
+        // difficulty's picks; one whose fares would carry a train needs no
+        // settled lines' earnings to begin ([`CARGO_TRAIN_FARES_LEAST`]).
         if self.spendable() >= train::RAIL_MONEY {
-            let far: Vec<CargoRoute> = picks
-                .iter()
-                .filter(|(_, r)| r.distance() >= train::RAIL_FROM)
-                .map(|(_, r)| r.clone())
-                .take(self.profile.pick_among.max(1))
-                .collect();
-            if !far.is_empty() {
+            by_train.truncate(self.profile.pick_among.max(1));
+            if !by_train.is_empty() {
                 #[allow(clippy::cast_possible_truncation)]
-                let pick = (self.random() % far.len() as u64) as usize;
+                let pick = (self.random() % by_train.len() as u64) as usize;
+                let (fares, route) = by_train.swap_remove(pick);
                 self.leg_now = None;
-                if self.start_rail(far[pick].clone()) {
+                self.join_outlets_chain(&route.to);
+                self.rail_fares = fares;
+                let begun = self.start_rail(route);
+                self.rail_fares = 0.0;
+                if begun {
+                    self.say(format!("reckons its fares at {fares:.0} a year"));
                     return;
                 }
             }
@@ -1867,11 +2391,86 @@ impl Brain {
                 vec![first, (P::of(industry.pos), industry.station)],
             ),
         };
+        // What it is reckoned to carry and bring: what its maker makes, and
+        // a town may take, over its length.
+        let made = from
+            .outputs
+            .iter()
+            .find(|o| o.cargo == cargo)
+            .map_or(0, |o| o.per_year);
+        let (units, distance) = match &to {
+            Taker::Town { town, at } => {
+                let short = town
+                    .needs
+                    .iter()
+                    .find(|n| n.cargo == cargo)
+                    .map_or(made, |n| n.limit.saturating_sub(n.supply));
+                (made.min(short), P::of(from.pos).flat_distance(P::of(*at)))
+            }
+            Taker::Industry(industry) => {
+                let room: u32 = industry
+                    .outputs
+                    .iter()
+                    .map(|o| o.most.saturating_sub(o.per_year))
+                    .sum();
+                (
+                    made.min(room.max(NEED_LEAST)),
+                    P::of(from.pos).flat_distance(P::of(industry.pos)),
+                )
+            }
+        };
+        // By the road its trucks would drive, where the pathfinder says
+        // how long it is: a line reckoned to pay over the straight line may
+        // not over a road half as long again. Run 70's stone trucks, 2.8 km
+        // from quarry to cement plant by the map and 4.6 km by road, took a
+        // year and a half over their first load.
+        let road = f64::from(route.length);
+        let estimate = econ::cargo_by_road(
+            f64::from(units),
+            distance,
+            road,
+            self.seen_truck.unwrap_or(TRUCK_RECKONED),
+            u32::from(self.profile.buses_most),
+            TRUCK_STATION_BUILT + DEPOT_BUILT,
+        );
+        if self.chain.is_empty()
+            && road > distance
+            && (estimate.profit() < LINE_PROFIT_LEAST
+                || estimate.payback().is_none_or(|years| years > PAYBACK_MOST))
+        {
+            self.given_up
+                .push((route_key(from.pos, cargo.as_str()), now + GIVE_UP_FOR));
+            self.say(format!(
+                "found the road from {} to {} {road:.0} m long, too far for what its trucks would earn",
+                from.name.as_str(),
+                to.name()
+            ));
+            self.stage = Stage::Survey;
+            self.rest(now);
+            return;
+        }
+        let fleet = (estimate.vehicles as usize)
+            .clamp(usize::from(self.profile.buses_first), FLEET_FIRST_MOST);
+        if self.chain.is_empty() && self.chain_group.is_none() {
+            self.join_outlets_chain(&to);
+        }
         let serves = Serves::Cargo { cargo, from, to };
-        self.say(format!("plans {}", serves.describe()));
+        self.say(format!(
+            "plans {}: {units} a year over {distance:.0} m, reckoned to bring {:.0} a year with {} truck(s)",
+            serves.describe(),
+            estimate.profit(),
+            estimate.vehicles
+        ));
+        let round = econ::YEAR
+            / self
+                .seen_truck
+                .unwrap_or(TRUCK_RECKONED)
+                .rounds(distance.max(road * econ::ROAD_DRIVEN));
         self.start(serves, centres);
         if let Some(project) = self.project.as_mut() {
             project.stops = stops;
+            project.fleet = fleet;
+            project.round = round;
         }
     }
 
@@ -1938,7 +2537,10 @@ impl Brain {
     }
 
     fn start(&mut self, serves: Serves, centres: Vec<Pos>) {
+        let fleet = usize::from(self.profile.buses_first);
         self.project = Some(Project {
+            fleet,
+            round: 0.0,
             serves,
             centres,
             sites: Vec::new(),
@@ -1973,11 +2575,26 @@ impl Brain {
             .filter(|t| t.buildings >= PASSENGER_TOWN && !t.centres.is_empty())
             .take(12)
             .collect();
+        // Where the game says who travels where, a railway is for two
+        // towns whose people's fares would carry one.
+        let counted = towns.iter().any(|t| !t.travel.is_empty());
+        let fares = |a: &AiTown, b: &AiTown, d: f64| {
+            let between = |from: &AiTown, to: &AiTown| {
+                from.travel
+                    .iter()
+                    .find(|t| t.to == to.id)
+                    .map_or(0, |t| t.people.saturating_sub(t.riding))
+            };
+            f64::from(between(a, b) + between(b, a)) * TRAIN_SHARE * econ::LINK_FARE * d
+        };
         let mut pairs: Vec<(f64, AiTown, AiTown)> = Vec::new();
         for (i, a) in big.iter().enumerate() {
             for b in &big[i + 1..] {
                 let d = P::of(a.centres[0]).flat_distance(P::of(b.centres[0]));
                 if !(PASSENGER_FROM..=PASSENGER_MOST).contains(&d) || taken(a, b) {
+                    continue;
+                }
+                if counted && fares(a, b, d) < TRAIN_FARES_LEAST {
                     continue;
                 }
                 // Another company's line joins them already: its riders
@@ -2001,6 +2618,101 @@ impl Brain {
         Some((a, b))
     }
 
+    /// How long a vehicle like `runs` is reckoned to take round a line
+    /// between two towns, in the game's seconds.
+    fn road_round(&self, runs: econ::Runs, serves: &Serves) -> f64 {
+        match serves {
+            Serves::Towns(pair) => {
+                econ::YEAR / runs.rounds(P::of(pair.0.pos).flat_distance(P::of(pair.1.pos)))
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Whether it has a road depot by `at`, joined to the street: a line
+    /// there needs none built.
+    fn road_depot_by(&self, at: Pos) -> bool {
+        self.company.as_ref().is_some_and(|c| {
+            c.depots.iter().any(|d| {
+                d.connected
+                    && d.file.as_str() != crate::rail::DEPOT
+                    && P::of(d.at).flat_distance(P::of(at)) <= DEPOT_REACH
+            })
+        })
+    }
+
+    /// The bus lines between two towns it could open, each with what it is
+    /// reckoned to bring and the people it would carry, the most for its
+    /// money first ([`econ::passengers`]): two towns [`INTERCITY_FROM`] to
+    /// its difficulty's reach apart, whose people who work and shop in the
+    /// other ride no line yet ([`AiTown::travel`]), not joined by a line of
+    /// its own, reckoned to make [`LINE_PROFIT_LEAST`] a year and earn
+    /// itself back within [`PAYBACK_MOST`] years. The first town of each is
+    /// where its depot goes: one it has a depot by, else the larger.
+    fn intercity(&self, towns: &[AiTown]) -> Vec<(econ::Estimate, u32, AiTown, AiTown)> {
+        let runs = self.seen_bus.unwrap_or(BUS_RECKONED);
+        let between = |a: &AiTown, b: &AiTown| {
+            a.travel
+                .iter()
+                .find(|t| t.to == b.id)
+                .map_or(0, |t| t.people.saturating_sub(t.riding))
+        };
+        let mut lines = Vec::new();
+        for (i, a) in towns.iter().enumerate() {
+            for b in &towns[i + 1..] {
+                let people = between(a, b) + between(b, a);
+                let d = P::of(a.pos).flat_distance(P::of(b.pos));
+                if people == 0
+                    || !(INTERCITY_FROM..=self.profile.cargo_most).contains(&d)
+                    || runs.way(d) > econ::WAY_MOST
+                {
+                    continue;
+                }
+                let taken = |key: u32| {
+                    self.memo.served.contains(&key)
+                        || self.memo.given_up.contains(&key)
+                        || self.given_up.iter().any(|(id, _)| *id == key)
+                };
+                // A railway of its own between them carries them already;
+                // another company's line between them takes their riders
+                // before they show as riding (run 63: the room's two AIs
+                // each opened a line between the same two towns, three
+                // minutes apart).
+                if taken(bus_pair_key(a.id, b.id))
+                    || self.memo.served.contains(&passenger_key(a.id, b.id))
+                    || a.linked.contains(&b.id)
+                    || b.linked.contains(&a.id)
+                {
+                    continue;
+                }
+                let (depot_a, depot_b) = (self.road_depot_by(a.pos), self.road_depot_by(b.pos));
+                let built = STOPS_BUILT + if depot_a || depot_b { 0.0 } else { DEPOT_BUILT };
+                let estimate = econ::passengers(
+                    f64::from(people),
+                    BUS_SHARE,
+                    d,
+                    runs,
+                    u32::from(self.profile.buses_most),
+                    built,
+                );
+                if estimate.profit() < LINE_PROFIT_LEAST
+                    || estimate.payback().is_none_or(|years| years > PAYBACK_MOST)
+                {
+                    continue;
+                }
+                let first_b = if depot_a == depot_b {
+                    b.buildings > a.buildings
+                } else {
+                    depot_b
+                };
+                let (first, second) = if first_b { (b, a) } else { (a, b) };
+                lines.push((estimate, people, first.clone(), second.clone()));
+            }
+        }
+        lines.sort_by(|x, y| y.0.worth().total_cmp(&x.0.worth()));
+        lines
+    }
+
     fn on_towns(&mut self, towns: Vec<AiTown>, now: Instant) {
         self.given_up.retain(|(_, until)| *until > now);
         // A new project from a look at the world: no chain's.
@@ -2021,6 +2733,48 @@ impl Brain {
             && self.start_passenger_rail(&a, &b)
         {
             return;
+        }
+        // A bus line between two towns whose people work and shop in each
+        // other, the one reckoned to bring most for its money, among its
+        // difficulty's picks: a fare pays by the metre carried, and a town's
+        // own buses carry their riders a few hundred (the fixture player's
+        // town lines took 120,000 to 370,000 a year, a line between towns
+        // by the same reckoning as much with a bus or two).
+        if !self.feeding {
+            let spendable = self.spendable();
+            #[allow(clippy::cast_precision_loss)]
+            let lines: Vec<_> = self
+                .intercity(&towns)
+                .into_iter()
+                // Half as much again in hand: run 68 opened a line its
+                // stops left it no bus for.
+                .filter(|(e, ..)| e.capital * CAPITAL_MARGIN <= spendable as f64)
+                .take(self.profile.pick_among.max(1))
+                .collect();
+            if !lines.is_empty() {
+                #[allow(clippy::cast_possible_truncation)]
+                let pick = (self.random() % lines.len() as u64) as usize;
+                let (estimate, people, a, b) = lines[pick].clone();
+                let per_town = self.profile.stops_most.div_ceil(2).max(1);
+                let centres = pair_centres(&a, &b, per_town);
+                let serves = Serves::Towns(Box::new((a, b)));
+                self.say(format!(
+                    "plans {}: {people} of their people travel between them, reckoned to bring {:.0} a year with {} bus(es) for {:.0}",
+                    serves.describe(),
+                    estimate.profit(),
+                    estimate.vehicles,
+                    estimate.capital
+                ));
+                let fleet = (estimate.vehicles as usize)
+                    .clamp(usize::from(self.profile.buses_first), FLEET_FIRST_MOST);
+                let round = self.road_round(self.seen_bus.unwrap_or(BUS_RECKONED), &serves);
+                self.start(serves, centres);
+                if let Some(project) = self.project.as_mut() {
+                    project.fleet = fleet;
+                    project.round = round;
+                }
+                return;
+            }
         }
         // Its bus lines' stops, and its passenger train stations: a town by
         // one wants buses to it, as a player runs buses to a station (the
@@ -2084,8 +2838,17 @@ impl Brain {
         #[allow(clippy::cast_possible_truncation)]
         let pick = (self.random() % among as u64) as usize;
         let town = candidates[pick].clone();
-        // Its money must stretch to a line: a rough first bound.
-        if self.spendable() < 150_000 {
+        // Its money must stretch to the line: its stops, a depot where it
+        // has none by, and its first bus. Runs 72 and 73 each opened a
+        // town's line its stops and depot left no bus for.
+        let bus = self.seen_bus.unwrap_or(BUS_RECKONED).price;
+        let depot = if self.road_depot_by(town.pos) {
+            0.0
+        } else {
+            DEPOT_BUILT
+        };
+        #[allow(clippy::cast_precision_loss)]
+        if (self.spendable() as f64) < bus + STOPS_BUILT + depot {
             self.say("waits for money".into());
             self.rest(now);
             return;
@@ -2390,6 +3153,7 @@ impl Brain {
         let name = match &project.serves {
             Serves::Cargo { to, .. } => format!("{} Freight", to.name()),
             Serves::Town(town) => format!("{} Freight", town.name.as_str()),
+            Serves::Towns(pair) => format!("{} Freight", pair.0.name.as_str()),
         };
         while let Some((index, side)) = project.station_tries.first().copied() {
             if let Some((_, build)) = project
@@ -2555,7 +3319,7 @@ impl Brain {
         let full = tpf3mp_proto::action::Fraction(1_000_000);
         let rules_at = |stop: usize| -> Option<(Vec<bool>, Vec<tpf3mp_proto::action::Fraction>)> {
             match &project.serves {
-                Serves::Town(_) => Some((vec![true], vec![full])),
+                Serves::Town(_) | Serves::Towns(_) => Some((vec![true], vec![full])),
                 Serves::Cargo { cargo, from, .. } => {
                     let index = usize::from(from.outputs.iter().find(|o| &o.cargo == cargo)?.index);
                     let mut load = vec![false; index + 1];
@@ -2583,7 +3347,7 @@ impl Brain {
             }
         };
         let alternatives = match &project.serves {
-            Serves::Town(_) => vec![Terminal {
+            Serves::Town(_) | Serves::Towns(_) => vec![Terminal {
                 station: 1,
                 terminal: 0,
             }],
@@ -2617,6 +3381,10 @@ impl Brain {
         }
         let (name, mode) = match &project.serves {
             Serves::Town(town) => (format!("{} Bus", town.name.as_str()), BUS_MODE),
+            Serves::Towns(pair) => (
+                format!("{} - {} Bus", pair.0.name.as_str(), pair.1.name.as_str()),
+                BUS_MODE,
+            ),
             Serves::Cargo { cargo, from, .. } => (
                 format!("{} {}", from.name.as_str(), cargo_name(cargo.as_str())),
                 TRUCK_MODE,
@@ -2652,6 +3420,35 @@ impl Brain {
         if let Stage::Upkeep(stage) = self.stage.clone() {
             return self.upkeep_models(stage, models, now);
         }
+        // A survey's read of the year's models: what it reckons with.
+        if matches!(self.stage, Stage::Survey | Stage::SurveyNeeds) {
+            let trucks = self.seen_bus.is_some();
+            #[allow(clippy::cast_precision_loss)]
+            let runs = self.pick_model(models, None).map_or(
+                if trucks { TRUCK_RECKONED } else { BUS_RECKONED },
+                |model| econ::Runs {
+                    capacity: f64::from(model.capacity),
+                    speed: f64::from(model.speed),
+                    price: model.price as f64,
+                    running: model.running as f64,
+                    rail: false,
+                },
+            );
+            self.say(format!(
+                "reckons with a {} of {:.0}, {:.0} km/h, {:.0} to buy and {:.0} a year",
+                if trucks { "truck" } else { "bus" },
+                runs.capacity,
+                runs.speed,
+                runs.price,
+                runs.running
+            ));
+            if trucks {
+                self.seen_truck = Some(runs);
+            } else {
+                self.seen_bus = Some(runs);
+            }
+            return None;
+        }
         // A new town line's bus is chosen for the riders it is likely to
         // have; one for a line running full, for its seats.
         let topped = self.topping.as_ref().and_then(|(id, _)| {
@@ -2665,9 +3462,29 @@ impl Brain {
                 .project
                 .as_ref()
                 .is_some_and(|p| p.serves.cargo().is_some());
-        let seats = (!cargo && !topped.is_some_and(|l| self.full(l))).then_some(TOWN_RIDERS);
+        // A line between two towns fills a bus over its length: its seats
+        // count, as a full line's.
+        let between_towns = self
+            .project
+            .as_ref()
+            .is_some_and(|p| matches!(p.serves, Serves::Towns(_)));
+        let seats = (!cargo && !between_towns && !topped.is_some_and(|l| self.full(l)))
+            .then_some(TOWN_RIDERS);
         match self.pick_model(models, seats) {
             Some(model) => {
+                #[allow(clippy::cast_precision_loss)]
+                let runs = econ::Runs {
+                    capacity: f64::from(model.capacity),
+                    speed: f64::from(model.speed),
+                    price: model.price as f64,
+                    running: model.running as f64,
+                    rail: false,
+                };
+                if cargo {
+                    self.seen_truck = Some(runs);
+                } else {
+                    self.seen_bus = Some(runs);
+                }
                 self.model = Some(model);
                 self.buy(now)
             }
@@ -2707,12 +3524,22 @@ impl Brain {
         let model = self.model.clone()?;
         let depot = self.depot_now()?;
         if model.price > self.spendable() {
-            self.say("waits for money for a bus".into());
+            let line = self.line_now();
+            if line != self.bus_wait_said {
+                self.bus_wait_said = line;
+                self.say("waits for money for a bus".into());
+            }
+            for owed in &mut self.owed {
+                if Some(owed.line) == line {
+                    owed.at = now + OWED_RETRY;
+                }
+            }
             self.project = None;
             self.topping = None;
             self.rest(now);
             return None;
         }
+        self.bus_wait_said = None;
         let before: Vec<VehicleId> = self
             .company
             .as_ref()
@@ -2751,8 +3578,30 @@ impl Brain {
             .iter()
             .filter(|v| v.line == Some(line))
             .count();
-        if running < usize::from(self.profile.buses_first) {
-            return self.buy(now);
+        let owed = self.owed.iter().position(|o| o.line == line);
+        #[allow(clippy::cast_precision_loss)]
+        let (fleet, apart) = match (&self.project, owed) {
+            (Some(p), _) => (p.fleet, p.round / p.fleet.max(1) as f64),
+            (None, Some(i)) => (self.owed[i].fleet, self.owed[i].apart),
+            (None, None) => (usize::from(self.profile.buses_first), 0.0),
+        };
+        if let Some(i) = owed {
+            self.owed.remove(i);
+        }
+        if running < fleet {
+            if apart < 1.0 {
+                return self.buy(now);
+            }
+            // The next leaves its share of a round after this one: owed,
+            // while it looks to its next line.
+            let faster = f64::from(self.speed.max(100)) / 100.0;
+            let wait = Duration::from_secs_f64((apart / faster).min(300.0));
+            self.owed.push(Owed {
+                line,
+                fleet,
+                apart,
+                at: now + wait,
+            });
         }
         if let Some(project) = self.project.take() {
             let id = project.serves.key();
@@ -2765,14 +3614,51 @@ impl Brain {
                 "bus(es)"
             };
             self.say(format!(
-                "runs {running} {vehicles} on {}",
-                project.serves.describe()
+                "runs {running} {vehicles} on {}{}",
+                project.serves.describe(),
+                if running < fleet {
+                    format!(", {} more to follow", fleet - running)
+                } else {
+                    String::new()
+                }
             ));
         }
         self.topping = None;
         self.rest(now);
         None
     }
+}
+
+/// Where a bus line between two towns stops: by `per_town` of each one's
+/// districts' centres (its houses' first, as [`AiTown::centres`] lists
+/// them), no two within [`STOP_SPACING`]; the first town's from its far
+/// side towards the second, the second's from its near side on, so a bus
+/// runs through each town once a round.
+fn pair_centres(a: &AiTown, b: &AiTown, per_town: usize) -> Vec<Pos> {
+    let pick = |town: &AiTown, other: &AiTown, towards: bool| {
+        let mut chosen: Vec<Pos> = Vec::new();
+        for centre in town.centres.iter() {
+            if chosen.len() < per_town
+                && chosen
+                    .iter()
+                    .all(|c| P::of(*c).flat_distance(P::of(*centre)) >= STOP_SPACING)
+            {
+                chosen.push(*centre);
+            }
+        }
+        let far = |c: &Pos| P::of(*c).flat_distance(P::of(other.pos));
+        chosen.sort_by(|x, y| {
+            if towards {
+                far(y).total_cmp(&far(x))
+            } else {
+                far(x).total_cmp(&far(y))
+            }
+        });
+        chosen
+    };
+    let mut centres = pick(a, b, true);
+    centres.extend(pick(b, a, false));
+    centres
 }
 
 /// The terminal of an industry's own station its output is loaded at. Its

@@ -37,6 +37,8 @@ pub const MAX_AI_ENDS: usize = 8;
 pub const RECENT_MONTHS: u32 = 3;
 /// Most towns a [`AiTown::linked`] lists.
 pub const MAX_AI_LINKED: usize = 8;
+/// Most towns a [`AiTown::travel`] lists: those most of its people go to.
+pub const MAX_AI_TRAVEL: usize = 8;
 /// How far from one of a town's districts' centres a stop is in that town,
 /// in metres.
 pub const TOWN_REACH: f64 = 600.0;
@@ -174,6 +176,11 @@ pub struct AiStation {
     /// A rail station's track ends: where its construction's tracks meet
     /// the world, and whether nothing meets them yet.
     pub ends: BoundedVec<AiEnd, MAX_AI_ENDS>,
+    /// How many industries and other cargo takers stand in its catchment
+    /// (`getStationCatchables` for cargo); none where the game did not
+    /// say. A station 250 m from a quarry reached none, and its train
+    /// loaded nothing for a year (run 74).
+    pub reach: Option<u16>,
 }
 
 /// A station track's end.
@@ -229,6 +236,11 @@ pub struct AiLine {
     pub recent: Option<i64>,
     /// Problems the game sees on it (no path, no vehicle, ...).
     pub problems: u16,
+    /// How long a vehicle takes round it, in the game's seconds, as the
+    /// game reckons its frequency (`getMaxFrequency`, its vehicles a
+    /// second); 0 unknown. A line between two towns takes most of a year:
+    /// what it earns shows only after rounds of it.
+    pub round: u32,
 }
 
 /// A vehicle of the company's.
@@ -244,6 +256,8 @@ pub struct AiVehicle {
     pub worn: u16,
     /// On no line: in a depot, or waiting for one.
     pub idle: bool,
+    /// How many of the game's months ago it was bought (its oldest part).
+    pub age: u16,
 }
 
 /// A town.
@@ -268,6 +282,26 @@ pub struct AiTown {
     pub rivals: u16,
     /// The towns another company's line already joins it to, each once.
     pub linked: BoundedVec<TownId, MAX_AI_LINKED>,
+    /// How many people its houses hold (its residential capacity): the
+    /// town window's size of it.
+    pub residents: u32,
+    /// The share of its people who travel by a line, in percent (the town
+    /// window's line usage).
+    pub usage: u8,
+    /// Where its people work and shop in other towns, the towns most go to
+    /// first: the town window's destinations. What a line between two
+    /// towns may carry, as a player reads it there.
+    pub travel: BoundedVec<AiTravel, MAX_AI_TRAVEL>,
+}
+
+/// The people of a town who work or shop in another
+/// (`getSourceToDestinationCount`): one for each person's workplace there
+/// and one for each one's shop, and those of them who go by a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiTravel {
+    pub to: TownId,
+    pub people: u32,
+    pub riding: u32,
 }
 
 /// A cargo a town takes: how much it was supplied and may take, as the
@@ -307,6 +341,11 @@ pub struct AiIndustry {
     /// line little: run 47's two AIs each built a cement railway from one
     /// plant, and each lost 0.7 to 0.8 million in its first year.
     pub carried: u16,
+    /// What was carried away from it over the last year, all it makes
+    /// together, by anyone (`getCargoShippedPerYear`): what it makes less
+    /// this is free for a new line. The fixture's largest farm makes 602
+    /// grain a year, 483 of it carried by its player's train.
+    pub shipped: u32,
 }
 
 /// One cargo an industry makes.
@@ -327,6 +366,10 @@ pub struct AiRoute {
     pub connected: bool,
     /// The edges of the path the game found; 0 for none.
     pub edges: u32,
+    /// How long that path is, in metres, by its edges' own lengths; 0
+    /// where the game did not say. A road between two places may run half
+    /// as far again as the straight line a fare pays for.
+    pub length: u32,
 }
 
 /// A street edge.

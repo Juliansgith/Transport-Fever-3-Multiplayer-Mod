@@ -571,6 +571,187 @@ place reaching 19 into one reaching 4. With 64 bearings on rings 20 m apart
 every one of the eight town pairs finds 3 to 37 places reaching enough at
 each end, the best reaching 10 to 28 cells, under every half-cell shift.
 
+## What the game pays, and for whom (2026-11-11)
+
+Through 1.5.0 no AI covered its loans: its bus lines took 20,000 to 60,000
+a year, its passenger trains nothing, where the fixture's player takes 45
+million. The cause was in what it chose, not how it built. Read from the
+game's own data files and from one game on the big fixture (build 40425,
+`bubujujuoct10`, May 1922, read-only console probes):
+
+- **The fare** (`base/content/economy.zip`, `economy/cargo_income.script`
+  and `cargotype.script`): what a vehicle unloads pays its income factor
+  times the difficulty's factor times the distance from where it loaded,
+  in a straight line through space, plus eight times any climb. Every
+  cargo's factor is 3.8 a metre (`constantFn`: 4, falling a quarter of the
+  way to 3.2); a passenger's 3.609 a metre (`passengersFn`), times a half
+  plus the vehicle's `priceFactor`. Speed and time are no part of it. The
+  difficulty's factor was 1 for both
+  (`api.res.getBaseConfig().economy.cargoIncomeScript.params`).
+- **So a line earns its units a year times its length.** The AI carried
+  each cargo to the *nearest* town that needs it, ran buses inside towns,
+  and began railways at 1.8 km: the least any of them could pay. The
+  player's lines, a year: a passenger train through five towns 12.2
+  million (three trains of 114 seats, 7.3 km end to end), one through
+  three 6.7 million; cargo trains of 150 to 168 units over 2.2 to 2.4 km,
+  5.3 to 7.5 million each; a town's bus line 120,000 to 370,000; one truck
+  of 12 over 1.4 km 188,000 (2.9 loads a year: a round of some 490 s, 360
+  of them driving at 8 m/s).
+- **A year is short.** 1,461,000 ms of the game's clock, 24 minutes at 1x:
+  a bus at 40 km/h drives 16 km in it. A vehicle's year is its capacity
+  times the rounds it makes times the line's length times the fare.
+- **Who travels where** is the town window's destinations table:
+  `api.engine.util.town.getSourceToDestinationCount(town, { entity = isTown
+  }, 1 | 2)` gives, for shops (1) and workplaces (2), how many of the
+  town's people go to each destination and how many of those by a line
+  (`gui/entity_window/town/town.tl`). A person has a home, a shop and a
+  workplace (`SIM_PERSON.destinations`) and a mode to each (0 on foot, 1
+  by car, 2 by a line). Of the fixture's 5,706 people's 11,412 shops and
+  workplaces, 5,587 are in another town: 1,707 by a line, 3,869 by car.
+  People of towns no line serves already work and shop in their
+  neighbours (Hunstanton: 133 of its 254 shops elsewhere).
+- **What they pay**: the player's passenger trains took 19.0 million a
+  year for 1,731 such people riding, 8.29 million of them times the
+  metres between their towns' centres: 2.29 a person and metre a year,
+  some 0.63 fares each.
+- **A joined town grows, and its people turn to the towns it is joined
+  to.** The player's six joined towns hold 197 to 420 people in their
+  houses, the others 30 to 120; 66 to 79 in 100 of their people ride
+  lines (`getTownLineUsage`), and Basingstoke's 365 have 343 shops and
+  workplaces in the other five, by line. The most people travelling
+  between two towns no line joins: 297 (Dinnington St John's and
+  Hunstanton, 1.9 km), then 115, 103, 95; 25 pairs of 46 or more.
+- **An industry grows as it is carried from**: every half year it may go
+  up a level, never when what it makes times the share of it shipped
+  rates under a quarter, always from three quarters
+  (`game_mechanics/industries/industries.script.tl`).
+
+So the AI reckons what a line would bring before it builds it
+(`crates/tpf3mp-ai/src/econ.rs`): the units or the people there are,
+times how far, at the game's fares, less what its vehicles cost to run,
+for what it costs to open; a vehicle's rounds by the player's truck
+above. It reads each town's people and destinations (bridge 41), opens
+bus lines between the two towns whose people travel most between them
+for the money, carries a cargo to the town that pays most for it, and
+opens a line with the vehicles its load needs.
+
+## A loan's clock: runs 67 to 72 (2026-11-11)
+
+One game, a Hard and a Normal AI, the big fixture, 4x (a year of the game
+in six minutes), each AI on the room's loan of 13 million over 48 months
+at 5 %: 299,381 a month, 3.6 million a year, whatever its lines earn.
+
+- **A works takes what it is brought only while something it makes is
+  carried on.** Run 67's oil railway to a refinery no one carried from
+  ran empty, nothing waiting at its well; the fixture player's cement
+  plant takes 434 stone a year and sends on 48 cement. Raw producers
+  report what they make with nothing shipped.
+- **The first AI railway that pays** (run 68): stone from Saffron Walden
+  Quarry to Chesterfield Cement Plant, 5.9 km, a mogul and six bulk
+  wagons, 60 a load: 1,410,540 a delivery, a round of 693 s, 2.82
+  million a year against 0.43 to run. It carried 126 of the 243 a year
+  its quarry makes: a train of twelve carries nearly all of it. Its line
+  was reckoned at 4.55 million and, with its train, took about 8.3 of
+  its 13: 40 of its edges bridges, 6 tunnels.
+- **What the rest earn.** Bus lines between Hunstanton and its
+  neighbours, three to five buses each: 590,000 to 730,000 a year by
+  their last quarter (Dinnington St John's, Bradley Stoke); a bus on a
+  lesser pair 230,000 to 390,000; a town's own line 10,000 to 50,000. A
+  truck of 1922 (10 units, 25 km/h): its road from quarry to cement plant
+  2,829 m by the map and 4,565 m by the pathfinder's edges, driven empty
+  in 748 s, a round 2,000 s by the game's own frequency; one truck had
+  not unloaded once in a year and a half. Everything that pays makes 40
+  to 60 in 100 of what it cost a year: a company that puts all 13
+  million to work at once earns some 6 million a year against 3.6 to pay
+  back; one that waits pays its loan back with the loan.
+- **Where the time went.** After opening a road line the AI sent its
+  vehicles out a share of a round apart and did nothing else meanwhile:
+  the Normal AI, six million in hand, planned nothing for a year of the
+  game while four trucks left their depot (run 68). The second AI seat
+  waited three minutes for the first to start: half a year, 1.8 million
+  of payments (run 72). Six young lines made the Normal AI wait with 4.5
+  million in hand; a year on, its loan had taken all of it (run 70).
+- **Where the money went.** A bus line opened first left a stone railway
+  reckoned at five million a year in fares too dear by less than the bus
+  line had cost (runs 69, 70). The Hard AI's first railway of run 70,
+  oil over 8.4 km, missed its budget by 130,000; the second was too dear
+  a bus line later. Both AIs opened a bus line between the same two
+  towns in the same seconds and shared its riders (run 70). Every AI
+  found "no route" for the oil railway: its search opened its 200,000
+  states over rough land before it arrived.
+
+What changed for it: stations of six modules and trains of up to twelve
+wagons where a round has more to carry than six hold (the station tool
+lays an even count from -2 to 3, `modular_station.script.lua`); a new
+line's later vehicles owed in the background, their price laid by; the
+railway looked at before a bus line while the loan is whole, up to
+three; a short train where the long one alone is too dear; the young
+lines' wait dropped while three million sit idle on a loan; the minds
+one game drives telling each other what they build; truck lines reckoned
+over their road (bridge 42); a second, keener route search; seats twenty
+seconds apart. In run 72 the Hard AI then built the stone railway first
+(its oil railway found no route, the keener search not yet in), and its
+train took 2.82 million in its first year.
+
+Run 73, with the keener search: the Hard AI's oil railway found its
+route, 8.4 km, reckoned at 5.94 million (up to 8.91 with half as much
+again) and built for 7.39 with its loan's payments over the building,
+1.17 times its reckoning; its train, chosen by the 8.91, was a mogul and
+six tank wagons before stations built for twelve, 1.87 million a load.
+The Normal AI's stone railway, reckoned at up to 5.54 million between
+its first station places, was laid out between others ("about 4.19
+million: 7 bridge and 26 tunnel edges") and took 11.22 million: tunnels
+under a hill cost far more than its prices say, and nothing held the
+second layout against its money. Its train "did not come", the line was
+given up, and both AIs ended the second year below nothing. Since then a
+layout's pieces are added up at the game's own verdicts before anything
+is built, a train is chosen by the line's likely cost and sized to the
+money at its purchase, and a railway without a train gets one later.
+
+Run 74, with those: the Hard AI's oil railway took 6.75 million and its
+train, a br75 and six tank wagons, 3.73 million in fares in its first
+year and a half (two loads), its company at -0.78 million and about
+level with its loan. The Normal AI's stone railway, held to the game's
+prices ("found its track 5,108,558 at the game's prices, 11,085,099 with
+its stations, depot and train: more than it has"), was laid out between
+other station places for 7.26 million, ran a year and was closed having
+earned nothing: its quarry's station stood 250 m from the quarry and
+`getStationCatchables(station, true)` lists nothing for it, where the
+cement plant's at 200 m and the oil well's and refinery's at 250 m each
+list one. All four stations were built six modules long; both trains had
+six wagons, since no engine of 1922 hauls twelve loaded up 2.5 % by the
+AI's rule (a br75: 85 kN against 89).
+
+Run 75, with the catchment check and long trains let climb slowly: the
+Hard AI, its oil railway reckoned too dear this time and a second too,
+laid the Leighton-Linslade stone railway out three times, the first two
+over its money at the game's prices, and built the third for 9.66
+million (reckoned at up to 5.54) with a mogul and five wagons, all its
+money bought: 1.65 million in its first year. It could pay for the line;
+nothing asked whether 3.6 million a year in fares was worth it. The
+Normal AI laid its Saffron Walden railway out for five minutes, pieces
+of it refused for touching the other AI's new track, a year of the game.
+Since then a railway must be reckoned to bring its whole price back in
+three years, and is laid out between three pairs of places, four rounds
+each, not six and eight.
+
+Run 76, with those, two and a half years in:
+
+| | built | its train | fares, last 12 months | money |
+|---|---|---|---|---|
+| Hard | oil railway, 8.4 km, 6.70 million (reckoned up to 8.91) | a mogul and 12 tank wagons, 120 a load | 3.73 million (one load of 3.73 million, a second aboard) | -1.68 million |
+| Normal | stone railway, 4.4 km, 4.49 million (reckoned up to 4.95) | a br75 and 6 wagons | 3.50 million (three loads of 1.17 million) | -0.03 million |
+
+Each is about level with its loan's 3.6 million a year, where runs 61 to
+72 had every AI falling by millions a year. The Normal AI gave up two
+railways as not worth their price and one as too dear in under two
+minutes. Still open: a mogul with twelve loaded wagons takes about a
+year a round, where six behind it took 900 s (the engine is chosen by
+its top speed, not by what it pulls); the Hard AI closed three bus lines
+between towns in their first year for losses of 14,000 to 21,000 (since
+then a line is given three rounds before it is closed for losing
+money); and neither company is yet ahead of its loan.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

@@ -84,6 +84,13 @@ pub const DEPOT_TRIES: usize = DEPOT_PLACES.len() + DEPOT_LINE_PLACES.len();
 /// (8.5 % and 55 m to build), for early locomotives and a line's speed.
 pub const MAX_GRADE: f64 = 0.025;
 pub const STEEPEST: f64 = 0.04;
+/// The grades a line may climb at where none within [`STEEPEST`] meets
+/// what it must cross, tried in turn: a street cleared by a bridge 7.5 m
+/// up and a level crossing 150 m on leave no heights at 4 %, and a line of
+/// 8.9 km found none between any of its station places (run 66). Each
+/// metre beyond [`MAX_GRADE`] still costs [`STEEP`], so the line is steep
+/// only where it must be; the simple track builds to 8.5 %.
+pub const STEEPER: [f64; 2] = [0.06, 0.075];
 pub const MIN_RADIUS: f64 = 180.0;
 /// What a metre climbed or fallen beyond [`MAX_GRADE`] costs: dear enough
 /// that a line keeps to its grade unless it cannot, for a steep line slows
@@ -589,6 +596,24 @@ fn depot_joined(
 /// the most houses on foot ([`Land::people`]) first.
 #[allow(clippy::cast_precision_loss)]
 pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) -> Vec<Station> {
+    sites_of(land, target, other, radii, passengers, 3)
+}
+
+/// [`sites`] for stations of `modules` track modules (3, 4, 6, 8 or 10, as
+/// the station tool's lengths go): a longer train needs longer platforms.
+#[allow(clippy::cast_precision_loss)]
+pub fn sites_of(
+    land: &Land,
+    target: P,
+    other: P,
+    radii: &[f64],
+    passengers: bool,
+    modules: i32,
+) -> Vec<Station> {
+    // As the station tool lays them out (`modular_station.script.lua`,
+    // `createTemplateFn`): the odd module of an even count at its inner end.
+    let first = -((modules - 1) / 2);
+    let last = first + modules - 1;
     let towards = (other.y - target.y).atan2(other.x - target.x);
     let mut out = Vec::new();
     for r in radii {
@@ -625,6 +650,8 @@ pub fn sites(land: &Land, target: P, other: P, radii: &[f64], passengers: bool) 
                     angle_between(a, towards),
                     Station {
                         passengers,
+                        first,
+                        last,
                         ..Station::new(origin, heading)
                     },
                 )
@@ -1082,7 +1109,14 @@ pub const SEARCH_MOST: usize = 200_000;
 /// `from` to the one [`LEAD`] short of `to`. It turns 22.5° at most a
 /// step, never on two steps running, each turn costing a little, and keeps
 /// off built land and other tracks.
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+///
+/// A long line over rough land opens more states than [`SEARCH_MOST`]
+/// before it arrives: its estimate, flat track all the way, is far under
+/// what earth and bridges cost, and the search spreads wide. It is then
+/// searched again [`GREEDY`] times as keen on getting nearer, three times
+/// as long: a dearer line than the cheapest, where there was none. Every
+/// AI of runs 67 to 72 found "no route" for an 8.4 km oil railway reckoned
+/// at seven million a year in fares.
 pub fn route(
     land: &Land,
     prices: &Prices,
@@ -1090,6 +1124,33 @@ pub fn route(
     from_heading: f64,
     to: P,
     to_heading: f64,
+) -> Option<Vec<(f64, f64)>> {
+    let search = |keen: f64, most: usize| {
+        route_keen(land, prices, from, from_heading, to, to_heading, keen, most)
+    };
+    search(1.0, SEARCH_MOST).or_else(|| search(GREEDY, 3 * SEARCH_MOST))
+}
+
+/// How much more than flat track a metre still to go counts in a route's
+/// second search.
+pub const GREEDY: f64 = 3.0;
+
+/// [`route`]'s search, a metre still to go counted `keen` times flat
+/// track's price, opening `most` states at most.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments
+)]
+fn route_keen(
+    land: &Land,
+    prices: &Prices,
+    from: P,
+    from_heading: f64,
+    to: P,
+    to_heading: f64,
+    keen: f64,
+    most: usize,
 ) -> Option<Vec<(f64, f64)>> {
     let flat = prices.ground(0.0);
     let (fx, fy) = unit(from_heading);
@@ -1104,10 +1165,11 @@ pub fn route(
         d: nearest_move(from_heading),
         turned: true,
     };
-    // No metre costs less than flat track: the estimate never overshoots.
+    // No metre costs less than flat track: at `keen` 1 the estimate never
+    // overshoots.
     let h = |i: usize, j: usize| {
         let (x, y) = land.centre(i, j);
-        flat * (x - goal_x).hypot(y - goal_y)
+        keen * flat * (x - goal_x).hypot(y - goal_y)
     };
     let mut open = BinaryHeap::new();
     let mut best: HashMap<State, f64> = HashMap::new();
@@ -1136,7 +1198,7 @@ pub fn route(
             return Some(cells);
         }
         opened += 1;
-        if opened > SEARCH_MOST {
+        if opened > most {
             return None;
         }
         let here = land.centre(state.i, state.j);
@@ -1468,6 +1530,24 @@ fn kinds(hold: Hold, z: f64) -> &'static [Kind] {
     clippy::cast_precision_loss
 )]
 pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> Option<Vec<Node>> {
+    std::iter::once(STEEPEST)
+        .chain(STEEPER)
+        .find_map(|steepest| profile_within(land, prices, nodes, holds, steepest))
+}
+
+/// [`profile`] with no grade steeper than `steepest`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn profile_within(
+    land: &Land,
+    prices: &Prices,
+    nodes: &[Node],
+    holds: &[Hold],
+    steepest: f64,
+) -> Option<Vec<Node>> {
     let n = nodes.len();
     if n < 2 || holds.len() != n {
         return None;
@@ -1521,7 +1601,7 @@ pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> 
     }
     for k in 1..n {
         let len = lengths[k - 1];
-        let reach = (STEEPEST * len / LEVEL).ceil() as usize;
+        let reach = (steepest * len / LEVEL).ceil() as usize;
         for i in 0..count {
             if !allowed(k, i) {
                 continue;
@@ -1535,7 +1615,7 @@ pub fn profile(land: &Land, prices: &Prices, nodes: &[Node], holds: &[Hold]) -> 
                 }
                 let z0 = height(k - 1, j);
                 // Held heights lie off the levels by up to half of one.
-                if (z1 - z0).abs() > STEEPEST * len + LEVEL / 2.0 {
+                if (z1 - z0).abs() > steepest * len + LEVEL / 2.0 {
                     continue;
                 }
                 // A level crossing lies level: the game refuses one on a
@@ -1936,6 +2016,8 @@ pub const LOOP_OFFSET: f64 = 5.0;
 /// The edges of line a passing loop runs beside: about 300 m, room for a
 /// train of six wagons to wait clear of the other's.
 pub const LOOP_EDGES: usize = 3;
+/// The same for a train of twelve: about 400 m.
+pub const LOOP_EDGES_LONG: usize = 4;
 /// The most a passing loop's stretch of line turns, node to node.
 pub const LOOP_TURN: f64 = 3.0 * std::f64::consts::PI / 180.0;
 /// The shortest line given a passing loop, in metres.
@@ -1976,12 +2058,12 @@ pub const LOOP_SPACING: f64 = 2_500.0;
 /// it fits there: [`LOOP_EDGES`] edges on the ground, straight (each node
 /// turned [`LOOP_TURN`] at most), crossing no street, clear of the
 /// stations, with free land on that side of them.
-fn loop_fits(land: &Land, nodes: &[Node], k: usize) -> Option<f64> {
-    if k == 0 || k + LOOP_EDGES + 1 >= nodes.len() {
+fn loop_fits(land: &Land, nodes: &[Node], k: usize, edges: usize) -> Option<f64> {
+    if k == 0 || k + edges + 1 >= nodes.len() {
         return None;
     }
-    let span = &nodes[k..=k + LOOP_EDGES];
-    let ground = span[..LOOP_EDGES].iter().all(|n| n.kind == Kind::Ground)
+    let span = &nodes[k..=k + edges];
+    let ground = span[..edges].iter().all(|n| n.kind == Kind::Ground)
         && span.iter().all(|n| n.crossing.is_none());
     let straight = span
         .windows(2)
@@ -2007,21 +2089,21 @@ fn loop_fits(land: &Land, nodes: &[Node], k: usize) -> Option<f64> {
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
 )]
-pub fn loop_sites(land: &Land, nodes: &[Node]) -> Vec<(usize, f64)> {
+pub fn loop_sites(land: &Land, nodes: &[Node], edges: usize) -> Vec<(usize, f64)> {
     let mut along = vec![0.0];
     for w in nodes.windows(2) {
         along.push(along.last().copied().unwrap_or(0.0) + w[0].at.flat_distance(w[1].at));
     }
     let length = along.last().copied().unwrap_or(0.0);
-    if nodes.len() < LOOP_EDGES + 3 || length < LOOP_FROM {
+    if nodes.len() < edges + 3 || length < LOOP_FROM {
         return Vec::new();
     }
     let count = ((length / LOOP_SPACING).floor() as usize).max(1);
     let mut out: Vec<(usize, f64)> = Vec::new();
     for i in 1..=count {
         let target = length * i as f64 / (count + 1) as f64;
-        let middle = |k: usize| (along[k] + along[k + LOOP_EDGES]) / 2.0;
-        let mut firsts: Vec<usize> = (1..nodes.len().saturating_sub(LOOP_EDGES + 1)).collect();
+        let middle = |k: usize| (along[k] + along[k + edges]) / 2.0;
+        let mut firsts: Vec<usize> = (1..nodes.len().saturating_sub(edges + 1)).collect();
         firsts.sort_by(|a, b| {
             (middle(*a) - target)
                 .abs()
@@ -2031,11 +2113,11 @@ pub fn loop_sites(land: &Land, nodes: &[Node]) -> Vec<(usize, f64)> {
             // Apart from the loops chosen: a node of single track between.
             let apart = out
                 .iter()
-                .all(|(o, _)| k > o + LOOP_EDGES + 1 || k + LOOP_EDGES + 1 < *o);
+                .all(|(o, _)| k > o + edges + 1 || k + edges + 1 < *o);
             if !apart {
                 return None;
             }
-            loop_fits(land, nodes, k).map(|side| (k, side))
+            loop_fits(land, nodes, k, edges).map(|side| (k, side))
         });
         out.extend(site);
     }
@@ -2046,8 +2128,14 @@ pub fn loop_sites(land: &Land, nodes: &[Node]) -> Vec<(usize, f64)> {
 /// `k`, where it leaves the line as a switch, `side` of it, back onto it at
 /// node `k` + [`LOOP_EDGES`]; each edge's tangents along the line's heading,
 /// its inner nodes at the line's heights.
-pub fn passing_loop(nodes: &[Node], k: usize, side: f64, year: i32) -> Option<TrackBuild> {
-    let m = k + LOOP_EDGES;
+pub fn passing_loop(
+    nodes: &[Node],
+    k: usize,
+    edges: usize,
+    side: f64,
+    year: i32,
+) -> Option<TrackBuild> {
+    let m = k + edges;
     let at = |i: usize| {
         if i == k || i == m {
             nodes[i].at
@@ -2184,8 +2272,14 @@ fn one_way_signal(a: P, ha: f64, b: P, hb: f64, t: f64, forward: bool, year: i32
 /// line's far end; on the loop's track by its near end, passing trains
 /// back. So each direction keeps to its own track through the loop and
 /// waits at its exit, clear of the other, for the single track ahead.
-pub fn loop_signals(nodes: &[Node], k: usize, side: f64, year: i32) -> [PlaceStop; 2] {
-    let m = k + LOOP_EDGES;
+pub fn loop_signals(
+    nodes: &[Node],
+    k: usize,
+    edges: usize,
+    side: f64,
+    year: i32,
+) -> [PlaceStop; 2] {
+    let m = k + edges;
     let main = one_way_signal(
         nodes[m - 1].at,
         nodes[m - 1].heading,
@@ -2692,6 +2786,69 @@ mod tests {
         }
         land.read.iter_mut().for_each(|r| *r = true);
         land
+    }
+
+    #[test]
+    fn a_long_line_over_rough_land_is_found_by_a_keener_search() {
+        // Hills and hollows 40 m high and deep every few hundred metres,
+        // 11 km across: the cheapest way opens more states than a search
+        // may.
+        let (a, b) = (p(0.0, 0.0), p(11_000.0, 2_000.0));
+        let mut land = Land::around(a, b);
+        for j in 0..land.h {
+            for i in 0..land.w {
+                let (x, y) = land.centre(i, j);
+                land.z[j * land.w + i] = 40.0 * (x / 260.0).sin() * (y / 310.0).cos();
+            }
+        }
+        land.read.iter_mut().for_each(|r| *r = true);
+        let prices = Prices::default();
+        let exact = route_keen(&land, &prices, a, 0.0, b, 0.0, 1.0, SEARCH_MOST);
+        assert!(
+            exact.is_none(),
+            "the cheapest way, within the search's most"
+        );
+        let found = route(&land, &prices, a, 0.0, b, 0.0).expect("a way all the same");
+        let (first, last) = (found[0], found[found.len() - 1]);
+        assert!((first.0 - a.x).hypot(first.1 - a.y) <= 2.0 * LEAD);
+        assert!((last.0 - b.x).hypot(last.1 - b.y) <= 2.0 * LEAD);
+        // A short line is searched once, as before: the cheapest.
+        let near = p(2_000.0, 500.0);
+        assert_eq!(
+            route(&land, &prices, a, 0.0, near, 0.0),
+            route_keen(&land, &prices, a, 0.0, near, 0.0, 1.0, SEARCH_MOST)
+        );
+    }
+
+    #[test]
+    fn a_long_station_lies_as_the_station_tool_lays_one() {
+        // Six modules: -2..3, the tool's fourth length (240 m).
+        let (target, other) = (p(0.0, 0.0), p(2_000.0, 0.0));
+        let land = flat(target, other, |_, _| false);
+        let long = sites_of(&land, target, other, &[200.0], false, 6);
+        assert!(!long.is_empty());
+        for s in &long {
+            assert_eq!((s.first, s.last), (-2, 3));
+            let build = s.build(1923, 7, "Freight").unwrap();
+            assert!(
+                build
+                    .params
+                    .iter()
+                    .any(|p| p.key.as_str() == "length" && p.value == ParamValue::Int(4))
+            );
+            let tracks = build
+                .params
+                .iter()
+                .filter(|p| {
+                    p.key.as_str().starts_with("modules[84") && p.key.as_str().ends_with(".name")
+                })
+                .count();
+            assert_eq!(tracks, 6);
+        }
+        // The short one, as before.
+        for s in sites(&land, target, other, &[200.0], false) {
+            assert_eq!((s.first, s.last), (-1, 1));
+        }
     }
 
     #[test]
@@ -3224,19 +3381,67 @@ mod tests {
     }
 
     #[test]
+    fn a_line_that_must_clear_a_street_too_soon_for_its_grade_climbs_steeper() {
+        // Flat land; a street it may not cross on the level 120 m out of
+        // one station and 120 m short of the other: a bridge 7.5 m up needs
+        // 6.25 %, where the line keeps to 4 % wherever it can.
+        let (a, b) = (p(0.0, 0.0), p(240.0, 0.0));
+        let land = flat(a, b, |_, _| false);
+        let nodes = [
+            Node::on(a, 0.0),
+            Node::on(p(60.0, 0.0), 0.0),
+            Node::on(p(120.0, 0.0), 0.0),
+            Node::on(p(180.0, 0.0), 0.0),
+            Node::on(b, 0.0),
+        ];
+        let holds = [
+            Hold::At(10.0),
+            Hold::Free,
+            Hold::Clear(10.0),
+            Hold::Free,
+            Hold::At(10.0),
+        ];
+        assert!(
+            profile_within(&land, &PRICES, &nodes, &holds, STEEPEST).is_none(),
+            "no heights within 4 %"
+        );
+        let planned = profile(&land, &PRICES, &nodes, &holds).expect("heights at a steeper grade");
+        assert!(planned[2].at.z >= 10.0 + OVER - 1e-9, "{}", planned[2].at.z);
+        let steepest = planned
+            .windows(2)
+            .map(|w| (w[1].at.z - w[0].at.z).abs() / w[0].at.flat_distance(w[1].at))
+            .fold(0.0, f64::max);
+        // Held heights lie off the levels by up to half of one.
+        assert!(
+            steepest <= STEEPER[1] + LEVEL / 2.0 / 60.0 + 1e-9,
+            "{steepest}"
+        );
+        // A line with room keeps to its grade as before.
+        let easy = [
+            Hold::At(10.0),
+            Hold::Free,
+            Hold::Free,
+            Hold::Free,
+            Hold::At(10.0),
+        ];
+        let level = profile(&land, &PRICES, &nodes, &easy).unwrap();
+        assert!((level[2].at.z - 10.0).abs() < LEVEL);
+    }
+
+    #[test]
     fn a_long_line_gets_a_passing_loop_with_a_signal_at_each_exit() {
         let (a, b) = (p(0.0, 0.0), p(3_000.0, 0.0));
         let land = flat(a, b, |_, _| false);
         let cells = route(&land, &PRICES, a, 0.0, b, 0.0).unwrap();
         let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).unwrap();
-        let sites = loop_sites(&land, &nodes);
+        let sites = loop_sites(&land, &nodes, LOOP_EDGES);
         assert_eq!(sites.len(), 1, "one loop on 3 km");
         let (k, side) = sites[0];
         // Near the middle, clear of the stations.
         let m = k + LOOP_EDGES;
         assert!(k > 0 && m < nodes.len() - 1);
         assert!(nodes[k].at.x > 800.0 && nodes[m].at.x < 2_200.0, "{k}");
-        let build = passing_loop(&nodes, k, side, 1923).unwrap();
+        let build = passing_loop(&nodes, k, LOOP_EDGES, side, 1923).unwrap();
         let v = &build.polyline.vertices;
         assert_eq!(v.len(), LOOP_EDGES + 1);
         // Off the line's nodes at its ends, as switches; beside it between.
@@ -3252,7 +3457,7 @@ mod tests {
             assert!((d - LOOP_OFFSET).abs() < 0.01, "{d}");
             assert_eq!(vertex.resolve, Resolve::New);
         }
-        let [main, back] = loop_signals(&nodes, k, side, 1923);
+        let [main, back] = loop_signals(&nodes, k, LOOP_EDGES, side, 1923);
         for s in [&main, &back] {
             assert_eq!(s.object, EdgeObjectKind::Signal);
             assert!(s.one_way);
@@ -3278,11 +3483,11 @@ mod tests {
         let short = flat(c, d, |_, _| false);
         let cells = route(&short, &PRICES, c, 0.0, d, 0.0).unwrap();
         let nodes = track(&short, &PRICES, c, 0.0, d, 0.0, &cells).unwrap();
-        assert!(loop_sites(&short, &nodes).is_empty());
+        assert!(loop_sites(&short, &nodes, LOOP_EDGES).is_empty());
         let crowded = flat(a, b, |_, y| y.abs() > 0.0 && y.abs() < 60.0);
         let cells: Vec<(f64, f64)> = (0..=75).map(|i| (f64::from(i) * 40.0, 0.0)).collect();
         let nodes = align(&crowded, a, 0.0, b, 0.0, &cells);
-        assert!(loop_sites(&crowded, &nodes).is_empty());
+        assert!(loop_sites(&crowded, &nodes, LOOP_EDGES).is_empty());
     }
 
     #[test]
@@ -3291,7 +3496,7 @@ mod tests {
         let land = flat(a, b, |_, _| false);
         let cells = route(&land, &PRICES, a, 0.0, b, 0.0).unwrap();
         let nodes = track(&land, &PRICES, a, 0.0, b, 0.0, &cells).unwrap();
-        let sites = loop_sites(&land, &nodes);
+        let sites = loop_sites(&land, &nodes, LOOP_EDGES);
         assert_eq!(sites.len(), 2, "{sites:?}");
         // Near a third and two thirds of the line, single track between.
         let (k0, k1) = (sites[0].0, sites[1].0);

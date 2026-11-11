@@ -172,6 +172,21 @@ end
 -- runs game scripts on a pool of states, so each learns on its own.
 local callbacks = true
 
+-- What the game said of a command it refused, where its answer says: its
+-- error state's messages. Run 59's feeder bus lines were refused with
+-- nothing said; this is read for the log alone, the same in every game.
+local function refusedBecause(data)
+	local ok, said = pcall(function()
+		local state = data and (data.errorState or (data.resultProposalData and data.resultProposalData.errorState))
+		local messages = {}
+		for _, m in ipairs(state and state.messages or {}) do messages[#messages + 1] = tostring(m) end
+		if state and state.critical then messages[#messages + 1] = "critical" end
+		return table.concat(messages, "; ")
+	end)
+	if ok and said ~= "" then return said end
+	return nil
+end
+
 -- Sends `command`, which runs at once, and returns what the game answered,
 -- its command data and result entities (nil, where it answers nothing
 -- here). A command the game refuses raises, and apply.run reports it.
@@ -182,7 +197,11 @@ local function sendNow(command)
 			heard, went, data, entities = true, success, d, e
 		end)
 		if sent then
-			if heard and went ~= true then error("the game refused it", 0) end
+			if heard and went ~= true then
+				local why = refusedBecause(data)
+				if why then error("the game refused it: " .. why, 0) end
+				error("the game refused it", 0)
+			end
 			return data, entities
 		end
 		-- The game refuses a callback before it runs anything: sent again
@@ -3600,10 +3619,35 @@ local function lineComponent(data, ctx)
 	return line
 end
 
+-- A line's stops as the game reads them, for the log where it refuses the
+-- line: each stop's station group, the station and terminal it names, and
+-- what that group holds (its stations, and each one's terminals).
+local function stopsSaid(line)
+	local ok, said = pcall(function()
+		local out = {}
+		for i, stop in ipairs(line.stops) do
+			local group = api.engine.getComponent(stop.stationGroup, api.type.ComponentType.STATION_GROUP)
+			local held = {}
+			for k, st in ipairs(group and group.stations or {}) do
+				local station = api.engine.getComponent(st, api.type.ComponentType.STATION)
+				held[k] = tostring(st) .. "/" .. tostring(station and #station.terminals)
+			end
+			out[i] = string.format("%d: group %s station %s terminal %s holds %s", i, tostring(stop.stationGroup),
+				tostring(stop.station), tostring(stop.terminal), table.concat(held, ","))
+		end
+		return table.concat(out, "; ")
+	end)
+	return ok and said or "unread"
+end
+
 function HANDLERS.CreateLine(create, ctx)
 	local line = lineComponent(create.line, ctx)
-	local data, entities = send(api.cmd.makeLineCreateCmd(create.name, tint(create.color),
+	local sent, data, entities = pcall(send, api.cmd.makeLineCreateCmd(create.name, tint(create.color),
 		company(), line))
+	if not sent then
+		log("a line refused, " .. tostring(create.name) .. ": " .. stopsSaid(line))
+		error(data, 0)
+	end
 	return true, madeBy("resultEntity", data, entities)
 end
 

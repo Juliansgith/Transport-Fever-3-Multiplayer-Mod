@@ -28,8 +28,12 @@ const MEMO_EVERY: Duration = Duration::from_secs(30);
 /// the room's world a moment ago and still be replaying turns.
 const SETTLE_IN: Duration = Duration::from_secs(5);
 /// How far apart the room's AI seats open their first lines, in the order
-/// the room lists them: about how long one takes to plan and build.
-const FIRST_LINES_APART: Duration = Duration::from_secs(180);
+/// the room lists them: time for the one before to choose, and say what
+/// it builds (`Brain::claims`), so the next takes something else. Three
+/// minutes, about how long one takes to plan and build, cost the second AI
+/// of run 72 half a year of a 4x game and 1.8 million of its loan's
+/// payments before its first line.
+const FIRST_LINES_APART: Duration = Duration::from_secs(20);
 /// How often the minds' thread looks at them while nothing comes in.
 const LOOK_EVERY: Duration = Duration::from_millis(10);
 
@@ -57,6 +61,12 @@ pub(crate) trait Mind: Send {
     fn memo(&self) -> Vec<u8>;
     /// Opens its first line no sooner than `until`.
     fn first_line_after(&mut self, _until: Instant) {}
+    /// What it is building now ([`Brain::claims`]).
+    fn claims(&self) -> Vec<u32> {
+        Vec::new()
+    }
+    /// Leaves what the other minds are building alone ([`Brain::avoid`]).
+    fn avoid(&mut self, _keys: &[u32], _now: Instant) {}
 }
 
 impl Mind for Brain {
@@ -82,6 +92,14 @@ impl Mind for Brain {
 
     fn first_line_after(&mut self, until: Instant) {
         Brain::first_line_after(self, until);
+    }
+
+    fn claims(&self) -> Vec<u32> {
+        Brain::claims(self)
+    }
+
+    fn avoid(&mut self, keys: &[u32], now: Instant) {
+        Brain::avoid(self, keys, now);
     }
 }
 
@@ -170,14 +188,25 @@ impl Minds {
         self.asked.retain(|_, seat| driven.contains(seat));
     }
 
+    /// What every mind but `player`'s is building now.
+    fn claimed_but(&self, player: PlayerId) -> Vec<u32> {
+        self.seats
+            .iter()
+            .filter(|s| s.seat.player != player)
+            .flat_map(|s| s.mind.claims())
+            .collect()
+    }
+
     /// The game's answer to question `id`, and what it makes its mind want.
     fn answer(&mut self, id: u32, answer: Result<AiAnswer, Text<256>>) -> Option<AiOut> {
         let player = self.asked.remove(&id)?;
+        let now = Instant::now();
+        let others = self.claimed_but(player);
         let seat = self.seats.iter_mut().find(|s| s.seat.player == player)?;
-        let out = seat.mind.answered(
-            answer.map_err(|why| why.as_str().to_owned()),
-            Instant::now(),
-        )?;
+        seat.mind.avoid(&others, now);
+        let out = seat
+            .mind
+            .answered(answer.map_err(|why| why.as_str().to_owned()), now)?;
         Some(Self::hand_on(&mut self.asked, &mut self.next_id, seat, out))
     }
 
@@ -225,7 +254,12 @@ impl Minds {
         if !self.ready {
             return out;
         }
-        for seat in &mut self.seats {
+        for index in 0..self.seats.len() {
+            // What the other minds build now, this look's earlier ones'
+            // new plans among it.
+            let others = self.claimed_but(self.seats[index].seat.player);
+            let seat = &mut self.seats[index];
+            seat.mind.avoid(&others, now);
             if let Some(want) = seat.mind.poll(now, self.speed) {
                 out.push(Self::hand_on(
                     &mut self.asked,

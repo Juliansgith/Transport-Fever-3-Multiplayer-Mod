@@ -70,6 +70,9 @@ fn losing_much(line: &AiLine) -> bool {
 /// cost a million; its meat train, from a farm no one supplied, the same
 /// (2026-10-31).
 pub const DEAD_AFTER: u16 = 4;
+/// The money, to spend, with which a railway left without a train gets
+/// one: an engine of the 1920s and six wagons.
+pub const TRAIN_MONEY: i64 = 2_000_000;
 
 /// Where its care of a line stands.
 #[derive(Debug, Clone)]
@@ -239,6 +242,40 @@ impl Brain {
                 line: (*line).clone(),
             });
         }
+        // A cargo railway of its own with no train: one, once its money
+        // buys it. Run 73's Normal AI, its line dearer than reckoned, had
+        // no money for its train, gave the line up and left it idle.
+        let rail_depot = |line: &AiLine| {
+            let station = line
+                .stops
+                .first()
+                .and_then(|s| company.stations.iter().find(|st| st.id == *s))?;
+            company
+                .depots
+                .iter()
+                .filter(|d| d.file.as_str() == rail::DEPOT && d.connected)
+                .min_by(|a, b| {
+                    let d = |x: &AiDepot| P::of(x.at).flat_distance(P::of(station.pos));
+                    d(a).total_cmp(&d(b))
+                })
+                .cloned()
+        };
+        if self.spendable() >= TRAIN_MONEY {
+            for line in company
+                .lines
+                .iter()
+                .filter(|l| self.memo.rail_lines.contains(&l.id.0) && on(l).is_empty())
+            {
+                if let (Some(cargo), Some(depot)) = (self.cargo_of(line), rail_depot(line)) {
+                    return Some(Task::Train {
+                        line: line.clone(),
+                        cargo,
+                        depot,
+                        engine: Text::lossy(""),
+                    });
+                }
+            }
+        }
         // A looped rail line whose trains run full, cargo waiting: another,
         // at its rail depot by its first station, up to one more than its
         // signalled loops (n loops pass n + 1 trains on single track).
@@ -305,6 +342,7 @@ impl Brain {
                 || line.income.is_none_or(|i| i > 0)
                 || line.load > 0
                 || line.waiting > 0
+                || !Brain::seasoned(company, line, super::ROUNDS_DEAD)
             {
                 continue;
             }
@@ -333,9 +371,16 @@ impl Brain {
         // 0.6 to 1 million a year each).
         for line in company.lines.iter() {
             let vehicles = on(line);
+            // Not before its vehicles have had time for the rounds its
+            // money is judged by: a round between two towns takes most of
+            // a year, a fare is paid where a rider gets off, and run 76's
+            // Hard AI closed a line between towns that had lost 15,717 in
+            // its first year, where the same line took 184,000 to 316,000
+            // a year in runs 68 and 70.
             if vehicles.is_empty()
                 || vehicles.iter().any(|v| v.worn < SETTLED)
                 || self.chain_young(company, line)
+                || !Brain::seasoned(company, line, super::ROUNDS_JUDGED)
             {
                 continue;
             }
@@ -397,6 +442,19 @@ impl Brain {
             }
             Task::Add { line } => {
                 let depot = road_depot(company, &line)?;
+                // Not said, nor tried, without a vehicle's price in hand:
+                // run 70's AI, out of money, said it of two lines every
+                // nine seconds.
+                let cargo = self.memo.cargo_lines.iter().any(|(id, _)| *id == line.id.0);
+                let price = if cargo {
+                    self.seen_truck.map(|t| t.price)
+                } else {
+                    self.seen_bus.map(|b| b.price)
+                };
+                #[allow(clippy::cast_precision_loss)]
+                if price.is_some_and(|p| p > self.spendable() as f64) {
+                    return None;
+                }
                 self.say(format!(
                     "adds a vehicle to {}, running full",
                     line.name.as_str()
@@ -411,10 +469,14 @@ impl Brain {
                 depot,
                 engine,
             } => {
-                self.say(format!(
-                    "buys another train for {}, running full",
-                    line.name.as_str()
-                ));
+                self.say(if engine.as_str().is_empty() {
+                    format!("buys a train for {}, which has none", line.name.as_str())
+                } else {
+                    format!(
+                        "buys another train for {}, running full",
+                        line.name.as_str()
+                    )
+                });
                 self.stage = Stage::Upkeep(Upkeep::TrainWagons {
                     line: line.id,
                     cargo,
@@ -772,11 +834,16 @@ impl Brain {
             self.rest(now);
             return None;
         };
-        let platform = 3.0 * rail::MODULE * 10.0;
+        // As long as its first: by its stations' platforms.
+        let (modules, most) = if self.memo.long.contains(&line.0) {
+            (6.0, train::WAGONS_LONG)
+        } else {
+            (3.0, train::WAGONS_MOST)
+        };
+        let platform = modules * rail::MODULE * 10.0;
         let room = (platform - f64::from(engine.length)).max(0.0);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let wagons =
-            ((room / f64::from(wagon.length.max(1))).floor() as usize).clamp(1, train::WAGONS_MOST);
+        let wagons = ((room / f64::from(wagon.length.max(1))).floor() as usize).clamp(1, most);
         let color = tint(&self.seat);
         let part = |m: &AiModel| ConsistPart {
             model: m.model.clone(),

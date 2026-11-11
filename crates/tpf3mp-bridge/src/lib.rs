@@ -100,8 +100,13 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// each AI line made over its last three months ([`ai::AiLine::recent`]).
 /// 39 whether the room's owner may seat AI players
 /// ([`LobbyRoom::ai_seats`], [`RoomInfo::ai_seats`]). 40 the land cells
-/// built on by town houses only ([`ai::land::HOUSE`]).
-pub const BRIDGE_VERSION: u32 = 40;
+/// built on by town houses only ([`ai::land::HOUSE`]). 41 each town's
+/// people and where they work and shop ([`ai::AiTown::residents`],
+/// [`ai::AiTown::usage`], [`ai::AiTown::travel`]), how long a vehicle
+/// takes round each AI line and how long ago each was bought
+/// ([`ai::AiLine::round`], [`ai::AiVehicle::age`]), and what is carried
+/// away from each industry already ([`ai::AiIndustry::shipped`]).
+pub const BRIDGE_VERSION: u32 = 43;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told

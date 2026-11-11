@@ -42,8 +42,14 @@ const GAME: &str = r#"
     local CT = { CONSTRUCTION = 1, STATION_GROUP = 2, STATION = 3, BASE_NODE = 4, LINE = 5, NAME = 6,
         TRANSPORT_VEHICLE = 7, TOWN_BUILDING = 8, TOWN = 9, BASE_EDGE = 10, BASE_EDGE_STREET = 11,
         PLAYER_OWNED = 12, EDGE_OBJECT = 13, BASE_NODE_CONFIG = 14, VEHICLE_DEPOT = 15, INDUSTRY = 16,
-        GAME_TIME = 17 }
+        GAME_TIME = 17, TRANSPORT_NETWORK = 18 }
     local COMP = {
+        -- Two streets as the pathfinder names their edges: 310.4 and
+        -- 95.5 m, and 120.25 m.
+        [CT.TRANSPORT_NETWORK] = {
+            [90] = { edges = { { geometry = { length = 310.4 } }, { geometry = { length = 95.5 } } } },
+            [91] = { edges = { { geometry = { length = 120.25 } } } },
+        },
         [CT.CONSTRUCTION] = {
             [300] = { fileName = "stations/street/small_stops/small_new_twosided.con",
                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 100.5,200.25,10,1 }, stations = { 301 }, depots = {} },
@@ -167,7 +173,11 @@ const GAME: &str = r#"
                 pathfinding = { findPathNodeToNode = function(a, b, modes)
                     -- A path only between street nodes.
                     for _, n in ipairs(a) do if n.entity == 80 then return {} end end
-                    if ROAD_JOINS and a[1].entity ~= b[1].entity and modes[1] == 4 then return { 1, 2, 3 } end
+                    -- Each item an edge of a network and its direction.
+                    if ROAD_JOINS and a[1].entity ~= b[1].entity and modes[1] == 4 then
+                        return { { { entity = 90, index = 0 }, true }, { { entity = 90, index = 1 }, true },
+                            { { entity = 91, index = 0 }, false } }
+                    end
                     return {} end },
                 getEntityName = function(e) return ({ [1000] = "Hunstanton Crop Farm",
                     [1010] = "Clun Livestock Farm" })[e] end,
@@ -178,6 +188,10 @@ const GAME: &str = r#"
                 },
             },
             system = {
+                -- Station 301 has an industry in its cargo catchment; the
+                -- street stop's reaches none.
+                catchmentAreaSystem = { getStationCatchables = function(s, cargo)
+                    return cargo and s == 301 and { [1001] = true } or {} end },
                 lineSystem = { getLinesForPlayer = function(e) return e == 77 and { 500 } or {} end },
                 -- Ely was supplied 3.5 goods of the 40.2 it may take.
                 townBuildingSystem = { getCargoSupplyAndLimit = function(t)
@@ -304,6 +318,11 @@ fn the_company_answer_reads_as_the_ai_reads_it() {
         "metres to mm"
     );
     assert_eq!(station.terminals, 2);
+    assert_eq!(
+        (station.reach, stop.reach),
+        (Some(1), Some(0)),
+        "what stands in each one's cargo catchment"
+    );
     assert_eq!(company.depots.len(), 1);
     let depot = &company.depots[0];
     assert_eq!(
@@ -514,6 +533,47 @@ fn a_town_counts_other_companies_passenger_stops_and_the_towns_their_lines_join(
 }
 
 #[test]
+fn a_town_says_how_many_live_in_it_and_where_they_work_and_shop() {
+    let lua = lua();
+    // Ely (701) holds 365 people, 79 in 100 of them riding lines; of its
+    // people 19 shop and 32 work in Didcot (700), 15 and 29 of them by a
+    // line. Five of Didcot's work in Ely, by car.
+    lua.load(
+        r#"
+        api.engine.system.townBuildingSystem.getLandUsePersonCapacities = function(t)
+            return t == 701 and { 365, 184, 173 } or { 61, 72, 64 } end
+        api.engine.util.town.getTownLineUsage = function(t) return t == 701 and 0.79 or 0 end
+        api.engine.util.town.getSourceToDestinationCount = function(t, isTown, select)
+            assert(isTown[700] and isTown[701], "every town is asked for")
+            if t == 701 then
+                return select == 1
+                    and { [701] = { count = 32, linesUseCount = 8 }, [700] = { count = 19, linesUseCount = 15 } }
+                    or { [701] = { count = 37, linesUseCount = 2 }, [700] = { count = 32, linesUseCount = 29 } }
+            end
+            return select == 2 and { [701] = { count = 5, linesUseCount = 0 } } or {}
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let AiAnswer::Towns(towns) = answer(&lua, "'Towns'") else {
+        panic!("not towns")
+    };
+    let (ely, didcot) = (&towns[0], &towns[1]);
+    assert_eq!((ely.residents, ely.usage), (365, 79));
+    assert_eq!((didcot.residents, didcot.usage), (61, 0));
+    // Its own town is no destination a line between towns carries to.
+    let to = |t: &tpf3mp_bridge::ai::AiTown| -> Vec<(u32, u32, u32)> {
+        t.travel
+            .iter()
+            .map(|t| (t.to.0, t.people, t.riding))
+            .collect()
+    };
+    assert_eq!(to(ely), [(didcot.id.0, 51, 44)]);
+    assert_eq!(to(didcot), [(ely.id.0, 5, 0)]);
+}
+
+#[test]
 fn an_industry_counts_what_other_companies_have_at_it() {
     let lua = lua();
     // By the farm, another company's truck station (a construction), and
@@ -656,11 +716,12 @@ fn industries_routes_and_trucks_by_cargo_read_as_the_ai_reads_them() {
         panic!("not a route")
     };
     assert!(joined.connected && joined.edges == 3);
+    assert_eq!(joined.length, 526, "its edges' lengths together, in metres");
     lua.load("ROAD_JOINS = false").exec().unwrap();
     let AiAnswer::Route(apart) = answer(&lua, route) else {
         panic!("not a route")
     };
-    assert!(!apart.connected && apart.edges == 0);
+    assert!(!apart.connected && apart.edges == 0 && apart.length == 0);
 
     // Trucks for grain: those whose load takes a class of grain's.
     let AiAnswer::Models(trucks) = answer(

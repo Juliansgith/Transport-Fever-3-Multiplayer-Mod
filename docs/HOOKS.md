@@ -3983,7 +3983,7 @@ only where it is, and the game's Lua sees it as `room.ai_seats` and
 `status.ai_seats`.
 
 An AI player (docs/AI_PLAYERS.md, D32) thinks in the agent of the member
-whose game drives it, and asks that game about the world (bridge 40):
+whose game drives it, and asks that game about the world (bridge 41):
 the agent sends `ToHook::AiAsk { id, ask }` (`tpf3mp_bridge::ai`: the
 seat's company (its rail stations with their track ends since bridge
 version 33: where the world's track meets each, and whether any does
@@ -4013,7 +4013,12 @@ do; since bridge version 37 what other companies have at it: their
 stations held by a construction within 300 m, and their cargo lines that
 stop at its own station), the streets near a place (each edge's ends, its curve's middle,
 template, owner, objects and structure), whether trucks can drive
-between two places (the game's pathfinder), the vehicle models of a
+between two places (the game's pathfinder; since bridge version 42 with
+how long the road it found is, the lengths of its edges together, each
+path item naming an edge of a `TRANSPORT_NETWORK`; since bridge version
+43 the company answer says of each of its stations how many industries
+and other cargo takers stand in its catchment,
+`catchmentAreaSystem.getStationCatchables(station, true)`), the vehicle models of a
 transport mode (of a cargo: those whose loads take one of its classes,
 with their capacity for it; since bridge version 33 a land vehicle's
 engine power, tractive effort, empty weight, length and whether its
@@ -4023,8 +4028,14 @@ vehicle store reads them), the land on a grid of at most 24 by 24 cells
 within its half diagonal, water, a construction, a street or a track;
 since bridge version 40 whether its constructions are town houses alone,
 the town buildings' own (`TOWN_BUILDING.construction`);
-16 by 16 cells read in about 7 ms on the rig's big fixture), or the
-game's verdict on an action), the session
+16 by 16 cells read in about 7 ms on the rig's big fixture), the towns
+(since bridge version 41 with how many people each one's houses hold
+(`getLandUsePersonCapacities`), the share of them riding lines
+(`getTownLineUsage`) and, for the eight other towns most of them work
+and shop in, how many do and how many of those by a line
+(`getSourceToDestinationCount` for shops and workplaces, the town
+window's destinations; the whole answer 23 ms for the fixture's 55
+towns), or the game's verdict on an action), the session
 hands it on as `Notice::AiAsk`, and `crate::ai` keeps it until the GUI
 takes it. The mod's GUI state (`tpf3mp/ai.lua`, every frame within 1.5
 ms) calls `tpf3mp_native.aiAsk()` for the next question, a table
