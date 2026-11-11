@@ -50,6 +50,9 @@ const TRAIN_RESERVE: f64 = 2_500_000.0;
 /// train's choosing: run 73's took 1.17 times its reckoning, its loan's
 /// payments over the building counted in.
 const TRAIN_OVERRUN: f64 = 1.25;
+/// What a track is likely to cost over the game's own prices for its
+/// pieces before anything is built: its joins, and what changes meanwhile.
+const TRIAL_OVERRUN: f64 = 1.1;
 
 /// The most pairs of station placements a line is laid out between before
 /// it builds anything.
@@ -254,6 +257,9 @@ pub(super) struct RailProject {
     /// Its money when it reckoned the line and began: what the line then
     /// cost shows against it once it opens.
     pub money_before: Option<i64>,
+    /// What the game would charge for its track as laid out, its pieces'
+    /// verdicts together, before anything is built.
+    pub trialled: i64,
     /// The route being laid out: its nodes on the ground, the street runs
     /// it crosses still to ask the game about, and the streets named.
     pub aligned: Vec<Node>,
@@ -566,6 +572,7 @@ impl Brain {
             modules: STATION_MODULES,
             wagons_most: WAGONS_MOST,
             money_before: None,
+            trialled: 0,
             aligned: Vec::new(),
             runs: Vec::new(),
             streets: Vec::new(),
@@ -1170,12 +1177,49 @@ impl Brain {
             // A trial: nothing sent; the next piece, then its depot, then
             // the stations.
             (RailStage::Trial { piece }, Action::BuildTrack(_)) => {
-                let count = self.rail.as_ref()?.pieces.len();
-                self.stage = Stage::Rail(if piece + 1 < count {
-                    RailStage::Trial { piece: piece + 1 }
+                let money = self.spendable();
+                let project = self.rail.as_mut()?;
+                if piece == 0 {
+                    project.trialled = 0;
+                }
+                project.trialled += cost;
+                if piece + 1 < project.pieces.len() {
+                    self.stage = Stage::Rail(RailStage::Trial { piece: piece + 1 });
+                    return None;
+                }
+                // Its whole track at the game's own prices, with what its
+                // stations, depot and train cost: more than it has, and it
+                // is laid out between other station places, or not at all.
+                // Run 73's Normal AI reckoned a line at up to 5.5 million
+                // between its first station places, laid it out between
+                // others through 2.6 km of tunnel, paid 11.2 million for
+                // it and had nothing left for its train.
+                let most = if project.passengers {
+                    PASSENGER_COACHES
                 } else {
-                    RailStage::DepotTrial { end: 0, place: 0 }
-                });
+                    project.wagons_most
+                };
+                #[allow(clippy::cast_precision_loss)]
+                let train = project
+                    .train
+                    .as_ref()
+                    .map_or(TRAIN_RESERVE, |(engine, wagon)| {
+                        engine.price as f64 + most as f64 * wagon.price as f64
+                    });
+                #[allow(clippy::cast_precision_loss)]
+                let whole = project.trialled as f64 * TRIAL_OVERRUN
+                    + project.prices.stations_and_depot(project.modules)
+                    + train;
+                #[allow(clippy::cast_precision_loss)]
+                if whole > money as f64 {
+                    let track = project.trialled;
+                    self.say(format!(
+                        "found its track {track} at the game's prices, {whole:.0} with its stations, depot and train: more than it has"
+                    ));
+                    self.or_other_sites(false, "found its track too dear", now);
+                    return None;
+                }
+                self.stage = Stage::Rail(RailStage::DepotTrial { end: 0, place: 0 });
                 return None;
             }
             (RailStage::DepotTrial { end, place }, Action::BuildConstruction(_)) => {

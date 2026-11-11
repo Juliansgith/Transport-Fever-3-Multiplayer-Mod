@@ -2838,8 +2838,17 @@ impl Brain {
         #[allow(clippy::cast_possible_truncation)]
         let pick = (self.random() % among as u64) as usize;
         let town = candidates[pick].clone();
-        // Its money must stretch to a line: a rough first bound.
-        if self.spendable() < 150_000 {
+        // Its money must stretch to the line: its stops, a depot where it
+        // has none by, and its first bus. Runs 72 and 73 each opened a
+        // town's line its stops and depot left no bus for.
+        let bus = self.seen_bus.unwrap_or(BUS_RECKONED).price;
+        let depot = if self.road_depot_by(town.pos) {
+            0.0
+        } else {
+            DEPOT_BUILT
+        };
+        #[allow(clippy::cast_precision_loss)]
+        if (self.spendable() as f64) < bus + STOPS_BUILT + depot {
             self.say("waits for money".into());
             self.rest(now);
             return;

@@ -693,6 +693,21 @@ seconds apart. In run 72 the Hard AI then built the stone railway first
 (its oil railway found no route, the keener search not yet in), and its
 train took 2.82 million in its first year.
 
+Run 73, with the keener search: the Hard AI's oil railway found its
+route, 8.4 km, reckoned at 5.94 million (up to 8.91 with half as much
+again) and built for 7.39 with its loan's payments over the building,
+1.17 times its reckoning; its train, chosen by the 8.91, was a mogul and
+six tank wagons before stations built for twelve, 1.87 million a load.
+The Normal AI's stone railway, reckoned at up to 5.54 million between
+its first station places, was laid out between others ("about 4.19
+million: 7 bridge and 26 tunnel edges") and took 11.22 million: tunnels
+under a hill cost far more than its prices say, and nothing held the
+second layout against its money. Its train "did not come", the line was
+given up, and both AIs ended the second year below nothing. Since then a
+layout's pieces are added up at the game's own verdicts before anything
+is built, a train is chosen by the line's likely cost and sized to the
+money at its purchase, and a railway without a train gets one later.
+
 ## Prior art
 
 - **AI Builder for Transport Fever 2** (Steam Workshop 2820656841, by

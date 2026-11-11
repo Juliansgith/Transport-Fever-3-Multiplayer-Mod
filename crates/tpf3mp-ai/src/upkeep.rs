@@ -70,6 +70,9 @@ fn losing_much(line: &AiLine) -> bool {
 /// cost a million; its meat train, from a farm no one supplied, the same
 /// (2026-10-31).
 pub const DEAD_AFTER: u16 = 4;
+/// The money, to spend, with which a railway left without a train gets
+/// one: an engine of the 1920s and six wagons.
+pub const TRAIN_MONEY: i64 = 2_000_000;
 
 /// Where its care of a line stands.
 #[derive(Debug, Clone)]
@@ -238,6 +241,40 @@ impl Brain {
             return Some(Task::Add {
                 line: (*line).clone(),
             });
+        }
+        // A cargo railway of its own with no train: one, once its money
+        // buys it. Run 73's Normal AI, its line dearer than reckoned, had
+        // no money for its train, gave the line up and left it idle.
+        let rail_depot = |line: &AiLine| {
+            let station = line
+                .stops
+                .first()
+                .and_then(|s| company.stations.iter().find(|st| st.id == *s))?;
+            company
+                .depots
+                .iter()
+                .filter(|d| d.file.as_str() == rail::DEPOT && d.connected)
+                .min_by(|a, b| {
+                    let d = |x: &AiDepot| P::of(x.at).flat_distance(P::of(station.pos));
+                    d(a).total_cmp(&d(b))
+                })
+                .cloned()
+        };
+        if self.spendable() >= TRAIN_MONEY {
+            for line in company
+                .lines
+                .iter()
+                .filter(|l| self.memo.rail_lines.contains(&l.id.0) && on(l).is_empty())
+            {
+                if let (Some(cargo), Some(depot)) = (self.cargo_of(line), rail_depot(line)) {
+                    return Some(Task::Train {
+                        line: line.clone(),
+                        cargo,
+                        depot,
+                        engine: Text::lossy(""),
+                    });
+                }
+            }
         }
         // A looped rail line whose trains run full, cargo waiting: another,
         // at its rail depot by its first station, up to one more than its
@@ -425,10 +462,14 @@ impl Brain {
                 depot,
                 engine,
             } => {
-                self.say(format!(
-                    "buys another train for {}, running full",
-                    line.name.as_str()
-                ));
+                self.say(if engine.as_str().is_empty() {
+                    format!("buys a train for {}, which has none", line.name.as_str())
+                } else {
+                    format!(
+                        "buys another train for {}, running full",
+                        line.name.as_str()
+                    )
+                });
                 self.stage = Stage::Upkeep(Upkeep::TrainWagons {
                     line: line.id,
                     cargo,

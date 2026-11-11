@@ -212,7 +212,9 @@ game with six million in hand, its loan taking 300,000 a month). A line
 must be reckoned to make 50,000 a year and earn itself back in three and
 a half years, and a road line is begun only with half as much again as
 its reckoned cost in hand (run 68's Hard AI opened a line its stops left
-it no bus for).
+it no bus for); a town's own line, with what its stops, a depot where it
+has none by and its first bus are reckoned at (it began one with
+150,000 until runs 72 and 73 each left a town's line without a bus).
 
 **Cargo goes where it pays, to whoever takes it.** What a producer makes
 that no one carries away yet goes to the town short of it, or the works
@@ -239,7 +241,18 @@ too dear by less than that bus line had cost. It looks at up to three
 railways running, one given up after another, before its buses' turn
 (run 70's first was too dear by 130,000 of its 13 million), and where a
 train of twelve and its long stations alone are too dear it builds for
-six.
+six. Its train is chosen by what its line is likely to cost (1.25 times
+its reckoning; the line is begun only with 1.5 times in hand), and
+bought with as many wagons as its money then buys. Once its track is
+laid out, every piece put to the game's verdict, it adds up what the
+game itself would charge: with its stations, depot and train more than
+it has, the line is laid out between other station places or not built
+(run 73's Normal AI reckoned a line at up to 5.5 million between its
+first station places, laid it out between others through 2.6 km of
+tunnel, paid 11.2 million and had nothing left for its train). A cargo
+railway of its own left without a train gets one once it has two
+million to spend. It says what each railway took of its money against
+its reckoning.
 
 **Money on a loan is put to work.** A loan is paid back each month
 whatever its lines earn (13 million over four years takes 300,000 a
