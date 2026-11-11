@@ -674,12 +674,19 @@ impl Brain {
                         let mut tries = places(project.modules);
                         // No room for long stations at both ends: short
                         // ones, and a train of their length.
-                        if project.modules > STATION_MODULES && tries.iter().any(Vec::is_empty) {
+                        let cramped =
+                            project.modules > STATION_MODULES && tries.iter().any(Vec::is_empty);
+                        if cramped {
                             tries = places(STATION_MODULES);
                             project.modules = STATION_MODULES;
                             project.wagons_most = WAGONS_MOST;
                         }
                         project.tries = tries;
+                        if cramped {
+                            self.said.push(format!(
+                                "found no room for long stations at both ends, plans a train of {WAGONS_MOST} wagons"
+                            ));
+                        }
                         // A passenger station reaching too few houses on
                         // foot is no place for one: a line with none such
                         // at either end is not begun.
