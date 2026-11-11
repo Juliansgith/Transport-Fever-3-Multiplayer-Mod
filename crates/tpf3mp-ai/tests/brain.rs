@@ -3578,6 +3578,39 @@ fn a_line_whose_round_takes_most_of_a_year_is_given_time_for_two_before_it_is_cl
 }
 
 #[test]
+fn a_line_between_towns_losing_a_little_in_its_first_year_is_kept_for_its_rounds() {
+    // Run 76: a bus line between two towns closed having lost 15,717 over
+    // its first year, a round of it most of a year; the same line took
+    // 184,000 to 316,000 a year in runs 68 and 70.
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    world.month_every = Some(Duration::from_secs(60));
+    // Losing money, riders aboard, its bus a year old and a twentieth
+    // through its life: but a round of it takes 1,000 s.
+    world.line_profit = Some(|_| -40_000);
+    world.line_income = Some(|_| 10_000);
+    world.lines[0].round = 1_000;
+    world.lines[0].load = 40;
+    for v in &mut world.vehicles {
+        v.worn = 6;
+        v.age = 12;
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(
+        world.lines.iter().any(|l| l.id == line),
+        "three rounds of it first: {said:?}"
+    );
+    // Three rounds on, 26 months old, and losing still: closed.
+    for v in &mut world.vehicles {
+        v.age = 26;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
+}
+
+#[test]
 fn a_town_other_companies_serve_is_passed_over_for_one_they_do_not() {
     // Didcot, the larger, has five stops of another company's: Ely first.
     let mut world = World::new();

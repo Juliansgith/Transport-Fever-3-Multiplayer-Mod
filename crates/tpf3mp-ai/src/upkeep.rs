@@ -371,9 +371,16 @@ impl Brain {
         // 0.6 to 1 million a year each).
         for line in company.lines.iter() {
             let vehicles = on(line);
+            // Not before its vehicles have had time for the rounds its
+            // money is judged by: a round between two towns takes most of
+            // a year, a fare is paid where a rider gets off, and run 76's
+            // Hard AI closed a line between towns that had lost 15,717 in
+            // its first year, where the same line took 184,000 to 316,000
+            // a year in runs 68 and 70.
             if vehicles.is_empty()
                 || vehicles.iter().any(|v| v.worn < SETTLED)
                 || self.chain_young(company, line)
+                || !Brain::seasoned(company, line, super::ROUNDS_JUDGED)
             {
                 continue;
             }

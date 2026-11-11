@@ -285,7 +285,10 @@ a rider gets off, and a round between two towns takes most of a year.
 Since bridge version 41 the company answer says how long a vehicle takes
 round each line (the game's frequency for it) and how long ago each
 vehicle was bought: a line is judged by its load and money only once its
-oldest vehicle has had time for three rounds, and one that earned
+oldest vehicle has had time for three rounds (nor sold from or closed
+for losing money before: run 76's Hard AI closed a line between two
+towns that had lost 15,717 in its first year, where the same line took
+184,000 to 316,000 a year in runs 68 and 70), and one that earned
 nothing is closed as carrying no one only after two. In run 63 (one
 game, a Hard and a Normal AI, the big fixture, 4x) the Hard AI closed
 two lines between towns seven months in, a bus of each 792 and 669 s one
