@@ -1846,6 +1846,41 @@ impl Brain {
         None
     }
 
+    /// Its own line that carries on what `works` makes, loading at the
+    /// works' own station: with it the works takes what it is brought.
+    fn outlet_of(&self, works: &AiIndustry) -> Option<LineId> {
+        let station = works.station?;
+        self.company
+            .as_ref()?
+            .lines
+            .iter()
+            .find(|l| l.stops.first() == Some(&station))
+            .map(|l| l.id)
+    }
+
+    /// A line into `to` belongs with the chain of the outlet it carries
+    /// for, if that is one of its own: judged with it, not before the
+    /// works' cargo flows.
+    fn join_outlets_chain(&mut self, to: &Taker) {
+        let Taker::Industry(works) = to else {
+            return;
+        };
+        if let Some(outlet) = self.outlet_of(works) {
+            let group = self
+                .memo
+                .chains
+                .iter()
+                .position(|g| g.contains(&outlet.0))
+                .unwrap_or_else(|| {
+                    self.memo.chains.push(vec![outlet.0]);
+                    let over = self.memo.chains.len().saturating_sub(CHAINS_KEPT);
+                    self.memo.chains.drain(..over);
+                    self.memo.chains.len() - 1
+                });
+            self.chain_group = Some(group);
+        }
+    }
+
     /// What a truck line carrying `units` a year `distance` metres is
     /// reckoned to bring ([`econ::cargo`]), with the truck it last chose, a
     /// truck station and a depot built for it.
@@ -1906,8 +1941,9 @@ impl Brain {
                 }
                 // Who would take it, and how much a year: the towns that
                 // need it, each what it is short of; and the industries
-                // that make something of it, each what its works can turn
-                // over that it does not make yet. The fixture player's
+                // that make something of it and have an outlet, each what
+                // its works can turn over that it does not make yet. The
+                // fixture player's
                 // largest cargo lines carry stone to a cement plant and
                 // grain to a livestock farm, 434 and 483 a year, of whose
                 // cement and meat a fifth is carried on (2026-11-11).
@@ -1927,10 +1963,15 @@ impl Brain {
                         })
                     })
                     .chain(industries.iter().filter_map(|works| {
+                        // A works takes what it is brought only while
+                        // something it makes is carried on, however little:
+                        // run 67's oil train to a refinery no one carried
+                        // from ran empty, nothing waiting at its well.
                         let takes = works.inputs.contains(&output.cargo)
                             && works.station.is_some()
                             && !works.water
-                            && works.pos != from.pos;
+                            && works.pos != from.pos
+                            && (works.shipped > 0 || self.outlet_of(works).is_some());
                         let room: u32 = works
                             .outputs
                             .iter()
@@ -2083,6 +2124,7 @@ impl Brain {
                 let pick = (self.random() % by_train.len() as u64) as usize;
                 let (fares, route) = by_train.swap_remove(pick);
                 self.leg_now = None;
+                self.join_outlets_chain(&route.to);
                 self.rail_fares = fares;
                 let begun = self.start_rail(route);
                 self.rail_fares = 0.0;
@@ -2193,6 +2235,9 @@ impl Brain {
         let estimate = self.truck_line(f64::from(units), distance);
         let fleet = (estimate.vehicles as usize)
             .clamp(usize::from(self.profile.buses_first), FLEET_FIRST_MOST);
+        if self.chain.is_empty() && self.chain_group.is_none() {
+            self.join_outlets_chain(&to);
+        }
         let serves = Serves::Cargo { cargo, from, to };
         self.say(format!(
             "plans {}: {units} a year over {distance:.0} m, reckoned to bring {:.0} a year with {} truck(s)",

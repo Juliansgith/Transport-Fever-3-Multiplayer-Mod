@@ -30,7 +30,7 @@ use super::{Brain, CONFIRM_TRIES, GIVE_UP_FOR, Out, SETTLE, Stage, cargo_name, r
 use crate::{
     chain::{Leg, Taker},
     costs::{self, Prices},
-    place,
+    econ, place,
     place::P,
     rail::{self, Land, Node, Piece, Station},
 };
@@ -42,6 +42,10 @@ pub const RAIL_FROM: f64 = 1_800.0;
 pub const RAIL_MONEY: i64 = 6_000_000;
 /// The modules of each station it builds.
 const STATION_MODULES: i32 = 3;
+/// What a line may cost over what it was reckoned at before anything was
+/// built, and what a train costs: both kept in hand before a line is begun.
+const LINE_OVERRUN: f64 = 1.5;
+const TRAIN_RESERVE: f64 = 2_500_000.0;
 
 /// The most pairs of station placements a line is laid out between before
 /// it builds anything.
@@ -128,6 +132,56 @@ pub fn passenger_engine<'a>(
             )
         })
 }
+/// Whether `engine` hauls `wagons` of `wagon` loaded up
+/// [`rail::MAX_GRADE`]: its tractive effort, in kN, against gravity's pull
+/// along the grade on the train's weight, a tonne counted for each unit a
+/// wagon carries. A weaker engine climbs slowly; it does not stall.
+#[allow(clippy::cast_precision_loss)]
+fn hauls(engine: &AiModel, wagon: &AiModel, wagons: usize) -> bool {
+    let tonnes = f64::from(engine.weight)
+        + wagons as f64 * (f64::from(wagon.weight) + f64::from(wagon.capacity));
+    f64::from(engine.tractive) >= tonnes * 9.81 * rail::MAX_GRADE
+}
+
+/// The engine for a cargo train of `wagons` of `wagon` over `distance`
+/// metres, of `engines`, within `money`: not electric, strong enough to
+/// haul them loaded ([`hauls`]), and of those the one
+/// its train is reckoned to make most a year with, its price spread over
+/// [`PRICE_YEARS`] ([`econ::cargo`]): a faster train makes more rounds, a
+/// dearer one costs more to buy and run. `units` is what there is to carry
+/// a year (0: as much as it carries). Run 67's AI, taking the strongest
+/// engine the rest of its money bought, had 350,000 left of 13 million with
+/// its first train on its line, four months of its loan's payments short.
+#[allow(clippy::cast_precision_loss)]
+pub fn freight_engine<'a>(
+    engines: &'a [AiModel],
+    wagon: &AiModel,
+    wagons: usize,
+    money: i64,
+    units: f64,
+    distance: f64,
+) -> Option<&'a AiModel> {
+    let n = wagons as f64;
+    let made = |m: &AiModel| {
+        let runs = econ::Runs {
+            capacity: n * f64::from(wagon.capacity),
+            speed: f64::from(m.speed.min(wagon.speed.max(1))),
+            price: m.price as f64 + n * wagon.price as f64,
+            running: m.running as f64 + n * wagon.running as f64,
+            rail: true,
+        };
+        let carried = if units > 0.0 { units } else { f64::MAX / 1e6 };
+        let line = econ::cargo(carried, distance, runs, 1, 0.0);
+        line.profit() - runs.price / PRICE_YEARS as f64
+    };
+    engines
+        .iter()
+        .filter(|m| m.power > 0 && !m.electric)
+        .filter(|m| m.price + wagons as i64 * wagon.price <= money)
+        .filter(|m| hauls(m, wagon, wagons))
+        .max_by(|a, b| made(a).total_cmp(&made(b)))
+}
+
 /// A rail stop's waits, in the game's seconds in millionths: as the game's
 /// line window sets a rail stop's (`line_util.tl`, `makeNewStop`).
 pub const RAIL_MAX_WAIT: i64 = 600_000_000;
@@ -158,6 +212,9 @@ pub(super) struct RailProject {
     /// What it reckoned the line costs before its train, from its first
     /// placements, before building anything.
     pub estimate: f64,
+    /// What its fares were reckoned to come to a year when it was chosen
+    /// (0: not reckoned).
+    pub fares: f64,
     /// The route being laid out: its nodes on the ground, the street runs
     /// it crosses still to ask the game about, and the streets named.
     pub aligned: Vec<Node>,
@@ -456,6 +513,7 @@ impl Brain {
                 trestle: false,
             },
             estimate: 0.0,
+            fares: self.rail_fares,
             aligned: Vec::new(),
             runs: Vec::new(),
             streets: Vec::new(),
@@ -572,11 +630,15 @@ impl Brain {
                         // What the line costs, from its first placements,
                         // before it builds anything: a line it cannot pay
                         // for, or with no route, is never begun.
-                        match estimate(project) {
-                            Ok(cost) if cost < money => {
+                        // Half as much again laid by for what its reckoning
+                        // misses, and a train's price: run 67's line, reckoned
+                        // at 3.3 million, left 350,000 of 13 million with its
+                        // train bought.
+                        match estimate(project).map(|cost| cost * LINE_OVERRUN) {
+                            Ok(cost) if cost + TRAIN_RESERVE < money => {
                                 project.estimate = cost;
                                 self.say(format!(
-                                    "reckons its rail line costs {cost:.0} before its train"
+                                    "reckons its rail line costs up to {cost:.0} before its train"
                                 ));
                                 self.stage = Stage::Rail(RailStage::Engines);
                                 self.rail_poll(RailStage::Engines, now)
@@ -1851,12 +1913,10 @@ impl Brain {
                     .then(|| passenger_engine(&models, &wagon, PASSENGER_COACHES, money))
                     .flatten()
                     .cloned();
+                let distance = P::of(project.from.pos).flat_distance(P::of(project.to.pos()));
+                let units = project.fares / (distance.max(1.0) * econ::CARGO_FARE);
                 let Some(engine) = passenger.or_else(|| {
-                    models
-                        .into_iter()
-                        .filter(|m| m.power > 0 && !m.electric)
-                        .filter(|m| m.price + 3 * wagon.price <= money)
-                        .max_by_key(|m| (m.power, -m.price))
+                    freight_engine(&models, &wagon, WAGONS_MOST, money, units, distance).cloned()
                 }) else {
                     self.give_up_rail("found no engine it can afford", now);
                     return None;
@@ -2149,5 +2209,27 @@ mod tests {
             .cloned()
             .collect();
         assert!(passenger_engine(&weak, &coach, PASSENGER_COACHES, i64::MAX).is_none());
+    }
+
+    #[test]
+    fn a_cargo_train_takes_the_engine_its_train_makes_most_with_not_the_strongest() {
+        let (engines, _) = trains_1922();
+        // Six tank wagons of ten, 80 km/h, over run 67's 8.9 km with 327
+        // crude oil a year to carry: about 8.5 million to spend after its
+        // line, the strongest it could afford the 4 million china_jf1.
+        let wagon = model("liquid_2_zh", 70_000, 11_700, 10, 80, 0, 0, 12, false);
+        let pick = |money| freight_engine(&engines, &wagon, WAGONS_MOST, money, 327.0, 8_893.0);
+        let best = pick(8_500_000).unwrap();
+        assert_eq!(
+            best.model.as_str(),
+            "br75_4",
+            "as fast as its wagons, half the price and running"
+        );
+        // Short of it: the next that hauls them.
+        assert_eq!(pick(1_900_000).unwrap().model.as_str(), "mogul_2_6_0");
+        assert!(pick(1_000_000).is_none());
+        // Nothing reckoned of what there is to carry: the same choice.
+        let unknown = freight_engine(&engines, &wagon, WAGONS_MOST, 8_500_000, 0.0, 8_893.0);
+        assert_eq!(unknown.unwrap().model.as_str(), "br75_4");
     }
 }

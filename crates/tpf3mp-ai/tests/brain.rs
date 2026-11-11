@@ -4279,26 +4279,44 @@ fn a_cargo_goes_to_the_town_that_pays_most_not_the_nearest() {
 }
 
 /// A works at (x, y) that takes `input` and could make `most` of `output`
-/// a year, making none yet.
-fn idle_works(name: &str, x: f64, y: f64, input: &str, output: &str, most: u32) -> AiIndustry {
+/// a year, making `made` of it, all of that carried on by someone.
+fn works(
+    name: &str,
+    x: f64,
+    y: f64,
+    input: &str,
+    output: &str,
+    made: u32,
+    most: u32,
+) -> AiIndustry {
     let mut works = industry(name, x, y, &[input], &[(output, most)]);
     let mut outputs: Vec<AiOutput> = works.outputs.iter().cloned().collect();
     for o in &mut outputs {
-        o.per_year = 0;
+        o.per_year = made;
     }
     works.outputs = BoundedVec::new(outputs).unwrap();
+    works.shipped = made;
     works
 }
 
 #[test]
 fn a_raw_material_goes_to_the_works_that_pays_most_for_carrying_it() {
     let mut world = World::new();
-    // A farm by Didcot and two livestock farms that stand idle: one 900 m
-    // off, one 4.7 km, by Ely. No town needs grain.
+    // A farm by Didcot and two livestock farms that make a little, carried
+    // on, of what they could: one 900 m off, one 4.7 km, by Ely. No town
+    // needs grain.
     world.industries = vec![
         industry("Witney Farm", 300.0, 300.0, &[], &[(GRAIN, 120)]),
-        idle_works("Near Livestock Farm", -400.0, -300.0, GRAIN, PLANKS, 200),
-        idle_works("Far Livestock Farm", 5_000.0, 400.0, GRAIN, PLANKS, 200),
+        works(
+            "Near Livestock Farm",
+            -400.0,
+            -300.0,
+            GRAIN,
+            PLANKS,
+            20,
+            200,
+        ),
+        works("Far Livestock Farm", 5_000.0, 400.0, GRAIN, PLANKS, 20, 200),
     ];
     world.money = 5_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
@@ -4325,17 +4343,43 @@ fn a_raw_material_goes_to_the_works_that_pays_most_for_carrying_it() {
 }
 
 #[test]
+fn a_works_no_one_carries_from_takes_nothing() {
+    // Run 67: an oil railway to a refinery no one carried from ran empty,
+    // nothing waiting at its well.
+    let mut world = World::new();
+    world.industries = vec![
+        industry("Witney Farm", 300.0, 300.0, &[], &[(GRAIN, 120)]),
+        works("Idle Livestock Farm", 5_000.0, 400.0, GRAIN, PLANKS, 0, 200),
+    ];
+    world.money = 5_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    let said = brain.take_said();
+    assert!(
+        !said.iter().any(|l| l.contains("carrying grain")),
+        "{said:?}"
+    );
+}
+
+#[test]
 fn a_works_already_turning_out_all_it_can_takes_no_more() {
     let mut world = World::new();
     world.industries = vec![
         industry("Witney Farm", 300.0, 300.0, &[], &[(GRAIN, 120)]),
-        // Making all it can: another company feeds it.
-        industry(
+        // Making all it can: another company feeds it and carries from it.
+        works(
             "Busy Livestock Farm",
             5_000.0,
             400.0,
-            &[GRAIN],
-            &[(PLANKS, 200)],
+            GRAIN,
+            PLANKS,
+            200,
+            200,
         ),
     ];
     world.money = 5_000_000;
