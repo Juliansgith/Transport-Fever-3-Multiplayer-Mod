@@ -35,6 +35,9 @@ name: release
 # - TPF3MP_GAME_ARCHIVE_40425: the private archive of build 40425 (Steam
 #   build ID 26129055), checked when that bundle is selected; the 40423
 #   archive stays available for the commits released on 40423.
+# - TPF3MP_GAME_ARCHIVE_40444: the private archive of build 40444 (Steam
+#   build ID 26643808), checked when that bundle is selected; the 40425
+#   archive stays available for the commits released on 40425.
 # - TPF3MP_CANDIDATE_GAME_ARCHIVE: optional private archive for static candidate
 #   signature checks on update feature branches; never selects a native bundle.
 #
@@ -107,6 +110,7 @@ jobs:
       TPF3MP_UPDATED_GAME_ARCHIVE: ${{ vars.TPF3MP_UPDATED_GAME_ARCHIVE }}
       TPF3MP_GAME_ARCHIVE_40423: ${{ vars.TPF3MP_GAME_ARCHIVE_40423 }}
       TPF3MP_GAME_ARCHIVE_40425: ${{ vars.TPF3MP_GAME_ARCHIVE_40425 }}
+      TPF3MP_GAME_ARCHIVE_40444: ${{ vars.TPF3MP_GAME_ARCHIVE_40444 }}
       TPF3MP_CANDIDATE_GAME_ARCHIVE: ${{ vars.TPF3MP_CANDIDATE_GAME_ARCHIVE }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -120,7 +124,8 @@ jobs:
           $selectedBuild = (Get-Content profiles/native-build.txt -Raw).Trim()
           $archive = & ./tools/github/select-game-archive.ps1 -SelectedBuild $selectedBuild `
             -ReleaseArchive $env:TPF3MP_GAME_ARCHIVE -UpdatedArchive $env:TPF3MP_UPDATED_GAME_ARCHIVE `
-            -Archive40423 $env:TPF3MP_GAME_ARCHIVE_40423 -Archive40425 $env:TPF3MP_GAME_ARCHIVE_40425
+            -Archive40423 $env:TPF3MP_GAME_ARCHIVE_40423 -Archive40425 $env:TPF3MP_GAME_ARCHIVE_40425 `
+            -Archive40444 $env:TPF3MP_GAME_ARCHIVE_40444
           $quietCargo = Join-Path $env:USERPROFILE '.claude/tools/quiet-cargo/quiet-cargo.cmd'
           if (-not (Test-Path -LiteralPath $quietCargo -PathType Leaf)) {
             throw 'Install quiet-cargo on the private runner before enabling game verification'

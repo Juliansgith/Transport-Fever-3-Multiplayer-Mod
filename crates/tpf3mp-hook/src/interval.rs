@@ -107,13 +107,22 @@ pub const LAYOUT_40408: Layout = Layout {
 /// (2026-10-08), 40420 (2026-10-09, the same offsets in `CGame::Step`
 /// and `RunGameSimLoop`), 40423 (2026-10-22: `CGame::Step` 0x11f400,
 /// `CGame::Sync` 0x11f6a0 and `RunGameSimLoop` 0x11e260 are 40420's
-/// instructions with only their addresses moved) and 40425 (2026-10-24:
-/// the same three functions at the same addresses, byte for byte).
+/// instructions with only their addresses moved), 40425 (2026-10-24:
+/// the same three functions at the same addresses, byte for byte) and 40444
+/// (2026-11-21: `CGame::Step` 0x11f7e0, `CGame::Sync` 0x11fa80 and
+/// `RunGameSimLoop` 0x11e640, each 40408's in size, instruction count and
+/// the place of every call and reference, with the same fields).
 pub fn layout_for(profile: &str) -> Option<Layout> {
-    ["Build 40408", "Build 40420", "Build 40423", "Build 40425"]
-        .iter()
-        .any(|build| profile.contains(build))
-        .then_some(LAYOUT_40408)
+    [
+        "Build 40408",
+        "Build 40420",
+        "Build 40423",
+        "Build 40425",
+        "Build 40444",
+    ]
+    .iter()
+    .any(|build| profile.contains(build))
+    .then_some(LAYOUT_40408)
 }
 
 /// The updates a call runs at the room's pace with the game's own 200 ms
@@ -960,6 +969,10 @@ mod tests {
         );
         assert_eq!(
             layout_for("Transport Fever 3 Build 40425 (Steam, Windows x64)"),
+            Some(LAYOUT_40408)
+        );
+        assert_eq!(
+            layout_for("Transport Fever 3 Build 40444 (Steam, Windows x64)"),
             Some(LAYOUT_40408)
         );
         assert_eq!(

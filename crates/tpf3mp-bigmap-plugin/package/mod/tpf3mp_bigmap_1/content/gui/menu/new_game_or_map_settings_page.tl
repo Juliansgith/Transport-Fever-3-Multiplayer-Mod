@@ -328,7 +328,7 @@ local function getNumTiles(size : integer, format : integer) : Vec2i
 		if format == 2 then return api.type.Vec2i.new(54, 162) end
 		if format == 3 then return api.type.Vec2i.new(48, 192) end
 		if format == 4 then return api.type.Vec2i.new(42, 210) end
-	elseif size == 7 then -- "colossal"
+	elseif size == 7 then -- "gigantomaniac"
 		if format == 0 then return api.type.Vec2i.new(112, 112) end
 		if format == 1 then return api.type.Vec2i.new(80, 160) end
 		if format == 2 then return api.type.Vec2i.new(64, 192) end
@@ -905,6 +905,26 @@ local NewGameOrMapSettingsPage = react.RegisterRecipe("NewGameOrMapSettingsPage"
 		activeModsParamsState = react.useState(useStates.activeModsParamsState)
 	end
 
+	local getInstalledActiveMods = function() : {string}
+		local modRep = app.getUserProfile():getModRep()
+		local installedActiveMods : {string} = {}
+		for __, modName in ipairs(activeModsState:old()) do
+			local modId = api.type.mod.ModId.new()
+			modId.name = modName
+			if modRep:exists(modId) then
+				table.insert(installedActiveMods, modName)
+			end
+		end
+		return installedActiveMods
+	end
+
+	react.onStep(function()
+		local installedActiveMods = getInstalledActiveMods()
+		if #installedActiveMods ~= #activeModsState:old() then
+			activeModsState:set(installedActiveMods)
+		end
+	end)
+
 	local mapPreviewReadyForInputRef : ReactRefT<MapPreviewInputs> = react.useRef(nil)
 
 	local mapState : ReactStateT<GameMap> = react.useState()
@@ -1011,7 +1031,7 @@ local NewGameOrMapSettingsPage = react.RegisterRecipe("NewGameOrMapSettingsPage"
 					map = mapState:old()
 				end
 
-				local completedMods = new_game_react_util.autoActivateConfigDictMods(activeModsState:old(), configDictState:old())
+				local completedMods = new_game_react_util.autoActivateConfigDictMods(getInstalledActiveMods(), configDictState:old())
 				
 				local completeModIdList = savegame_react_util.makeModIdList(completedMods)
 
@@ -1032,7 +1052,7 @@ local NewGameOrMapSettingsPage = react.RegisterRecipe("NewGameOrMapSettingsPage"
 				createNewMapPageParams.commonParams.setPage("ProgressPage", {})
 			else
 				modParams = activeModsParamsState:old()
-				modIdList = savegame_react_util.makeModIdList(activeModsState:old())
+				modIdList = savegame_react_util.makeModIdList(getInstalledActiveMods())
 
 				createNewMapPageParams.commonParams.setPage("ProgressPage", {
 					onMount = function()

@@ -1,13 +1,13 @@
-//! Big Maps' package against the real game, build 40425, without running
+//! Big Maps' package against the real game, build 40444, without running
 //! it: its hooks found in the executable's code by the hook's own
-//! `plugins::locate`, arranged against every target the hook's own 40425
+//! `plugins::locate`, arranged against every target the hook's own 40444
 //! profile patches (`plugins::arrange`), and the plugin's entry run with a
 //! host that answers from the executable's bytes at their preferred
 //! addresses, with every switch on. Every check the plugin makes in the
 //! game is made here, on the same bytes.
 //!
-//! The executable is optional: set `TPF3MP_TF3_BUILD40425_EXE` to it (as
-//! `tpf3mp-hookcore`'s `tf3_build40425_profile` test does). Without it the
+//! The executable is optional: set `TPF3MP_TF3_BUILD40444_EXE` to it (as
+//! `tpf3mp-hookcore`'s `tf3_build40444_profile` test does). Without it the
 //! test says so and passes; with another build it fails.
 
 #![allow(clippy::unwrap_used, unsafe_code)]
@@ -18,7 +18,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use tpf3mp_bigmap_plugin::{build40425::BUILD, manifest};
+use tpf3mp_bigmap_plugin::{build40444::BUILD, manifest};
 use tpf3mp_hook::plugins::{self, Found};
 use tpf3mp_hookcore::{
     pe::PeHeaders,
@@ -27,8 +27,8 @@ use tpf3mp_hookcore::{
 use tpf3mp_nativemods::{enabled::EnabledPackage, index::HookKind};
 use tpf3mp_plugin_abi as abi;
 
-const EXE_ENV: &str = "TPF3MP_TF3_BUILD40425_EXE";
-const PROFILE: &str = include_str!("../../../profiles/tf3_build40425_steam_windows/hooks.toml");
+const EXE_ENV: &str = "TPF3MP_TF3_BUILD40444_EXE";
+const PROFILE: &str = include_str!("../../../profiles/tf3_build40444_steam_windows/hooks.toml");
 
 /// The executable, loaded as the game would be at its preferred base:
 /// each section's bytes at `image_base + virtual_address`.
@@ -158,7 +158,7 @@ static SERVICES: abi::Services = abi::Services {
 };
 
 #[test]
-fn big_maps_finds_and_checks_every_site_in_build_40425() {
+fn big_maps_finds_and_checks_every_site_in_build_40444() {
     let Some(path) = std::env::var_os(EXE_ENV).map(PathBuf::from) else {
         eprintln!("{EXE_ENV} is not set: Big Maps' sites are not checked against the game");
         return;
@@ -167,7 +167,7 @@ fn big_maps_finds_and_checks_every_site_in_build_40425() {
     assert_eq!(
         tpf3mp_nativemods::signed::sha256_hex(&exe),
         BUILD,
-        "{} is not build 40425",
+        "{} is not build 40444",
         path.display()
     );
     let pe = PeHeaders::parse(&exe).unwrap();

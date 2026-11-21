@@ -352,8 +352,8 @@ game with the hook in it as the launcher does.
 ### Reviewing the native data for a game update
 
 The compiled Windows native data is grouped with its signature profile in
-`profiles/tf3_build40425_steam_windows/` (the 40408, 40420 and 40423 bundles
-remain for historical verification): `hooks.toml` records the executable
+`profiles/tf3_build40444_steam_windows/` (the 40408, 40420, 40423 and 40425
+bundles remain for historical verification): `hooks.toml` records the executable
 SHA-256, size and PE timestamp; `native.rs` records the game/Steam build and
 exports each subsystem's data file. Those files hold splice bytes, frame and
 field offsets, structure layouts and GUI register/site descriptions. The
@@ -368,13 +368,18 @@ Bootstrap checks its complete executable identity before
 installing the menu or step gate. A TOML profile for another executable is
 insufficient: it cannot enable that build with the previous build's native
 layouts. Custom profiles for the supported executable keep their priority.
-This selects Windows Steam build 40425 (Steam build ID 26129055, the update
-of 2026-10-24; [the update's note](../investigation/UPDATE_40425_2026-10-24.md)):
-40423's bundle with only the identity changed, since 40425's code is 40423's
-at the same addresses but for its version data
-([40423's note](../investigation/UPDATE_40423_2026-10-22.md) has the port
-from 40420). The released main branch keeps 40423 until the normal
-acceptance and promotion gates are passed; this does not approve Preview or another
+This selects Windows Steam build 40444 (Steam build ID 26643808, the update
+of 2026-11-20; [the update's note](../investigation/UPDATE_40444_2026-11-21.md)):
+40425's bundle carried over to a real code update, 159 of its 170 targets
+still matching their signatures, eleven found again, and every native
+constant re-read from the 40444 executable, three of them changed in
+meaning (`RegisterAppUsertypes` gained two arguments, the transport
+vehicles' node count moved in its frame, the street tool's click callback
+was recompiled). 40425's bundle was 40423's with only the identity changed
+([40425's note](../investigation/UPDATE_40425_2026-10-24.md); [40423's
+note](../investigation/UPDATE_40423_2026-10-22.md) has the port from 40420).
+The released main branch keeps its build until the normal acceptance and
+promotion gates are passed; this does not approve Preview or another
 platform.
 
 A static signature candidate for Steam Preview 40418 is in
@@ -1492,7 +1497,10 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
 - **Gets a Lua state that can load.** The game gives a Lua state its `app`
   table in one function, `RegisterAppUsertypes` (profile target, build
   40408 `0xdc5fa0`), for the menu's states and the in-game GUI's. The
-  hook detours it and, after the game's registration, runs a short chunk
+  hook detours it, passing every argument through: on build 40444 it takes
+  five, the last a `std::shared_ptr` by value on the stack, which the game
+  releases, so the detour passes the first stack argument on as well as the
+  four registers. After the game's registration, it runs a short chunk
   there (`lua_load`, `lua_pcallk`): it hands the hook a function that
   loads a save by name, kept in the state's registry (`luaL_ref`), and a
   sentinel whose `__gc` tells the hook when the state closes (Lua 5.2 runs
@@ -6903,7 +6911,7 @@ and the `perf: sim` line's `parcel-collision`.
 
 `crates/tpf3mp-hook/src/fastbitmap.rs` (`fast-bitmap-span`, on unless
 `TPF3MP_HOOK_FAST_BITMAP_SPAN=0` or `off`; profile target
-`fast-bitmap-span: BitmapRasterizable::Fill`, 40425 only). Every time an
+`fast-bitmap-span: BitmapRasterizable::Fill`, 40425 and 40444 only). Every time an
 industry spawns, the game connects it to the road network on the
 simulation thread (`game/urbansim/init_streets_util.cpp`), and its console
 says `Connect industry: 850-1075 ms` on Bubu's 150 MB world: a freeze of

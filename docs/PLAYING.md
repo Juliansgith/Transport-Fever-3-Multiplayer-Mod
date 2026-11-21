@@ -603,11 +603,11 @@ protected folder such as Program Files.
 - **Vehicles and lines.** Buy vehicles in a depot's store, make and change
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
-  hears it a moment after your click. On Steam builds 40420, 40423 and
-  40425, station clicks made while a new line waits for the room are kept in
-  order. On other supported builds, wait for the new line to appear before
-  adding its next station; the copied line window has only been verified
-  for builds 40420, 40423 and 40425.
+  hears it a moment after your click. On Steam build 40444, station clicks
+  made while a new line waits for the room are kept in order. On other
+  supported builds, wait for the new line to appear before adding its next
+  station; the copied line window is made from build 40444's (40444
+  changed the game's window).
 - **Companies.** Everyone starts in the save's own company, together. In
   the Multiplayer window you can found a company of your own, join
   another, rename or recolour yours, and dissolve it once you are its last

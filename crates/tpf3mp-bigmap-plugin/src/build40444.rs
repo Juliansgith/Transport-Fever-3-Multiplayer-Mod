@@ -1,10 +1,13 @@
-//! Steam Windows build 40425's data for Big Maps' patches: 40423's (ported
-//! from 40420's on 2026-10-22, investigation/UPDATE_40423_2026-10-22.md)
-//! with only the build changed, since 40425's code is 40423's at the same
-//! addresses (investigation/UPDATE_40425_2026-10-24.md); first made on Big Maps'
-//! own branch (`profiles/tf3_build40420_steam_windows/bigmap.rs` and
-//! `simswitch.rs` on `feat/bigmaps-40420`;
-//! investigation/TF3_BIGMAPS_256KM_2026-10-05.md and
+//! Steam Windows build 40444's data for Big Maps' patches, ported from
+//! 40425's on 2026-11-21 (investigation/UPDATE_40444_2026-11-21.md): every
+//! signature matches once on the same functions, and the code each check
+//! reads is 40425's but for the displacements below (the two vtable `lea`s
+//! in `crate::manifest`, three calls and the factor load in
+//! [`CREATE_GRID_BODY`], and the coarse factor's distance). 40425's came from
+//! 40423's (ported from 40420's, investigation/UPDATE_40423_2026-10-22.md);
+//! first made on Big Maps' own branch
+//! (`profiles/tf3_build40420_steam_windows/bigmap.rs` and `simswitch.rs` on
+//! `feat/bigmaps-40420`; investigation/TF3_BIGMAPS_256KM_2026-10-05.md and
 //! TF3_BIG_MAP_SIM_COST_2026-10-05.md there), with each target named as the
 //! package's hook (`crate::manifest`) instead of the hook profile's.
 //!
@@ -12,7 +15,7 @@
 //! call, [`ROOT_NEXT_OFFSET`] bytes past the site.
 
 /// The game build these are read on: its executable's SHA-256.
-pub const BUILD: &str = "e9a6190f9ca8f7f34a46dfafac0f3b897e41ea6dc6498d6f5871aed6b9ca74cd";
+pub const BUILD: &str = "51a7cafa6b57bee804f1f513a9c58aa7a01a1d4ba3048c46e1fb4daa3d039c49";
 
 /// `OctreeSystem::Resize(octree, depth, half)`: stores the root box and
 /// the depth, nothing else.
@@ -232,12 +235,12 @@ pub const CREATE_GRID_BODY_OFFSET: usize = 0x91;
 /// and the two multiplies. The load's displacement (`+0x5d..+0x61` here)
 /// is checked through the constant it reads instead.
 pub const CREATE_GRID_BODY: [u8; 106] = [
-    0xC1, 0xE0, 0x04, 0x89, 0x03, 0x49, 0x8B, 0xCF, 0xE8, 0x12, 0xBD, 0x00, 0x00, 0x48, 0xC1, 0xE8,
+    0xC1, 0xE0, 0x04, 0x89, 0x03, 0x49, 0x8B, 0xCF, 0xE8, 0x02, 0xBD, 0x00, 0x00, 0x48, 0xC1, 0xE8,
     0x20, 0xC1, 0xE0, 0x04, 0x89, 0x43, 0x04, 0x41, 0x8B, 0x07, 0xC1, 0xE0, 0x04, 0x89, 0x43, 0x08,
     0x41, 0x8B, 0x4F, 0x04, 0xC1, 0xE1, 0x04, 0x89, 0x4B, 0x0C, 0x83, 0xF8, 0x02, 0x0F, 0x8E, 0xB1,
     0x01, 0x00, 0x00, 0x83, 0xF9, 0x02, 0x0F, 0x8E, 0x87, 0x01, 0x00, 0x00, 0x49, 0x8B, 0xCF, 0xE8,
-    0xAB, 0xBC, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x34, 0x49, 0x8B, 0xCF, 0xE8, 0x9E, 0xBC, 0x00,
-    0x00, 0x48, 0x89, 0x84, 0x24, 0xB8, 0x00, 0x00, 0x00, 0xC5, 0xFA, 0x10, 0x15, 0xB2, 0xDF, 0xB1,
+    0x9B, 0xBC, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x34, 0x49, 0x8B, 0xCF, 0xE8, 0x8E, 0xBC, 0x00,
+    0x00, 0x48, 0x89, 0x84, 0x24, 0xB8, 0x00, 0x00, 0x00, 0xC5, 0xFA, 0x10, 0x15, 0xE2, 0x97, 0xB4,
     0x02, 0xC5, 0xEA, 0x59, 0x9C, 0x24, 0xB8, 0x00, 0x00, 0x00,
 ];
 
@@ -252,10 +255,11 @@ pub const CREATE_GRID_FACTOR_LOAD: usize = 0xea;
 /// The load's opcode bytes before its displacement.
 pub const VMOVSS_XMM2_RIP: [u8; 4] = [0xC5, 0xFA, 0x10, 0x15];
 
-/// From the 0.0625f the load reads (0x36c3ca4, shared by ten other
+/// From the 0.0625f the load reads (0x36f2d84, shared by ten other
 /// instructions, never written) to a 0.125f in the same section
-/// (0x36d31e4, read by 22 instructions), which the load is pointed at.
-pub const CREATE_GRID_COARSE_FACTOR_DELTA: usize = 0x36d31e4 - 0x36c3ca4;
+/// (0x3702324, read by 22 instructions), which the load is pointed at. On
+/// 40425 the two were 0xf540 apart (0x36c3ca4, 0x36d31e4); 40444 moved them.
+pub const CREATE_GRID_COARSE_FACTOR_DELTA: usize = 0x3702324 - 0x36f2d84;
 
 /// The four shifts' rewrite hooks, in [`CREATE_GRID_SHIFTS`]' order.
 pub const CREATE_GRID_SHIFT_HOOKS: [&str; 4] = [
