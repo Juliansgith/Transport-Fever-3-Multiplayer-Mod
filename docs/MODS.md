@@ -110,7 +110,12 @@ has, from each place the game keeps them (`tpf3mp_modscan::roots`):
 
 A mod is found by its `mod.json`'s `modId`, else its folder's name. A save
 lists a Mod Hub mod by its `modId`, the mod.io number only as its hub id
-(SEEN, below).
+(SEEN, below). A `mod.json`, and each of mod.io's own files read here, may
+start with a UTF-8 byte order mark, which the game reads past (SEEN,
+2026-11-08: the Curved Railway Station's revision 2 from the Mod Hub,
+loaded by its `modId`); the scan reads past it too. Until then it found
+that mod by its folder's number, and a room asking for it called it
+missing.
 
 ### Where Mod Hub keeps its downloads
 

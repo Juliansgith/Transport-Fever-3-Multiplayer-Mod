@@ -96,6 +96,23 @@ fn a_gui_overlay_is_personal_and_says_what_it_does() {
     );
 }
 
+/// A `mod.json` that starts with a UTF-8 byte order mark, as the Mod Hub's
+/// Curved Railway Station's revision 2 did (2026-11-08), names its mod and
+/// revision; read as "does not parse", it gave neither and made the mod
+/// shared.
+#[test]
+fn a_manifest_with_a_byte_order_mark_names_its_mod() {
+    let manifest = format!("\u{feff}{MANIFEST}");
+    let dir = mod_with(&[("mod.json", &manifest), ("_content.json", "{}")]);
+    let report = scan(dir.path());
+    assert_eq!(report.id, "test_mod_1");
+    assert_eq!(report.revision, Some(3));
+    assert!(
+        !report.reasons.iter().any(|r| r.kind == Kind::Manifest),
+        "{report}"
+    );
+}
+
 #[test]
 fn a_game_script_that_sends_only_what_the_room_carries_is_carried() {
     // Shaped like Auto Line Namer: a game script renaming lines on a timer,
