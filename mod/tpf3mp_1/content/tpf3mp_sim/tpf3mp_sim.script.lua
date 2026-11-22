@@ -89,6 +89,9 @@ function data()
 	-- the scripts' follow-up builds in the GUI's state, and whether their
 	-- wrapper is on there (tpf3mp/modbuild.lua).
 	local applying, followUps, followUpsOn = false, nil, false
+	-- What shared mods keep up after builds (tpf3mp/upkeep.lua), in the game
+	-- scripts' GUI state: its frame function, once on.
+	local upkeepFrame = nil
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
 	local told, toldRegistry, toldOwnership, toldProgression = false, false, false, false
@@ -395,6 +398,48 @@ function data()
 		end
 		l:log(ok and "scripts' builds from the game scripts' GUI state go to the room as their player's follow-ups"
 			or ("scripts' builds from the game scripts' GUI state are not guarded: " .. tostring(why)))
+		-- In front of D27's wrapper: a shared mod's upkeep (Real Cant's
+		-- templates, grades and drawings) goes to the room from one game.
+		local okUpkeep, upkeepModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/upkeep.lua")
+		local okEvents, modevents = pcall(ug_require, MOD .. "::/scripts/tpf3mp/modevents.lua")
+		local okProposals, proposals = pcall(function() return api.engine.util.proposal end)
+		local hooks, whyNot = nil, "tpf3mp/upkeep.lua did not load: " .. tostring(upkeepModule)
+		if okCmd and okUpkeep and type(upkeepModule) == "table" and okEvents and type(modevents) == "table" then
+			hooks, whyNot = upkeepModule.install(cmd, okProposals and proposals or nil, {
+				inRoom = function() return l:room() end,
+				applying = function() return applying end,
+				decides = function() return upkeepModule.decider(l:status()) end,
+				command = function(action) return l:command(action) end,
+				world = {
+					component = function(entity, name)
+						if type(entity) ~= "number" then return nil end
+						local okC, c = pcall(function()
+							return api.engine.getComponent(entity, api.type.ComponentType[name])
+						end)
+						if okC then return c end
+						return nil
+					end,
+				},
+				encode = modevents.encode,
+				event = function(src, id, name, param) return modevents.capture({}, src, id, name, param) end,
+				log = function(line) l:log(line) end,
+			})
+		end
+		upkeepFrame = hooks and hooks.frame or nil
+		l:log(hooks and "shared mods' upkeep from the game scripts' GUI state goes to the room from one game"
+			or ("shared mods' upkeep is not carried: " .. tostring(whyNot)))
+	end
+
+	-- The room's shared mods, by modId, or nil where the link has no list.
+	local function sharedMods(l)
+		local ok, names = pcall(function() return l:shared() end)
+		if not ok or type(names) ~= "table" then return nil end
+		local set = {}
+		for _, line in ipairs(names) do
+			local id = tostring(line):match("^%s*(%S+)")
+			if id then set[id] = true end
+		end
+		return set
 	end
 
 	-- The guard on what this player's personal mods' game scripts send, in
@@ -707,7 +752,7 @@ function data()
 				applying = work.actions ~= nil
 				-- Whose build applied last: this player's or another's, for
 				-- the GUI's scripts' follow-ups (tpf3mp/modbuild.lua).
-				local lastBuild
+				local lastBuild, upkeepApplied
 				for i, action in ipairs(work.actions or {}) do
 					-- Booked to the sender's company.
 					local player = work.origins and work.origins[i]
@@ -783,6 +828,9 @@ function data()
 						local status = l:status()
 						lastBuild = (status and status.me_id ~= nil and player == status.me_id) and "mine" or "other"
 					end
+					-- A shared mod's upkeep applied: the deciding game runs the
+					-- mod's pass again (tpf3mp/upkeep.lua, UPKEEP_NOTE).
+					if ok and name == "ScriptUpkeep" then upkeepApplied = true end
 					if not ok then
 						l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
 					elseif name == "CompanyOp" then
@@ -799,6 +847,10 @@ function data()
 				applying = false
 				if lastBuild then
 					l:note(modbuild.NOTE, modbuild.noted(l:note(modbuild.NOTE), lastBuild == "mine"))
+				end
+				if upkeepApplied then
+					local n = tonumber(l:note("tpf3mp.upkeep") or "") or 0
+					l:note("tpf3mp.upkeep", tostring(n + 1))
 				end
 				if work.monthly then
 					local ok, why = pcall(companies.chargeMonths, roster, work.monthly, apply.send, api)
@@ -1020,6 +1072,9 @@ function data()
 			if not l then return end
 			followUpsInGui(l)
 			if followUps then followUps.seen(l:note(modbuild.NOTE)) end
+			if upkeepFrame then
+				upkeepFrame(l:note(modbuild.NOTE), ug_require, sharedMods(l), l:note("tpf3mp.upkeep"))
+			end
 			-- The player's own preview; the others' the Multiplayer plugin shows.
 			if previews and l:room() then previews.tick(l, api) end
 			local clicks = l:clicks()
