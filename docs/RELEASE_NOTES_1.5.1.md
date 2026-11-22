@@ -30,17 +30,36 @@ the game.
   no longer count as active). **Big Maps cannot be installed for 40444**
   until a 40444 package is published; TPF3-MP does not install a 40425
   package into a 40444 game.
+- **A Mod Hub mod whose `mod.json` starts with a byte order mark** is found
+  by its `modId` again, as the game finds it. The launcher called such a mod
+  missing in a room though it was installed (seen with *Curved Railway
+  Station*, Mod Hub 6457934, after its update of 2026-11-08).
 
 ## Verification and operation
 
 `tpfre verify-build` against the complete private Steam build 26643808
 archive must pass on the exact release commit; its 170 static targets match
 without review required. A static proof (`tf3_build40444_profile`) and Big
-Maps' game test pass against the 40444 executable. Static verification does
-not prove every runtime path: the real-game acceptance on 40444 is still to
-do. CI and acceptance must pass on the exact promoted commit.
+Maps' game test pass against the 40444 executable. The masked comparison
+against the 40425 archive (`tpfre update --check-only`) passes its static
+checks, and of the game files 40444 changed only the two this release
+rebuilds are ones the mods replace. In the real game, on Windows, two games
+in one room on 40444 loaded the room's world from the main menu, a line was
+built station by station in the line manager and a road extended from its
+end and continued by the street tool, and the two games' rolling world
+checks agreed over some 4,700 steps (94 of 94 windows). Big Maps and macOS
+and Linux games were not run. CI and acceptance must pass on the exact
+promoted commit.
 
 The protocol stays **26**, the Lua bridge **40**, the action schema **29**
 and the room-log format **11**. This client-only build update needs no relay
 restart or room-log migration. Restart the launcher to update, or download
 the new **TPF3-MP.exe**.
+
+Silver (silver2127) authored
+[#234](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/234),
+the port to 40444, with Claude Opus 5.5 recorded as co-author; it carries
+over Max (tearded)'s earlier ports. Max (tearded) authored
+[#232](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/232),
+with Claude Opus 5.5 recorded as co-author. Julian Cooper (_Sep,
+@Juliansgith) ran the release checks and the real-game acceptance.
