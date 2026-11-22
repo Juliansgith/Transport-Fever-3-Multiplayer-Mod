@@ -1,5 +1,5 @@
--- TPF3-MP: Transport Fever 3's gui/line_vehicle_mgmt/manager_window.tl (builds
--- 40420, 40423 and 40425: the same file), served in its place by the hook's menu patch
+-- TPF3-MP: Transport Fever 3's gui/line_vehicle_mgmt/manager_window.tl (build
+-- 40444), served in its place by the hook's menu patch
 -- (crates/tpf3mp-hook/src/menu_entry.rs), with one change, marked TPF3-MP:
 -- stations clicked while a new line is being created are added to it once it
 -- exists, instead of being dropped. Refresh this copy from the game's when a
@@ -33,8 +33,14 @@ local vehicle_store_window = ug_require "/gui/line_vehicle_mgmt/vehicle_store_wi
 local vehicle_store_util = ug_require "/gui/line_vehicle_mgmt/vehicle_store_util.tl" as VehicleStoreUtil
 local vehicle_util = ug_require "/gui/line_vehicle_mgmt/vehicle_util.tl" as VehicleUtil
 
+
 local lvmSFX = api.gui.genericRep.get(api.gui.genericRep.find("::/gui/line_vehicle_mgmt/sound/lvm_sfx.gres")).data as LvmSFX
 local guiCompSFX = api.gui.genericRep.get(api.gui.genericRep.find("::/gui/sound/gui_comp_sfx.gres")).data as GuiCompSFX
+
+
+local function getWindowApi(gameCtx : GameContext) : Builtin.WindowAPI
+	return gameCtx.windowContainer:get():getApi()
+end
 
 local function isEnabledReturnTrue() : boolean
 	return true
@@ -233,18 +239,45 @@ local function actionHandleVehicles(
 	)
 end
 
+local function lineHasAnyProblem(problemCache : ProblemCache, lineEntity : Engine.Entity) : boolean
+	if problemCache.line2problem[lineEntity] == true then
+		return true
+	end
+	return (problemCache.line2vehicleProblemCount[lineEntity] or 0) > 0
+end
+
+local function matchesLineProblemFilter(filterLineProblems : boolean, problemCache : ProblemCache, lineEntity : Engine.Entity) : boolean
+	if not filterLineProblems then
+		return true
+	end
+	if problemCache == nil then
+		return false
+	end
+	return lineHasAnyProblem(problemCache, lineEntity)
+end
+
+local function matchesCommonLineFilters(commonParams : CommonActionParams, allowedCarriers : {Carrier}, lineEntity : Engine.Entity) : boolean
+	if allowedCarriers and not api.engine.util.line.filterLineCarriers(allowedCarriers, lineEntity) then
+		return false
+	end
+	return commonParams.lineCapacityFilterFn(lineEntity) and commonParams.lineProblemFilterFn(lineEntity)
+end
+
 local function makeActionMainMode(commonParams : CommonActionParams, __any : any) : TreeNodeId
 
 	local allPlayerLines = api.engine.system.lineSystem.getLinesForPlayer(api.engine.util.getPlayer())
 	local filteredLines : {Engine.Entity} = {}
 	local allowedCarriers = commonParams.carrierFn()
+	local capacityFilterActive = commonParams.isCapacityFilterActiveFn()
+	local problemFilterActive = commonParams.isProblemFilterActiveFn()
+	local anyFilterActive = allowedCarriers ~= nil or capacityFilterActive or problemFilterActive
 	for __, lineEntity in ipairs(allPlayerLines) do
-		if not allowedCarriers then
+		if not anyFilterActive then
 			break
 		end
 
 		if api.engine.entityExists(lineEntity) then
-			if line_util.filterLine(allowedCarriers, lineEntity) then
+			if matchesCommonLineFilters(commonParams, allowedCarriers, lineEntity) then
 				table.insert(filteredLines, lineEntity)
 			end
 		end
@@ -415,7 +448,7 @@ local function makeActionMainMode(commonParams : CommonActionParams, __any : any
 	end
 
 	local lineVisualizations : {Builtin.Type.LineVisualization} = {}
-	if allowedCarriers then
+	if anyFilterActive then
 		for __, line in ipairs(filteredLines) do
 			local lineVis = builtin.type.LineVisualization.new()
 			lineVis.entity = line
@@ -530,11 +563,13 @@ local function makeActionSegmentMode(commonParams : CommonActionParams, insertAt
 		return getSelectedVehicleEntities(commonParams.vehicleManagerStateRef)
 	end)
 
+
 	-- update tooltips and the internal input actions. Return the new state for immediate use in case of click
 	local function pickedEntity(details : LineUtil.SelectionDetails) : LineUtil.GuiContextState
 		local ctx = prepareContextBuilder()
 
 		if details and details.station and details.station.stationGroup and not entity_util.isOwnedByPlayerOrNotOwned(details.station.stationGroup) then
+			commonParams.addStopHoveredStationRef:set(nil)
 			return ctx.result
 		end
 
@@ -568,10 +603,10 @@ local function makeActionSegmentMode(commonParams : CommonActionParams, insertAt
 			end
 		end
 
-		commonParams.addStopHoveredStationState:set(nil)
 		if not details or commonParams.getDisableHudInteraction() then
 			appendIaPreferWaypointIfLineSelected()
 			setContextState(ctx.result)
+			commonParams.addStopHoveredStationRef:set(nil)
 			return ctx.result
 		end
 
@@ -591,13 +626,13 @@ local function makeActionSegmentMode(commonParams : CommonActionParams, insertAt
 			end
 			appendIaPreferWaypointIfLineSelected()
 			setContextState(ctx.result)
+			commonParams.addStopHoveredStationRef:set(nil)
 			return ctx.result
 		end
 
 		local allowAll = true
 		if insertAtStopNumber == -1 then
 			allowAll = false
-			-- ctx.tooltip(manager_tooltips_util.LMSelectSectionFirst, nil)
 			ctx.setMouseCursor(gui_react_util.getMouseCursorInteger("Default"))
 		end
 
@@ -656,12 +691,14 @@ local function makeActionSegmentMode(commonParams : CommonActionParams, insertAt
 			end
 		end
 
+		local picked = false
 		local pickedStation = function(sDetails : LineUtil.StationSelectionDetails)
 			if not allowAll then
 				return
 			end
 
-			commonParams.addStopHoveredStationState:set(sDetails)
+			picked = true
+			commonParams.addStopHoveredStationRef:set(sDetails)
 			ctx.tooltip(manager_tooltips_util.LMAddStop, sDetails)
 			ctx.setMouseCursor(gui_react_util.getMouseCursorInteger("AddStopInvalid"))
 			if sDetails.flatStationTerminalIndex1 ~= nil and sDetails.flatStationTerminalIndex1 >= 1 then
@@ -805,6 +842,10 @@ local function makeActionSegmentMode(commonParams : CommonActionParams, insertAt
 				ctx.setMouseCursor(gui_react_util.getMouseCursorInteger("Default"))
 				actionHandleVehicles(ctx, commonParams, entity)
 			end
+		end
+
+		if not picked then
+			commonParams.addStopHoveredStationRef:set(nil)
 		end
 
 		appendIaPreferWaypointIfLineSelected()
@@ -1656,10 +1697,11 @@ local LineManagerActionButtons = react.RegisterRecipe("LineManagerActionButtons"
 			local onlyVisible = params.filterState:old().onlyVisible
 			local searchString = params.filterState:old().search or ""
 			local allowedCarriers : {Carrier} = params.commonParams.carrierFn()
+			local lineOnlyFilterActive = params.commonParams.isCapacityFilterActiveFn() or params.commonParams.isProblemFilterActiveFn()
 
 			local addToSelection = false
 			if selectDepots then
-				addToSelection = (lineSelectionValue ~= 1) or (depotSelectionValue ~= 1)
+				addToSelection = checkboxValue ~= 1
 			else
 				addToSelection = lineSelectionValue ~= 1
 			end
@@ -1667,7 +1709,7 @@ local LineManagerActionButtons = react.RegisterRecipe("LineManagerActionButtons"
 				local allPlayerLineEARsFiltered : {EntityUtil.EntityAndRevision} = {}
 				for __, playerLine in ipairs(api.engine.system.lineSystem.getLinesForPlayer(api.engine.util.getPlayer())) do
 					if not onlyVisible or api.gui.byEntity.isLineEmptyOrVisible(playerLine) then
-						if not allowedCarriers or api.engine.util.line.isLineCompatibleWithAnyCarrier(playerLine, allowedCarriers, false) then
+						if matchesCommonLineFilters(params.commonParams, allowedCarriers, playerLine) then
 							local lineName = api.engine.util.getEntityName(playerLine)
 							if searchString == "" or lang_util.stringContains(lineName, searchString) then
 								table.insert(allPlayerLineEARsFiltered, entity_util.makeEntityAndRevision(playerLine))
@@ -1680,7 +1722,7 @@ local LineManagerActionButtons = react.RegisterRecipe("LineManagerActionButtons"
 				for __, depotEAR in ipairs(params.commonParams.lineManagerStateRef:get().depotListEntitiesSelected) do
 					local depot : Engine.Component.VehicleDepot = api.engine.getComponent(depotEAR.entity, api.type.ComponentType.VEHICLE_DEPOT)
 
-					if not onlyVisible or api.gui.byEntity.isVisible(depotEAR.entity) then
+					if not lineOnlyFilterActive and (not onlyVisible or api.gui.byEntity.isVisible(depotEAR.entity)) then
 						if not allowedCarriers or statistics_react_util.areCarriersContainedInTransportModes(depot.transportModes, allowedCarriers) then
 							local depotName = api.engine.util.getEntityName(depotEAR.entity)
 							if searchString == "" or lang_util.stringContains(depotName, searchString) then
@@ -1692,7 +1734,7 @@ local LineManagerActionButtons = react.RegisterRecipe("LineManagerActionButtons"
 				for __, depotEAR in ipairs(params.commonParams.lineManagerStateRef:get().depotListEntitiesUnselected) do
 					local depot : Engine.Component.VehicleDepot = api.engine.getComponent(depotEAR.entity, api.type.ComponentType.VEHICLE_DEPOT)
 
-					if not onlyVisible or api.gui.byEntity.isVisible(depotEAR.entity) then
+					if not lineOnlyFilterActive and (not onlyVisible or api.gui.byEntity.isVisible(depotEAR.entity)) then
 						if not allowedCarriers or statistics_react_util.areCarriersContainedInTransportModes(depot.transportModes, allowedCarriers) then
 							local depotName = api.engine.util.getEntityName(depotEAR.entity)
 							if searchString == "" or lang_util.stringContains(depotName, searchString) then
@@ -1779,6 +1821,85 @@ local LineManagerActionButtons = react.RegisterRecipe("LineManagerActionButtons"
 	end
 
 	if params.filterConfigState:old() then
+		local filterState = params.filterState:old()
+
+		local problemButtons : {TreeNodeId} = {
+			builtin.ToggleButton{
+				content = builtin.ImageView{
+					meta = { class = "category", tooltip = _("Show Lines with Problems") },
+					path = params.commonParams.iconPaths.abFilterProblems,
+					scaling = builtin.type.ImageViewScaling.AutoFit,
+				},
+				value = filterState.filterLineProblems and 1 or 0,
+				onValueChange = function(value : integer)
+					transformFilterState(function(cur : StatisticsReactUtil.FilterState) : StatisticsReactUtil.FilterState
+						local result = table_util.copy(cur)
+						result.filterLineProblems = (value == 1)
+						return result
+					end)
+				end,
+			},
+		}
+
+		table.insert(actionListChildren, builtin.Component{
+			meta = {
+				disableFocusableRecursive = moreOptionsLocalState:old(),
+			},
+			layout = builtin.BoxLayout{
+				child = statistics_react_util.createFocusBar(problemButtons, nil, nil, nil, true),
+			}
+		})
+
+		table.insert(actionListChildren, builtin.Component{
+			meta = { class = "horizontal-spacer" }
+		})
+
+		local capacityButtons : {TreeNodeId} = {
+			builtin.ToggleButton{
+				content = builtin.ImageView{
+					meta = { class = "category", tooltip = _("Show Lines with Cargo Capacity") },
+					path = params.commonParams.iconPaths.abFilterCargo,
+					scaling = builtin.type.ImageViewScaling.AutoFit,
+				},
+				value = filterState.filterCargoCapacity and 1 or 0,
+				onValueChange = function(value : integer)
+					transformFilterState(function(cur : StatisticsReactUtil.FilterState) : StatisticsReactUtil.FilterState
+						local result = table_util.copy(cur)
+						result.filterCargoCapacity = (value == 1)
+						return result
+					end)
+				end,
+			},
+			builtin.ToggleButton{
+				content = builtin.ImageView{
+					meta = { class = "category", tooltip = _("Show Lines with Passenger Capacity") },
+					path = params.commonParams.iconPaths.abFilterPassenger,
+					scaling = builtin.type.ImageViewScaling.AutoFit,
+				},
+				value = filterState.filterPassengerCapacity and 1 or 0,
+				onValueChange = function(value : integer)
+					transformFilterState(function(cur : StatisticsReactUtil.FilterState) : StatisticsReactUtil.FilterState
+						local result = table_util.copy(cur)
+						result.filterPassengerCapacity = (value == 1)
+						return result
+					end)
+				end,
+			},
+		}
+
+		table.insert(actionListChildren, builtin.Component{
+			meta = {
+				disableFocusableRecursive = moreOptionsLocalState:old(),
+			},
+			layout = builtin.BoxLayout{
+				child = statistics_react_util.createFocusBar(capacityButtons, nil, nil, nil, true),
+			}
+		})
+
+		table.insert(actionListChildren, builtin.Component{
+			meta = { class = "horizontal-spacer" }
+		})
+
 		table.insert(actionListChildren, builtin.Component{
 			meta = {
 				disableFocusableRecursive = moreOptionsLocalState:old(),
@@ -2189,7 +2310,10 @@ local LineAndDepotListEntry = react.RegisterRecipe("LineAndDepotListEntry", func
 
 		children[#children + 1] = makeNameButton(onClickOverride, tooltipSelectLine)
 
-		children[#children + 1] = line_react_util.ManagerNotificationWidget(entity)
+		children[#children + 1] = line_react_util.ManagerNotificationWidget{
+			entity = entity,
+			persistingEntity2NotificationRef = userParams.commonParams.gameCtx.notificationCache.persistingEntity2NotificationRef,
+		}
 
 		children[#children + 1] = builtin.Button{
 			meta = {
@@ -2205,6 +2329,27 @@ local LineAndDepotListEntry = react.RegisterRecipe("LineAndDepotListEntry", func
 					editModeState:set(not editModeState:old())
 				end
 			end,
+		}
+
+		local grayscale = api.gui.genericRep.findAndGet("::/gui/main/grayscale.gres").data as GResColorArray
+		local colorPalette = color_util.toArray3(table_util.concatenate((api.gui.genericRep.get(api.gui.genericRep.find("::/gui/line_vehicle_mgmt/line_colors.gres")).data as GResColorArray), grayscale))
+
+		children[#children + 1] = builtin.ColorChooserButton{
+			meta = {
+				class = "row-line-color" .. (showButtons and "" or ", hidden-button"),
+				tooltip = _("Change Line Color"),
+			},
+			colors = colorPalette,
+			image = userParams.commonParams.iconPaths.rowPaint,
+			onValueChange = function(color : Vec3f)
+				if api.engine.entityExists(entity) then
+					api.cmd.sendCommand(api.cmd.makeEntitySetColorCmd(entity, color),
+						function(_result : ICommandData, _success : boolean)
+						end)
+				end
+			end,
+			resetButton = false,
+			innerResetButton = false,
 		}
 
 		children[#children + 1] = line_react_util.LocateButton{
@@ -2350,7 +2495,10 @@ local LineAndDepotListEntry = react.RegisterRecipe("LineAndDepotListEntry", func
 
 		children[#children + 1] = makeNameButton(onClickOverride, tooltipSelectDepot)
 
-		children[#children + 1] = line_react_util.ManagerNotificationWidget(entity)
+		children[#children + 1] = line_react_util.ManagerNotificationWidget{
+			entity = entity,
+			persistingEntity2NotificationRef = userParams.commonParams.gameCtx.notificationCache.persistingEntity2NotificationRef,
+		}
 
 		children[#children + 1] = builtin.Button{
 			meta = {
@@ -2531,6 +2679,10 @@ local LineAndDepotList = react.RegisterRecipe("LineAndDepotList", function(param
 	local searchString = params.filterState:old().search or ""
 	local filterShowCategories = params.filterState:old().category
 	local filterShowOnlyVisible = params.filterState:old().onlyVisible
+	local filterCargoCapacity = params.filterState:old().filterCargoCapacity
+	local filterPassengerCapacity = params.filterState:old().filterPassengerCapacity
+	local filterLineProblems = params.filterState:old().filterLineProblems
+	local allowedCarriers = statistics_react_util.getCarrierFilterFromCategories(filterCategories, filterShowCategories)
 
 	local fnUserFilter = function(key : integer) : boolean
 		if not api.engine.entityExists(key) then
@@ -2543,11 +2695,18 @@ local LineAndDepotList = react.RegisterRecipe("LineAndDepotList", function(param
 				return false
 			end
 
-			local allowedCarriers = statistics_react_util.getCarrierFilterFromCategories(filterCategories, filterShowCategories)
 			if allowedCarriers ~= nil then
-				if not line_util.filterLine(allowedCarriers, key) then
+				if not api.engine.util.line.filterLineCarriers(allowedCarriers, key) then
 					return false
 				end
+			end
+
+			if not api.engine.util.line.filterLineCapacity(filterCargoCapacity, filterPassengerCapacity, key) then
+				return false
+			end
+
+			if not matchesLineProblemFilter(filterLineProblems, params.commonParams.problemCacheState:old(), key) then
+				return false
 			end
 
 			if searchString == "" then
@@ -2574,7 +2733,10 @@ local LineAndDepotList = react.RegisterRecipe("LineAndDepotList", function(param
 				return false
 			end
 
-			local allowedCarriers  = statistics_react_util.getCarrierFilterFromCategories(filterCategories, filterShowCategories)
+			if filterCargoCapacity or filterPassengerCapacity or filterLineProblems then
+				return false
+			end
+
 			if allowedCarriers ~= nil then
 				if not statistics_react_util.areCarriersContainedInTransportModes(depot.transportModes, allowedCarriers) then
 					return false
@@ -3006,6 +3168,7 @@ local LineOrDepotNameFilling = react.RegisterRecipe("LineOrDepotNameFilling", fu
 		children = {
 			params.isLine and line_react_util.LineCargoDisplay{
 				lineEntity = params.entity,
+				stepTimer = true,
 			} or DepotIconDisplay{
 				depotEntity = params.entity,
 			},
@@ -3855,6 +4018,7 @@ local LineStatisticDetails = react.RegisterRecipe("LineStatisticDetails", functi
 				children = {
 					line_react_util.LineCargoDisplay{
 						lineEntity = params.lineEntity,
+						stepTimer = true,
 					},
 					builtin.Button{
 						meta = {
@@ -4796,12 +4960,9 @@ local record SendToLineButtonParams
 end
 
 local SendToLineButton = react.RegisterRecipe("SendToLineButton", function(params : SendToLineButtonParams) : TreeNodeId
-	local function getWindowApi() : Builtin.WindowAPI
-		return params.commonParams.gameCtx.windowContainer:get():getApi()
-	end
-
 	react.onUnmount(function()
-		getWindowApi().removeAllWindows(popover_react_util.PopoverWindow)
+		local wc = getWindowApi(params.commonParams.gameCtx)
+		wc.removeAllWindows(popover_react_util.PopoverWindow)
 		params.sendToLineDisabledState:set(false)
 	end)
 
@@ -5929,7 +6090,6 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 	local queuedStopsRef : ReactRefT<{LineUtil.StationSelectionDetails}> = react.useRef({})
 	local queuedStopsLineRef : ReactRefT<Engine.Entity> = react.useRef(nil)
 	local sendToLineHoveredLineState : ReactStateT<Engine.Entity> = react.useState(nil)
-	local addStopHoveredStationState : ReactStateT<LineUtil.StationSelectionDetails> = react.useState(nil)
 	local preferLineOverTNEdgeState : ReactStateT<boolean> = react.useState(true)
 
 	local vehicleStoreEventParamState : ReactStateT<VehicleStoreWindow.VehicleStoreEventParam> = react.useState(nil)
@@ -5952,6 +6112,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 	local lvmDnDDataRef : ReactRefT<LVMDnDData> = react.useRef({})
 	local lvmInitialControllerFocusRef = react.useRef(true)
 	local lvmExit3DControllerFocusRef : ReactRefT<integer> = react.useRef(2)
+	local addStopHoveredStationRef : ReactRefT<LineUtil.StationSelectionDetails> = react.useRef(nil)
 
 	local configureLinesPopoverPosRef = react.useNodeRef()
 	local sendToLinePopoverPosRef = react.useNodeRef()
@@ -6147,6 +6308,49 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 		return statistics_react_util.getCarrierFilterFromCategories(lvmFilterConfigState:old().categories, localLVMFilterState:old().category)
 	end
 
+	local isCapacityFilterActiveFn = function() : boolean
+		if not localLVMFilterState:old() then
+			return false
+		end
+		if localLVMFilterState:hasExpired() then
+			return false
+		end
+		local filterState = localLVMFilterState:old()
+		return (filterState.filterCargoCapacity or filterState.filterPassengerCapacity) == true
+	end
+
+	local lineCapacityFilterFn = function(lineEntity : Engine.Entity) : boolean
+		if not localLVMFilterState:old() then
+			return true
+		end
+		if localLVMFilterState:hasExpired() then
+			return true
+		end
+		local filterState = localLVMFilterState:old()
+		return api.engine.util.line.filterLineCapacity(filterState.filterCargoCapacity, filterState.filterPassengerCapacity, lineEntity)
+	end
+
+	local isProblemFilterActiveFn = function() : boolean
+		if not localLVMFilterState:old() then
+			return false
+		end
+		if localLVMFilterState:hasExpired() then
+			return false
+		end
+		return localLVMFilterState:old().filterLineProblems == true
+	end
+
+	local lineProblemFilterFn = function(lineEntity : Engine.Entity) : boolean
+		if not localLVMFilterState:old() then
+			return true
+		end
+		if localLVMFilterState:hasExpired() then
+			return true
+		end
+		local filterState = localLVMFilterState:old()
+		return matchesLineProblemFilter(filterState.filterLineProblems, problemCacheState:old(), lineEntity)
+	end
+
 	local countDataState : ReactStateT<LVMCountData> = engine_react_util.useStepState(function() : LVMCountData
 		local countLinesWithProblems = 0
 		local countLinesSelected = 0
@@ -6169,6 +6373,10 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 
 		local onlyVisible = localLVMFilterState:old().onlyVisible
 		local allowedCarriers : {Carrier} = carrierFn()
+		local filterCargoCapacity = localLVMFilterState:old().filterCargoCapacity
+		local filterPassengerCapacity = localLVMFilterState:old().filterPassengerCapacity
+		local filterLineProblems = localLVMFilterState:old().filterLineProblems
+		local lineOnlyFilterActive = filterCargoCapacity or filterPassengerCapacity or filterLineProblems
 		local problemCache = problemCacheState:old() or {
 			vehiclesAndProblems : {{{Engine.Entity}, VehicleProblem}} = {},
 			vehiclesWithRoundTrips : {Engine.Entity : integer} = {},
@@ -6179,10 +6387,14 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 			line2vehicleProblemCount : {Engine.Entity : integer} = {},
 		}
 
+		local matchesLineFilters = function(lineEntity : Engine.Entity) : boolean
+			return api.engine.util.line.filterLineCapacity(filterCargoCapacity, filterPassengerCapacity, lineEntity) and matchesLineProblemFilter(filterLineProblems, problemCache, lineEntity)
+		end
+
 		for __, depotEAR in ipairs(toolParams.lineManagerStateRef:get().depotListEntitiesSelected) do
 			local depot : Engine.Component.VehicleDepot = api.engine.getComponent(depotEAR.entity, api.type.ComponentType.VEHICLE_DEPOT)
 
-			if not entity_util.entityChanged0(depotEAR) then
+			if not entity_util.entityChanged0(depotEAR) and not lineOnlyFilterActive then
 				if not onlyVisible or api.gui.byEntity.isVisible(depotEAR.entity) then
 					if not allowedCarriers or statistics_react_util.areCarriersContainedInTransportModes(depot.transportModes, allowedCarriers) then
 						countDepotsSelected = countDepotsSelected + 1
@@ -6194,7 +6406,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 		for __, depotEAR in ipairs(toolParams.lineManagerStateRef:get().depotListEntitiesUnselected) do
 			local depot : Engine.Component.VehicleDepot = api.engine.getComponent(depotEAR.entity, api.type.ComponentType.VEHICLE_DEPOT)
 
-			if not entity_util.entityChanged0(depotEAR) then
+			if not entity_util.entityChanged0(depotEAR) and not lineOnlyFilterActive then
 				if not onlyVisible or api.gui.byEntity.isVisible(depotEAR.entity) then
 					if not allowedCarriers or statistics_react_util.areCarriersContainedInTransportModes(depot.transportModes, allowedCarriers) then
 						countDepotsUnselected = countDepotsUnselected + 1
@@ -6211,12 +6423,14 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 		for __, lineEAR in ipairs(toolParams.lineManagerStateRef:get().lineListEntitiesSelected) do
 			if not entity_util.entityChanged0(lineEAR) then
 				if not onlyVisible or api.gui.byEntity.isLineEmptyOrVisible(lineEAR.entity) then
-					if not allowedCarriers or api.engine.util.line.isLineCompatibleWithAnyCarrier(lineEAR.entity, allowedCarriers, false) then
-						countLinesSelected = countLinesSelected + 1
+					if not allowedCarriers or api.engine.util.line.filterLineCarriers(allowedCarriers, lineEAR.entity) then
+						if matchesLineFilters(lineEAR.entity) then
+							countLinesSelected = countLinesSelected + 1
+						end
 					end
 				end
 
-				if problemCache.line2problem[lineEAR.entity] then
+				if lineHasAnyProblem(problemCache, lineEAR.entity) then
 					countLinesWithProblems = countLinesWithProblems + 1
 				end
 
@@ -6228,12 +6442,14 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 		for __, lineEAR in ipairs(toolParams.lineManagerStateRef:get().lineListEntitiesUnselected) do
 			if not entity_util.entityChanged0(lineEAR) then
 				if not onlyVisible or api.gui.byEntity.isLineEmptyOrVisible(lineEAR.entity) then
-					if not allowedCarriers or api.engine.util.line.isLineCompatibleWithAnyCarrier(lineEAR.entity, allowedCarriers, false) then
-						countLinesUnselected = countLinesUnselected + 1
+					if not allowedCarriers or api.engine.util.line.filterLineCarriers(allowedCarriers, lineEAR.entity) then
+						if matchesLineFilters(lineEAR.entity) then
+							countLinesUnselected = countLinesUnselected + 1
+						end
 					end
 				end
 
-				if problemCache.line2problem[lineEAR.entity] then
+				if lineHasAnyProblem(problemCache, lineEAR.entity) then
 					countLinesWithProblems = countLinesWithProblems + 1
 				end
 			end
@@ -6292,50 +6508,56 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 				modifier3D_PreferWaypoint = "IA_PRECISION_MODE", -- right shoulder (hold)
 			},
 			iconPaths = { -- iconpaths for LVM section rows (smaller)
-				rowRename          = "::/gui/line_vehicle_mgmt/icons/symbol_pencil_20.tga",
-				rowConfigure       = "::/gui/line_vehicle_mgmt/icons/symbol_cargo_20.tga",
-				rowMove            = "::/gui/line_vehicle_mgmt/icons/indicator_move_20.tga",
-				rowDelete          = "::/gui/line_vehicle_mgmt/icons/symbol_trash_bin_20.tga",
-				rowSelectTerminals = "::/gui/line_vehicle_mgmt/icons/indicator_terminal_20.tga",
-				rowLocate          = "::/gui/line_vehicle_mgmt/icons/symbol_locate_20.tga",
-				rowRemove          = "::/gui/line_vehicle_mgmt/icons/symbol_minus_20.tga",
-				rowCart            = "::/gui/line_vehicle_mgmt/icons/symbol_shopping_cart_20.tga",
+				rowRename           = "::/gui/line_vehicle_mgmt/icons/symbol_pencil_20.tga",
+				rowConfigure        = "::/gui/line_vehicle_mgmt/icons/symbol_cargo_20.tga",
+				rowMove             = "::/gui/line_vehicle_mgmt/icons/indicator_move_20.tga",
+				rowDelete           = "::/gui/line_vehicle_mgmt/icons/symbol_trash_bin_20.tga",
+				rowSelectTerminals  = "::/gui/line_vehicle_mgmt/icons/indicator_terminal_20.tga",
+				rowLocate           = "::/gui/line_vehicle_mgmt/icons/symbol_locate_20.tga",
+				rowRemove           = "::/gui/line_vehicle_mgmt/icons/symbol_minus_20.tga",
+				rowCart             = "::/gui/line_vehicle_mgmt/icons/symbol_shopping_cart_20.tga",
+				rowPaint            = "::/gui/line_vehicle_mgmt/icons/symbol_paintbucket_20.tga",
 
-				problemAlert       = "::/gui/statistics/icons/alert.tga",
-				problemArrow       = "::/gui/line_vehicle_mgmt/icons/special_arrow_down.tga",
+				problemAlert        = "::/gui/statistics/icons/alert.tga",
+				problemArrow        = "::/gui/line_vehicle_mgmt/icons/special_arrow_down.tga",
 
-				regSelectTerminals = "::/gui/line_vehicle_mgmt/icons/indicator_terminal.tga",
-				regRename          = "::/gui/builtin/window/icons/symbol_pencil.tga",
-				regAutoRename      = "::/gui/line_vehicle_mgmt/icons/symbol_autorename.tga",
-				regFilterVisible   = "::/gui/line_vehicle_mgmt/icons/symbol_eye.tga",
-				regGradient        = "::/gui/line_vehicle_mgmt/design/gradient.tga",
-				regDragGrip        = "::/gui/line_vehicle_mgmt/icons/drag_vertical_20.tga",
+				alternativeTerminal = "::/gui/line_vehicle_mgmt/icons/terminal_alternative_20.tga",
 
-				abNewLine          = "::/gui/line_vehicle_mgmt/icons/line_plus.tga",
-				abSendToLine       = "::/gui/line_vehicle_mgmt/icons/symbol_arrow_up.tga",
-				abBuyVehicles      = "::/gui/line_vehicle_mgmt/icons/symbol_shopping_cart.tga",
-				abFilterVisible    = "::/gui/line_vehicle_mgmt/icons/symbol_eye.tga",
-				abFilterRoad       = "::/gui/line_vehicle_mgmt/icons/vehicle_bus_18.tga",
-				abFilterTram       = "::/gui/line_vehicle_mgmt/icons/vehicle_tram_18.tga",
-				abFilterRail       = "::/gui/line_vehicle_mgmt/icons/vehicle_train_18.tga",
-				abFilterWater      = "::/gui/line_vehicle_mgmt/icons/vehicle_ship_18.tga",
-				abFilterAir        = "::/gui/line_vehicle_mgmt/icons/vehicle_airplane_18.tga",
-				abReverse          = "::/gui/line_vehicle_mgmt/icons/symbol_arrow_reverse.tga",
-				abStartStop        = "::/gui/line_vehicle_mgmt/icons/symbol_circle_on_off.tga",
-				abPaint            = "::/gui/entity_window/icons/symbol_paintbucket.tga",
-				abDuplicate        = "::/gui/line_vehicle_mgmt/icons/symbol_square_copy.tga",
-				abReplace          = "::/gui/line_vehicle_mgmt/icons/symbol_arrows_refresh.tga",
-				abConfigure        = "::/gui/line_vehicle_mgmt/icons/symbol_wrench.tga",
-				abSendToDepot      = "::/gui/line_vehicle_mgmt/icons/building_depot_arrow.tga",
-				abSell             = "::/gui/line_vehicle_mgmt/icons/symbol_dollar_arrow.tga",
-				abAutoRename       = "::/gui/line_vehicle_mgmt/icons/symbol_autorename.tga",
+				regSelectTerminals  = "::/gui/line_vehicle_mgmt/icons/indicator_terminal.tga",
+				regRename           = "::/gui/builtin/window/icons/symbol_pencil.tga",
+				regAutoRename       = "::/gui/line_vehicle_mgmt/icons/symbol_autorename.tga",
+				regFilterVisible    = "::/gui/line_vehicle_mgmt/icons/symbol_eye.tga",
+				regGradient         = "::/gui/line_vehicle_mgmt/design/gradient.tga",
+				regDragGrip         = "::/gui/line_vehicle_mgmt/icons/drag_vertical_20.tga",
 
-				hudTerminal        = "::/gui/line_vehicle_mgmt/icons/indicator_terminal.tga",
-				hudConfigureNone   = "::/gui/line_vehicle_mgmt/icons/configure.tga",
-				hudConfigure       = "::/gui/line_vehicle_mgmt/icons/symbol_cargo.tga",
-				hudMove            = "::/gui/line_vehicle_mgmt/icons/indicator_move.tga",
-				hudAdd             = "::/gui/line_vehicle_mgmt/icons/add.tga",
-				hudRemove          = "::/gui/line_vehicle_mgmt/icons/trash_bin.tga",
+				abNewLine           = "::/gui/line_vehicle_mgmt/icons/line_plus.tga",
+				abSendToLine        = "::/gui/line_vehicle_mgmt/icons/symbol_arrow_up.tga",
+				abBuyVehicles       = "::/gui/line_vehicle_mgmt/icons/symbol_shopping_cart.tga",
+				abFilterVisible     = "::/gui/line_vehicle_mgmt/icons/symbol_eye.tga",
+				abFilterRoad        = "::/gui/line_vehicle_mgmt/icons/vehicle_bus_18.tga",
+				abFilterTram        = "::/gui/line_vehicle_mgmt/icons/vehicle_tram_18.tga",
+				abFilterRail        = "::/gui/line_vehicle_mgmt/icons/vehicle_train_18.tga",
+				abFilterWater       = "::/gui/line_vehicle_mgmt/icons/vehicle_ship_18.tga",
+				abFilterAir         = "::/gui/line_vehicle_mgmt/icons/vehicle_airplane_18.tga",
+				abFilterCargo       = "::/gui/line_vehicle_mgmt/icons/symbol_cargo_18.tga",
+				abFilterPassenger   = "::/gui/line_vehicle_mgmt/icons/symbol_person_18.tga",
+				abFilterProblems    = "::/gui/line_vehicle_mgmt/icons/alert_18.tga",
+				abReverse           = "::/gui/line_vehicle_mgmt/icons/symbol_arrow_reverse.tga",
+				abStartStop         = "::/gui/line_vehicle_mgmt/icons/symbol_circle_on_off.tga",
+				abPaint             = "::/gui/entity_window/icons/symbol_paintbucket.tga",
+				abDuplicate         = "::/gui/line_vehicle_mgmt/icons/symbol_square_copy.tga",
+				abReplace           = "::/gui/line_vehicle_mgmt/icons/symbol_arrows_refresh.tga",
+				abConfigure         = "::/gui/line_vehicle_mgmt/icons/symbol_wrench.tga",
+				abSendToDepot       = "::/gui/line_vehicle_mgmt/icons/building_depot_arrow.tga",
+				abSell              = "::/gui/line_vehicle_mgmt/icons/symbol_dollar_arrow.tga",
+				abAutoRename        = "::/gui/line_vehicle_mgmt/icons/symbol_autorename.tga",
+
+				hudTerminal         = "::/gui/line_vehicle_mgmt/icons/indicator_terminal.tga",
+				hudConfigureNone    = "::/gui/line_vehicle_mgmt/icons/configure.tga",
+				hudConfigure        = "::/gui/line_vehicle_mgmt/icons/symbol_cargo.tga",
+				hudMove             = "::/gui/line_vehicle_mgmt/icons/indicator_move.tga",
+				hudAdd              = "::/gui/line_vehicle_mgmt/icons/add.tga",
+				hudRemove           = "::/gui/line_vehicle_mgmt/icons/trash_bin.tga",
 			},
 
 			problemCacheState = problemCacheState,
@@ -6346,7 +6568,6 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 			lvmActionButtonsState = lvmActionButtonsState,
 			moreOptionsState = moreOptionsHoldState,
 			sendToLineHoveredLineState = sendToLineHoveredLineState,
-			addStopHoveredStationState = addStopHoveredStationState,
 			preferLineOverTNEdgeState = preferLineOverTNEdgeState,
 			creatingNewLineState = creatingNewLineState,
 			gamepadNo3DSelectionInfoState = gamepadNo3DSelectionInfoState,
@@ -6359,6 +6580,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 			deleteSellRef = deleteSellRef,
 			bufferedSendDataRef = bufferedSendDataRef,
 			lvmDnDDataRef = lvmDnDDataRef,
+			addStopHoveredStationRef = addStopHoveredStationRef,
 
 			configureLinesPopoverPosRef = configureLinesPopoverPosRef,
 			sendToLinePopoverPosRef = sendToLinePopoverPosRef,
@@ -6387,8 +6609,12 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 					return newContext
 				end)
 			end,
-			accessNotificationCacheFn = toolParams.gameCtx.accessNotificationCacheFn,
+			accessNotificationCacheFn = toolParams.gameCtx.notificationCache.accessNotificationCacheFn,
 			carrierFn = carrierFn,
+			lineCapacityFilterFn = lineCapacityFilterFn,
+			isCapacityFilterActiveFn = isCapacityFilterActiveFn,
+			lineProblemFilterFn = lineProblemFilterFn,
+			isProblemFilterActiveFn = isProblemFilterActiveFn,
 			getDisableHudInteraction = function() : boolean
 				local disableHudInteraction = gamepadInputModeState:old() and lvm2D3DModeState:old() == "2D"
 				return disableHudInteraction
@@ -7060,6 +7286,40 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 		end
 		commonParams.switchMode({"SEGMENT", nil})
 	end
+	commonParams.setPassengerLoad = function(stopNumber : integer, enabled : boolean)
+		local oldState = reactLineState:old()
+		if not oldState then
+			return
+		end
+
+		local oldVia = oldState.path[stopNumber]
+		if not oldVia or not oldVia.stop then
+			return
+		end
+
+		local newState : Line.ReactLine = table_util.shallowCopy(oldState)
+		newState.path = table_util.shallowCopy(oldState.path)
+
+		local newVia : Line.ReactVia = table_util.shallowCopy(oldVia)
+		newVia.stop = table_util.shallowCopy(oldVia.stop)
+		newVia.stop.passThroughStopData = table_util.shallowCopy(oldVia.stop.passThroughStopData)
+
+		local oldStopConfig = oldVia.stop.passThroughStopData.stopConfig
+		local newStopConfig : Engine.Component.Line.StopConfig = api.type.Line.StopConfig.new(oldStopConfig)
+		local stopLoads : {boolean} = {}
+		for k, v in ipairs(oldStopConfig.load) do
+			stopLoads[k] = v
+		end
+		local passengerCargoTypeId : CargoTypeId = cargo_util.getPassengerCargoTypeId()
+		stopLoads[passengerCargoTypeId + 1] = enabled
+		newStopConfig.load = stopLoads
+		newVia.stop.passThroughStopData.stopConfig = newStopConfig
+
+		newState.path[stopNumber] = newVia
+		newState.customFilters = true
+
+		reactLineCommit(newState)
+	end
 
 	commonParams.addOrRemoveVehicleToVehicleList = function(vehicleDepotDetails : LineUtil.VehicleDepotDetails)
 		if creatingNewLineState:old() then
@@ -7387,11 +7647,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 			end
 		end
 
-		local function getWindowApi() : Builtin.WindowAPI
-			return params.toolParam.gameCtx.windowContainer:get():getApi()
-		end
-
-		local wc = getWindowApi()
+		local wc = getWindowApi(params.toolParam.gameCtx)
 		wc.removeAllWindows(vehicle_store_window.VehicleStoreWindow)
 		vehicleStoreOpenForDepotAndLineRef:set(nil)
 
@@ -7946,11 +8202,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 				vehicleSelection = getSelectedVehicleEntities(toolParams.vehicleManagerStateRef)
 			end
 
-			local function getWindowApi() : Builtin.WindowAPI
-				return toolParams.gameCtx.windowContainer:get():getApi()
-			end
-
-			local wc = getWindowApi()
+			local wc = getWindowApi(toolParams.gameCtx)
 
 			local pos = sendToLinePopoverPosRef:get():getPosition(1.0, 1.0)
 			wc.removeAllWindows(popover_react_util.PopoverWindow)
@@ -7971,14 +8223,14 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 					commonParams = commonParams,
 				    selection = vehicleSelection,
 				    sendToLine = function(lineEntity : Engine.Entity, sendScheme : FirstStopToSend.Scheme)
-					sendVehiclesToLineCommands(
-						vehicleSelection,
-						lineEntity,
+				    	sendVehiclesToLineCommands(
+				    		vehicleSelection,
+				    		lineEntity,
 							sendScheme,
 							afterSendingToLineFixup,
 							bufferedSendDataRef,
 							false -- doNotBuffer
-					)
+				    	)
 						cleanupSendToLine(
 							toolParams.gameCtx,
 							sendToLineDisabledState,
@@ -8060,23 +8312,12 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 				meta = { class = "keyhints" },
 				children = {
 					builtin.FloatingLayoutChild{
-						h = -1,
-						v = -1,
+						h = -1, v = -1,
 						item = LineVehicleManagerTopBar{
 							commonParams = commonParams,
 							filterState = localLVMFilterState,
 						},
 					},
-					-- lvmControllerModeState:old().mode == "3D" and builtin.FloatingLayoutChild{
-					-- 	overflowMode = builtin.type.FloatingLayoutOverflowMode.Overflow,
-					-- 	h = 1,
-					-- 	v = 0.5,
-					-- 	item = builtin.KeybindingHintDisplay {
-					-- 		meta = { class = "overflow-mode" },
-					-- 		source = selfRef,
-					-- 		inputAction = commonParams.lvmButtonIAs.btn2D3D_Switch,
-					-- 	},
-					-- } or nil,
 				},
 			},
 		},
@@ -8105,8 +8346,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 						},
 					},
 					builtin.FloatingLayoutChild{
-						h = -1,
-						v = -1,
+						h = -1, v = -1,
 						item = builtin.Component{
 							meta = {
 								class = "line-manager, greyed-out",
@@ -8155,8 +8395,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 						}),
 					},
 					builtin.FloatingLayoutChild{
-						h = -1,
-						v = 0,
+						h = -1, v = 0,
 						item = builtin.Component{
 							meta = {
 								class = "vehicle-manager, greyed-out",
@@ -8165,8 +8404,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 						},
 					},
 					gamepadInputModeState:old() and builtin.FloatingLayoutChild{
-						h = 1,
-						v = 0.5,
+						h = 1, v = 0.5,
 						overflowMode = builtin.type.FloatingLayoutOverflowMode.Overflow,
 						item = builtin.Component{
 							meta = {
@@ -8230,8 +8468,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 					},
 				},
 				builtin.FloatingLayoutChild{
-					h = -1,
-					v = 0,
+					h = -1, v = 0,
 					item = builtin.Component{
 						meta = {
 							class = "line-panel, greyed-out",
@@ -8240,8 +8477,7 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 					},
 				},
 				builtin.FloatingLayoutChild{
-					h = 0.5,
-					v = 0,
+					h = 0.5, v = 0,
 					item = builtin.Component{
 						meta = {
 							class = hasFeedbackState:old() and "feedback-container" or "",
@@ -8254,6 +8490,13 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 			}
 		},
 	}
+
+	react.onMouseEvent(function (evt :  Gui.Mouse.Event) : boolean
+		if evt.type == api.gui.mouse.Event.Type.Pressed then
+			getWindowApi(toolParams.gameCtx).removeAllWindows(popover_react_util.PopoverWindow)
+		end
+		return false
+	end)
 
 	return builtin.BoxLayout{
 		children = {
@@ -8268,10 +8511,6 @@ manager_window.ManagerWindowContent = react.RegisterRecipe("ManagerWindowContent
 		}
 	}
 end)
-
-local function getWindowApi(gameCtx : GameContext) : Builtin.WindowAPI
-	return gameCtx.windowContainer:get():getApi()
-end
 
 local managerToolWindowId = "menu.management"
 
@@ -8413,7 +8652,10 @@ manager_window.ManagerEntryPoint = react.RegisterRecipe("ManagerEntryPoint", fun
 	local lvmFilterStateRef : ReactRefT<StatisticsReactUtil.FilterState> = react.useRef({
 		category = {},
 		search = "",
-		onlyVisible = false
+		onlyVisible = false,
+		filterCargoCapacity = false,
+		filterPassengerCapacity = false,
+		filterLineProblems = false,
 	})
 	local storedLVMModeRef : ReactRefT<{LVMMode, any}> = react.useRef({"MAIN", nil})
 

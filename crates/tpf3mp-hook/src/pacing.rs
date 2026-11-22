@@ -158,9 +158,10 @@ impl Clock {
 }
 
 /// The profile target: `UI::CGameUI::GameStep`'s call of `CGame::Step`
-/// (40425 `0x65f26c`), redirected to [`game_step`].
+/// (40425 `0x65f26c`, 40444 `0x65faa2`), redirected to [`game_step`].
 pub const STEP_CALL_TARGET: &str = "UI::CGameUI::GameStep/CGame::Step call";
-/// `CGame::Step`'s first instructions on 40425 (`0x11f400`), up to its
+/// `CGame::Step`'s first instructions on 40425 (`0x11f400`) and 40444
+/// (`0x11f7e0`, the same bytes), up to its
 /// `add [m_data + totalTime], rdx`: the `dt` the redirect changes is the
 /// one added to the vehicles' clock, in µs.
 pub const STEP_BYTES: [u8; 31] = [
@@ -395,14 +396,14 @@ mod tests {
     #[test]
     fn the_profile_names_the_step_call() {
         let profile = tpf3mp_hookcore::profile::Profile::from_toml(include_str!(
-            "../../../profiles/tf3_build40425_steam_windows/hooks.toml"
+            "../../../profiles/tf3_build40444_steam_windows/hooks.toml"
         ))
         .unwrap();
         let target = profile
             .targets
             .iter()
             .find(|target| target.name == STEP_CALL_TARGET)
-            .expect("the 40425 profile names the call");
+            .expect("the 40444 profile names the call");
         assert!(!target.required);
         assert_eq!(target.prologue, vec![0xE8], "a call of CGame::Step");
     }

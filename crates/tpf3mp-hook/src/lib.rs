@@ -623,6 +623,8 @@ prologue = "40 53"
             include_str!("../../../profiles/tf3_build40423_steam_windows/hooks.toml");
         const RELEASE_40425: &str =
             include_str!("../../../profiles/tf3_build40425_steam_windows/hooks.toml");
+        const RELEASE_40444: &str =
+            include_str!("../../../profiles/tf3_build40444_steam_windows/hooks.toml");
         let known = [
             (
                 "Transport Fever 3 Build 40408 (Steam, Windows x64)",
@@ -662,6 +664,16 @@ prologue = "40 53"
                         .into(),
                     size: Some(69_876_664),
                     pe_timestamp: Some(0x6AD9_CE10),
+                },
+            ),
+            (
+                "Transport Fever 3 Build 40444 (Steam, Windows x64)",
+                RELEASE_40444,
+                BuildIdentity {
+                    sha256: "51a7cafa6b57bee804f1f513a9c58aa7a01a1d4ba3048c46e1fb4daa3d039c49"
+                        .into(),
+                    size: Some(70_134_624),
+                    pe_timestamp: Some(0x6AF6_FD97),
                 },
             ),
         ];

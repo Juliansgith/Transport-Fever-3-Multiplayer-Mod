@@ -45,8 +45,9 @@ pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_FAST_BITMAP_SPAN";
 /// The profile target: optional, in the builds whose function was checked.
 pub const TARGET: &str = "fast-bitmap-span: BitmapRasterizable::Fill";
 
-/// The game's function on Steam Windows 40425, entry to `ret`: the
-/// profile's signature, and the code the tests run against [`fill`].
+/// The game's function on Steam Windows 40425 and 40444 (byte-identical),
+/// entry to `ret`: the profile's signature, and the code the tests run
+/// against [`fill`].
 pub const ORIGINAL_BYTES: [u8; 78] = [
     0x44, 0x0F, 0xAF, 0x41, 0x10, // imul r8d, [rcx+0x10]
     0x4C, 0x8B, 0xD9, // mov r11, rcx
@@ -274,14 +275,14 @@ mod tests {
     #[test]
     fn the_profile_names_the_whole_function() {
         let profile = tpf3mp_hookcore::profile::Profile::from_toml(include_str!(
-            "../../../profiles/tf3_build40425_steam_windows/hooks.toml"
+            "../../../profiles/tf3_build40444_steam_windows/hooks.toml"
         ))
         .unwrap();
         let target = profile
             .targets
             .iter()
             .find(|target| target.name == TARGET)
-            .expect("the 40425 profile names the span fill");
+            .expect("the 40444 profile names the span fill");
         assert!(!target.required, "optional: the game's own without it");
         assert_eq!(target.offset, 0);
         assert!(

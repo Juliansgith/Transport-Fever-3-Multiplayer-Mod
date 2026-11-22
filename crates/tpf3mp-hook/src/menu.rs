@@ -10,7 +10,8 @@
 //!
 //! - **Finding the state.** The game gives a Lua state its `app` table in
 //!   one function, `RegisterAppUsertypes(lua::State&, UI::CMenuUI&,
-//!   std::function<bool()> const&)` (profile target
+//!   std::function<bool()> const&)` (on build 40444 with a `bool` and a
+//!   `std::shared_ptr` by value after them; profile target
 //!   [`REGISTER_APP_TARGET`]). The hook detours it and, after the game's own
 //!   registration, runs [`CHUNK`] in that state ([`adopt`]): Lua that hands
 //!   the hook a function loading a save by name, kept in the state's
@@ -644,10 +645,19 @@ static REGISTER_ORIGINAL: AtomicU64 = AtomicU64::new(0);
 /// The menu's `DoStep`, reached through its trampoline.
 static STEP_ORIGINAL: AtomicU64 = AtomicU64::new(0);
 
-/// Both detours pass four registers through: the targets take three
-/// (`RegisterAppUsertypes`: the state, the menu, the callback; `DoStep`: the
-/// menu and two more) and their results pass back in `rax`.
+/// `DoStep`'s detour passes four registers through: it takes three (the
+/// menu and two more), and its result passes back in `rax`.
 type Passthrough = unsafe extern "C-unwind" fn(usize, usize, usize, usize) -> usize;
+
+/// `RegisterAppUsertypes`' detour passes four registers and the first stack
+/// argument through. Build 40444 gave it five arguments (the state, the
+/// menu, the callback, a `bool` in `r9b`, and a `std::shared_ptr` passed by
+/// value, which MSVC hands over as a pointer to the caller's copy on the
+/// stack, for the callee to release): with only the registers passed, the
+/// game would release whatever lies in the detour's own stack slot. On a
+/// build whose function takes fewer, the extra word is read from the
+/// caller's frame and ignored.
+type RegisterPassthrough = unsafe extern "C-unwind" fn(usize, usize, usize, usize, usize) -> usize;
 
 /// After the game gave a state `app`: adopt it. `state` is the game's
 /// `lua::State&`, whose `lua_State*` is its first field.
@@ -656,6 +666,7 @@ unsafe extern "C-unwind" fn register_detour(
     menu: usize,
     ready: usize,
     d: usize,
+    e: usize,
 ) -> usize {
     let original = REGISTER_ORIGINAL.load(Ordering::Acquire);
     if original == 0 {
@@ -663,8 +674,9 @@ unsafe extern "C-unwind" fn register_detour(
     }
     // SAFETY: the trampoline of the function the profile resolved, called
     // with the arguments the game passed.
-    let result =
-        unsafe { std::mem::transmute::<u64, Passthrough>(original)(state, menu, ready, d) };
+    let result = unsafe {
+        std::mem::transmute::<u64, RegisterPassthrough>(original)(state, menu, ready, d, e)
+    };
     let _ = std::panic::catch_unwind(|| {
         if state == 0 {
             return;
@@ -1245,5 +1257,36 @@ pub(crate) mod tests {
             Ok("tpf3mp_room_9||savegame|false|nil".into())
         );
         forget_all();
+    }
+
+    /// What the fake `RegisterAppUsertypes` was called with.
+    static REGISTERED: Mutex<Option<[usize; 5]>> = Mutex::new(None);
+    unsafe extern "C-unwind" fn fake_register(
+        state: usize,
+        menu: usize,
+        ready: usize,
+        flag: usize,
+        shared: usize,
+    ) -> usize {
+        *REGISTERED.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some([state, menu, ready, flag, shared]);
+        0x5eed
+    }
+
+    #[test]
+    fn the_register_detour_hands_the_game_its_stack_argument_too() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        // Build 40444's RegisterAppUsertypes takes a fifth argument, a
+        // shared_ptr it releases, on the stack: the game must get the
+        // caller's, not whatever lies in the detour's frame.
+        REGISTER_ORIGINAL.store(fake_register as *const () as u64, Ordering::Release);
+        // No state: nothing to adopt, only the game's call.
+        let result = unsafe { register_detour(0, 0x2000, 0x3000, 1, 0x5000) };
+        REGISTER_ORIGINAL.store(0, Ordering::Release);
+        assert_eq!(result, 0x5eed, "the game's result passes back");
+        assert_eq!(
+            *REGISTERED.lock().unwrap_or_else(PoisonError::into_inner),
+            Some([0, 0x2000, 0x3000, 1, 0x5000])
+        );
     }
 }

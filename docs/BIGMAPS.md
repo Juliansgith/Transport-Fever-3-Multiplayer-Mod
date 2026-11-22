@@ -159,9 +159,11 @@ compressor-only benchmark. See the
 and [the 2026-10-29 audit](../investigation/PERFORMANCE_AUDIT_2026-10-29.md).
 Every player of a room saves at the same step and stands still while it
 does, so a save is the longest freeze a room has.
-The Steam Windows 40408 and 40425 profiles
+The Steam Windows 40408, 40425 and 40444 profiles
 have verified targets. On 40425, the compressor is at `0x32deb0`,
-its level load at `0x32dec4` and its buffer size at `0x32e024`. Exact-build
+its level load at `0x32dec4` and its buffer size at `0x32e024`; on 40444 at
+`0x32e210`, `0x32e224` (the shared level constant now `0x3814b98`) and
+`0x32e384`. Exact-build
 tests pin both sites; the level constant shared with decompression is untouched.
 The 40420 and 40423 bundles have no save
 targets, so the hook logs that faster saves are unavailable for the build
@@ -401,7 +403,7 @@ derived (`WorldModel::TPF2_BUILD_35924`), until TF3's are measured.
 Big Maps' own branch (`feat/bigmaps-40420`) carries its patches in the
 hook, switched on by `TPF3MP_BIGMAP_*` variables. As a native mod with a
 plugin (a proposed D29 amendment), `crates/tpf3mp-bigmap-plugin` is the
-same code as a package for build 40425 (first made for 40420), switched on
+same code as a package for build 40444 (first made for 40420), switched on
 by its package's settings, which a room's terms carry ([NATIVE_MODS.md](NATIVE_MODS.md),
 "Plugins").
 

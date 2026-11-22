@@ -6,7 +6,8 @@ param(
   [Parameter(Mandatory = $true)][string]$ReleaseArchive,
   [string]$UpdatedArchive,
   [string]$Archive40423,
-  [string]$Archive40425
+  [string]$Archive40425,
+  [string]$Archive40444
 )
 $ErrorActionPreference = 'Stop'
 
@@ -15,6 +16,7 @@ switch ($SelectedBuild.Trim()) {
   'tf3_build40420_steam_windows' { $archive = $UpdatedArchive; break }
   'tf3_build40423_steam_windows' { $archive = $Archive40423; break }
   'tf3_build40425_steam_windows' { $archive = $Archive40425; break }
+  'tf3_build40444_steam_windows' { $archive = $Archive40444; break }
   default { throw "No private archive mapping for selected native bundle '$SelectedBuild'" }
 }
 if ([string]::IsNullOrWhiteSpace($archive)) {

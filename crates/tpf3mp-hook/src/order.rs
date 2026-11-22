@@ -2931,8 +2931,9 @@ mod splice_tests {
     }
 
     /// The platform chooser's loop head, as the engine has it: `this` in
-    /// r13 (`[this+8]` the node-list holder), the count at `[rbp+0x5b0]`,
-    /// the byte offset of the iteration in rsi. The fixture returns the
+    /// r13 (`[this+8]` the node-list holder), the count at
+    /// `[rbp+COUNT]` (the bundle's, `0x590` on 40444, `0x5b0` before), the byte
+    /// offset of the iteration in rsi. The fixture returns the
     /// entity the iteration reads at `[rsi+rdi]` after the site.
     #[test]
     fn the_visit_hook_walks_the_node_list_in_entity_order_without_writing_it() {
@@ -2945,6 +2946,7 @@ mod splice_tests {
         const HOLDER: usize = 0x140;
         const RECORDS: usize = 0x200;
         const RBP: usize = 0x300;
+        const COUNT_AT: usize = RBP + crate::build_data::native::order::platform::COUNT as usize;
         // {entity, index}: 30, 10, 20.
         for (i, (entity, index)) in [(30u32, 0u32), (10, 1), (20, 2)].into_iter().enumerate() {
             let at = RECORDS + i * 8;
@@ -2954,7 +2956,7 @@ mod splice_tests {
         put(&mut memory, THIS + 8, base + HOLDER as u64);
         put(&mut memory, HOLDER, base + RECORDS as u64);
         put(&mut memory, HOLDER + 8, base + RECORDS as u64 + 24);
-        memory[RBP + 0x5b0..RBP + 0x5b4].copy_from_slice(&3i32.to_le_bytes());
+        memory[COUNT_AT..COUNT_AT + 4].copy_from_slice(&3i32.to_le_bytes());
         // push rbp; push r13; push rsi; push rdi; push rbx; mov rbp, imm64;
         // mov r13, imm64; mov rsi, rcx; mov rax, [r13+8]; mov rdi, [rax];
         // <site>; mov eax, [rsi+rdi]; pop rbx; pop rdi; pop rsi; pop r13;
@@ -2992,7 +2994,7 @@ mod splice_tests {
             "the list is not written"
         );
         // A count that is not the list's: the engine's own order stands.
-        memory[RBP + 0x5b0..RBP + 0x5b4].copy_from_slice(&2i32.to_le_bytes());
+        memory[COUNT_AT..COUNT_AT + 4].copy_from_slice(&2i32.to_le_bytes());
         assert_eq!(fun(0), 30);
         // SAFETY: nothing runs the fixture now.
         unsafe { splice.detach() }.unwrap();
