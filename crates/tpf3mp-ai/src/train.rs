@@ -30,7 +30,7 @@ use super::{Brain, CONFIRM_TRIES, GIVE_UP_FOR, Out, SETTLE, Stage, cargo_name, r
 use crate::{
     chain::{Leg, Taker},
     costs::{self, Prices},
-    place,
+    econ, place,
     place::P,
     rail::{self, Land, Node, Piece, Station},
 };
@@ -42,10 +42,29 @@ pub const RAIL_FROM: f64 = 1_800.0;
 pub const RAIL_MONEY: i64 = 6_000_000;
 /// The modules of each station it builds.
 const STATION_MODULES: i32 = 3;
+/// What a line may cost over what it was reckoned at before anything was
+/// built, and what a train costs: both kept in hand before a line is begun.
+const LINE_OVERRUN: f64 = 1.5;
+const TRAIN_RESERVE: f64 = 2_500_000.0;
+/// What a line is likely to cost over what it was reckoned at, for its
+/// train's choosing: run 73's took 1.17 times its reckoning, its loan's
+/// payments over the building counted in.
+const TRAIN_OVERRUN: f64 = 1.25;
+/// What a track is likely to cost over the game's own prices for its
+/// pieces before anything is built: its joins, and what changes meanwhile.
+const TRIAL_OVERRUN: f64 = 1.1;
+/// The years within which a railway's fares must bring back what it and
+/// its train cost, and the share of its fares it keeps over its train's
+/// running (run 68's stone train: 2.82 million a year for 0.43).
+const RAIL_PAYBACK: f64 = 3.0;
+const FARES_KEPT: f64 = 0.85;
 
 /// The most pairs of station placements a line is laid out between before
-/// it builds anything.
-const SITE_PAIRS: u32 = 6;
+/// it builds anything: three, each routed round refused pieces
+/// [`REPLANS`] times, some fifteen layouts of five seconds each. With six
+/// pairs and eight rounds run 75's Normal AI laid a line out for five
+/// minutes, a year of a 4x game and 3.6 million of its loan's payments.
+const SITE_PAIRS: u32 = 3;
 /// The most places kept for each of a passenger line's stations, those
 /// reaching the most people on foot: a refused station tries the next, and
 /// a town's dense search ([`rail::PASSENGER_BEARINGS`]) finds hundreds.
@@ -69,7 +88,7 @@ fn passenger_rings() -> Vec<f64> {
         .collect()
 }
 /// How many times a line is routed round pieces the game refused.
-pub const REPLANS: u32 = 8;
+pub const REPLANS: u32 = 4;
 /// Around a refused piece's middle the land is taken as built on, in
 /// metres.
 pub const REFUSED_REACH: f64 = 70.0;
@@ -82,6 +101,12 @@ pub const TRAIN: &str = "TRAIN";
 pub const PASSENGERS: &str = "::/cargos/passengers/passengers.cargo";
 /// The most wagons a train pulls.
 pub const WAGONS_MOST: usize = 6;
+/// The wagons of a long cargo train and the modules of its stations, where
+/// its cargo is more than a train of [`WAGONS_MOST`] carries: run 68's
+/// stone train of six carried 126 a year of the 243 its quarry makes, 1.4
+/// million a load, on a line that had cost eight.
+pub const WAGONS_LONG: usize = 12;
+const STATION_MODULES_LONG: i32 = 6;
 /// The coaches a passenger train starts with, rather than as many as its
 /// platforms take: run 59's two stations reached 24 and 10 town buildings,
 /// and its train of six cost 1.76 million in coaches and 0.37 a year to run
@@ -128,6 +153,88 @@ pub fn passenger_engine<'a>(
             )
         })
 }
+/// How much a cargo line reckoned to take `fares` a year over `distance`
+/// metres has to carry each round of a train of the 1920s (75 km/h; run
+/// 68: 693 s round 5.9 km, 766 s by this).
+fn a_round(fares: f64, distance: f64) -> f64 {
+    let rounds = econ::Runs {
+        capacity: 0.0,
+        speed: 75.0,
+        price: 0.0,
+        running: 0.0,
+        rail: true,
+    }
+    .rounds(distance);
+    fares / (distance.max(1.0) * econ::CARGO_FARE) / rounds
+}
+
+/// Whether `a_round` to carry is more than a train of [`WAGONS_MOST`]
+/// wagons holding `capacity` each takes: a long train then, and stations
+/// for it.
+#[allow(clippy::cast_precision_loss)]
+fn long_train(a_round: f64, capacity: u32) -> bool {
+    capacity > 0 && a_round > WAGONS_MOST as f64 * f64::from(capacity)
+}
+
+/// Whether `engine` hauls `wagons` of `wagon` loaded up
+/// [`rail::MAX_GRADE`]: its tractive effort, in kN, against gravity's pull
+/// along the grade on the train's weight, a tonne counted for each unit a
+/// wagon carries. A weaker engine climbs slowly; it does not stall: a
+/// train longer than [`WAGONS_MOST`] is let climb at half that grade's
+/// pull, since twice the load is worth more than its slow hills. No
+/// engine of 1922 within an AI's money hauled twelve loaded wagons up
+/// 2.5 %, and runs 73 and 74 ran six behind stations built for twelve.
+#[allow(clippy::cast_precision_loss)]
+fn hauls(engine: &AiModel, wagon: &AiModel, wagons: usize) -> bool {
+    let tonnes = f64::from(engine.weight)
+        + wagons as f64 * (f64::from(wagon.weight) + f64::from(wagon.capacity));
+    let grade = if wagons > WAGONS_MOST {
+        rail::MAX_GRADE / 2.0
+    } else {
+        rail::MAX_GRADE
+    };
+    f64::from(engine.tractive) >= tonnes * 9.81 * grade
+}
+
+/// The engine for a cargo train of `wagons` of `wagon` over `distance`
+/// metres, of `engines`, within `money`: not electric, strong enough to
+/// haul them loaded ([`hauls`]), and of those the one
+/// its train is reckoned to make most a year with, its price spread over
+/// [`PRICE_YEARS`] ([`econ::cargo`]): a faster train makes more rounds, a
+/// dearer one costs more to buy and run. `units` is what there is to carry
+/// a year (0: as much as it carries). Run 67's AI, taking the strongest
+/// engine the rest of its money bought, had 350,000 left of 13 million with
+/// its first train on its line, four months of its loan's payments short.
+#[allow(clippy::cast_precision_loss)]
+pub fn freight_engine<'a>(
+    engines: &'a [AiModel],
+    wagon: &AiModel,
+    wagons: usize,
+    money: i64,
+    units: f64,
+    distance: f64,
+) -> Option<&'a AiModel> {
+    let n = wagons as f64;
+    let made = |m: &AiModel| {
+        let runs = econ::Runs {
+            capacity: n * f64::from(wagon.capacity),
+            speed: f64::from(m.speed.min(wagon.speed.max(1))),
+            price: m.price as f64 + n * wagon.price as f64,
+            running: m.running as f64 + n * wagon.running as f64,
+            rail: true,
+        };
+        let carried = if units > 0.0 { units } else { f64::MAX / 1e6 };
+        let line = econ::cargo(carried, distance, runs, 1, 0.0);
+        line.profit() - runs.price / PRICE_YEARS as f64
+    };
+    engines
+        .iter()
+        .filter(|m| m.power > 0 && !m.electric)
+        .filter(|m| m.price + wagons as i64 * wagon.price <= money)
+        .filter(|m| hauls(m, wagon, wagons))
+        .max_by(|a, b| made(a).total_cmp(&made(b)))
+}
+
 /// A rail stop's waits, in the game's seconds in millionths: as the game's
 /// line window sets a rail stop's (`line_util.tl`, `makeNewStop`).
 pub const RAIL_MAX_WAIT: i64 = 600_000_000;
@@ -158,6 +265,18 @@ pub(super) struct RailProject {
     /// What it reckoned the line costs before its train, from its first
     /// placements, before building anything.
     pub estimate: f64,
+    /// What its fares were reckoned to come to a year when it was chosen
+    /// (0: not reckoned).
+    pub fares: f64,
+    /// Its stations' track modules, and the most wagons its train has.
+    pub modules: i32,
+    pub wagons_most: usize,
+    /// Its money when it reckoned the line and began: what the line then
+    /// cost shows against it once it opens.
+    pub money_before: Option<i64>,
+    /// What the game would charge for its track as laid out, its pieces'
+    /// verdicts together, before anything is built.
+    pub trialled: i64,
     /// The route being laid out: its nodes on the ground, the street runs
     /// it crosses still to ask the game about, and the streets named.
     pub aligned: Vec<Node>,
@@ -235,6 +354,16 @@ pub fn passenger_key(a: TownId, b: TownId) -> u32 {
 }
 
 impl RailProject {
+    /// The edges of line each of its passing loops runs beside: room for
+    /// its train.
+    pub fn loop_edges(&self) -> usize {
+        if self.wagons_most > WAGONS_MOST {
+            rail::LOOP_EDGES_LONG
+        } else {
+            rail::LOOP_EDGES
+        }
+    }
+
     /// Each station's line end and the heading out of it, towards the
     /// place the other serves: as built, or as planned at its first
     /// placement.
@@ -404,6 +533,7 @@ impl Brain {
             outputs: BoundedVec::default(),
             water: false,
             carried: 0,
+            shipped: 0,
         };
         let to = Taker::Town {
             town: b.clone(),
@@ -420,7 +550,10 @@ impl Brain {
     fn start_rail_of(&mut self, leg: Leg, passengers: bool, key: u32) -> bool {
         // A cargo railway waits on its lines' earnings; a passenger one on
         // stations that reach people enough (the Land stage).
-        if self.spendable() < RAIL_MONEY || (!passengers && !self.trains_carried()) {
+        // One whose fares are reckoned to carry a train
+        // ([`super::CARGO_TRAIN_FARES_LEAST`]) waits on neither.
+        let carried = self.trains_carried() || self.rail_fares >= super::CARGO_TRAIN_FARES_LEAST;
+        if self.spendable() < RAIL_MONEY || (!passengers && !carried) {
             return false;
         }
         // No new railway while its settled ones lose money together: the
@@ -452,6 +585,11 @@ impl Brain {
                 trestle: false,
             },
             estimate: 0.0,
+            fares: self.rail_fares,
+            modules: STATION_MODULES,
+            wagons_most: WAGONS_MOST,
+            money_before: None,
+            trialled: 0,
             aligned: Vec::new(),
             runs: Vec::new(),
             streets: Vec::new(),
@@ -544,10 +682,28 @@ impl Brain {
                         } else {
                             &MAKER_RINGS
                         };
-                        project.tries = [
-                            rail::sites(&project.land, from, at, near, passengers),
-                            rail::sites(&project.land, at, from, rings, passengers),
-                        ];
+                        let places = |modules| {
+                            [
+                                rail::sites_of(&project.land, from, at, near, passengers, modules),
+                                rail::sites_of(&project.land, at, from, rings, passengers, modules),
+                            ]
+                        };
+                        let mut tries = places(project.modules);
+                        // No room for long stations at both ends: short
+                        // ones, and a train of their length.
+                        let cramped =
+                            project.modules > STATION_MODULES && tries.iter().any(Vec::is_empty);
+                        if cramped {
+                            tries = places(STATION_MODULES);
+                            project.modules = STATION_MODULES;
+                            project.wagons_most = WAGONS_MOST;
+                        }
+                        project.tries = tries;
+                        if cramped {
+                            self.said.push(format!(
+                                "found no room for long stations at both ends, plans a train of {WAGONS_MOST} wagons"
+                            ));
+                        }
                         // A passenger station reaching too few houses on
                         // foot is no place for one: a line with none such
                         // at either end is not begun.
@@ -568,11 +724,66 @@ impl Brain {
                         // What the line costs, from its first placements,
                         // before it builds anything: a line it cannot pay
                         // for, or with no route, is never begun.
-                        match estimate(project) {
-                            Ok(cost) if cost < money => {
+                        // Half as much again laid by for what its reckoning
+                        // misses, and a train's price: run 67's line, reckoned
+                        // at 3.3 million, left 350,000 of 13 million with its
+                        // train bought.
+                        // Its train's reserve covers twelve wagons behind
+                        // one of its year's cheaper engines (1922: a mogul
+                        // and twelve, about two million).
+                        let mut reckoned = estimate(project).map(|cost| cost * LINE_OVERRUN);
+                        // Too dear with long stations and a train of twelve:
+                        // with short ones, where its money stretches to
+                        // those. Run 70's Hard AI gave up an oil railway
+                        // reckoned at seven million a year in fares for
+                        // 130,000 of its 13 million.
+                        if project.wagons_most > WAGONS_MOST
+                            && reckoned.is_ok_and(|cost| cost + TRAIN_RESERVE >= money)
+                        {
+                            let short = [
+                                rail::sites(&project.land, from, at, near, passengers),
+                                rail::sites(&project.land, at, from, rings, passengers),
+                            ];
+                            if short.iter().all(|s| !s.is_empty()) {
+                                let long = std::mem::replace(&mut project.tries, short);
+                                let was = (project.modules, project.wagons_most);
+                                project.modules = STATION_MODULES;
+                                project.wagons_most = WAGONS_MOST;
+                                let cost = estimate(project).map(|cost| cost * LINE_OVERRUN);
+                                if cost.is_ok_and(|cost| cost + TRAIN_RESERVE < money) {
+                                    reckoned = cost;
+                                    self.said.push(format!(
+                                        "its money short of long stations, plans a train of {WAGONS_MOST} wagons"
+                                    ));
+                                } else {
+                                    project.tries = long;
+                                    (project.modules, project.wagons_most) = was;
+                                }
+                            }
+                        }
+                        // What it is likely to cost with its train must come
+                        // back in fares within [`RAIL_PAYBACK`] years.
+                        let fares = project.fares;
+                        let unworthy = |cost: f64| {
+                            fares > 0.0
+                                && cost / LINE_OVERRUN * TRAIN_OVERRUN + TRAIN_RESERVE
+                                    > fares * FARES_KEPT * RAIL_PAYBACK
+                        };
+                        match reckoned {
+                            Ok(cost) if unworthy(cost) => {
+                                self.give_up_rail(
+                                    &format!(
+                                        "found its rail line, up to {cost:.0}, not worth {fares:.0} a year in fares"
+                                    ),
+                                    now,
+                                );
+                                None
+                            }
+                            Ok(cost) if cost + TRAIN_RESERVE < money => {
                                 project.estimate = cost;
+                                project.money_before = self.company.as_ref().map(|c| c.money);
                                 self.say(format!(
-                                    "reckons its rail line costs {cost:.0} before its train"
+                                    "reckons its rail line costs up to {cost:.0} before its train"
                                 ));
                                 self.stage = Stage::Rail(RailStage::Engines);
                                 self.rail_poll(RailStage::Engines, now)
@@ -744,14 +955,17 @@ impl Brain {
                 let year = self.year();
                 let project = self.rail.as_ref()?;
                 let (k, side) = *project.looped.get(lp)?;
-                let build = rail::passing_loop(&project.nodes, k, side, year)?;
+                let build =
+                    rail::passing_loop(&project.nodes, k, project.loop_edges(), side, year)?;
                 self.verdict(&Action::BuildTrack(build), now)
             }
             RailStage::SignalVerdict { lp, n, .. } => {
                 let year = self.year();
                 let project = self.rail.as_ref()?;
                 let (k, side) = *project.looped.get(lp)?;
-                let signal = rail::loop_signals(&project.nodes, k, side, year)[n].clone();
+                let signal =
+                    rail::loop_signals(&project.nodes, k, project.loop_edges(), side, year)[n]
+                        .clone();
                 self.verdict(&Action::PlaceStop(signal), now)
             }
             RailStage::Opening => self.open_rail(now),
@@ -866,7 +1080,7 @@ impl Brain {
                 .count(),
         );
         // Passing loops on a long line, for more trains.
-        project.looped = rail::loop_sites(&project.land, &nodes);
+        project.looped = rail::loop_sites(&project.land, &nodes, project.loop_edges());
         let said = format!(
             "lays its track in {} pieces for about {:.0}: {crossings} level crossings, {bridges} bridge and {tunnels} tunnel edges{}",
             project.pieces.len(),
@@ -1004,12 +1218,63 @@ impl Brain {
             // A trial: nothing sent; the next piece, then its depot, then
             // the stations.
             (RailStage::Trial { piece }, Action::BuildTrack(_)) => {
-                let count = self.rail.as_ref()?.pieces.len();
-                self.stage = Stage::Rail(if piece + 1 < count {
-                    RailStage::Trial { piece: piece + 1 }
+                let money = self.spendable();
+                let project = self.rail.as_mut()?;
+                if piece == 0 {
+                    project.trialled = 0;
+                }
+                project.trialled += cost;
+                if piece + 1 < project.pieces.len() {
+                    self.stage = Stage::Rail(RailStage::Trial { piece: piece + 1 });
+                    return None;
+                }
+                // Its whole track at the game's own prices, with what its
+                // stations, depot and train cost: more than it has, and it
+                // is laid out between other station places, or not at all.
+                // Run 73's Normal AI reckoned a line at up to 5.5 million
+                // between its first station places, laid it out between
+                // others through 2.6 km of tunnel, paid 11.2 million for
+                // it and had nothing left for its train.
+                let most = if project.passengers {
+                    PASSENGER_COACHES
                 } else {
-                    RailStage::DepotTrial { end: 0, place: 0 }
-                });
+                    project.wagons_most
+                };
+                #[allow(clippy::cast_precision_loss)]
+                let train = project
+                    .train
+                    .as_ref()
+                    .map_or(TRAIN_RESERVE, |(engine, wagon)| {
+                        engine.price as f64 + most as f64 * wagon.price as f64
+                    });
+                #[allow(clippy::cast_precision_loss)]
+                let whole = project.trialled as f64 * TRIAL_OVERRUN
+                    + project.prices.stations_and_depot(project.modules)
+                    + train;
+                #[allow(clippy::cast_precision_loss)]
+                if whole > money as f64 {
+                    let track = project.trialled;
+                    self.say(format!(
+                        "found its track {track} at the game's prices, {whole:.0} with its stations, depot and train: more than it has"
+                    ));
+                    self.or_other_sites(false, "found its track too dear", now);
+                    return None;
+                }
+                // Or more than its fares bring back in [`RAIL_PAYBACK`]
+                // years: money enough is no reason. Run 75's Hard AI, two
+                // layouts too dear, laid a stone railway reckoned at 3.6
+                // million a year through a hill for 9.7 million, and had
+                // money left for a train of five wagons.
+                let worth = project.fares * FARES_KEPT * RAIL_PAYBACK;
+                if project.fares > 0.0 && whole > worth {
+                    let fares = project.fares;
+                    self.say(format!(
+                        "found its line {whole:.0} at the game's prices with its train, for {fares:.0} a year in fares: not worth it"
+                    ));
+                    self.or_other_sites(false, "found its line not worth its price", now);
+                    return None;
+                }
+                self.stage = Stage::Rail(RailStage::DepotTrial { end: 0, place: 0 });
                 return None;
             }
             (RailStage::DepotTrial { end, place }, Action::BuildConstruction(_)) => {
@@ -1271,6 +1536,14 @@ impl Brain {
                     .stations
                     .iter()
                     .find(|s| P::of(s.pos).flat_distance(station.origin) <= 5.0);
+                // By an industry, it must reach it: the game lists what
+                // stands in a station's catchment. Before any track.
+                let by_industry =
+                    !project.passengers && (end == 0 || matches!(project.to, Taker::Industry(_)));
+                if by_industry && found.is_some_and(|s| s.reach == Some(0)) {
+                    self.give_up_rail("built a station that reaches no industry", now);
+                    return None;
+                }
                 match found {
                     Some(s) => {
                         let other = P::of(if end == 0 {
@@ -1415,7 +1688,7 @@ impl Brain {
                 // Where: the line's nodes either side of the loop's far end,
                 // for the log.
                 let (k, _) = *project.looped.get(lp)?;
-                let m = k + rail::LOOP_EDGES;
+                let m = k + project.loop_edges();
                 let at = |i: usize| {
                     project
                         .nodes
@@ -1509,11 +1782,24 @@ impl Brain {
                     {
                         self.memo.looped.push((line.id.0, project.signalled));
                     }
+                    if project.wagons_most > WAGONS_MOST && !self.memo.long.contains(&line.id.0) {
+                        self.memo.long.push(line.id.0);
+                    }
                     if !self.memo.rail_lines.contains(&line.id.0) {
                         self.memo.rail_lines.push(line.id.0);
                     }
+                    let spent = project
+                        .money_before
+                        .map(|before| (before - company.money, project.estimate));
                     self.chain_line(line.id.0);
                     self.say(format!("opened {described}"));
+                    // For its reckoning's keeping: what its money fell by,
+                    // its loans' payments over the building among it.
+                    if let Some((spent, reckoned)) = spent {
+                        self.say(format!(
+                            "its line took {spent} of its money, reckoned at up to {reckoned:.0}"
+                        ));
+                    }
                     self.stage = Stage::Rail(RailStage::Buying);
                 } else if tries >= CONFIRM_TRIES {
                     self.give_up_rail("its line did not open", now);
@@ -1677,9 +1963,13 @@ impl Brain {
         let most = if project.passengers {
             PASSENGER_COACHES
         } else {
-            WAGONS_MOST
+            project.wagons_most
         };
-        let wagons = fit.clamp(1, most);
+        // And as many as its money buys behind its engine: its line may
+        // have cost more than its train was chosen by.
+        let afford = usize::try_from((self.money() - engine.price).max(0) / wagon.price.max(1))
+            .unwrap_or(usize::MAX);
+        let wagons = fit.min(afford).clamp(1, most);
         let (origin, _) = project.depot?;
         let color = tint(&self.seat);
         let part = |m: &AiModel| ConsistPart {
@@ -1820,7 +2110,24 @@ impl Brain {
                     self.give_up_rail("found no wagon for its cargo", now);
                     return None;
                 }
-                self.rail.as_mut()?.wagons = wagons;
+                // A long train where what there is to carry a round is more
+                // than a short one holds: its fares over its length a year,
+                // by the rounds a train of the 1920s makes.
+                let project = self.rail.as_mut()?;
+                let distance = P::of(project.from.pos).flat_distance(P::of(project.to.pos()));
+                let roomiest = wagons.iter().map(|w| w.capacity).max().unwrap_or(0);
+                let a_round = a_round(project.fares, distance);
+                let long = !project.passengers && long_train(a_round, roomiest);
+                if long {
+                    project.modules = STATION_MODULES_LONG;
+                    project.wagons_most = WAGONS_LONG;
+                }
+                project.wagons = wagons;
+                if long {
+                    self.say(format!(
+                        "plans a train of up to {WAGONS_LONG} wagons: {a_round:.0} to carry a round"
+                    ));
+                }
                 self.stage = Stage::Rail(RailStage::Land);
                 None
             }
@@ -1836,8 +2143,14 @@ impl Brain {
                     .clone();
                 // What the line will cost before its train: its money must
                 // leave the train.
+                // By what its line is likely to cost, not the most it may
+                // ([`TRAIN_OVERRUN`]): run 73's oil railway, reckoned at up
+                // to 8.9 million, took 7.4, and its train, chosen by the
+                // 8.9, was a mogul and six tank wagons before stations
+                // built for twelve.
                 #[allow(clippy::cast_possible_truncation)]
-                let money = self.spendable() - project.estimate.ceil() as i64;
+                let money = self.spendable()
+                    - (project.estimate / LINE_OVERRUN * TRAIN_OVERRUN).ceil() as i64;
                 // Not electric: its track has no catenary (a C 6/8 bought
                 // for one, the game refused it the line; 2026-10-30). A
                 // passenger train's engine for its coaches' speed at the
@@ -1847,13 +2160,22 @@ impl Brain {
                     .then(|| passenger_engine(&models, &wagon, PASSENGER_COACHES, money))
                     .flatten()
                     .cloned();
-                let Some(engine) = passenger.or_else(|| {
-                    models
-                        .into_iter()
-                        .filter(|m| m.power > 0 && !m.electric)
-                        .filter(|m| m.price + 3 * wagon.price <= money)
-                        .max_by_key(|m| (m.power, -m.price))
-                }) else {
+                let distance = P::of(project.from.pos).flat_distance(P::of(project.to.pos()));
+                let units = project.fares / (distance.max(1.0) * econ::CARGO_FARE);
+                let mut wagons_most = project.wagons_most;
+                let freight = |wagons| {
+                    freight_engine(&models, &wagon, wagons, money, units, distance).cloned()
+                };
+                // No engine its money buys hauls twelve: one that hauls six.
+                let engine = passenger.or_else(|| freight(wagons_most)).or_else(|| {
+                    (wagons_most > WAGONS_MOST && !project.passengers)
+                        .then(|| {
+                            wagons_most = WAGONS_MOST;
+                            freight(WAGONS_MOST)
+                        })
+                        .flatten()
+                });
+                let Some(engine) = engine else {
                     self.give_up_rail("found no engine it can afford", now);
                     return None;
                 };
@@ -1863,6 +2185,7 @@ impl Brain {
                     self.year() < costs::TRESTLE_UNTIL && engine.speed <= costs::TRESTLE_SPEED;
                 let project = self.rail.as_mut()?;
                 project.prices.trestle = trestle;
+                project.wagons_most = wagons_most;
                 project.train = Some((engine, wagon));
                 // Its whole line laid out before it builds anything.
                 let (at, heading) = project.end(0)?;
@@ -1915,7 +2238,7 @@ fn estimate(project: &mut RailProject) -> Result<f64, &'static str> {
             let crossings = rail::street_runs(&project.land, &cells).len() as f64;
             let cost = rail::cost(&nodes)
                 + crossings * prices.crossing()
-                + prices.stations_and_depot(STATION_MODULES);
+                + prices.stations_and_depot(project.modules);
             priced += 1;
             if best.is_none_or(|(c, _, _)| cost < c) {
                 best = Some((cost, i, j));
@@ -2145,5 +2468,68 @@ mod tests {
             .cloned()
             .collect();
         assert!(passenger_engine(&weak, &coach, PASSENGER_COACHES, i64::MAX).is_none());
+    }
+
+    #[test]
+    fn a_line_with_more_to_carry_a_round_than_six_wagons_hold_gets_a_long_train() {
+        // Run 68: 243 stone a year over 5.9 km, wagons of ten. About 127 a
+        // round: twice what six hold.
+        let fares = 243.0 * 5_900.0 * econ::CARGO_FARE;
+        let each = a_round(fares, 5_900.0);
+        assert!((110.0..140.0).contains(&each), "{each}");
+        assert!(long_train(each, 10));
+        // Wagons of 25 hold it in six; so does a line a third as long, its
+        // rounds three times as many.
+        assert!(!long_train(each, 25));
+        assert!(!long_train(
+            a_round(243.0 * 1_900.0 * econ::CARGO_FARE, 1_900.0),
+            10
+        ));
+        // Nothing reckoned: a short train.
+        assert!(!long_train(a_round(0.0, 5_900.0), 10));
+        assert!(!long_train(each, 0));
+    }
+
+    #[test]
+    fn an_engine_of_1922_pulls_twelve_wagons_slowly_up_its_hills() {
+        let (engines, _) = trains_1922();
+        let wagon = model("bulk_2_ok", 70_000, 11_700, 10, 80, 0, 0, 14, false);
+        let br75 = engines
+            .iter()
+            .find(|m| m.model.as_str() == "br75_4")
+            .unwrap();
+        // Six loaded up 2.5 %: 220 t, 54 kN of its 85.
+        assert!(hauls(br75, &wagon, WAGONS_MOST));
+        // Twelve: 364 t, 89 kN up 2.5 %, more than it has; let climb at
+        // half that, it hauls them.
+        assert!(hauls(br75, &wagon, WAGONS_LONG));
+        // And is the engine a long train of them is given.
+        let pick = freight_engine(&engines, &wagon, WAGONS_LONG, 4_000_000, 300.0, 8_000.0);
+        assert!(pick.is_some());
+        // Not an engine with no pull to speak of.
+        let weak = model("shunter", 300_000, 50_000, 0, 60, 200, 20, 30, false);
+        assert!(!hauls(&weak, &wagon, WAGONS_LONG));
+    }
+
+    #[test]
+    fn a_cargo_train_takes_the_engine_its_train_makes_most_with_not_the_strongest() {
+        let (engines, _) = trains_1922();
+        // Six tank wagons of ten, 80 km/h, over run 67's 8.9 km with 327
+        // crude oil a year to carry: about 8.5 million to spend after its
+        // line, the strongest it could afford the 4 million china_jf1.
+        let wagon = model("liquid_2_zh", 70_000, 11_700, 10, 80, 0, 0, 12, false);
+        let pick = |money| freight_engine(&engines, &wagon, WAGONS_MOST, money, 327.0, 8_893.0);
+        let best = pick(8_500_000).unwrap();
+        assert_eq!(
+            best.model.as_str(),
+            "br75_4",
+            "as fast as its wagons, half the price and running"
+        );
+        // Short of it: the next that hauls them.
+        assert_eq!(pick(1_900_000).unwrap().model.as_str(), "mogul_2_6_0");
+        assert!(pick(1_000_000).is_none());
+        // Nothing reckoned of what there is to carry: the same choice.
+        let unknown = freight_engine(&engines, &wagon, WAGONS_MOST, 8_500_000, 0.0, 8_893.0);
+        assert_eq!(unknown.unwrap().model.as_str(), "br75_4");
     }
 }

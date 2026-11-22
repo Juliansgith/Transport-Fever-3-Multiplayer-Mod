@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use tpf3mp_ai::{Brain, Out, place::P};
 use tpf3mp_bridge::ai::{
     AiAnswer, AiCompany, AiDepot, AiEnd, AiIndustry, AiLand, AiLine, AiLoan, AiModel, AiNeed,
-    AiOutput, AiQuestion, AiRoute, AiStation, AiStreet, AiTown, AiVehicle, AiVerdict, land,
+    AiOutput, AiQuestion, AiRoute, AiStation, AiStreet, AiTown, AiTravel, AiVehicle, AiVerdict,
+    land,
 };
 use tpf3mp_proto::{
     AiDifficulty, BoundedVec, FixedBytes, PlayerId, RoomId, Text,
@@ -74,6 +75,8 @@ struct World {
     /// trucks can drive between them, and each line's transport mode.
     industries: Vec<AiIndustry>,
     roads_join: bool,
+    /// How long the road the pathfinder finds is, in metres (0: not said).
+    road_length: u32,
     line_modes: Vec<(LineId, u16)>,
     /// The truck stations built.
     truck_stations: Vec<StationId>,
@@ -111,6 +114,11 @@ struct World {
     /// for them; how many standing things a construction's verdict says it
     /// touches.
     station_cost: Option<fn(Pos) -> i64>,
+    /// What the game charges for a piece of track (none: 10,000).
+    track_cost: Option<i64>,
+    /// How many industries a rail station it builds reaches (none: not
+    /// said).
+    rail_reach: Option<u16>,
     station_quotes: Vec<(Pos, i64)>,
     touches: Option<fn(&tpf3mp_proto::action::ConstructionBuild) -> u16>,
     /// Rail depot verdicts, the first so many, that touch something.
@@ -177,6 +185,9 @@ impl World {
                 needs: BoundedVec::default(),
                 rivals: 0,
                 linked: BoundedVec::default(),
+                residents: 0,
+                usage: 0,
+                travel: BoundedVec::default(),
             });
         }
         Self {
@@ -197,6 +208,7 @@ impl World {
             drop_depots: 0,
             industries: Vec::new(),
             roads_join: true,
+            road_length: 0,
             line_modes: Vec::new(),
             truck_stations: Vec::new(),
             rail_stations: Vec::new(),
@@ -216,6 +228,8 @@ impl World {
             depot_cost: None,
             depot_quotes: Vec::new(),
             station_cost: None,
+            track_cost: None,
+            rail_reach: None,
             station_quotes: Vec::new(),
             touches: None,
             rail_depot_touches: 0,
@@ -438,6 +452,7 @@ impl World {
                 AiAnswer::Route(AiRoute {
                     connected: joined,
                     edges: if joined { 40 } else { 0 },
+                    length: if joined { self.road_length } else { 0 },
                 })
             }
             AiQuestion::Models { cargo: None, .. } if self.buses.is_some() => {
@@ -599,6 +614,7 @@ impl World {
             Action::BuildConstruction(b) if b.file.as_str().contains("modular_terminal") => {
                 self.station_cost.map_or(10_000, |f| f(b.transform.origin))
             }
+            Action::BuildTrack(_) => self.track_cost.unwrap_or(10_000),
             _ => 10_000,
         };
         let collisions = match action {
@@ -697,6 +713,7 @@ impl World {
                     terminals: 2,
                     waiting: 0,
                     ends: BoundedVec::default(),
+                    reach: None,
                 });
                 if let Some(s) = self
                     .streets
@@ -718,6 +735,7 @@ impl World {
                     terminals: 1,
                     waiting: 0,
                     ends: BoundedVec::default(),
+                    reach: None,
                 });
                 self.money -= 60_000;
             }
@@ -779,6 +797,7 @@ impl World {
                             .collect(),
                     )
                     .unwrap(),
+                    reach: self.rail_reach,
                 });
                 self.money -= 230_000;
             }
@@ -967,6 +986,7 @@ impl World {
                     income: None,
                     recent: None,
                     problems: 0,
+                    round: 0,
                 });
             }
             Action::BuyVehicle(buy) => {
@@ -989,6 +1009,7 @@ impl World {
                     model: buy.consist[0].model.clone(),
                     worn: 0,
                     idle: true,
+                    age: 0,
                 });
                 self.money -= 30_000;
             }
@@ -1155,6 +1176,7 @@ fn industry(name: &str, x: f64, y: f64, inputs: &[&str], outputs: &[(&str, u32)]
         .unwrap(),
         water: false,
         carried: 0,
+        shipped: 0,
     }
 }
 
@@ -1322,6 +1344,8 @@ fn an_ai_plans_its_next_line_one_look_after_the_last_not_two() {
     // minutes, twice its 2 between looks: its rest waited one look, then
     // its look's answer waited another before the survey it led to.
     let mut world = World::new();
+    // Money for a second town's line as it reckons one: stops, a depot, a bus.
+    world.money = 1_500_000;
     let mut brain = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Normal, None);
     let mut now = Instant::now();
     // From its first line's bus put on, the line done, to its next plan.
@@ -1346,8 +1370,45 @@ fn an_ai_plans_its_next_line_one_look_after_the_last_not_two() {
 }
 
 #[test]
+fn a_towns_line_is_begun_only_with_its_stops_depot_and_bus_in_hand() {
+    // Runs 72 and 73: a town's line opened with 150,000 to spend, its stops
+    // and depot built, and no money left for a bus.
+    let mut world = World::new();
+    world.offers = Vec::new();
+    world.money = 300_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    let said = brain.take_said();
+    assert!(said.iter().any(|l| l == "waits for money"), "{said:?}");
+    assert!(
+        world.lines.is_empty() && world.stations.is_empty(),
+        "{said:?}"
+    );
+    // With what its stops, a depot and its bus are reckoned at: a line.
+    let mut world = World::new();
+    world.offers = Vec::new();
+    world.money = 400_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    assert_eq!(world.lines_with_buses(1), 1, "{:?}", brain.take_said());
+}
+
+#[test]
 fn a_hard_ai_serves_town_after_town_while_its_money_lasts() {
     let mut world = World::new();
+    // Loans that stretch to a second town's line as it reckons one: its
+    // stops, a depot, a bus.
+    world.offers = vec![loan("Small", 1_000_000), loan("Large", 2_000_000)];
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
         &mut brain,
@@ -1397,6 +1458,8 @@ fn a_refused_depot_tries_the_other_side_and_a_refused_town_is_left_for_another()
 #[test]
 fn a_new_driver_carries_on_from_the_memo() {
     let mut world = World::new();
+    // Money for a second town's line as it reckons one: stops, a depot, a bus.
+    world.money = 1_500_000;
     let mut first = Brain::new(seat(), "Rossi Transport", AiDifficulty::Normal, None);
     // Long enough for one line, before its next look.
     play(
@@ -1488,6 +1551,7 @@ fn stops_a_project_left_behind_do_not_make_their_town_served_and_are_taken_up() 
         terminals: 2,
         waiting: 0,
         ends: BoundedVec::default(),
+        reach: None,
     });
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
@@ -1698,13 +1762,14 @@ fn it_carries_cargo_by_truck_to_a_town_that_needs_it() {
     let mut world = World::new();
     world.industries = mills();
     ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
-    // Trucks by default.
+    // Trucks by default. Long enough for its trucks to leave its depot a
+    // share of a round apart.
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
         &mut brain,
         &mut world,
         Instant::now(),
-        Duration::from_secs(600),
+        Duration::from_secs(1_800),
     );
     // Buses in a town first, then the planks by truck, in turn.
     let trucks: Vec<LineId> = world
@@ -1744,7 +1809,9 @@ fn it_carries_cargo_by_truck_to_a_town_that_needs_it() {
         .iter()
         .filter(|v| v.line == Some(trucks[0]))
         .collect();
-    assert_eq!(on_it.len(), 1, "one truck to start");
+    // 60 planks a year over 5.6 km: a truck makes about one round of it a
+    // year, so it opens with as many as a line opens with at most.
+    assert_eq!(on_it.len(), 4, "the trucks its cargo needs to start");
     assert!(
         on_it
             .iter()
@@ -1754,6 +1821,18 @@ fn it_carries_cargo_by_truck_to_a_town_that_needs_it() {
     assert!(
         said.iter()
             .any(|l| l == "opened a truck line carrying planks from Witney Sawmill to Ely"),
+        "{said:?}"
+    );
+    // Its trucks leave a share of a round apart, and it looks to its next
+    // line meanwhile: run 68, a year of the game waiting on four trucks.
+    let first = said
+        .iter()
+        .position(|l| l.contains("runs 1 truck(s)") && l.ends_with("3 more to follow"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert!(
+        said[first..].iter().any(|l| l.starts_with("weighs")
+            || l.starts_with("plans")
+            || l.starts_with("found no")),
         "{said:?}"
     );
     // No town takes grain or stone: never planned, the livestock farm that
@@ -1867,9 +1946,9 @@ fn a_cargo_too_far_for_trucks_goes_by_train() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     play(
@@ -1927,6 +2006,145 @@ fn a_cargo_too_far_for_trucks_goes_by_train() {
     );
     // Not trucks as well.
     assert!(!world.line_modes.iter().any(|(_, m)| *m == 4));
+}
+
+#[test]
+fn money_for_a_railway_whole_looks_to_a_train_before_a_bus_line() {
+    // Run 69: a bus line first left a stone railway reckoned at five
+    // million a year in fares too dear by less than the bus line cost.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 240)],
+    )];
+    ely_needs_planks(&mut world, 0, 200, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    let first = said
+        .iter()
+        .find(|l| l.starts_with("plans "))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert_eq!(
+        first, "plans a rail line carrying planks from Witney Sawmill to Ely",
+        "{said:?}"
+    );
+    // Then its buses, in turn.
+    assert!(
+        said.iter().any(|l| l.starts_with("plans a bus line")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_long_train_too_dear_is_a_short_one_where_its_money_stretches_to_that() {
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 480)],
+    )];
+    ely_needs_planks(&mut world, 0, 400, pos(5_320.0, -280.0));
+    // A valley between them, bridged: a line of some millions.
+    world.ground = Some(|x, _| {
+        if (x - 3_400.0).abs() < 500.0 {
+            -8.0
+        } else {
+            10.0
+        }
+    });
+    // Money for the line with short stations and a train of six (about
+    // 3.0 million reckoned, and 2.5 for its train), not for long ones and
+    // twelve (3.85).
+    world.money = 6_500_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "plans a train of up to 12 wagons: 142 to carry a round"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l == "its money short of long stations, plans a train of 6 wagons"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l
+                == "buys a train: vehicle/train/engine.mdl and 6 vehicle/train/planks_wagon.mdl"),
+        "{said:?}"
+    );
+    // With money for it: long stations, and twelve.
+    let mut world = World::new();
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 480)],
+    )];
+    ely_needs_planks(&mut world, 0, 400, pos(5_320.0, -280.0));
+    world.ground = Some(|x, _| {
+        if (x - 3_400.0).abs() < 500.0 {
+            -8.0
+        } else {
+            10.0
+        }
+    });
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l
+                == "buys a train: vehicle/train/engine.mdl and 12 vehicle/train/planks_wagon.mdl"),
+        "{said:?}"
+    );
+    // What its line took of its money is said against its reckoning.
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("its line took ")
+                && l.contains(" of its money, reckoned at up to ")),
+        "{said:?}"
+    );
+    let long = world
+        .actions
+        .iter()
+        .filter(|(_, a)| match a {
+            Action::BuildConstruction(b) => b.params.iter().any(|p| {
+                p.key.as_str() == "length" && p.value == tpf3mp_proto::action::ParamValue::Int(4)
+            }),
+            _ => false,
+        })
+        .count();
+    assert_eq!(long, 2, "two stations of six modules: {said:?}");
 }
 
 #[test]
@@ -2095,9 +2313,9 @@ fn a_rail_line_crosses_a_country_road_on_the_level() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // A country road from north to south between the sawmill and Ely.
     let road = street(pos(3_500.0, -2_000.0), pos(3_500.0, 2_000.0));
     world.streets.push(road.clone());
@@ -2132,6 +2350,183 @@ fn a_rail_line_crosses_a_country_road_on_the_level() {
 }
 
 #[test]
+fn a_track_dearer_at_the_games_prices_than_its_money_is_never_begun() {
+    // Run 73: a line reckoned at up to 5.5 million, laid out between other
+    // station places through 2.6 km of tunnel, took 11.2 million and left
+    // nothing for its train.
+    let mut world = World::new();
+    an_earning_line(&mut world);
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 400)],
+    )];
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    // The game asks five million for each piece of its track.
+    world.track_cost = Some(5_000_000);
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter().any(|l| l.starts_with("found its track ")
+            && l.ends_with("with its stations, depot and train: more than it has")),
+        "{said:?}"
+    );
+    // Nothing of it built: no rail station, no track.
+    assert!(world.rail_stations.is_empty(), "{said:?}");
+    assert_eq!(world.track_laid, 0.0);
+}
+
+#[test]
+fn a_station_that_reaches_no_industry_ends_its_line_before_its_track() {
+    // Run 74: a station 250 m from its quarry reached nothing, its train
+    // loaded nothing, and a railway of 7.3 million was closed in a year.
+    let mut world = World::new();
+    an_earning_line(&mut world);
+    world.small_towns();
+    world.industries = vec![
+        industry("Witney Quarry", 1_800.0, 900.0, &[], &[(GRAIN, 240)]),
+        works("Ely Works", 5_320.0, -280.0, GRAIN, PLANKS, 20, 400),
+    ];
+    world.money = 30_000_000;
+    world.rail_reach = Some(0);
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("built a station that reaches no industry")),
+        "{said:?}"
+    );
+    assert_eq!(world.track_laid, 0.0, "{said:?}");
+    // One that reaches its industry: the line.
+    let mut world = World::new();
+    an_earning_line(&mut world);
+    world.small_towns();
+    world.industries = vec![
+        industry("Witney Quarry", 1_800.0, 900.0, &[], &[(GRAIN, 240)]),
+        works("Ely Works", 5_320.0, -280.0, GRAIN, PLANKS, 20, 400),
+    ];
+    world.money = 30_000_000;
+    world.rail_reach = Some(1);
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("runs a train on a rail line")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_railway_that_would_not_earn_its_price_back_is_not_built_whatever_its_money() {
+    // Run 75: two layouts too dear, the Hard AI laid a stone railway
+    // reckoned at 3.6 million a year through a hill for 9.7 million.
+    let mut world = World::new();
+    // A settled line of its own that earns: a railway waits on one.
+    an_earning_line(&mut world);
+    world.small_towns();
+    // 60 planks a year over 3.7 km: 850,000 in fares, for a line and train
+    // of some five million.
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(1_200),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("found its rail line, up to ")
+                && l.contains(", not worth ")
+                && l.contains(" a year in fares")),
+        "{said:?}"
+    );
+    assert!(world.rail_stations.is_empty(), "{said:?}");
+    assert_eq!(world.track_laid, 0.0);
+}
+
+#[test]
+fn a_railway_left_without_a_train_gets_one() {
+    // Run 73: its line dearer than reckoned, the Normal AI had no money for
+    // its train, gave the line up and left it idle.
+    let mut world = World::new();
+    an_earning_line(&mut world);
+    world.small_towns();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        1_800.0,
+        900.0,
+        &[],
+        &[(PLANKS, 400)],
+    )];
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
+    world.money = 30_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    let start = Instant::now();
+    let now = play(&mut brain, &mut world, start, Duration::from_secs(1_200));
+    let rail = world
+        .lines
+        .iter()
+        .find(|l| world.line_modes.contains(&(l.id, 7)))
+        .expect("a rail line")
+        .id;
+    assert!(world.vehicles.iter().any(|v| v.line == Some(rail)));
+    brain.take_said();
+    // Its train gone.
+    world.vehicles.retain(|v| v.line != Some(rail));
+    for line in &mut world.lines {
+        if line.id == rail {
+            line.vehicles = BoundedVec::default();
+        }
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(1_200));
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l == "buys a train for Witney Sawmill planks train, which has none"),
+        "{said:?}"
+    );
+    assert!(
+        world
+            .vehicles
+            .iter()
+            .any(|v| v.line == Some(rail) && v.model.as_str().contains("engine")),
+        "{said:?}"
+    );
+}
+
+#[test]
 fn a_rail_line_it_cannot_pay_for_is_never_begun() {
     let mut world = World::new();
     // A settled line of its own that earns: a railway waits on one.
@@ -2141,9 +2536,9 @@ fn a_rail_line_it_cannot_pay_for_is_never_begun() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // A gorge 70 m deep and 1.6 km wide between them: the line across it
     // and a train cost more than the AI has.
     world.ground = Some(|x, _| {
@@ -2183,9 +2578,9 @@ fn a_line_goes_over_or_under_a_street_it_may_not_cross_on_the_level() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // A road with stops on it from edge to edge between them: no level
     // crossing may be laid on it.
     let mut road = street(pos(3_500.0, -20_000.0), pos(3_500.0, 20_000.0));
@@ -2229,9 +2624,9 @@ fn a_line_whose_track_would_be_refused_builds_no_station() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     // The game refuses any track by the sawmill.
     world.refuse_track_near = Some(pos(1_800.0, 900.0));
     world.money = 30_000_000;
@@ -2419,9 +2814,9 @@ fn a_long_rail_line_gets_a_signalled_passing_loop_and_a_second_train_when_full()
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     let start = Instant::now();
@@ -2570,9 +2965,9 @@ fn a_longer_line_gets_two_loops_and_runs_up_to_three_trains() {
         -1_200.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 60_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     let start = Instant::now();
@@ -2617,19 +3012,19 @@ fn a_second_rail_line_from_one_place_shares_the_first_ones_depot() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120), (GOODS, 90)],
+        &[(PLANKS, 400), (GOODS, 400)],
     )];
     world.towns[1].needs = BoundedVec::new(vec![
         AiNeed {
             cargo: Text::new(PLANKS).unwrap(),
             supply: 0,
-            limit: 60,
+            limit: 300,
             at: pos(5_320.0, -280.0),
         },
         AiNeed {
             cargo: Text::new(GOODS).unwrap(),
             supply: 0,
-            limit: 60,
+            limit: 300,
             at: pos(5_320.0, -280.0),
         },
     ])
@@ -2858,9 +3253,9 @@ fn a_rail_depot_touching_what_stands_goes_further_out_or_to_the_other_end() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.touches = Some(|b| {
         let near = P::of(b.transform.origin).flat_distance(P::of(pos(1_800.0, 900.0))) < 700.0;
@@ -2923,9 +3318,9 @@ fn a_rail_depot_touching_what_stands_at_first_goes_further_out_at_that_end() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.rail_depot_touches = 1;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
@@ -2981,9 +3376,9 @@ fn a_rail_depot_blocked_straight_out_turns_aside_on_a_curved_track() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.rail_depot_touches = 3;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
@@ -3095,6 +3490,36 @@ fn an_ai_opens_no_more_lines_while_its_young_ones_have_not_shown_what_they_earn(
 }
 
 #[test]
+fn money_idle_on_a_loan_is_put_to_work_its_young_lines_notwithstanding() {
+    // Run 70: six lines young, the Normal AI waited with four and a half
+    // million in hand, and a year on its loan had taken all of it.
+    let mut world = World::new();
+    world.money = 8_000_000;
+    let terms = loan("Large", 8_000_000);
+    world.loans = 1;
+    world.owed.push(AiLoan {
+        payment: tpf3mp_ai::money::payment(&terms, MONTH).unwrap(),
+        remaining: terms.amount,
+        months_left: 48,
+        terms,
+    });
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Easy, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(2_400),
+    );
+    let said = brain.take_said();
+    // Easy waits on one young line; not with this money on a loan.
+    assert!(world.lines.len() >= 2, "{said:?}");
+    assert!(
+        !said.iter().any(|l| l.starts_with("waits to see what its")),
+        "{said:?}"
+    );
+}
+
+#[test]
 fn a_line_that_earns_nothing_is_closed_after_its_first_months() {
     let (mut world, mut brain, now) = a_running_bus_line();
     let line = world.lines[0].id;
@@ -3122,6 +3547,67 @@ fn a_line_that_earns_nothing_is_closed_after_its_first_months() {
             .any(|l| l.starts_with("closes ") && l.contains("which earned nothing")),
         "{said:?}"
     );
+}
+
+#[test]
+fn a_line_whose_round_takes_most_of_a_year_is_given_time_for_two_before_it_is_closed() {
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    world.month_every = Some(Duration::from_secs(60));
+    // Earning nothing, no one aboard or waiting, its bus seven months old:
+    // but a round of it takes 1,100 s, nine months, as between two towns.
+    world.line_income = Some(|_| 0);
+    world.lines[0].round = 1_100;
+    for v in &mut world.vehicles {
+        v.worn = 4;
+        v.age = 7;
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(
+        world.lines.iter().any(|l| l.id == line),
+        "its first riders are still aboard somewhere: {said:?}"
+    );
+    // Two rounds on, 19 months old, still nothing: closed.
+    for v in &mut world.vehicles {
+        v.age = 19;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
+}
+
+#[test]
+fn a_line_between_towns_losing_a_little_in_its_first_year_is_kept_for_its_rounds() {
+    // Run 76: a bus line between two towns closed having lost 15,717 over
+    // its first year, a round of it most of a year; the same line took
+    // 184,000 to 316,000 a year in runs 68 and 70.
+    let (mut world, mut brain, now) = a_running_bus_line();
+    let line = world.lines[0].id;
+    world.month_every = Some(Duration::from_secs(60));
+    // Losing money, riders aboard, its bus a year old and a twentieth
+    // through its life: but a round of it takes 1,000 s.
+    world.line_profit = Some(|_| -40_000);
+    world.line_income = Some(|_| 10_000);
+    world.lines[0].round = 1_000;
+    world.lines[0].load = 40;
+    for v in &mut world.vehicles {
+        v.worn = 6;
+        v.age = 12;
+    }
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(
+        world.lines.iter().any(|l| l.id == line),
+        "three rounds of it first: {said:?}"
+    );
+    // Three rounds on, 26 months old, and losing still: closed.
+    for v in &mut world.vehicles {
+        v.age = 26;
+    }
+    play(&mut brain, &mut world, now, Duration::from_secs(600));
+    let said = brain.take_said();
+    assert!(!world.lines.iter().any(|l| l.id == line), "{said:?}");
 }
 
 #[test]
@@ -3268,9 +3754,9 @@ fn a_rail_depot_whose_track_would_touch_what_stands_goes_elsewhere_before_anythi
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    ely_needs_planks(&mut world, 0, 300, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     world.rail_link_touches = 1;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
@@ -3705,6 +4191,7 @@ fn an_earning_line(world: &mut World) {
         terminals: 2,
         waiting: 0,
         ends: BoundedVec::default(),
+        reach: None,
     });
     world.lines.push(AiLine {
         id: LineId(9000),
@@ -3717,6 +4204,7 @@ fn an_earning_line(world: &mut World) {
         income: Some(2_000_000),
         recent: Some(300_000),
         problems: 0,
+        round: 0,
     });
     world.vehicles.push(AiVehicle {
         id: VehicleId(9002),
@@ -3724,6 +4212,7 @@ fn an_earning_line(world: &mut World) {
         model: Text::new("vehicle/bus/good.mdl").unwrap(),
         worn: 10,
         idle: false,
+        age: 0,
     });
 }
 
@@ -3803,6 +4292,9 @@ fn a_young_chains_losses_hold_nothing_back() {
     for v in &mut world.vehicles {
         v.worn = 6;
     }
+    // Its first month's books in: its lines' year as above.
+    let now = play(&mut brain, &mut world, now, Duration::from_secs(90));
+    brain.take_said();
     play(&mut brain, &mut world, now, Duration::from_secs(600));
     let said = brain.take_said();
     assert!(
@@ -3882,9 +4374,11 @@ fn a_cargo_railway_waits_until_its_settled_lines_earn_what_a_train_costs() {
         1_800.0,
         900.0,
         &[],
-        &[(PLANKS, 120)],
+        &[(PLANKS, 400)],
     )];
-    ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+    // 135 a year over 3.7 km: 1.9 million in fares, worth a railway of
+    // its price and short of what begins one unproven.
+    ely_needs_planks(&mut world, 0, 135, pos(5_320.0, -280.0));
     world.money = 30_000_000;
     let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
     let now = play(
@@ -4025,11 +4519,11 @@ fn a_station_whose_nearest_street_is_refused_joins_the_next() {
 #[test]
 fn an_ai_whose_settled_lines_earn_opens_twice_as_many_young_lines_at_once() {
     // Run 52: three young lines at a time, nine months each to settle; some
-    // four lines a year, all paying, its loan idle.
+    // four lines a year, all paying, its loan idle. Hard waits on six.
     let mut world = World::new();
     world.small_towns();
-    // Six more towns, 6 km apart: room for more lines than it waits on.
-    for n in 0..6 {
+    // Twelve more towns, 6 km apart: room for more lines than it waits on.
+    for n in 0..12 {
         let mut town = world.towns[0].clone();
         town.id = TownId(10 + n);
         town.name = Text::lossy(&format!("Town {n}"));
@@ -4066,9 +4560,9 @@ fn an_ai_whose_settled_lines_earn_opens_twice_as_many_young_lines_at_once() {
         Duration::from_secs(1_200),
     );
     let said = brain.take_said();
-    // Nothing proven yet: Hard's three.
-    assert_eq!(world.lines.len(), 3, "{said:?}");
-    // Two settled lines of its own earning: up to six young ones.
+    // Nothing proven yet: Hard's six.
+    assert_eq!(world.lines.len(), 6, "{said:?}");
+    // Two settled lines of its own earning: up to twelve young ones.
     an_earning_line(&mut world);
     let mut second = world.lines.last().unwrap().clone();
     second.id = LineId(9010);
@@ -4078,8 +4572,364 @@ fn an_ai_whose_settled_lines_earn_opens_twice_as_many_young_lines_at_once() {
     bus.id = VehicleId(9012);
     bus.line = Some(LineId(9010));
     world.vehicles.push(bus);
-    play(&mut brain, &mut world, now, Duration::from_secs(1_200));
+    play(&mut brain, &mut world, now, Duration::from_secs(2_400));
     let said = brain.take_said();
     let young = world.lines.iter().filter(|l| l.id.0 < 9000).count();
-    assert_eq!(young, 6, "{said:?}");
+    assert_eq!(young, 12, "{said:?}");
+}
+
+/// `people` of town `from`'s (by index) work and shop in town `to`, none
+/// of them riding a line yet.
+fn travel(world: &mut World, from: usize, to: usize, people: u32) {
+    let to = world.towns[to].id;
+    let mut travel: Vec<AiTravel> = world.towns[from].travel.iter().copied().collect();
+    travel.push(AiTravel {
+        to,
+        people,
+        riding: 0,
+    });
+    world.towns[from].travel = BoundedVec::new(travel).unwrap();
+}
+
+#[test]
+fn what_another_ai_player_is_building_is_left_to_it() {
+    // Run 70: two AIs one game drove looked in the same seconds, and each
+    // opened a bus line between Hunstanton and Dinnington St John's.
+    let towns = |world: &mut World| {
+        travel(world, 0, 1, 80);
+        travel(world, 1, 0, 60);
+        world.money = 3_000_000;
+    };
+    // The first plans the line between the two towns, and says so.
+    let mut world = World::new();
+    towns(&mut world);
+    let mut first = Brain::new(seat(), "Rossi Transport", AiDifficulty::Normal, None);
+    let start = Instant::now();
+    let mut now = start;
+    while first.claims().is_empty() {
+        now = play(&mut first, &mut world, now, STEP);
+        assert!(now < start + Duration::from_secs(600), "no plan");
+    }
+    let claimed = first.claims();
+    assert!(
+        first
+            .take_said()
+            .iter()
+            .any(|l| l.starts_with("plans a bus line between Didcot and Ely")),
+    );
+    // The second, told of it at every look, plans something else.
+    let mut world = World::new();
+    towns(&mut world);
+    let mut second = Brain::new(seat(), "Lindqvist Lines", AiDifficulty::Normal, None);
+    let mut now = start;
+    while now < start + Duration::from_secs(600) {
+        second.avoid(&claimed, now);
+        now = play(&mut second, &mut world, now, STEP);
+    }
+    let said = second.take_said();
+    assert!(
+        !said.iter().any(|l| l.contains("between Didcot and Ely")),
+        "{said:?}"
+    );
+    assert!(said.iter().any(|l| l.starts_with("plans ")), "{said:?}");
+    // Told no more, it takes the line up once the claim has run out.
+    play(&mut second, &mut world, now, Duration::from_secs(900));
+    let said = second.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("plans a bus line between Didcot and Ely")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn two_towns_whose_people_travel_between_them_get_a_bus_line_through_both() {
+    let mut world = World::new();
+    // Didcot and Ely, 5 km apart: 140 of their people work and shop in
+    // the other, by car.
+    travel(&mut world, 0, 1, 80);
+    travel(&mut world, 1, 0, 60);
+    // Money for a line between towns as it reckons one: its buses, its
+    // stops and a depot among houses.
+    world.money = 3_000_000;
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter().any(|l| l.starts_with(
+            "plans a bus line between Didcot and Ely: 140 of their people travel between them"
+        )),
+        "{said:?}"
+    );
+    // Its first line, before any town's own buses: a fare pays by the
+    // metre, and these riders go 5 km.
+    let line = &world.lines[0];
+    assert_eq!(line.name.as_str(), "Didcot - Ely Bus", "{said:?}");
+    let towns: Vec<Option<u32>> = line
+        .stops
+        .iter()
+        .map(|id| {
+            let station = world.stations.iter().find(|s| s.id == *id).unwrap();
+            world.town_of(station.pos)
+        })
+        .collect();
+    assert!(
+        towns.contains(&Some(1)) && towns.contains(&Some(2)),
+        "stops in both towns: {towns:?}"
+    );
+    // Each town's stops together, so a bus runs through each once a round.
+    let changes = towns.windows(2).filter(|w| w[0] != w[1]).count();
+    assert_eq!(changes, 1, "{towns:?}");
+    // 140 people at three in five, some 53 fares a year over 5 km: the
+    // buses that carries, of the model it buys.
+    let buses = world
+        .vehicles
+        .iter()
+        .filter(|v| v.line == Some(line.id))
+        .count();
+    assert!((1..=4).contains(&buses), "{buses} buses: {said:?}");
+    // Its depot in the larger town, Didcot.
+    assert!(
+        world
+            .depots
+            .iter()
+            .any(|d| d.connected && world.town_of(d.at) == Some(1)),
+        "{:?}",
+        world.depots
+    );
+    // The pair is served: no second line between them.
+    let between = world
+        .lines
+        .iter()
+        .filter(|l| l.name.as_str() == "Didcot - Ely Bus")
+        .count();
+    assert_eq!(between, 1);
+}
+
+#[test]
+fn towns_whose_people_already_ride_between_them_get_no_bus_line() {
+    let mut world = World::new();
+    travel(&mut world, 0, 1, 80);
+    travel(&mut world, 1, 0, 60);
+    // Another company's line carries them all.
+    for town in &mut world.towns {
+        let riding: Vec<AiTravel> = town
+            .travel
+            .iter()
+            .map(|t| AiTravel {
+                riding: t.people,
+                ..*t
+            })
+            .collect();
+        town.travel = BoundedVec::new(riding).unwrap();
+    }
+    let mut brain = Brain::new(seat(), "Rossi Transport", AiDifficulty::Normal, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    assert!(
+        !said.iter().any(|l| l.contains("between Didcot and Ely")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|l| l.starts_with("opened a bus line in")),
+        "a town's own buses, as before: {said:?}"
+    );
+}
+
+#[test]
+fn a_cargo_goes_to_the_town_that_pays_most_not_the_nearest() {
+    let mut world = World::new();
+    world.industries = vec![industry(
+        "Witney Sawmill",
+        2_000.0,
+        -200.0,
+        &[],
+        &[(PLANKS, 120)],
+    )];
+    // Both towns take planks: Didcot 2 km from the sawmill, Ely 3 km.
+    let need = |at: Pos| tpf3mp_bridge::ai::AiNeed {
+        cargo: Text::new(PLANKS).unwrap(),
+        supply: 0,
+        limit: 60,
+        at,
+    };
+    world.towns[0].needs = BoundedVec::new(vec![need(pos(20.0, 30.0))]).unwrap();
+    world.towns[1].needs = BoundedVec::new(vec![need(pos(5_020.0, 30.0))]).unwrap();
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("plans a truck line carrying planks from Witney Sawmill to Ely")),
+        "the further town pays more a plank: {said:?}"
+    );
+}
+
+/// A works at (x, y) that takes `input` and could make `most` of `output`
+/// a year, making `made` of it, all of that carried on by someone.
+fn works(
+    name: &str,
+    x: f64,
+    y: f64,
+    input: &str,
+    output: &str,
+    made: u32,
+    most: u32,
+) -> AiIndustry {
+    let mut works = industry(name, x, y, &[input], &[(output, most)]);
+    let mut outputs: Vec<AiOutput> = works.outputs.iter().cloned().collect();
+    for o in &mut outputs {
+        o.per_year = made;
+    }
+    works.outputs = BoundedVec::new(outputs).unwrap();
+    works.shipped = made;
+    works
+}
+
+#[test]
+fn a_raw_material_goes_to_the_works_that_pays_most_for_carrying_it() {
+    let mut world = World::new();
+    // A farm by Didcot and two livestock farms that make a little, carried
+    // on, of what they could: one 900 m off, one 4.7 km, by Ely. No town
+    // needs grain.
+    world.industries = vec![
+        industry("Witney Farm", 300.0, 300.0, &[], &[(GRAIN, 120)]),
+        works(
+            "Near Livestock Farm",
+            -400.0,
+            -300.0,
+            GRAIN,
+            PLANKS,
+            20,
+            200,
+        ),
+        works("Far Livestock Farm", 5_000.0, 400.0, GRAIN, PLANKS, 20, 200),
+    ];
+    world.money = 5_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(900),
+    );
+    let said = brain.take_said();
+    assert!(
+        said.iter().any(|l| l.starts_with(
+            "plans a truck line carrying grain from Witney Farm to Far Livestock Farm: 120 a year"
+        )),
+        "the further works pays more a load: {said:?}"
+    );
+    // It unloads at the works' own station.
+    let line = world
+        .lines
+        .iter()
+        .find(|l| l.name.as_str() == "Witney Farm grain")
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert_eq!(Some(line.stops[1]), world.industries[2].station, "{said:?}");
+}
+
+#[test]
+fn a_road_far_longer_than_the_straight_line_is_no_truck_line() {
+    // Run 70: stone trucks over 4.6 km of road for a fare paid over 2.8 km
+    // took a year and a half over their first load.
+    let cargo_world = |road: u32| {
+        let mut world = World::new();
+        world.industries = mills();
+        ely_needs_planks(&mut world, 0, 60, pos(5_320.0, -280.0));
+        world.road_length = road;
+        world
+    };
+    let said_of = |mut world: World| {
+        let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+        play(
+            &mut brain,
+            &mut world,
+            Instant::now(),
+            Duration::from_secs(1_800),
+        );
+        (brain.take_said(), world)
+    };
+    // 5.6 km between them: by a road of 6 km, a truck line.
+    let (said, world) = said_of(cargo_world(6_000));
+    assert!(world.line_modes.iter().any(|(_, m)| *m == 4), "{said:?}");
+    // By a road of 30 km, none: its trucks would make a quarter of the
+    // rounds.
+    let (said, world) = said_of(cargo_world(30_000));
+    assert!(!world.line_modes.iter().any(|(_, m)| *m == 4), "{said:?}");
+    assert!(
+        said.iter().any(|l| l
+            == "found the road from Witney Sawmill to Ely 30000 m long, too far for what its trucks would earn"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_works_no_one_carries_from_takes_nothing() {
+    // Run 67: an oil railway to a refinery no one carried from ran empty,
+    // nothing waiting at its well.
+    let mut world = World::new();
+    world.industries = vec![
+        industry("Witney Farm", 300.0, 300.0, &[], &[(GRAIN, 120)]),
+        works("Idle Livestock Farm", 5_000.0, 400.0, GRAIN, PLANKS, 0, 200),
+    ];
+    world.money = 5_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    let said = brain.take_said();
+    assert!(
+        !said.iter().any(|l| l.contains("carrying grain")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_works_already_turning_out_all_it_can_takes_no_more() {
+    let mut world = World::new();
+    world.industries = vec![
+        industry("Witney Farm", 300.0, 300.0, &[], &[(GRAIN, 120)]),
+        // Making all it can: another company feeds it and carries from it.
+        works(
+            "Busy Livestock Farm",
+            5_000.0,
+            400.0,
+            GRAIN,
+            PLANKS,
+            200,
+            200,
+        ),
+    ];
+    world.money = 5_000_000;
+    let mut brain = Brain::new(seat(), "Tanaka Express", AiDifficulty::Hard, None);
+    play(
+        &mut brain,
+        &mut world,
+        Instant::now(),
+        Duration::from_secs(600),
+    );
+    let said = brain.take_said();
+    assert!(
+        !said.iter().any(|l| l.contains("carrying grain")),
+        "{said:?}"
+    );
 }
